@@ -53,8 +53,7 @@ Use root scripts when available:
 ../../scripts/fmt-all.sh
 ```
 
-Until the SDK pinning ADR is accepted, Daml builds are expected to be skipped.
-After `daml.yaml` exists, missing DPM/Daml tooling is a validation failure, not
-a green skip. Use `OZ_DAML_TOOLCHAIN=dpm` or `OZ_DAML_TOOLCHAIN=daml` when the
-accepted ADR requires one exact command; otherwise scripts auto-select DPM
-first, then Daml Assistant.
+The accepted M0 proof baseline uses DPM with SDK 3.4.11. Because `daml.yaml`
+exists, missing DPM/Daml tooling is a validation failure, not a green skip. Use
+`OZ_DAML_TOOLCHAIN=dpm` for the M0 proof baseline; Daml Assistant requires a
+superseding ADR or explicit exception.
