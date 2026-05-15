@@ -48,9 +48,19 @@ Current M0 proof DAR:
   `14ad46dfe5e89f3be7be0f4de8209f49e5b26dc0471069101184c71d9f5f2007`
 
 The root and scaffold scripts use `OZ_DAML_TOOLCHAIN=auto` by default. Auto
-selection prefers `dpm` when available, otherwise `daml`. Set
+selection requires DPM and does not fall back to Daml Assistant. The scripts
+make `~/.dpm/bin/dpm` visible for non-interactive shells when present and
+default DPM/DAML cache writes to the repo-local ignored `.cache/` directory.
+The scaffold check uses `scripts/dpm-env.sh` inside this repo so standalone CI
+checkouts do not depend on the coordinating workspace root. Set
 `OZ_DAML_TOOLCHAIN=dpm` in CI for the accepted M0 proof baseline. Daml
 Assistant use requires a superseding ADR or explicit exception.
+
+The repo-local `scripts/dpm-env.sh` is intentionally kept byte-for-byte in sync
+with the coordinating root helper until an accepted vendoring step replaces the
+duplication. Root `./scripts/check-all.sh` fails if the two helper copies drift.
+Future CI should install or expose DPM and Java 17 before running
+`scripts/check-scaffold.sh`.
 
 From the workspace root, run:
 
@@ -79,8 +89,10 @@ From the workspace root:
 ```
 
 `localnet-up.sh` requires `tmux`, starts Canton in a detached session, and waits
-for the Ledger API port to be reachable before returning. This makes the default
-up/proof/down sequence reproducible in non-interactive validation shells.
+for the Ledger API port to be reachable before returning. The proof script
+performs the same DPM bootstrap as the build/test scripts, so the default
+up/proof/down sequence works in non-interactive validation shells when DPM is
+installed on `PATH` or at `~/.dpm/bin/dpm`.
 
 ## Hello-World Scaffold
 

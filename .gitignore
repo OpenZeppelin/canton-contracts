@@ -23,3 +23,4 @@ CLAUDE.local.md
 
 # Daml build state
 .daml/
+.cache/

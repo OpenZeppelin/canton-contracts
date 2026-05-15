@@ -28,6 +28,19 @@ Do not add:
 
 ## Daml Requirements
 
+This repo is DPM-native. Use `dpm build`, `dpm test`, `dpm script`, and
+`dpm init`; do not use legacy `daml ...` commands or stale SDK binaries unless
+a superseding ADR or explicit temporary exception accepts them. Daml Assistant
+absence is expected for the M0 proof path and must not be treated as a reason
+to fall back from DPM.
+
+Local scripts bootstrap DPM from PATH or `~/.dpm/bin/dpm`, require Java 17 for
+the accepted DPM build/test/script path, and default DPM/DAML cache writes to
+the repo-local ignored `.cache/` directory. The repo-local
+`scripts/dpm-env.sh` is intentionally duplicated with the coordinating root
+helper so standalone checkouts remain buildable; update both copies together
+until an accepted vendoring step replaces the duplication.
+
 Every template or interface must document:
 
 - Signatories
@@ -54,6 +67,6 @@ Use root scripts when available:
 ```
 
 The accepted M0 proof baseline uses DPM with SDK 3.4.11. Because `daml.yaml`
-exists, missing DPM/Daml tooling is a validation failure, not a green skip. Use
-`OZ_DAML_TOOLCHAIN=dpm` for the M0 proof baseline; Daml Assistant requires a
-superseding ADR or explicit exception.
+exists, missing DPM or Java 17 tooling is a validation failure, not a green
+skip. Use `OZ_DAML_TOOLCHAIN=dpm` for the M0 proof baseline; Daml Assistant
+requires a superseding ADR or explicit exception.
