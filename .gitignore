@@ -1,0 +1,25 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editor swap files
+*.swp
+*.swo
+*~
+
+# Local agent and editor state
+.codex/
+CLAUDE.local.md
+.claude/settings.local.json
+.cursor/
+.aider*
+.windsurf/
+.continue/
+
+# Daml build state
+.daml/

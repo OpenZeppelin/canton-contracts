@@ -1,0 +1,12 @@
+# Placeholder only.
+# Do not rename this file to daml.yaml until the SDK/CIP pinning ADR is
+# accepted and the selected package manager path is available locally and in CI.
+
+sdk-version: "<accepted-daml-sdk-version>"
+name: oz-daml-contracts-hello-world
+source: daml
+version: 0.0.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+
