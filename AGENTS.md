@@ -25,6 +25,8 @@ Do not add:
 - Full relayer infrastructure.
 - Year 2 components before scope review approval.
 - Public APIs without an ADR once implementation begins.
+- GitHub Actions, hosted CI workflows, or `.github/workflows` files unless a
+  superseding root ADR or explicit scope decision accepts hosted CI.
 
 ## Daml Requirements
 
@@ -64,9 +66,16 @@ Use root scripts when available:
 ../../scripts/check-all.sh
 ../../scripts/test-all.sh
 ../../scripts/fmt-all.sh
+../../scripts/check-no-github-workflows.sh
+../../scripts/manual-workflow-tests.sh
 ```
 
 The accepted M0 proof baseline uses DPM with SDK 3.4.11. Because `daml.yaml`
 exists, missing DPM or Java 17 tooling is a validation failure, not a green
 skip. Use `OZ_DAML_TOOLCHAIN=dpm` for the M0 proof baseline; Daml Assistant
 requires a superseding ADR or explicit exception.
+
+This repo uses local manual workflow tests instead of GitHub CI. The repo-local
+entrypoint is `scripts/manual-workflow-test.sh`, and the root guard
+`../../scripts/check-no-github-workflows.sh` must remain green so hosted
+workflow files are not reintroduced accidentally.

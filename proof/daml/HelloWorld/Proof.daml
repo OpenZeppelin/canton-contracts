@@ -3,9 +3,10 @@ module HelloWorld.Proof where
 import Daml.Script
 import HelloWorld.HelloWorld
 
--- M0 LocalNet proof only. This script uploads the package through the Daml
--- Script gRPC path, allocates the proof parties, creates the hello-world
--- Greeting, and exercises the consuming archive choice.
+-- M0 LocalNet proof only. This script uploads the proof package through the
+-- Daml Script gRPC path, allocates the proof parties, creates the hello-world
+-- Greeting from the production package, and exercises the consuming archive
+-- choice.
 helloWorldProof : Script ()
 helloWorldProof = script do
   issuer <- allocatePartyByHint (PartyIdHint "m0-issuer")

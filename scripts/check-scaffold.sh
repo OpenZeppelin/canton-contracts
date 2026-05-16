@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/dpm-env.sh"
 DAML_TOOL=""
+PROOF_ROOT="$ROOT/proof"
 
 fail() {
 	printf 'check-scaffold: %s\n' "$*" >&2
@@ -13,6 +14,12 @@ fail() {
 require_file() {
 	if [ ! -f "$ROOT/$1" ]; then
 		fail "missing $1"
+	fi
+}
+
+reject_production_daml_script() {
+	if grep -Eq '(^|[[:space:]-])daml-script($|[[:space:]])' "$ROOT/daml.yaml"; then
+		fail "production daml.yaml must not depend on daml-script; keep script code in proof/daml.yaml"
 	fi
 }
 
@@ -36,13 +43,18 @@ select_daml_tool() {
 require_file README.md
 require_file AGENTS.md
 require_file LICENSE
-require_file .github/workflows/check.yml
+require_file scripts/manual-workflow-test.sh
 require_file daml/HelloWorld/HelloWorld.daml
+require_file proof/daml.yaml
+require_file proof/daml/HelloWorld/Proof.daml
 
 if [ -f "$ROOT/daml.yaml" ]; then
+	reject_production_daml_script
 	select_daml_tool
-	printf 'check-scaffold: running %s build\n' "$DAML_TOOL"
+	printf 'check-scaffold: running %s build for production package\n' "$DAML_TOOL"
 	(cd "$ROOT" && "$DAML_TOOL" build)
+	printf 'check-scaffold: running %s build for proof package\n' "$DAML_TOOL"
+	(cd "$PROOF_ROOT" && "$DAML_TOOL" build)
 else
 	require_file daml.yaml.placeholder
 	printf 'check-scaffold: SKIP daml build: daml.yaml is not committed yet for the accepted M0 3.4.11 proof baseline\n'
