@@ -72,7 +72,7 @@ Daml Assistant use requires a superseding ADR or explicit exception.
 The repo-local `scripts/dpm-env.sh` is intentionally kept byte-for-byte in sync
 with the coordinating root helper until an accepted vendoring step replaces the
 duplication. Root `./scripts/check-all.sh` fails if the two helper copies drift.
-Manual validation machines should install or expose DPM and Java 17 before
+Manual validation machines should install or expose DPM and Java 21 before
 running `scripts/manual-workflow-test.sh` or `scripts/check-scaffold.sh`.
 
 From the workspace root, run:

@@ -28,7 +28,7 @@ select_daml_tool() {
 	auto | dpm)
 		oz_setup_dpm_env "$ROOT/.cache"
 		oz_has_dpm || fail "daml.yaml exists but dpm is not available; install DPM or expose ~/.dpm/bin/dpm"
-		oz_has_java_17 || fail "Java 17 runtime is not available; install or expose a JDK before running dpm build"
+		oz_has_java_21 || fail "Java 21 runtime is not available; install or expose a JDK before running dpm build"
 		DAML_TOOL="dpm"
 		;;
 	daml)
