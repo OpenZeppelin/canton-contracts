@@ -1,0 +1,58 @@
+-- | Consumer templates that demonstrate how a downstream contract composes the
+-- access-control primitives — and double as the harness the test scripts gate
+-- through. These live in the test package, not the library: they show the
+-- *usage pattern*, they are not part of any shipped primitive.
+module OpenZeppelin.Test.Gated where
+
+import OpenZeppelin.AccessControl
+import OpenZeppelin.Pausable
+
+-- | An RBAC-gated operation. The caller signs this and presents its own
+-- `RoleGrant` (which it observes); the choice fetches the grant and enforces
+-- `requireRole`. This is the canonical "gated choice" shape.
+template RoleCheck
+  with
+    caller : Party
+    admin : Party
+    role : Text
+  where
+    signatory caller
+
+    nonconsuming choice RoleCheck_Run : ()
+      with
+        grantCid : ContractId RoleGrant
+      controller caller
+      do
+        grant <- fetch grantCid
+        requireRole caller role admin grant
+
+-- | A pause-gated operation: fetch the disclosed `PauseState` and refuse while
+-- paused. `party` must be able to see the `PauseState` (here, the pauser).
+template PauseCheck
+  with
+    party : Party
+  where
+    signatory party
+
+    nonconsuming choice PauseCheck_Run : ()
+      with
+        psCid : ContractId PauseState
+      controller party
+      do
+        ps <- fetch psCid
+        whenNotPaused ps
+
+-- | A worked example of the recommended typed-wrapper pattern: a consumer keeps
+-- a closed, exhaustive role sum for compile-time safety in its own code, and
+-- maps it to the generic library's `Text` ids at the boundary via `roleId`.
+-- (See docs/ARCHITECTURE.md §5 in canton-token-template.)
+data DemoRole
+  = Minter
+  | Burner
+  | DemoPauser
+  deriving (Eq, Show)
+
+roleId : DemoRole -> Text
+roleId Minter = "MINTER_ROLE"
+roleId Burner = "BURNER_ROLE"
+roleId DemoPauser = "PAUSER_ROLE"

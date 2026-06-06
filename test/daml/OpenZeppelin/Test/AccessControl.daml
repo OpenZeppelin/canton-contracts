@@ -1,0 +1,87 @@
+-- | Tests for OpenZeppelin.AccessControl: grant/revoke, the requireRole gates
+-- (admin / assignee / role), and the typed-wrapper pattern.
+module OpenZeppelin.Test.AccessControl where
+
+import Daml.Script
+
+import OpenZeppelin.AccessControl
+import OpenZeppelin.Test.Gated
+
+-- | A granted minter passes a minter-gated operation.
+test_grantedRolePasses : Script ()
+test_grantedRolePasses = script do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  roleAdmin <- submit admin do createCmd RoleAdmin with admin
+  grant <- submit admin do
+    exerciseCmd roleAdmin RoleAdmin_GrantRole with account = alice, role = "MINTER_ROLE"
+  check <- submit alice do createCmd RoleCheck with caller = alice, admin, role = "MINTER_ROLE"
+  submit alice do exerciseCmd check RoleCheck_Run with grantCid = grant
+  pure ()
+
+-- | A grant for the wrong role fails the role gate (A3).
+test_wrongRoleFails : Script ()
+test_wrongRoleFails = script do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  roleAdmin <- submit admin do createCmd RoleAdmin with admin
+  grant <- submit admin do
+    exerciseCmd roleAdmin RoleAdmin_GrantRole with account = alice, role = "BURNER_ROLE"
+  check <- submit alice do createCmd RoleCheck with caller = alice, admin, role = "MINTER_ROLE"
+  submitMustFail alice do exerciseCmd check RoleCheck_Run with grantCid = grant
+  pure ()
+
+-- | A grant issued by a different admin fails the admin gate (A1).
+test_wrongAdminFails : Script ()
+test_wrongAdminFails = script do
+  admin <- allocateParty "admin"
+  other <- allocateParty "other"
+  alice <- allocateParty "alice"
+  otherAdmin <- submit other do createCmd RoleAdmin with admin = other
+  grant <- submit other do
+    exerciseCmd otherAdmin RoleAdmin_GrantRole with account = alice, role = "MINTER_ROLE"
+  -- alice presents a grant from `other`, but the resource expects `admin`.
+  check <- submit alice do createCmd RoleCheck with caller = alice, admin, role = "MINTER_ROLE"
+  submitMustFail alice do exerciseCmd check RoleCheck_Run with grantCid = grant
+  pure ()
+
+-- | Impersonation: a caller cannot use a grant naming someone else. Bob's grant
+-- is observed only by bob, so alice cannot even fetch it (anti-impersonation is
+-- enforced by both visibility and requireRole's assignee check).
+test_impersonationFails : Script ()
+test_impersonationFails = script do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  roleAdmin <- submit admin do createCmd RoleAdmin with admin
+  bobGrant <- submit admin do
+    exerciseCmd roleAdmin RoleAdmin_GrantRole with account = bob, role = "MINTER_ROLE"
+  check <- submit alice do createCmd RoleCheck with caller = alice, admin, role = "MINTER_ROLE"
+  submitMustFail alice do exerciseCmd check RoleCheck_Run with grantCid = bobGrant
+  pure ()
+
+-- | A revoked grant no longer authorizes (the grant contract is archived).
+test_revokedRoleFails : Script ()
+test_revokedRoleFails = script do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  roleAdmin <- submit admin do createCmd RoleAdmin with admin
+  grant <- submit admin do
+    exerciseCmd roleAdmin RoleAdmin_GrantRole with account = alice, role = "MINTER_ROLE"
+  submit admin do exerciseCmd roleAdmin RoleAdmin_RevokeRole with grantCid = grant
+  check <- submit alice do createCmd RoleCheck with caller = alice, admin, role = "MINTER_ROLE"
+  submitMustFail alice do exerciseCmd check RoleCheck_Run with grantCid = grant
+  pure ()
+
+-- | The typed-wrapper pattern: grant and check using a closed role sum mapped to
+-- Text ids via `roleId`, keeping compile-time exhaustiveness over the generic core.
+test_typedWrapperBridge : Script ()
+test_typedWrapperBridge = script do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  roleAdmin <- submit admin do createCmd RoleAdmin with admin
+  grant <- submit admin do
+    exerciseCmd roleAdmin RoleAdmin_GrantRole with account = alice, role = roleId Minter
+  check <- submit alice do createCmd RoleCheck with caller = alice, admin, role = roleId Minter
+  submit alice do exerciseCmd check RoleCheck_Run with grantCid = grant
+  pure ()

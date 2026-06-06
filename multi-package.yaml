@@ -1,0 +1,16 @@
+# Multi-package layout for the OpenZeppelin Daml contracts workspace.
+#
+# The access-control library ships as three INDEPENDENT packages — a consumer
+# imports only the DAR(s) it needs (e.g. just `oz-pausable`), which is the whole
+# point of the decoupling (see canton-token-template docs/ARCHITECTURE.md, AL-7).
+# `test` data-depends on all three and is not shipped. The root package and
+# `proof` are the pre-existing M0 hello-world baseline.
+#
+# Build everything in dependency order with `dpm build --all`.
+packages:
+  - .
+  - proof
+  - access-control
+  - ownable
+  - pausable
+  - test
