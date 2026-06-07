@@ -1,0 +1,69 @@
+-- | Tests for OpenZeppelin.Ownable: the two-step transfer handshake, decline,
+-- withdraw, renounce, and the self-offer guard.
+module OpenZeppelin.Test.Ownable where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import OpenZeppelin.Ownable
+
+-- | Offer → accept transfers ownership to the new owner.
+test_transferAccept : Script ()
+test_transferAccept = script do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  own <- submit alice do createCmd Ownership with owner = alice
+  offer <- submit alice do exerciseCmd own Ownership_OfferOwnership with newOwner = bob
+  newOwn <- submit bob do exerciseCmd offer OwnershipOffer_Accept
+  Some o <- queryContractId bob newOwn
+  o.owner === bob
+
+-- | Decline returns ownership to the offerer.
+test_transferDecline : Script ()
+test_transferDecline = script do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  own <- submit alice do createCmd Ownership with owner = alice
+  offer <- submit alice do exerciseCmd own Ownership_OfferOwnership with newOwner = bob
+  restored <- submit bob do exerciseCmd offer OwnershipOffer_Decline
+  Some o <- queryContractId alice restored
+  o.owner === alice
+
+-- | The offerer can withdraw a pending offer, restoring ownership.
+test_transferWithdraw : Script ()
+test_transferWithdraw = script do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  own <- submit alice do createCmd Ownership with owner = alice
+  offer <- submit alice do exerciseCmd own Ownership_OfferOwnership with newOwner = bob
+  restored <- submit alice do exerciseCmd offer OwnershipOffer_Withdraw
+  Some o <- queryContractId alice restored
+  o.owner === alice
+
+-- | Only the prospective owner may accept (not the offerer).
+test_onlyNewOwnerAccepts : Script ()
+test_onlyNewOwnerAccepts = script do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  own <- submit alice do createCmd Ownership with owner = alice
+  offer <- submit alice do exerciseCmd own Ownership_OfferOwnership with newOwner = bob
+  submitMustFail alice do exerciseCmd offer OwnershipOffer_Accept
+  pure ()
+
+-- | Offering ownership to the current owner is rejected.
+test_selfOfferFails : Script ()
+test_selfOfferFails = script do
+  alice <- allocateParty "alice"
+  own <- submit alice do createCmd Ownership with owner = alice
+  submitMustFail alice do exerciseCmd own Ownership_OfferOwnership with newOwner = alice
+  pure ()
+
+-- | Renounce leaves the resource ownerless (the Ownership contract is archived
+-- and nothing replaces it).
+test_renounce : Script ()
+test_renounce = script do
+  alice <- allocateParty "alice"
+  own <- submit alice do createCmd Ownership with owner = alice
+  submit alice do exerciseCmd own Ownership_RenounceOwnership
+  res <- queryContractId alice own
+  res === None

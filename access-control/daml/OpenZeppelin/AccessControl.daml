@@ -1,0 +1,133 @@
+-- | OpenZeppelin AccessControl — a standalone, token-agnostic role-based
+-- access-control substrate.
+--
+-- The Daml analogue of `AccessControl.sol`: an authority (`admin`, the
+-- `DEFAULT_ADMIN_ROLE` holder) grants named roles to accounts, and gated
+-- operations require that the caller holds the right role. Independent — no
+-- dependency on the Ownable or Pausable packages — so a project that wants only
+-- RBAC imports only this DAR.
+--
+-- # Roles are Text ids (the `bytes32` analogue), on purpose
+-- Solidity identifies roles with `bytes32` constants (e.g.
+-- `keccak256("MINTER_ROLE")`). A *generic* Daml library must do something
+-- equivalent, because **Daml templates are monomorphic**: a template field
+-- cannot be a type variable, so there is no `template RoleGrant r with role : r`.
+-- A reusable role primitive therefore stores `role : Text`. This is the
+-- deliberate genericity/type-safety trade documented in the canton-token-template
+-- `docs/ARCHITECTURE.md`: the library is generic (Text ids, reusable by any
+-- contract) and a consumer that wants compile-time exhaustiveness layers its own
+-- closed role sum on top via a thin `roleId : MyRole -> Text` wrapper (see the
+-- test package for a worked example).
+--
+-- # Keyless model (Daml-LF 2.1)
+-- No contract keys, so there is no global role map to query. A `RoleGrant` is a
+-- bearer credential, signed by `admin` and naming one `account`. Possession of a
+-- valid grant *is* the authorization: a gated choice fetches the grant the
+-- caller presents (by `ContractId`, disclosed where needed) and `requireRole`
+-- checks it is admin-signed, names the caller, and carries the required role.
+-- Soundness without keys: the grant is `admin`-signed (unforgeable) and names a
+-- specific `account`, so the worst an adversary can do is present a grant they
+-- do not hold and fail their own authorization.
+module OpenZeppelin.AccessControl where
+
+-- | A role granted by `admin` to `account`. Possession is authorization.
+--
+-- Signatories: `admin` (the role authority; the grant is unforgeable).
+-- Observers: `account` (so the grantee can see and present its own credential).
+-- Controllers: none directly — grants are minted/revoked through `RoleAdmin`
+--   and validated by the pure `requireRole`/`hasRole` functions; the grant
+--   itself exposes no choices, mirroring a capability that is only ever fetched.
+-- Choices: none.
+-- Disclosed parties: `admin` and `account` are stakeholders; a gated operation
+--   the caller invokes is given the grant by disclosure when the operation's
+--   signatory is not already a stakeholder.
+-- Privacy expectations: only `admin` and `account` (and disclosed verifiers)
+--   learn of the grant.
+-- Authorization assumptions: only `admin` can create a grant (via `RoleAdmin`),
+--   so role membership cannot be forged.
+-- Archival behavior: revoked via `RoleAdmin_RevokeRole` (admin-authorized
+--   archive); no self-archive choice.
+-- Failure modes: presenting another account's grant fails `requireRole`'s
+--   assignee check; a wrong-admin or wrong-role grant fails its respective
+--   check.
+-- Upgrade and migration assumptions: 0.x, unstable; not yet public API.
+template RoleGrant
+  with
+    admin : Party
+      -- ^ The role authority (DEFAULT_ADMIN_ROLE analogue) that issued this grant.
+    account : Party
+      -- ^ The party granted the role.
+    role : Text
+      -- ^ The role identifier, e.g. "MINTER_ROLE".
+  where
+    signatory admin
+    observer account
+
+-- | The role-administration authority: mints and revokes `RoleGrant`s.
+--
+-- Signatories: `admin`. Observers: none. Controllers: `admin` for both choices.
+-- Choices: `RoleAdmin_GrantRole`, `RoleAdmin_RevokeRole`.
+-- Disclosed parties: `admin` only.
+-- Privacy expectations: the admin contract is private to `admin`.
+-- Authorization assumptions: only `admin` administers roles. A per-role admin
+--   hierarchy (`getRoleAdmin`) is intentionally out of scope for the minimal
+--   primitive; layer it as a consumer extension if needed.
+-- Archival behavior: nonconsuming choices; the `RoleAdmin` persists.
+-- Failure modes: `RoleAdmin_RevokeRole` rejects a grant minted by a different
+--   admin (eRoleAdminMismatch).
+-- Upgrade and migration assumptions: 0.x, unstable; not yet public API.
+template RoleAdmin
+  with
+    admin : Party
+      -- ^ The DEFAULT_ADMIN_ROLE holder.
+  where
+    signatory admin
+
+    -- | Grant `role` to `account`. Returns the new grant's id.
+    nonconsuming choice RoleAdmin_GrantRole : ContractId RoleGrant
+      with
+        account : Party
+        role : Text
+      controller admin
+      do
+        create RoleGrant with admin; account; role
+
+    -- | Revoke a grant this admin issued.
+    nonconsuming choice RoleAdmin_RevokeRole : ()
+      with
+        grantCid : ContractId RoleGrant
+      controller admin
+      do
+        grant <- fetch grantCid
+        assertMsg eRoleAdminMismatch (grant.admin == admin)
+        archive grantCid
+
+-- | Predicate: does `grant` authorize `caller` for `role` under `admin`?
+-- Pure form, for callers that already hold the fetched grant.
+hasRole : Party -> Text -> Party -> RoleGrant -> Bool
+hasRole caller role admin grant =
+  grant.admin == admin && grant.account == caller && grant.role == role
+
+-- | Assert that `caller` holds `role` under `admin`, given the grant they
+-- present. The `requireRole` analogue — call it at the top of a gated choice.
+--
+-- Checks (mirroring daml-verify A1-A3):
+--   * grant.admin == admin    — credential issued by this registry's authority
+--   * grant.account == caller — anti-impersonation (caller names itself)
+--   * grant.role == role      — the credential carries the required role
+requireRole : Party -> Text -> Party -> RoleGrant -> Update ()
+requireRole caller role admin grant = do
+  assertMsg eRoleAdminMismatch (grant.admin == admin)
+  assertMsg eRoleAssigneeMismatch (grant.account == caller)
+  assertMsg eRoleMismatch (grant.role == role)
+
+-- Error messages (inlined to keep this package dependency-free).
+
+eRoleAdminMismatch : Text
+eRoleAdminMismatch = "AccessControl: grant admin is not the expected authority"
+
+eRoleAssigneeMismatch : Text
+eRoleAssigneeMismatch = "AccessControl: grant does not name the caller (impersonation)"
+
+eRoleMismatch : Text
+eRoleMismatch = "AccessControl: grant does not carry the required role"

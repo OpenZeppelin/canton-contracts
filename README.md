@@ -3,8 +3,10 @@
 Reusable Daml contracts library scaffold for the OpenZeppelin Canton ecosystem
 workspace.
 
-Status: M0 scaffold only. This repo does not implement CIP-56, CIP-86,
-CIP-103, CIP-104, or reference implementation logic yet.
+Status: M0 scaffold + the first reusable access-control primitives (slice AL-7,
+see [Access Control Library](#access-control-library-al-7) below). This repo does
+not yet implement CIP-56, CIP-86, CIP-103, CIP-104, or reference-implementation
+logic.
 
 ## Scope
 
@@ -117,6 +119,43 @@ failure, and migration assumptions in the source comments.
 `proof/daml/HelloWorld/Proof.daml` is a disposable M0 LocalNet proof script. It
 is not public API and keeps the Daml Script dependency out of the production
 package.
+
+## Access Control Library (AL-7)
+
+The first reusable primitives land here as **three independent packages**, each
+its own DAR with no dependency on the others — so a consumer imports only what it
+needs (e.g. just `oz-pausable`). This is the Daml-idiomatic form of OpenZeppelin's
+decoupled-module promise: independence is at the **package** boundary, since Daml
+has no inheritance and the unit of reuse is the DAR. The full rationale, the
+options weighed, and the Daml-specific genericity trade are documented in the
+canton-token-template `docs/ARCHITECTURE.md` (slice AL-7).
+
+| Package | Module | Mirrors | Notes |
+|---|---|---|---|
+| `oz-access-control` | `OpenZeppelin.AccessControl` | `AccessControl.sol` | `RoleGrant` / `RoleAdmin` + pure `requireRole` / `hasRole`. Roles are `Text` ids (the `bytes32` analogue) because Daml templates are monomorphic; a consumer layers a closed role sum on top via a `roleId : MyRole -> Text` wrapper. |
+| `oz-ownable` | `OpenZeppelin.Ownable` | `Ownable2Step.sol` | `Ownership` + `OwnershipOffer`. Transfer is a two-step handshake **by necessity** — a new owner is a signatory and cannot be bound unilaterally. |
+| `oz-pausable` | `OpenZeppelin.Pausable` | `Pausable.sol` | `PauseState` + `whenNotPaused` guard. Pause is origination control on a keyless ledger. |
+
+Each library package is `daml-script`-free. Tests and the example-consumer
+templates that demonstrate the usage pattern (`RoleCheck`, `PauseCheck`, the
+typed-wrapper bridge) live in the separate `test/` package, which data-depends on
+all three DARs.
+
+Build and test the whole workspace in dependency order:
+
+```sh
+dpm build --all          # builds all packages, including the three libraries
+cd test && dpm test      # 16 scripts: 6 AccessControl, 6 Ownable, 4 Pausable
+```
+
+Or build a single library standalone (proving its independence):
+
+```sh
+cd pausable && dpm build
+```
+
+Status: `0.1.0`, **unstable** — these are not yet public API (no stability ADR),
+so DAR SHAs are intentionally not pinned here while the shape may still change.
 
 ## License
 
