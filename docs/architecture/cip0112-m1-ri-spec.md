@@ -3,6 +3,11 @@
 Status: **experimental architecture & scoping spec**, non-public, outside the
 committed M1 public-library surface. This document specifies the M1 settlement
 RI target and records the adopted design decisions and their grounding in code.
+The promotion boundary for Token Standard V2 imports and the public API
+candidate surface is recorded in
+[`cip0112-public-api-promotion-boundary.md`](./cip0112-public-api-promotion-boundary.md);
+that ADR keeps this scaffold experimental until the later DAR/import evidence
+gates land.
 
 > **Google Docs import:** paste this file into Docs with *Edit → Paste* after
 > *File → Open* of the `.md`, or use a Markdown add-on. Headings (H1/H2/H3) drive
@@ -22,10 +27,10 @@ RI target and records the adopted design decisions and their grounding in code.
 The OpenZeppelin Canton M1 reference implementation targets the **Canton Network
 Token Standard V2 (CIP-0112)** settlement surface, replacing the superseded
 CIP-0056 token foundation (root `PLAN.md` Decision Log S1). The goal of M1 is
-not a production DeFi application but a **scope-locked, audit-ready settlement
-primitive** plus a deep settlement exemplar that proves the library against a
-real consumer. CIP-86 / CIP-103 / CIP-104 are re-scoped to interoperate with
-this settlement surface.
+not a production DeFi application but a **scope-locked settlement primitive**
+that can later enter audit-readiness review, plus a deep settlement exemplar
+that proves the library against a real consumer. CIP-86 / CIP-103 / CIP-104 are
+re-scoped to interoperate with this settlement surface.
 
 What exists today, in code:
 
@@ -49,21 +54,22 @@ current state of this code.
 
 ---
 
-## 2. Open Questions Requiring Input
+## 2. Promotion Boundary Status And Open Questions
 
 Ordered by **level of input required** — most cross-cutting / highest-effort
 first. These are the items where external or architectural input changes the
 build; the seizure and authority model are **no longer** in this list (see §4,
-adopted).
+adopted). The Splice / Token Standard V2 source and import posture are now
+bounded by the promotion ADR, but the ADR is not a stability claim.
 
-| # | Question | Input required | Sought from |
+| # | Status | Boundary / question | Follow-up |
 | --- | --- | --- | --- |
-| Q1 | **Token Standard V2 DAR / import & license boundary.** Do we vendor the Splice V2 API DARs (`splice-api-token-*`), depend on a published artifact, or keep local interface stand-ins? Gates whether the scaffold can implement real `HoldingV1`/`TransferFactory` interfaces vs. local mirrors. | High — cross-org + licensing | OZ architecture + Splice/Canton |
-| Q2 | **Public-API ADR for the settlement primitive.** Which choices, fields, and interfaces become the stable `canton-contracts` surface, and what is the upgrade contract (SCU boundaries)? Gates promotion from experiment to library. | High — ADR + audit scope | OZ architecture |
-| Q3 | **Splice branch/commit of record.** This report's source cites `hyperledger-labs/splice @ token-standard-v2-upcoming`; the local note pins `canton-network/splice @ token-standard-v2-daml-preview` (`b91de5d4…`). Reconcile to one repo+branch+commit before any interface is mirrored. | Medium — verification | OZ architecture |
-| Q4 | **D1 attestation shape.** D1 is decided no-cache / fail-closed / node-side. Open: does the contract stay oblivious to the result (off-ledger gate), or verify a signed node attestation at exercise time? Shapes the audit story. | Medium — design | OZ architecture |
-| Q5 | **EventLog adoption scope for M1.** Is `EventLog_HoldingsChange` in-scope for the M1 settlement primitive, or carried only as `canton-token-template` evidence until the DAR boundary (Q1) lands? | Medium — scope | OZ architecture |
-| Q6 | **Naming drift.** `canton-contracts` README/package still says `oz-daml-contracts`. Cosmetic but affects public docs. | Low | OZ architecture |
+| B1 | Bounded by ADR | **Splice branch/commit of record.** Use `hyperledger-labs/splice` branch `token-standard-v2-upcoming` at `1e34121b2b369c5dde357c098e2aaeb65250e736` as the source evidence pin. The older `canton-network/splice @ token-standard-v2-daml-preview` (`b91de5d4…`) remains historical local evidence only. | Re-check if upstream cuts a release tag or changes the intended Token Standard V2 source branch. |
+| B2 | Deferred by ADR | **Token Standard V2 DAR / import & license boundary.** Do not vendor or import Splice DARs in this slice. Upstream API packages are Apache-2.0 and split across `splice-api-token-*` DARs; local stand-ins remain experimental until published DAR/checksum/package-ID, license/NOTICE, and DPM wiring evidence exists. | Later import slice. |
+| B3 | Bounded by ADR | **Public API candidate.** The ADR defines the promotable candidate surface, experimental-only scaffold surface, SCU contract, direct-vs-batch semantics, third-party custodian credit model, and post-deadline seizure-window policy. | Later stability ADR/review before any public API claim. |
+| Q1 | Open | **D1 attestation shape.** D1 is decided no-cache / fail-closed / node-side. Open: does the contract stay oblivious to the result (off-ledger gate), or verify a signed node attestation at exercise time? Shapes the audit story. | OZ architecture. |
+| Q2 | Open after DAR gate | **EventLog adoption implementation.** The ADR treats Token Standard V2 `EventLog_HoldingsChange` as the promoted reporting route, but implementation still waits on the transfer-events DAR boundary. | OZ architecture after DAR/import evidence. |
+| Q3 | Open | **Legacy package naming.** Public docs now use `canton-contracts`, but M0 package/DAR names still contain `oz-daml-contracts`. Renaming packages is a separate compatibility decision. | OZ architecture. |
 
 ---
 
@@ -171,8 +177,9 @@ interface instance TransferEventsV2.EventLog for SimpleEventLog where
   -- emits EventLog_HoldingsChange and records a standalone entry
 ```
 
-Upstream, this lives in `splice-api-token-transfer-events-v2`; whether it enters
-the M1 `canton-contracts` surface is **Q5**.
+Upstream, this lives in `splice-api-token-transfer-events-v2`; the promotion ADR
+treats it as the promoted reporting route, with implementation still gated by
+the transfer-events DAR boundary (**Q2**).
 
 ---
 
@@ -218,7 +225,7 @@ upgrade-safe. Where a choice records a decision, it is stated as decided.
 
 4. **Toy holdings as test witnesses only.** `ToyHolding` exists to make locking
    testable without shipping a public token; real assets implement the Token
-   Standard V2 holding interface (gated by Q1).
+   Standard V2 holding interface once the promotion ADR's DAR/import gates land.
 
 5. **Batch-only atomicity.** Atomic multi-allocation settlement is a property of
    `SettlementFactory_SettleBatch`; the direct `Allocation_Settle` proves
@@ -243,11 +250,13 @@ M1 base. These are not defects; they are the deliberate seams.
 1. **Third-party custodian credit model.** The experiment can route to a true
    third-party `Account` only when that destination account party co-authorizes
    receipt of the replacement `ToyHolding`, because the toy holding makes
-   account parties signatory. *Expected extension:* the public API ADR must pick
-   the real Token Standard V2 custodian-credit shape: direct receipt
-   co-authorization, a propose/accept credit flow, or a registry-only-signatory
-   holding model. *Trigger:* Q1/Q2 promotion work or a custodian destination
-   that cannot co-sign the seizure transaction.
+   account parties signatory. The promotion ADR separates D2 seizure authority
+   from destination credit authorization: regular third-party credit needs a
+   pre-onboarded account arrangement, co-signed receipt transaction, or later
+   propose/accept flow. *Expected extension:* implement that selected model
+   against real Token Standard V2 account authorization after the DAR/import
+   gate. *Trigger:* accepted import boundary or a custodian destination that
+   cannot use the co-authorized/admin-managed account model.
 
 2. **Seizure destination mutability & authority escalation.** M1 ships
    single-admin, preset-destination seizure (§4.1). *Expected extension:* if
@@ -258,24 +267,28 @@ M1 base. These are not defects; they are the deliberate seams.
 
 3. **Seizure window after settlement deadline.** The experiment fails the D2
    sweep path after `settlementDeadline`; committed allocations can be withdrawn
-   only after that same deadline. *Expected extension:* decide whether lawful
-   in-flight seizure must remain available after the deadline or whether
-   post-deadline release/return takes precedence. *Trigger:* public API ADR,
-   legal/compliance review, or exemplar threat model.
+   only after that same deadline. The promotion ADR keeps that terminal deadline
+   as the M1 promotable policy. *Expected extension:* if lawful seizure must
+   remain available after the deadline, add an explicit seizure-window field and
+   lawful-process evidence model through a later ADR. *Trigger:*
+   legal/compliance review or exemplar threat model.
 
 4. **D1 node-side attestation typing.** M1 carries a contract-side reference
    guard only. *Expected extension:* add a typed signed-node-attestation field /
-   choice once the node-side attestation shape (Q4) is decided. *Trigger:* audit
+   choice once the node-side attestation shape (Q1) is decided. *Trigger:* audit
    story requires on-ledger proof of the node check.
 
 5. **Real Token Standard V2 interfaces.** M1 uses local stand-ins / evidence-repo
-   interfaces. *Expected extension:* implement real `HoldingV1` /
-   `TransferFactory` / `EventLog` against vendored Splice DARs once Q1 lands.
-   *Trigger:* DAR/license boundary accepted.
+   interfaces. *Expected extension:* implement real `HoldingV2`,
+   `AllocationV2`, `AllocationRequestV2`, `AllocationInstructionV2`,
+   `TransferInstructionV2`, and `EventLog` against upstream Splice API packages
+   only after the promotion ADR's DAR/checksum/license/DPM gates land.
+   *Trigger:* DAR/import boundary accepted.
 
 6. **EventLog adoption in the library surface.** Carried as evidence today.
    *Expected extension:* promote `EventLog_HoldingsChange` into the M1 primitive
-   for wallet discoverability. *Trigger:* Q5 resolved + wallet-kernel target.
+   for wallet discoverability. *Trigger:* Q2 implementation after the
+   transfer-events DAR boundary is accepted.
 
 7. **UTXO defragmentation (`MergeDelegation`).** Not present. *Expected
    extension:* add delegated background merge once fragmentation is a measured
@@ -298,7 +311,7 @@ M1 base. These are not defects; they are the deliberate seams.
 
 ## 6. Conclusion → Next Steps & Future Planning
 
-M1 establishes a small, auditable CIP-0112 settlement primitive with explicit,
+M1 is building toward a small CIP-0112 settlement primitive with explicit,
 decided semantics for the two controls that matter most to regulated
 settlement: a fail-closed compliance seam (D1) and a concrete in-flight seizure
 policy (§4.1, lock-and-sweep to a preset admin destination under single-admin
@@ -308,17 +321,19 @@ the largest source of churn for downstream work, rather than leaving it open.
 
 **Immediate next steps:**
 
-1. Resolve Q1–Q3 (Splice DAR/branch/import boundary + public-API ADR) so the
-   scaffold can move from local stand-ins toward real V2 interfaces.
-2. Keep D1's node-side attestation shape open until Q4 is resolved; the current
+1. Use the promotion ADR boundary for Splice source evidence and public API
+   candidate scope; do not import Splice DARs until the ADR's published
+   DAR/checksum/license/DPM gates land.
+2. Keep D1's node-side attestation shape open until Q1 is resolved; the current
    hook remains only a fail-closed reference seam.
-3. Promote the settlement primitive per the public-API ADR (Q2), then build the
-   deep settlement exemplar (Phase 3).
+3. After the import gates land, implement the settlement facade per the
+   promotion ADR and then build the deep settlement exemplar (Phase 3), without
+   claiming stability until a later stability review accepts it.
 
 **Foundation provided.** With settlement, compliance, seizure, and authority
 decided and grounded in code, M1 becomes the reusable skeleton the M2 DEX, M3
 lending, and M4 cross-chain stablecoin RIs inherit — each adding its modular
-transfer hooks (§5.8) on top of a stable, privacy-preserving settlement base
+transfer hooks (§5.8) on top of the intended privacy-preserving settlement base
 rather than re-litigating the core controls.
 
 ---
@@ -337,9 +352,12 @@ rather than re-litigating the core controls.
   `Allocation.daml`, `Admin/Capability.daml` (`RoleCapability`), `Admin/Roles.daml`.
 - `[EVIDENCE]` `canton-token-template/docs/` — `CIP-0112-EXTENSION-PLAN.md`,
   `SCOPE.md`, `ADMIN-LAYER-PLAN.md`, `AUDIT.md`.
-- `[UPSTREAM]` Splice V2 API — reconcile repo/branch/commit per **Q3**
-  (`canton-network/splice @ token-standard-v2-daml-preview b91de5d4…` per local
-  note vs. `hyperledger-labs/splice @ token-standard-v2-upcoming` per source).
+- `[UPSTREAM]` Splice V2 API — source evidence pin per
+  [`cip0112-public-api-promotion-boundary.md`](./cip0112-public-api-promotion-boundary.md):
+  `hyperledger-labs/splice` branch `token-standard-v2-upcoming` commit
+  `1e34121b2b369c5dde357c098e2aaeb65250e736`. The older
+  `canton-network/splice @ token-standard-v2-daml-preview b91de5d4…` reference
+  remains historical local evidence only.
 - Decisions / plan of record: root `PLAN.md` (Decision Log, gate table),
   `docs/decisions/D4_MULTISIG.md`,
   `canton-contracts/docs/experiments/cip112-settlement.md`,

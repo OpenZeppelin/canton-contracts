@@ -1,4 +1,4 @@
-# AGENTS.md - oz-daml-contracts
+# AGENTS.md - canton-contracts
 
 ## Role
 

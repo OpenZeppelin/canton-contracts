@@ -1,35 +1,49 @@
-# oz-daml-contracts
+# canton-contracts
 
 Reusable Daml contracts library scaffold for the OpenZeppelin Canton ecosystem
 workspace.
 
 Status: M0 scaffold + the first reusable access-control primitives (slice AL-7,
-see [Access Control Library](#access-control-library-al-7) below). This repo does
-not yet implement CIP-56, CIP-86, CIP-103, CIP-104, or reference-implementation
-logic.
+see [Access Control Library](#access-control-library-al-7) below), plus a
+non-public experimental CIP-0112 / Token Standard V2 settlement scaffold. The
+M1 target is now CIP-112 settlement, not the superseded CIP-56 token foundation.
+No stable M1 public API, CIP-0112 conformance, audit readiness, production
+readiness, or release readiness is claimed.
 
 ## Scope
 
 M1 target scope:
 
-- CIP-56 token foundation.
-- CIP-86 compatibility surface.
-- CIP-103 dApp and wallet-provider support components.
-- CIP-104 rewards support components.
+- CIP-0112 / Token Standard V2 interface-aligned settlement primitive.
+- CIP-86 compatibility surface scoped to interoperate with the settlement work.
+- CIP-103 dApp and wallet-provider support components scoped to the settlement
+  surface.
+- CIP-104 rewards support components scoped to the settlement surface.
 - Documentation, tests, security notes, and compatibility evidence.
+
+CIP-56 is background and migration evidence only. The experimental CIP-112
+settlement scaffold lives under `experiments/cip112-settlement` and remains
+outside the committed public-library surface until the promotion boundary ADR's
+Splice DAR/import, license/NOTICE, package-ID/checksum, DPM wiring, and public
+API gates land:
+
+- [`docs/architecture/cip0112-public-api-promotion-boundary.md`](docs/architecture/cip0112-public-api-promotion-boundary.md)
+- [`docs/architecture/cip0112-m1-ri-spec.md`](docs/architecture/cip0112-m1-ri-spec.md)
+- [`docs/experiments/cip112-settlement.md`](docs/experiments/cip112-settlement.md)
 
 Out of scope for this repo:
 
 - DEX, lending, payments, or auction business logic.
 - Production private integrations.
+- Production KYC, sanctions, custody, validator, bridge, or relayer services.
 - Full off-chain relayer infrastructure.
 - Year 2 components before approval.
 
 ## Build Instructions
 
 The M0 proof baseline accepts Daml SDK / Canton 3.4.11 through DPM only for the
-hello-world compile/deploy proof. M1 public API pins remain open until the
-required 3.5 re-evaluation.
+hello-world compile/deploy proof. M1 public API and Splice DAR import pins
+remain open until the CIP-112 promotion boundary gates are accepted.
 
 For the M0 proof baseline:
 
@@ -145,7 +159,7 @@ Build and test the whole workspace in dependency order:
 
 ```sh
 dpm build --all          # builds all packages, including the three libraries
-cd test && dpm test      # 16 scripts: 6 AccessControl, 6 Ownable, 4 Pausable
+cd test && dpm test      # runs the shared test package, including experiments
 ```
 
 Or build a single library standalone (proving its independence):
@@ -156,6 +170,21 @@ cd pausable && dpm build
 
 Status: `0.1.0`, **unstable** — these are not yet public API (no stability ADR),
 so DAR SHAs are intentionally not pinned here while the shape may still change.
+
+## CIP-112 Settlement Experiment
+
+The experimental settlement package models a Token Standard V2-aligned
+request/instruction/allocation/settlement lifecycle with optional D1 and D2
+extension points. Its source evidence pin is `hyperledger-labs/splice` branch
+`token-standard-v2-upcoming` at
+`1e34121b2b369c5dde357c098e2aaeb65250e736`; the older
+`canton-network/splice` `token-standard-v2-daml-preview` branch is historical
+evidence only.
+
+The package intentionally uses local stand-ins and toy holdings. Do not import
+or vendor Splice DARs from this repo until a later slice satisfies the promotion
+boundary ADR's published-DAR or reproducible-build evidence, package
+ID/checksum, Apache-2.0 license/NOTICE, and DPM dependency requirements.
 
 ## License
 

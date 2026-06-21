@@ -1,15 +1,17 @@
 -- | Experimental CIP-0112 / Token Standard V2 settlement scaffold.
 --
--- Source-of-record basis:
+-- Source evidence:
 -- - Canton Foundation CIP-0112, "Canton Network Token Standard V2 -
 --   Improvements for Privacy, Performance and Traditional Accounting".
--- - canton-network/splice branch token-standard-v2-daml-preview at
---   b91de5d4b910ded598151981654dce2acc6f84ba.
+-- - hyperledger-labs/splice branch token-standard-v2-upcoming at
+--   1e34121b2b369c5dde357c098e2aaeb65250e736.
+-- - Historical local preview only: canton-network/splice branch
+--   token-standard-v2-daml-preview at b91de5d4b910ded598151981654dce2acc6f84ba.
 --
 -- This package is non-public and proposed-only. It intentionally mirrors the
 -- names of the CIP-0112 V2 settlement concepts, but it does not vendor or
 -- replace the Splice API packages. It is a small local scaffold for the M1
--- scoping decision in root PLAN.md.
+-- scoping decision in root PLAN.md and the promotion boundary ADR.
 module OpenZeppelin.Experimental.Settlement.Cip112 where
 
 data Metadata = Metadata with

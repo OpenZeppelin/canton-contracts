@@ -11,15 +11,24 @@ Source evidence:
 - CIP text: `canton-foundation/cips`, `main` commit
   `24b121264fcb473399e3d40615dabff915371ba5`,
   `cip-0112/cip-0112.md`.
-- Daml API preview: `canton-network/splice`, branch
+- Token Standard V2 source evidence pin:
+  `hyperledger-labs/splice`, branch `token-standard-v2-upcoming`, commit
+  `1e34121b2b369c5dde357c098e2aaeb65250e736`.
+- Historical local Daml API preview: `canton-network/splice`, branch
   `token-standard-v2-daml-preview`, commit
-  `b91de5d4b910ded598151981654dce2acc6f84ba`.
+  `b91de5d4b910ded598151981654dce2acc6f84ba`. This is no longer the promotion
+  source of record.
 - Local prior evidence:
   `/Users/x/cantonator/canton-token-template/docs/CIP-0112-EXTENSION-PLAN.md`.
+- Promotion boundary ADR:
+  [`../architecture/cip0112-public-api-promotion-boundary.md`](../architecture/cip0112-public-api-promotion-boundary.md).
 
 The CIP text is approved, but the local package added by this slice is still an
 experiment. `canton-contracts` has no stability ADR for this surface, so the
-primitive is not a stable public API.
+primitive is not a stable public API. The promotion ADR chooses the source
+evidence pin and import posture, but it keeps Splice DAR vendoring/imports
+blocked until published DAR/checksum/package-ID, license/NOTICE, and DPM wiring
+evidence exists.
 
 ## What CIP-0112 Settles In M1
 
@@ -35,7 +44,8 @@ Recommended v1 direction:
 - Do not treat CIP-56 as the active foundation; use it only as migration and
   compatibility evidence per root `PLAN.md`.
 - Use toy holdings only as test witnesses until the accepted Token Standard V2
-  DAR/import boundary and license boundary are settled.
+  DAR/import boundary and license boundary are implemented per the promotion
+  ADR.
 
 Tradeoffs:
 
@@ -47,8 +57,9 @@ Tradeoffs:
   CIP-56-like target that root `PLAN.md` explicitly superseded and would risk a
   non-standard settlement surface.
 - Importing the Splice preview packages directly would reduce local type drift,
-  but it would prematurely couple `canton-contracts` to a branch/DAR and
-  licensing boundary before the repo-required ADR exists.
+  but the promotion ADR rejects import in this slice because the current
+  evidence is source-level, not a published DAR/checksum/package-ID and
+  license/NOTICE packaging boundary.
 
 ## Proposed Lifecycle
 
@@ -131,14 +142,18 @@ allocation with this hook prevents normal settlement and enables
   configured custodian destination.
 
 The destination co-authorization is a toy holding receipt constraint, not
-seizure approval authority. The promoted Token Standard V2 path still needs an
-ADR decision for third-party custodian crediting: direct receipt
-co-authorization, a propose/accept credit, or a registry-only-signatory holding
-model.
+seizure approval authority. The promotion ADR separates those concerns: S2
+single-admin capability authority approves seizure, while regular third-party
+custodian credit requires a pre-onboarded account arrangement, co-signed receipt
+transaction, or later propose/accept credit flow. The ADR does not accept
+unilateral crediting of an arbitrary third-party regular account.
 
 This is still an experiment. It does not settle the D1 attestation shape, real
-Token Standard V2 import boundary, public API ADR, lawful-process attestation
-field, destination mutability, or production custody policy.
+Token Standard V2 import implementation, stable public API, lawful-process
+attestation field, destination mutability, post-deadline seizure-window
+extension, or production custody policy. For M1 promotion, the ADR keeps the
+current deadline terminal: D2 in-flight sweep must complete on or before
+`settlementDeadline` unless a later ADR adds an explicit seizure-window field.
 
 ## Upgrade And Migration Assumptions
 
@@ -225,4 +240,5 @@ Removing this experiment later requires:
 - removing its entry from `multi-package.yaml`;
 - removing its DAR from `test/daml.yaml`;
 - deleting `test/daml/OpenZeppelin/Test/Cip112Settlement.daml`;
-- deleting this note or replacing it with the accepted ADR / design note.
+- deleting this note or replacing it with the accepted stable implementation
+  docs after the promotion ADR's import gates land.

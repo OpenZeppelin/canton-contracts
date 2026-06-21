@@ -509,6 +509,36 @@ test_cip112Settlement_d2InFlightSeizureSweepsLockedHolding = script do
         _ -> fail "expected AllocationD2Swept"
     [] -> fail "expected an alice allocation"
 
+-- | A delegated Burner capability can sweep to a third-party custodian when the
+-- allocation is disclosed and the preset destination co-authorizes receipt.
+test_cip112Settlement_d2DelegatedBurnerSweepsToThirdPartyCustodian : Script ()
+test_cip112Settlement_d2DelegatedBurnerSweepsToThirdPartyCustodian = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2-delegated-sweep" False False
+  burner <- allocateParty "cip112-d2-delegated-sweep-burner"
+  custodianParty <- allocateParty "cip112-d2-delegated-sweep-custodian"
+  let custodian = mkD2ThirdPartyCustodianAccount "cip112-d2-delegated-sweep" custodianParty
+      seizureHook = mkD2Hook "cip112-d2-delegated-sweep" custodian
+  (burnerCap, _) <- createBurnerCapability admin burner (Some (usdInstrument admin))
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      result <- submitMulti [burner, custodianParty] [admin] do
+        exerciseCmd markedAliceAllocation Allocation_SweepD2InFlightSeizure with
+          burner
+          burnerCapCid = Some burnerCap
+      case result of
+        AllocationD2Swept custodianHoldingCids -> do
+          length custodianHoldingCids === 1
+          case custodianHoldingCids of
+            custodianHoldingCid :: _ -> do
+              Some custodianHolding <- queryContractId custodianParty custodianHoldingCid
+              custodianHolding.account === custodian
+              custodianHolding.lock === None
+              custodianHolding.amount === 10.0
+            [] -> fail "expected a custodian holding"
+        _ -> fail "expected AllocationD2Swept"
+    [] -> fail "expected an alice allocation"
+
 -- | A D2-marked allocation cannot continue through normal settlement. The
 -- only resolution path for the in-flight marker is the dedicated sweep choice.
 test_cip112Settlement_d2MarkedAllocationCannotSettle : Script ()
@@ -536,6 +566,7 @@ test_cip112Settlement_d2MarkedAllocationCannotSettle = script do
           peerReceiptCids = []
           nextIterationFunding = None
           d1ComplianceRef = None
+      Some _ <- queryContractId admin markedAliceAllocation
       pure ()
     _ -> fail "expected two allocations"
 
