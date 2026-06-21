@@ -153,8 +153,45 @@ slice must choose one of these accepted sources:
 
 ## Reproducible Build Status
 
-Splice documents a build path, but this slice did not run it and does not accept
-it as reproducible for local import.
+Splice documents a build path, but the initial (2026-06-18) slice did not run it
+and does not accept it as reproducible for local import.
+
+### 2026-06-21 local-rebuild attempt — result: package IDs do NOT reproduce locally
+
+A rebuild was attempted from the pinned source, isolated outside the repo (no
+package/import file changed). The seven boundary packages are plain Daml declaring
+`sdk-version: 3.4.11` / `--target=2.1`; `splice-api-token-metadata-v1` (which
+depends only on `daml-prim`/`daml-stdlib`) was rebuilt with local `dpm` 3.4.11,
+source `daml.yaml` unmodified.
+
+**Result: the rebuilt package ID does not match upstream.**
+`metadata-v1` rebuilt to `25952a7cee7b1b68560fd5fe202085b68f4a6bc7e2db28bdb9b6330a7dbf9e5a`
+vs. the upstream `4ded6b66…354f`.
+
+**Root cause (precise): a `daml-stdlib`/`daml-prim` baseline mismatch, not source.**
+Comparing the DALFs bundled in each DAR:
+
+| Dependency | Upstream checked-in DAR | Local dpm 3.4.11 rebuild |
+| --- | --- | --- |
+| `daml-stdlib` (main) | `daml-stdlib-3.3.0.20250502.13767.0` (`9d1a644e…`) | `daml-stdlib-3.4.11` (`3b25c9b0…`) |
+| `daml-prim` (main) | `54f85ebf…c274` | `7cff38e3…14ef` |
+| split stdlib modules (`DA.*.Types`) | identical | identical |
+
+A package ID is a hash over its dependency closure, so a different stdlib/prim
+baseline changes every dependent ID; the identical split modules isolate the
+cause to the main stdlib/prim **version**, not the package source. This cascades
+to all seven boundary packages (each depends transitively on `daml-stdlib` and/or
+on `metadata-v1`).
+
+**Implication.** The `daml.yaml` declares `sdk-version: 3.4.11`, but the published
+DARs were built against a **3.3.0 snapshot** stdlib — i.e. the nominal
+`sdk-version` label does not pin the toolchain that produced the artifacts;
+Splice's pinned `nix`/`direnv` build environment does. A faithful reproducible
+build therefore requires that exact upstream environment, **not** a local `dpm`
+that merely shares the `3.4.11` label. Local package-ID reproduction with `dpm`
+alone is not achievable. The accepted import must consequently rest on either
+upstream-published DAR artifacts with checksums, or a build performed inside
+Splice's pinned environment — re-recording checksums for that result.
 
 A future reproducible-build import must record:
 
@@ -271,7 +308,11 @@ license/NOTICE handling, DPM wiring, and public API review land.
   source repo still has no GitHub Releases, and the new `0.6.9` source tag does
   not carry the six `*-v2` API packages — they remain branch-only.)
 - No accepted release-bundle extraction path for Token Standard V2 DARs.
-- No accepted reproducible-build transcript from the release source.
+- No accepted reproducible-build transcript from the release source. (Attempted
+  2026-06-21: a local `dpm` 3.4.11 rebuild does **not** reproduce the package IDs —
+  upstream DARs were built against `daml-stdlib 3.3.0.20250502.13767.0`, not
+  dpm's 3.4.11 stdlib. Faithful reproduction needs Splice's pinned `nix`/`direnv`
+  environment; see "Reproducible Build Status".)
 - ~~No local DAR SHA-256 list for the exact artifacts to consume.~~ Partially
   addressed 2026-06-21: SHA-256 recorded for the branch-pinned checked-in DARs
   (see "DAR Artifact Checksums"), with embedded package IDs confirmed against
