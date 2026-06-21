@@ -255,6 +255,10 @@ its dependency DALFs, so distribution = redistribution) — is in
 
 ## Release-Source Confirmation Requirements
 
+This is the single remaining binding blocker; it is framed as a decision with
+options and a recommendation in
+[`cip0112-import-source-of-record-decision.md`](./cip0112-import-source-of-record-decision.md).
+
 Before import, confirm with upstream evidence or maintainer approval:
 
 - whether `hyperledger-labs/splice`/`canton-network/splice`
