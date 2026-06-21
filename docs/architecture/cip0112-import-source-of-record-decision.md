@@ -1,8 +1,8 @@
 # Decision memo: source of record for the Splice Token Standard V2 packages
 
-Status: **Decision requested — not yet decided.** This memo frames the one
-remaining blocker on the CIP-0112 import gate so it can be resolved. It records
-options and a recommendation; it does not itself accept a source.
+Status: **Decided 2026-06-21 — Option D (defer import for M1; keep local
+stand-ins).** This memo framed the one remaining blocker on the CIP-0112 import
+gate; the decision is recorded at the bottom.
 
 Date: 2026-06-21
 
@@ -74,8 +74,25 @@ required to proceed — once the answer lands, record it as the decision below.
 3. Apply the DPM wiring spec; run `dpm build --all` + `dpm test`.
 4. Public API review of the OpenZeppelin facade.
 
-## Decision (to be filled in)
+## Decision
 
-- **Chosen option:** _pending_
-- **Date / who provided input:** _pending_
-- **Rationale:** _pending_
+- **Chosen option:** **D — defer import for M1; keep local stand-ins** — with
+  **B as the import trigger** (adopt published Token Standard V2 DARs once
+  upstream publishes a tagged/released, individually-consumable set).
+- **Date / who provided input:** 2026-06-21, Amar (library owner). No external
+  sign-off required; recorded openly here and surfaced on the PR.
+- **Rationale:** M1 is scope-locked, non-public, and experimental; the scaffold
+  already validates (60/60) against local stand-ins, and the only stable-tagged
+  upstream source (`0.6.9`) does not yet carry the six `*-v2` packages. Building a
+  public-facing facade on a force-pushable branch (A) or a DevNet-only bundle (C)
+  would import instability we do not need for M1.
+- **Interim alignment policy (until the trigger fires):** keep the local
+  stand-in types **aligned with the `token-standard-v2-upcoming` branch** so the
+  eventual switch to real V2 DARs is a thin substitution. Re-check the branch pin
+  (currently `1e34121…`) when revisiting this area; if upstream cuts a tagged V2
+  release, that is the signal to execute the import via the ready
+  [DPM wiring spec](./cip0112-dpm-wiring-spec.md) and
+  [license/NOTICE plan](./cip0112-license-notice-packaging-plan.md), then public
+  API review.
+- **What this does NOT claim:** no stability, conformance, M1 acceptance, audit,
+  production, or release readiness — D keeps the scaffold experimental.

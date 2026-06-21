@@ -22,6 +22,15 @@ The current upstream evidence is sufficient to keep the M1 scaffold aligned to
 Token Standard V2, but it is not sufficient to import Splice DARs into
 `canton-contracts` or claim a stable public API.
 
+**Source-of-record decided 2026-06-21 — Option D (defer import for M1; keep local
+stand-ins), with a published tagged V2 release as the import trigger.** See
+[`cip0112-import-source-of-record-decision.md`](./cip0112-import-source-of-record-decision.md).
+The import gate is therefore not an open question blocking M1: the accepted M1
+posture is to keep local stand-ins aligned with the `token-standard-v2-upcoming`
+branch and execute the import (via the ready DPM-wiring and license plans) only
+when upstream publishes consumable V2 DARs. The "do not change package/import
+files" guidance below still holds — that is exactly what D mandates for M1.
+
 Do not change Daml package or import files until a later slice accepts all of
 the following as one import boundary:
 
@@ -255,9 +264,11 @@ its dependency DALFs, so distribution = redistribution) — is in
 
 ## Release-Source Confirmation Requirements
 
-This is the single remaining binding blocker; it is framed as a decision with
-options and a recommendation in
+**Decided 2026-06-21 — Option D (defer for M1; keep local stand-ins; import on a
+published tagged V2 release).** See
 [`cip0112-import-source-of-record-decision.md`](./cip0112-import-source-of-record-decision.md).
+The confirmations below remain the checklist for the *future* import slice when
+the trigger fires.
 
 Before import, confirm with upstream evidence or maintainer approval:
 
@@ -307,6 +318,10 @@ promote after the accepted import source, package IDs, DAR checksums,
 license/NOTICE handling, DPM wiring, and public API review land.
 
 ## Remaining Blockers
+
+With the source-of-record decided as **D (defer import for M1)**, these are no
+longer M1 blockers — they are the prerequisite checklist for the *future* import
+slice, to be satisfied when the trigger (a published tagged V2 release) fires.
 
 - No accepted individual-DAR publication source. (Re-confirmed 2026-06-21: the
   source repo still has no GitHub Releases, and the new `0.6.9` source tag does
