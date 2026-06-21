@@ -190,20 +190,25 @@ upgrade-safe. Where a choice records a decision, it is stated as decided.
    (`RoleCapability` / `Burner`, admin-signed — `[EVIDENCE]`
    `Admin/Capability.daml`) and the implemented in-flight clawback path
    (`LockedSimpleHolding_ForcedBurn` — `[EVIDENCE]`), changing the terminal
-   action from *destroy* to *route-to-preset-destination*. The scaffold already
-   carries the attachment points: `D2SeizureHook { custodianDestination :
-   Account, … }` and `Allocation_MarkD2InFlightSeizure` (single `admin` actor)
-   — `[IMPLEMENTED]` `Cip112.daml`.
+   action from *destroy* to *route-to-preset-destination*. The scaffold carries
+   the implemented attachment points: `D2SeizureHook { custodianDestination :
+   Account, … }`, `BurnerCapability`,
+   `Allocation_MarkD2InFlightSeizure`, and
+   `Allocation_SweepD2InFlightSeizure` — `[IMPLEMENTED]` `Cip112.daml`. In the
+   toy witness, a true third-party destination co-authorizes receipt of the
+   replacement holding because `ToyHolding` account parties are signatories;
+   that co-authorization is a receipt constraint, not seizure approval
+   authority.
    *Realignment note (for auditors, not a blocker):* this supersedes the earlier
    2026-06-15 multi-party D2 lean (custodian destination + two-person control,
    in-flight deferred). It is an internal M1 development decision; production
    deployment by a specific issuer still carries the standard re-validation
    against that issuer's compliance obligations.
 
-2. **In-flight handling is concrete, not deferred.** Settlement no longer just
-   *blocks* on an in-flight marker (the prior conservative stub); the adopted
-   policy is lock-and-sweep (choice 1). This un-defers the S1 in-flight question
-   by deciding it.
+2. **In-flight handling is concrete, not deferred.** Normal settlement rejects
+   an active D2 marker and the adopted resolution path is lock-and-sweep (choice
+   1). This un-defers the S1 in-flight question by deciding it and implementing
+   the dedicated sweep choice.
 
 3. **Single admin authority model.** Authority is capability-based and
    admin-rooted (`RoleCapability`, admin-signed, possession-is-authorization),
@@ -235,40 +240,56 @@ Ordered by **where we expect future extension to occur first**, each motivated
 by stakeholder confirmation that the extension is generally useful on top of the
 M1 base. These are not defects; they are the deliberate seams.
 
-1. **Seizure destination mutability & authority escalation.** M1 ships
+1. **Third-party custodian credit model.** The experiment can route to a true
+   third-party `Account` only when that destination account party co-authorizes
+   receipt of the replacement `ToyHolding`, because the toy holding makes
+   account parties signatory. *Expected extension:* the public API ADR must pick
+   the real Token Standard V2 custodian-credit shape: direct receipt
+   co-authorization, a propose/accept credit flow, or a registry-only-signatory
+   holding model. *Trigger:* Q1/Q2 promotion work or a custodian destination
+   that cannot co-sign the seizure transaction.
+
+2. **Seizure destination mutability & authority escalation.** M1 ships
    single-admin, preset-destination seizure (§4.1). *Expected extension:* if
    institutions (DTCC / large banks) require it, escalate to multi-sig or
    multi-party authority for the seizure path and/or a mutable, per-order
    destination with a lawful-process attestation field. *Trigger:* stakeholder
    confirmation that single-admin seizure is unacceptable for their audit.
 
-2. **D1 node-side attestation typing.** M1 carries a contract-side reference
+3. **Seizure window after settlement deadline.** The experiment fails the D2
+   sweep path after `settlementDeadline`; committed allocations can be withdrawn
+   only after that same deadline. *Expected extension:* decide whether lawful
+   in-flight seizure must remain available after the deadline or whether
+   post-deadline release/return takes precedence. *Trigger:* public API ADR,
+   legal/compliance review, or exemplar threat model.
+
+4. **D1 node-side attestation typing.** M1 carries a contract-side reference
    guard only. *Expected extension:* add a typed signed-node-attestation field /
    choice once the node-side attestation shape (Q4) is decided. *Trigger:* audit
    story requires on-ledger proof of the node check.
 
-3. **Real Token Standard V2 interfaces.** M1 uses local stand-ins / evidence-repo
+5. **Real Token Standard V2 interfaces.** M1 uses local stand-ins / evidence-repo
    interfaces. *Expected extension:* implement real `HoldingV1` /
    `TransferFactory` / `EventLog` against vendored Splice DARs once Q1 lands.
    *Trigger:* DAR/license boundary accepted.
 
-4. **EventLog adoption in the library surface.** Carried as evidence today.
+6. **EventLog adoption in the library surface.** Carried as evidence today.
    *Expected extension:* promote `EventLog_HoldingsChange` into the M1 primitive
    for wallet discoverability. *Trigger:* Q5 resolved + wallet-kernel target.
 
-5. **UTXO defragmentation (`MergeDelegation`).** Not present. *Expected
+7. **UTXO defragmentation (`MergeDelegation`).** Not present. *Expected
    extension:* add delegated background merge once fragmentation is a measured
    problem under a real consumer. *Trigger:* exemplar shows UTXO-count pressure.
 
-6. **Mixed-version (V1/V2) settlement.** Not built. *Expected extension:* add a
+8. **Mixed-version (V1/V2) settlement.** Not built. *Expected extension:* add a
    bridging path if live V1 assets must settle against V2 during migration.
    *Trigger:* an actual V1 asset in scope.
 
-7. **Cross-domain identity (D3).** Deferred. *Expected extension:* ONCHAINID /
+9. **Cross-domain identity (D3).** Deferred. *Expected extension:* ONCHAINID /
    ERC-735-style typed claim via additive SCU upgrade. *Trigger:* multi-subnet
    requirement.
 
-8. **Modular transfer hooks (DeFi composability).** The generalized
+10. **Modular transfer hooks (DeFi composability).** The generalized
    `TransferInstruction_Accept` + `pendingActions` map is the seam for
    Uniswap-Hooks-style pre-accept logic (e.g. credential-gated lending).
    *Expected extension:* M2/M3 RIs. *Trigger:* RI design begins.
@@ -287,16 +308,11 @@ the largest source of churn for downstream work, rather than leaving it open.
 
 **Immediate next steps:**
 
-1. Record §4.1 (and the §4.3 single-admin authority model) as a dated Decision
-   Log entry in root `PLAN.md`, superseding the conflicting parts of the
-   2026-06-15 D2 lean and closing the D4 fork to the single-admin capability
-   path for M1. *(I can draft this entry on request.)*
-2. Resolve Q1–Q3 (Splice DAR/branch/import boundary + public-API ADR) so the
+1. Resolve Q1–Q3 (Splice DAR/branch/import boundary + public-API ADR) so the
    scaffold can move from local stand-ins toward real V2 interfaces.
-3. Convert the lock-and-sweep seizure design into the scaffold: replace the
-   in-flight *block* with a route-to-`custodianDestination` choice on
-   `Allocation`, reusing the `Burner`-capability gate, plus negative tests.
-4. Promote the settlement primitive per the public-API ADR (Q2), then build the
+2. Keep D1's node-side attestation shape open until Q4 is resolved; the current
+   hook remains only a fail-closed reference seam.
+3. Promote the settlement primitive per the public-API ADR (Q2), then build the
    deep settlement exemplar (Phase 3).
 
 **Foundation provided.** With settlement, compliance, seizure, and authority
@@ -311,7 +327,8 @@ rather than re-litigating the core controls.
 
 - `[IMPLEMENTED]` `canton-contracts/experiments/cip112-settlement/daml/OpenZeppelin/Experimental/Settlement/Cip112.daml`
   — `TransferSide`/`TransferLegSide`, `D1ComplianceHook`, `D2SeizureHook`,
-  `Allocation_MarkD2InFlightSeizure`, `requireNoUnresolvedD2InFlight`,
+  `BurnerCapability`, `Allocation_MarkD2InFlightSeizure`,
+  `Allocation_SweepD2InFlightSeizure`, `requireNoActiveD2InFlight`,
   `SettlementFactory_SettleBatch`.
 - `[EVIDENCE]` `canton-token-template/simple-token/daml/SimpleToken/`
   — `Holding.daml` (`LockedSimpleHolding`, `LockedSimpleHolding_ForcedBurn`,

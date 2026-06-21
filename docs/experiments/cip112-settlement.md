@@ -73,8 +73,10 @@ The proposed M1 lifecycle should follow the CIP-0112 V2 settlement flow:
    allocations cannot be withdrawn before the settlement deadline.
 6. **Atomicity.** Batch settlement should be one Daml transaction. Any failed
    leg, missing authorization side, expired settlement, missing required D1
-   hook reference, or unresolved D2 in-flight hook must roll back the whole
-   transaction. The direct `Allocation_Settle` choice is narrower: it proves
+   hook reference, or active D2 in-flight seizure marker on the settlement path
+   must roll back the whole transaction. D2-marked allocations are resolved by
+   the separate lock-and-sweep choice, not by settlement executors choosing a
+   destination. The direct `Allocation_Settle` choice is narrower: it proves
    that matching peer authorization exists through fetched peer allocations or
    prior receipts, then archives only the local allocation's locked holdings. It
    is not full direct delivery-versus-payment co-settlement.
@@ -107,20 +109,36 @@ Upgrade-safe rule:
 
 ## D2 Seizure / In-Flight Extension
 
-Root `PLAN.md` records D2 as custodian-routed seizure: seized funds route to a
-deployer-configurable third-party destination, not burn and not
-return-to-sender. S1 reopened the in-flight handling question for M1 because
-settlement makes in-flight funds first-class.
+Root `PLAN.md` S2 records D2 as custodian-routed lock-and-sweep: seized
+in-flight locked holdings route to a registry-admin-preset destination, not
+burn and not return-to-sender. D4 is also decided for M1 as single-admin
+capability authority.
 
 The experimental package therefore carries an optional `D2SeizureHook` with a
-custodian destination and an explicit `inFlightHandlingStatus`. Marking an
-allocation with this hook blocks settlement with
-`Cip112Settlement: D2 in-flight seizure handling unresolved`.
+custodian destination and explicit `inFlightHandlingStatus`. Marking an
+allocation with this hook prevents normal settlement and enables
+`Allocation_SweepD2InFlightSeizure`, which:
 
-This is deliberate. The scaffold records where D2 attaches, but it does not
-choose between wait-to-settle-then-reallocate, burn-as-last-resort containment,
-or any other in-flight policy. Those remain Phase 1/Phase 2 blockers before a
-stable settlement primitive can land.
+- requires a caller-presented, admin-issued `BurnerCapability`;
+- uses only `seizureHook.custodianDestination` as the destination;
+- requires destination account-party co-authorization when the preset
+  destination is a third-party owner/provider, because `ToyHolding` makes
+  account parties signatory on the replacement holding;
+- rejects an account with neither owner nor provider before archiving locked
+  holdings;
+- rejects the sweep path after `settlementDeadline`;
+- archives the locked toy holdings and recreates unlocked toy holdings at the
+  configured custodian destination.
+
+The destination co-authorization is a toy holding receipt constraint, not
+seizure approval authority. The promoted Token Standard V2 path still needs an
+ADR decision for third-party custodian crediting: direct receipt
+co-authorization, a propose/accept credit, or a registry-only-signatory holding
+model.
+
+This is still an experiment. It does not settle the D1 attestation shape, real
+Token Standard V2 import boundary, public API ADR, lawful-process attestation
+field, destination mutability, or production custody policy.
 
 ## Upgrade And Migration Assumptions
 
@@ -149,7 +167,8 @@ Templates:
 - `SettlementFactory`: request, instruction, and batch-settlement entrypoint.
 - `AllocationRequest`: app/executor request to an authorizer account.
 - `AllocationInstruction`: wallet/authorizer instruction that locks holdings.
-- `Allocation`: ready-to-settle allocation with D1 and D2 extension points.
+- `Allocation`: ready-to-settle allocation with D1 and D2 extension points,
+  including D2 lock-and-sweep for marked in-flight locked holdings.
 - `SettlementReceipt`: experiment-only receipt. Release-quality reporting
   should use CIP-0112 `EventLog_HoldingsChange`.
 
@@ -178,8 +197,13 @@ Test coverage:
 - wrong-actor cancel fails;
 - wrong-actor withdraw fails;
 - executor cancellation unlocks a locked holding;
-- D2 in-flight seizure marker blocks settlement until the in-flight policy is
-  resolved.
+- D2 in-flight seizure sweeps locked holdings to the admin-preset custodian
+  destination under `BurnerCapability`, including a third-party destination
+  owner that co-authorizes receipt of the replacement toy holding;
+- normal batch/direct settlement rejects a D2-marked allocation and must use the
+  sweep path;
+- D2 sweep rejects wrong actor, missing capability, wrong capability scope,
+  missing custodian destination, and post-deadline seizure.
 
 ## Non-Goals
 
@@ -191,7 +215,7 @@ This experiment does not implement:
 - a stable public `canton-contracts` API;
 - CIP-0112 conformance;
 - RI-specific business logic;
-- D4 multi-sig resolution.
+- on-ledger or topology-level D4 multi-sig implementation.
 
 ## Teardown Checklist
 

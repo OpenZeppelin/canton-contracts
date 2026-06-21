@@ -125,10 +125,46 @@ data AllocationResult
   = AllocationSettled with receiptCid : ContractId SettlementReceipt
   | AllocationCancelled with returnedHoldingCids : [ContractId ToyHolding]
   | AllocationWithdrawn with returnedHoldingCids : [ContractId ToyHolding]
+  | AllocationD2Swept with custodianHoldingCids : [ContractId ToyHolding]
   deriving (Eq, Show)
 
 experimentalFeatureFlag : Text
 experimentalFeatureFlag = "experimental.cip112-settlement.enabled"
+
+-- | Minimal single-admin D2 authority witness for the experimental settlement
+-- scaffold.
+--
+-- Signatories: `admin`, the registry root that issues the capability.
+-- Observers: `assignee`, the party allowed to exercise D2 sweep authority.
+-- Controllers: none.
+-- Choices: none.
+-- Disclosed parties: the assignee presents this CID directly to a gated choice;
+-- tests disclose it only when proving a wrong actor still cannot use it.
+-- Privacy expectations: only the registry admin and assignee see the
+-- capability. Counterparties and settlement executors do not learn the D2
+-- authority graph from settlement state.
+-- Authorization assumptions: this narrowly models the S2 D4 decision for M1:
+-- single-admin, admin-signed `Burner` authority. It does not implement
+-- on-ledger multi-sig, topology multi-hosting, lawful-process attestations, or
+-- production custody policy.
+-- Archival behavior: no choices; revocation/rotation is outside this
+-- experiment and must be added before any public authority surface.
+-- Failure modes: a D2 sweep rejects a missing capability, wrong admin, wrong
+-- assignee, or instrument scope mismatch before any locked holding is archived.
+-- Upgrade and migration assumptions: this local witness mirrors the shape of
+-- `RoleCapability` evidence. A promoted library surface should either import
+-- the accepted capability package or add an SCU-compatible replacement without
+-- mutating the baseline settlement choices.
+template BurnerCapability
+  with
+    admin : Party
+    assignee : Party
+    instrumentScope : Optional InstrumentId
+    featureFlag : Text
+  where
+    signatory admin
+    observer assignee
+    ensure featureFlag == experimentalFeatureFlag
 
 -- | Toy holding used only to make allocation locking testable without creating
 -- a public token package.
@@ -182,13 +218,15 @@ template ToyHolding
 -- disclosed to executors or account parties in tests and consumers.
 -- Privacy expectations: the factory does not make a settlement public. Requests
 -- and allocations carry only the parties needed for that lifecycle step.
--- Authorization assumptions: D4 is open. `admin`, executors, and account
--- parties are plain Daml parties here; this does not choose on-ledger multi-sig
--- or topology multi-hosting.
+-- Authorization assumptions: D4 is decided for M1 as single-admin capability
+-- authority. Settlement remains executor-driven; D2 in-flight seizure is
+-- exercised through `BurnerCapability` on `Allocation`, not through settlement
+-- executors or counterparties.
 -- Archival behavior: nonconsuming choices; the factory persists.
 -- Failure modes: wrong actors, empty transfer-leg lists, missing authorization
 -- sides, settlement mismatch, expired allocations, missing D1 references, and
--- marked D2 in-flight seizure state fail before the transaction commits.
+-- active D2 in-flight seizure state fail before settlement commits; the D2
+-- state is resolved through `Allocation_SweepD2InFlightSeizure`.
 -- Upgrade and migration assumptions: non-public experiment. Optional D1 and D2
 -- hook fields follow the SCU pattern from the identity-hook upgrade spike:
 -- append optional fields and add choices rather than mutating baseline choice
@@ -383,35 +421,48 @@ template AllocationInstruction
 -- Signatories: allocation `admin` plus authorizer account parties.
 -- Observers: settlement executors.
 -- Controllers: `admin :: settlement.executors` settle; settlement executors
--- cancel; authorizer account parties withdraw; admin marks an unresolved D2
--- in-flight seizure hook.
+-- cancel; authorizer account parties withdraw; admin marks a D2 in-flight
+-- seizure hook; a `BurnerCapability` assignee sweeps marked locked holdings,
+-- with destination account parties co-authorizing only the toy holding create
+-- when the preset destination is a third party.
 -- Choices: `Allocation_Settle`, `Allocation_Cancel`, `Allocation_Withdraw`,
--- `Allocation_MarkD2InFlightSeizure`.
+-- `Allocation_MarkD2InFlightSeizure`, `Allocation_SweepD2InFlightSeizure`.
 -- Disclosed parties: admin, authorizer account parties, and executors.
 -- Privacy expectations: allocation visibility is per authorizer and executor.
 -- Batch settlement receipts expose only leg ids and the parties already
 -- involved in the allocation.
 -- Authorization assumptions: settlement uses the CIP-0112 default posture:
 -- executor authority supplied by the settlement app plus instrument admin
--- authority from the settlement factory. D4 multi-sig form remains open.
--- Archival behavior: settle, cancel, and withdraw are consuming; D2 marking is
--- consuming and creates a successor allocation. `Allocation_Settle` archives
--- only this allocation's locked holdings; peer allocation and receipt proof
--- CIDs are fetched as authorization evidence, not co-settled by this choice.
--- Atomic multi-allocation settlement is a property of
+-- authority from the settlement factory. D2 seizure uses the S2 D4
+-- single-admin `BurnerCapability` model; the sweep caller must present an
+-- admin-issued capability naming that caller. The optional destination
+-- co-authorization is not seizure authority; it is required only because
+-- `ToyHolding` makes account parties signatory on the replacement holding.
+-- Archival behavior: settle, cancel, withdraw, and D2 sweep are consuming; D2
+-- marking is consuming and creates a successor allocation. `Allocation_Settle`
+-- archives only this allocation's locked holdings; peer allocation and receipt
+-- proof CIDs are fetched as authorization evidence, not co-settled by this
+-- choice. D2 sweep archives locked holdings only after validating the
+-- configured custodian destination and capability, then creates replacement
+-- toy holdings at that destination. For a third-party destination, the
+-- destination party signs the exercise so the replacement toy holding is
+-- authorized. Atomic multi-allocation settlement is a property of
 -- `SettlementFactory_SettleBatch`.
 -- Failure modes: wrong actors, settlement mismatch, expired settlement, missing
--- D1 reference when the optional hook requires one, unauthorized leg sides, and
--- unresolved D2 in-flight seizure state fail before commit.
+-- D1 reference when the optional hook requires one, unauthorized leg sides,
+-- active D2 in-flight seizure on the settlement path, missing/invalid Burner
+-- capability, missing custodian destination, post-deadline D2 seizure, and
+-- unlocked or out-of-scope holdings fail before commit.
 -- Upgrade and migration assumptions: optional D1/D2 hook fields are additive.
 -- `peerAllocationCids` and `peerReceiptCids` are experimental proof inputs
 -- added before public stability. They prove matching authorization exists; they
 -- do not prove atomic delivery-versus-payment at the direct-choice level. If a
 -- promoted direct path needs atomic co-settlement, it must consume or settle the
 -- peer allocations too, or the direct choice should stay non-public. Future
--- typed compliance/seizure behavior should be added through new choices or
--- optional fields, not by changing baseline choice arguments once a public
--- surface exists.
+-- typed compliance/seizure behavior, including lawful-process attestations or
+-- destination mutability, should be added through new choices or optional
+-- fields, not by changing baseline choice arguments once a public surface
+-- exists.
 template Allocation
   with
     originalAllocationCid : Optional (ContractId Allocation)
@@ -445,7 +496,7 @@ template Allocation
         assertMsg eBadTransferLegAmount (allTransferLegAmountsPositive transferLegs)
         requireBeforeSettlementDeadline allocation.settlement
         requireD1Reference d1ComplianceHook d1ComplianceRef
-        requireNoUnresolvedD2InFlight d2SeizureHook
+        requireNoActiveD2InFlight d2SeizureHook
         requireIteratedSettlementAllowed allocation extraTransferLegSides nextIterationFunding
         peerAllocations <- fetchAllocations peerAllocationCids
         peerReceipts <- fetchReceipts peerReceiptCids
@@ -495,6 +546,19 @@ template Allocation
       do
         assertMsg eAdminActorsMismatch (actors == [allocation.admin])
         create this with d2SeizureHook = Some seizureHook
+
+    choice Allocation_SweepD2InFlightSeizure : AllocationResult
+      with
+        burner : Party
+        burnerCapCid : Optional (ContractId BurnerCapability)
+      controller d2SweepControllers allocation.admin d2SeizureHook burner
+      do
+        hook <- requireD2InFlightSeizure d2SeizureHook
+        requireBeforeSettlementDeadline allocation.settlement
+        cap <- requireBurnerCapability burner allocation.admin burnerCapCid
+        requireCustodianDestination hook.custodianDestination
+        custodianHoldingCids <- sweepLockedHoldings hook.custodianDestination cap lockedHoldingCids
+        pure AllocationD2Swept with custodianHoldingCids
 
 -- | Minimal settlement receipt used by the experiment to prove successful
 -- atomic settlement without implementing a production asset ledger.
@@ -557,6 +621,25 @@ lockObservers lock =
   case lock of
     None -> []
     Some l -> l.holders
+
+d2SweepControllers : Party -> Optional D2SeizureHook -> Party -> [Party]
+d2SweepControllers admin hook burner =
+  case hook of
+    None -> [burner]
+    Some h -> burner :: d2DestinationControllers admin h.custodianDestination
+
+d2DestinationControllers : Party -> Account -> [Party]
+d2DestinationControllers admin destination =
+  filterDifferentParties (accountObservers destination) admin
+
+filterDifferentParties : [Party] -> Party -> [Party]
+filterDifferentParties parties excluded =
+  case parties of
+    [] -> []
+    party :: rest ->
+      if party == excluded
+        then filterDifferentParties rest excluded
+        else party :: filterDifferentParties rest excluded
 
 allRequestedAdminsMatch : Party -> [RequestedAllocation] -> Bool
 allRequestedAdminsMatch admin allocations =
@@ -636,6 +719,22 @@ unlockHoldings cids =
       unlockedCid <- create holding with lock = None
       unlockedRest <- unlockHoldings rest
       pure (unlockedCid :: unlockedRest)
+
+sweepLockedHoldings : Account -> BurnerCapability -> [ContractId ToyHolding] -> Update [ContractId ToyHolding]
+sweepLockedHoldings destination cap cids =
+  case cids of
+    [] -> pure []
+    cid :: rest -> do
+      holding <- fetch cid
+      assertMsg eD2HoldingAdminMismatch (holding.admin == cap.admin)
+      assertMsg eBurnerCapabilityScopeMismatch (burnerScopeAuthorizes cap.instrumentScope holding.instrumentId)
+      assertMsg eD2HoldingNotLocked (holding.lock /= None)
+      archive cid
+      custodianCid <- create holding with
+        account = destination
+        lock = None
+      custodianRest <- sweepLockedHoldings destination cap rest
+      pure (custodianCid :: custodianRest)
 
 fetchAllocations : [ContractId Allocation] -> Update [Allocation]
 fetchAllocations cids =
@@ -791,11 +890,49 @@ requireD1Reference hook ref =
         then assertMsg eD1ComplianceReferenceMissing (ref /= None)
         else pure ()
 
-requireNoUnresolvedD2InFlight : Optional D2SeizureHook -> Update ()
-requireNoUnresolvedD2InFlight hook =
+requireNoActiveD2InFlight : Optional D2SeizureHook -> Update ()
+requireNoActiveD2InFlight hook =
   case hook of
     None -> pure ()
-    Some _ -> abort eD2InFlightUnresolved
+    Some _ -> abort eD2InFlightSweepRequired
+
+requireD2InFlightSeizure : Optional D2SeizureHook -> Update D2SeizureHook
+requireD2InFlightSeizure hook =
+  case hook of
+    None -> abort eD2InFlightMissing
+    Some h -> pure h
+
+requireBurnerCapability
+  : Party
+  -> Party
+  -> Optional (ContractId BurnerCapability)
+  -> Update BurnerCapability
+requireBurnerCapability burner expectedAdmin capCid =
+  case capCid of
+    None -> abort eBurnerCapabilityMissing
+    Some cid -> do
+      cap <- fetch cid
+      assertMsg eBurnerCapabilityAdminMismatch (cap.admin == expectedAdmin)
+      assertMsg eBurnerCapabilityAssigneeMismatch (cap.assignee == burner)
+      assertMsg eFeatureDisabled (cap.featureFlag == experimentalFeatureFlag)
+      pure cap
+
+burnerScopeAuthorizes : Optional InstrumentId -> InstrumentId -> Bool
+burnerScopeAuthorizes capScope requiredScope =
+  case capScope of
+    None -> True
+    Some scope -> scope == requiredScope
+
+requireCustodianDestination : Account -> Update ()
+requireCustodianDestination destination =
+  assertMsg eD2CustodianDestinationMissing (accountHasOwnerOrProvider destination)
+
+accountHasOwnerOrProvider : Account -> Bool
+accountHasOwnerOrProvider account =
+  case (account.owner, account.provider) of
+    (None, None) -> False
+    (Some _, _) -> True
+    (_, Some _) -> True
 
 requireIteratedSettlementAllowed
   : AllocationSpecification
@@ -894,8 +1031,32 @@ eSettlementDeadlinePassed = "Cip112Settlement: settlement deadline passed"
 eD1ComplianceReferenceMissing : Text
 eD1ComplianceReferenceMissing = "Cip112Settlement: D1 compliance reference required by experimental hook"
 
-eD2InFlightUnresolved : Text
-eD2InFlightUnresolved = "Cip112Settlement: D2 in-flight seizure handling unresolved"
+eD2InFlightSweepRequired : Text
+eD2InFlightSweepRequired = "Cip112Settlement: D2 in-flight seizure must use sweep path"
+
+eD2InFlightMissing : Text
+eD2InFlightMissing = "Cip112Settlement: D2 in-flight seizure hook required"
+
+eD2CustodianDestinationMissing : Text
+eD2CustodianDestinationMissing = "Cip112Settlement: D2 custodian destination must include owner or provider"
+
+eD2HoldingAdminMismatch : Text
+eD2HoldingAdminMismatch = "Cip112Settlement: D2 locked holding admin mismatch"
+
+eD2HoldingNotLocked : Text
+eD2HoldingNotLocked = "Cip112Settlement: D2 sweep requires locked holdings"
+
+eBurnerCapabilityMissing : Text
+eBurnerCapabilityMissing = "Cip112Settlement: Burner capability required"
+
+eBurnerCapabilityAdminMismatch : Text
+eBurnerCapabilityAdminMismatch = "Cip112Settlement: Burner capability admin mismatch"
+
+eBurnerCapabilityAssigneeMismatch : Text
+eBurnerCapabilityAssigneeMismatch = "Cip112Settlement: Burner capability assignee mismatch"
+
+eBurnerCapabilityScopeMismatch : Text
+eBurnerCapabilityScopeMismatch = "Cip112Settlement: Burner capability scope mismatch"
 
 eIteratedSettlementDisabled : Text
 eIteratedSettlementDisabled = "Cip112Settlement: iterated settlement arguments require nextIterationFunding"

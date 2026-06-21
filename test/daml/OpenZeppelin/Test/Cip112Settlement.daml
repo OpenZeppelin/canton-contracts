@@ -70,6 +70,59 @@ mkD1Hook prefix = D1ComplianceHook with
   hookRef = prefix <> "-node-side-check"
   requiresPerSettlementReference = True
 
+usdInstrument : Party -> InstrumentId
+usdInstrument admin = InstrumentId with admin; id = "USD"
+
+mkD2CustodianAccount : Text -> Party -> Account
+mkD2CustodianAccount prefix admin = Account with
+  owner = None
+  provider = Some admin
+  id = prefix <> "-custodian"
+
+mkD2ThirdPartyCustodianAccount : Text -> Party -> Account
+mkD2ThirdPartyCustodianAccount prefix custodian = Account with
+  owner = Some custodian
+  provider = None
+  id = prefix <> "-third-party-custodian"
+
+missingD2CustodianAccount : Account
+missingD2CustodianAccount = Account with
+  owner = None
+  provider = None
+  id = "missing-d2-custodian"
+
+mkD2Hook : Text -> Account -> D2SeizureHook
+mkD2Hook prefix custodianDestination = D2SeizureHook with
+  seizureCaseRef = prefix <> "-case"
+  custodianDestination
+  inFlightHandlingStatus = "lock-and-sweep per root PLAN.md S2"
+
+createBurnerCapability
+  : Party
+  -> Party
+  -> Optional InstrumentId
+  -> Script (ContractId BurnerCapability, Disclosure)
+createBurnerCapability admin assignee instrumentScope = do
+  cap <- submit admin do
+    createCmd BurnerCapability with
+      admin
+      assignee
+      instrumentScope
+      featureFlag = experimentalFeatureFlag
+  Some capDisclosure <- queryDisclosure @BurnerCapability admin cap
+  pure (cap, capDisclosure)
+
+markD2InFlightSeizure
+  : Party
+  -> ContractId Allocation
+  -> D2SeizureHook
+  -> Script (ContractId Allocation)
+markD2InFlightSeizure admin allocationCid seizureHook =
+  submit admin do
+    exerciseCmd allocationCid Allocation_MarkD2InFlightSeizure with
+      actors = [admin]
+      seizureHook
+
 setupScenario : Text -> Bool -> Bool -> Script SettlementScenario
 setupScenario prefix requireD1 committed = do
   setTime t0
@@ -114,7 +167,7 @@ setupScenario prefix requireD1 committed = do
     createCmd ToyHolding with
       admin
       account = aliceAccount
-      instrumentId = InstrumentId with admin; id = "USD"
+      instrumentId = usdInstrument admin
       amount = 10.0
       lock = None
       meta = emptyMetadata
@@ -426,22 +479,46 @@ test_cip112Settlement_withdrawWrongActorFails = script do
       pure ()
     [] -> fail "expected an alice allocation"
 
--- | Marking an allocation with the D2 in-flight seizure extension blocks
--- settlement until the reopened in-flight handling decision is resolved.
-test_cip112Settlement_d2InFlightSeizureBlocksSettlement : Script ()
-test_cip112Settlement_d2InFlightSeizureBlocksSettlement = script do
-  SettlementScenario{..} <- setupScenario "cip112-d2" False False
-  let custodian = basicAccount admin
-      seizureHook = D2SeizureHook with
-        seizureCaseRef = "case-cip112-d2"
-        custodianDestination = custodian
-        inFlightHandlingStatus = "open per root PLAN.md D2/S1"
+-- | D2 in-flight seizure sweeps locked holdings to the admin-preset custodian
+-- destination under a Burner capability. Settlement executors and
+-- counterparties do not provide a destination.
+test_cip112Settlement_d2InFlightSeizureSweepsLockedHolding : Script ()
+test_cip112Settlement_d2InFlightSeizureSweepsLockedHolding = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2-sweep" False False
+  custodianParty <- allocateParty "cip112-d2-sweep-custodian"
+  let custodian = mkD2ThirdPartyCustodianAccount "cip112-d2-sweep" custodianParty
+      seizureHook = mkD2Hook "cip112-d2-sweep" custodian
+  (burnerCap, _) <- createBurnerCapability admin admin (Some (usdInstrument admin))
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      result <- submit [admin, custodianParty] do
+        exerciseCmd markedAliceAllocation Allocation_SweepD2InFlightSeizure with
+          burner = admin
+          burnerCapCid = Some burnerCap
+      case result of
+        AllocationD2Swept custodianHoldingCids -> do
+          length custodianHoldingCids === 1
+          case custodianHoldingCids of
+            custodianHoldingCid :: _ -> do
+              Some custodianHolding <- queryContractId custodianParty custodianHoldingCid
+              custodianHolding.account === custodian
+              custodianHolding.lock === None
+              custodianHolding.amount === 10.0
+            [] -> fail "expected a custodian holding"
+        _ -> fail "expected AllocationD2Swept"
+    [] -> fail "expected an alice allocation"
+
+-- | A D2-marked allocation cannot continue through normal settlement. The
+-- only resolution path for the in-flight marker is the dedicated sweep choice.
+test_cip112Settlement_d2MarkedAllocationCannotSettle : Script ()
+test_cip112Settlement_d2MarkedAllocationCannotSettle = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2-marked-no-settle" False False
+  let custodian = mkD2CustodianAccount "cip112-d2-marked-no-settle" admin
+      seizureHook = mkD2Hook "cip112-d2-marked-no-settle" custodian
   case allocationCids of
     aliceAllocation :: bobAllocation :: [] -> do
-      markedAliceAllocation <- submit admin do
-        exerciseCmd aliceAllocation Allocation_MarkD2InFlightSeizure with
-          actors = [admin]
-          seizureHook
+      markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
       submitWithDisclosuresMustFail app [factoryDisclosure] do
         exerciseCmd factory SettlementFactory_SettleBatch with
           settlement
@@ -449,5 +526,105 @@ test_cip112Settlement_d2InFlightSeizureBlocksSettlement = script do
           allocationCids = [markedAliceAllocation, bobAllocation]
           actors = [app]
           d1ComplianceRef = None
+      submitMustFail [admin, app] do
+        exerciseCmd markedAliceAllocation Allocation_Settle with
+          actors = [admin, app]
+          settlement
+          transferLegs = [transferLeg]
+          extraTransferLegSides = []
+          peerAllocationCids = [bobAllocation]
+          peerReceiptCids = []
+          nextIterationFunding = None
+          d1ComplianceRef = None
       pure ()
     _ -> fail "expected two allocations"
+
+-- | The sweep exerciser must be the party named by the admin-issued Burner
+-- capability.
+test_cip112Settlement_d2SweepWrongActorFails : Script ()
+test_cip112Settlement_d2SweepWrongActorFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2-wrong-actor" False False
+  let custodian = mkD2CustodianAccount "cip112-d2-wrong-actor" admin
+      seizureHook = mkD2Hook "cip112-d2-wrong-actor" custodian
+  (burnerCap, burnerCapDisclosure) <- createBurnerCapability admin admin (Some (usdInstrument admin))
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      submitWithDisclosuresMustFail app [burnerCapDisclosure] do
+        exerciseCmd markedAliceAllocation Allocation_SweepD2InFlightSeizure with
+          burner = app
+          burnerCapCid = Some burnerCap
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | A missing Burner capability fails before any locked holding can be swept.
+test_cip112Settlement_d2SweepMissingCapabilityFails : Script ()
+test_cip112Settlement_d2SweepMissingCapabilityFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2-missing-cap" False False
+  let custodian = mkD2CustodianAccount "cip112-d2-missing-cap" admin
+      seizureHook = mkD2Hook "cip112-d2-missing-cap" custodian
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      submitMustFail admin do
+        exerciseCmd markedAliceAllocation Allocation_SweepD2InFlightSeizure with
+          burner = admin
+          burnerCapCid = None
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | A Burner capability for the wrong instrument does not authorize sweeping a
+-- USD locked holding.
+test_cip112Settlement_d2SweepWrongCapabilityFails : Script ()
+test_cip112Settlement_d2SweepWrongCapabilityFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2-wrong-cap" False False
+  let custodian = mkD2CustodianAccount "cip112-d2-wrong-cap" admin
+      seizureHook = mkD2Hook "cip112-d2-wrong-cap" custodian
+      eurInstrument = InstrumentId with admin; id = "EUR"
+  (wrongCap, _) <- createBurnerCapability admin admin (Some eurInstrument)
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      submitMustFail admin do
+        exerciseCmd markedAliceAllocation Allocation_SweepD2InFlightSeizure with
+          burner = admin
+          burnerCapCid = Some wrongCap
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | A D2 hook with no owner/provider destination is rejected before locked
+-- holdings are archived.
+test_cip112Settlement_d2SweepMissingDestinationFails : Script ()
+test_cip112Settlement_d2SweepMissingDestinationFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2-missing-destination" False False
+  let seizureHook = mkD2Hook "cip112-d2-missing-destination" missingD2CustodianAccount
+  (burnerCap, _) <- createBurnerCapability admin admin (Some (usdInstrument admin))
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      submitMustFail admin do
+        exerciseCmd markedAliceAllocation Allocation_SweepD2InFlightSeizure with
+          burner = admin
+          burnerCapCid = Some burnerCap
+      Some _ <- queryContractId admin markedAliceAllocation
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | D2 in-flight seizure is a pre-deadline containment path. After the
+-- settlement deadline, the experimental sweep path fails closed.
+test_cip112Settlement_d2SweepAfterDeadlineFails : Script ()
+test_cip112Settlement_d2SweepAfterDeadlineFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2-after-deadline" False False
+  let custodian = mkD2CustodianAccount "cip112-d2-after-deadline" admin
+      seizureHook = mkD2Hook "cip112-d2-after-deadline" custodian
+  (burnerCap, _) <- createBurnerCapability admin admin (Some (usdInstrument admin))
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      setTime t2
+      submitMustFail admin do
+        exerciseCmd markedAliceAllocation Allocation_SweepD2InFlightSeizure with
+          burner = admin
+          burnerCapCid = Some burnerCap
+      pure ()
+    [] -> fail "expected an alice allocation"
