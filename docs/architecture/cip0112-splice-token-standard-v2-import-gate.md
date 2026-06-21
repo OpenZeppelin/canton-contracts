@@ -4,7 +4,7 @@ Status: Phase 2 evidence-boundary result. This is not a Splice DAR import,
 public API stability, conformance, M1 acceptance, audit-readiness,
 production-readiness, or release-readiness claim.
 
-Date: 2026-06-18
+Date: 2026-06-18 (evidence refresh 2026-06-21 — see "2026-06-21 Evidence Refresh")
 
 Phase: Phase 2, Scope-Locked Library Foundation
 
@@ -37,6 +37,62 @@ the following as one import boundary:
   MIT-licensed repo;
 - DPM dependency wiring and local build/test evidence;
 - public API review for the OpenZeppelin facade and SCU compatibility contract.
+
+## 2026-06-21 Evidence Refresh
+
+Re-verification of the upstream state, three days after the initial pass, plus
+the first hard artifact-integrity evidence (DAR SHA-256 checksums). Still **not**
+a DAR import, source acceptance, or stability claim. Method: files fetched read-
+only via `raw.githubusercontent.com` at the pinned commit; no Daml package or
+import file was changed.
+
+- **Branch pin unchanged.** `git ls-remote … refs/heads/token-standard-v2-upcoming`
+  still resolves to `1e34121b2b369c5dde357c098e2aaeb65250e736`.
+- **New source tag `0.6.9` exists but does not carry the V2 API packages.** The
+  source repo now has a `0.6.9` tag (`bc6a3587e7ea94230ba0c36c638945282c52b304`),
+  absent from the 2026-06-18 evidence. Its `daml/dars.lock` contains only
+  `splice-api-token-metadata-v1` (1 of the 7 boundary package IDs); the six
+  `*-v2` API package IDs are **not** present at `0.6.9`. The Token Standard V2 API
+  packages at the IDs in "Package Boundary" therefore remain **branch-only** on
+  `token-standard-v2-upcoming`; the new tag is not a release-source-of-record for
+  them.
+- **DevNet bundle unchanged.** `digital-asset/decentralized-canton-sync` @
+  `token-standard-v2-upcoming` is still version
+  `0.6.9-snapshot.20260615.3096.0.v27548d88`, still marked pre-release.
+- **No formal source releases.** `canton-network/splice` (the redirect target of
+  `hyperledger-labs/splice`) still lists no GitHub Releases, so there is still no
+  individual-DAR publication contract.
+- **NOTICE still absent.** `/NOTICE`, `/NOTICE.txt`, and `/NOTICE.md` all return
+  HTTP 404 at the pinned commit, corroborating the original license/notice
+  finding.
+
+### DAR Artifact Checksums (branch pin `1e34121…`, source `daml/dars/`)
+
+SHA-256 over the checked-in DAR files at the pin, with the main package ID read
+from each DAR's embedded `*.dalf` filename. **All seven embedded package IDs
+match the "Package Boundary" table / `dars.lock` exactly** — independent
+confirmation of package identity from the binaries, not just a re-read of the
+lock file. These are artifact-integrity checksums for the **branch-pinned
+checked-in DARs**; they do not by themselves accept that source for import
+(reproducible build, release-source confirmation, license/NOTICE packaging, DPM
+wiring, and public API review remain open).
+
+| Package (DAR `…-1.0.0.dar`) | Size (bytes) | DAR SHA-256 | Embedded pkg id == boundary table |
+| --- | --- | --- | --- |
+| `splice-api-token-metadata-v1` | 260414 | `455eb160cb5abd4ae9918a6fbb9dad471f721adda39f0e5c76feef08d05637fc` | ✅ `4ded6b66…354f` |
+| `splice-api-token-holding-v2` | 483164 | `156a5d78659abbf9664cac3ece97338afa9fd1c2a4a72588ea89fc09e78ebea9` | ✅ `26ba27db…8d84` |
+| `splice-api-token-allocation-v2` | 542139 | `968a089eb5026b2317c3489f67feb000990a56c2202ab890b8386f6844003205` | ✅ `f0570f0d…c81f` |
+| `splice-api-token-allocation-request-v2` | 534881 | `a30af9a1ba3cf3c79f96bac00541f1ae641637857d1cfc1b78939ab0acb696e0` | ✅ `94fad8bd…e962` |
+| `splice-api-token-allocation-instruction-v2` | 546082 | `96f2768471fc92e24e4943359bf529072b111848d4bfa17196a17b2f6c836b00` | ✅ `1f76e53c…0314` |
+| `splice-api-token-transfer-instruction-v2` | 520160 | `f3cb0ae308997167daf008b291854b3c948d695b1331f7f4e60810f25e83e694` | ✅ `5031d790…6d5a` |
+| `splice-api-token-transfer-events-v2` | 498208 | `b865117fc61b1bdb46756dcaa2d2330822e62e7a925c9bec49805e71dd0bddda` | ✅ `5cdd2104…2fee` |
+
+These are checksums of DARs committed to the **moving** `token-standard-v2-upcoming`
+branch. A later import slice must re-pin to whatever source the
+"Release-Source Confirmation" section settles on (tagged release, accepted
+bundle extraction, or reproducible build) and re-record checksums for that
+source — these values are evidence the pin is internally consistent today, not
+an accepted import artifact set.
 
 ## Sources Checked
 
@@ -132,6 +188,10 @@ When accepted, the DPM wiring should be narrow:
 - run `dpm build --all` from `canton-contracts` and `dpm test` from
   `canton-contracts/test` after any package/import change.
 
+The exact wiring (template `daml.yaml` data-dependencies block, dependency graph,
+facade layout, verification gate) is drafted but **not applied** in
+[`cip0112-dpm-wiring-spec.md`](./cip0112-dpm-wiring-spec.md).
+
 ## License And NOTICE Handling
 
 `canton-contracts` is MIT. The upstream Token Standard V2 API packages are
@@ -149,6 +209,12 @@ contains upstream artifacts, add a packaging plan that:
   notes or package metadata;
 - avoids implying that local MIT licensing relicenses upstream Apache-2.0
   artifacts.
+
+The concrete plan satisfying the above — Apache-2.0 §4 obligations mapped to
+specific files to add, and the technical trigger (a published Daml DAR bundles
+its dependency DALFs, so distribution = redistribution) — is in
+[`cip0112-license-notice-packaging-plan.md`](./cip0112-license-notice-packaging-plan.md)
+(plan only, not applied).
 
 ## Release-Source Confirmation Requirements
 
@@ -201,10 +267,16 @@ license/NOTICE handling, DPM wiring, and public API review land.
 
 ## Remaining Blockers
 
-- No accepted individual-DAR publication source.
+- No accepted individual-DAR publication source. (Re-confirmed 2026-06-21: the
+  source repo still has no GitHub Releases, and the new `0.6.9` source tag does
+  not carry the six `*-v2` API packages — they remain branch-only.)
 - No accepted release-bundle extraction path for Token Standard V2 DARs.
 - No accepted reproducible-build transcript from the release source.
-- No local DAR SHA-256 list for the exact artifacts to consume.
+- ~~No local DAR SHA-256 list for the exact artifacts to consume.~~ Partially
+  addressed 2026-06-21: SHA-256 recorded for the branch-pinned checked-in DARs
+  (see "DAR Artifact Checksums"), with embedded package IDs confirmed against
+  `dars.lock`. Still pending: checksums tied to an **accepted** release-source or
+  reproducible build, since the pin is a moving branch.
 - No local DPM dependency edit or validation evidence.
 - No Apache-2.0 license/NOTICE packaging change in this MIT repo.
 - No public API review for the OpenZeppelin facade.
