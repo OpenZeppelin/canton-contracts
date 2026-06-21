@@ -16,6 +16,9 @@ Depends on:
   admin-preset custodian destination; D4 is single-admin capability authority.
 - [`cip0112-public-api-promotion-boundary.md`](./cip0112-public-api-promotion-boundary.md):
   Splice Token Standard V2 DAR import and public API stability remain gated.
+- [`cip0112-splice-token-standard-v2-import-gate.md`](./cip0112-splice-token-standard-v2-import-gate.md):
+  current upstream package/release evidence is documented, but import and
+  stability claims remain blocked.
 
 ## Context
 
@@ -262,7 +265,9 @@ the same upgrade posture as the CIP-112 promotion ADR:
 - D4: S2 single-admin capability authority is fixed for M1. Deployment-specific
   multi-sig review can happen later without reopening the M1 default.
 - Splice DAR/import: no Splice DAR is imported, vendored, or treated as public
-  API by this note.
+  API by this note. The current evidence-boundary result is
+  [`cip0112-splice-token-standard-v2-import-gate.md`](./cip0112-splice-token-standard-v2-import-gate.md);
+  it does not close the import or public API gate.
 
 ## Acceptance Closeout
 

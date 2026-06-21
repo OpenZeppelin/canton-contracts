@@ -1,0 +1,212 @@
+# CIP-0112 Splice Token Standard V2 Import Gate
+
+Status: Phase 2 evidence-boundary result. This is not a Splice DAR import,
+public API stability, conformance, M1 acceptance, audit-readiness,
+production-readiness, or release-readiness claim.
+
+Date: 2026-06-18
+
+Phase: Phase 2, Scope-Locked Library Foundation
+
+Depends on:
+
+- root `PLAN.md` Decision Log S2: D2 in-flight seizure is lock-and-sweep to the
+  admin-preset custodian destination; D4 is single-admin capability authority.
+- [`cip0112-public-api-promotion-boundary.md`](./cip0112-public-api-promotion-boundary.md):
+  the local settlement scaffold stays experimental until upstream DAR/import and
+  public API gates are accepted.
+
+## Result
+
+The current upstream evidence is sufficient to keep the M1 scaffold aligned to
+Token Standard V2, but it is not sufficient to import Splice DARs into
+`canton-contracts` or claim a stable public API.
+
+Do not change Daml package or import files until a later slice accepts all of
+the following as one import boundary:
+
+- release source: the exact upstream release tag, branch, commit, and artifact
+  source intended for Token Standard V2 consumers;
+- artifact source: either individually published DARs or an accepted release
+  bundle extraction path;
+- package identity: package IDs for every imported DAR and its transitive
+  dependency set;
+- artifact integrity: SHA-256 checksums for the actual DAR files or DPM
+  artifacts consumed locally;
+- license and notice handling for Apache-2.0 upstream artifacts inside this
+  MIT-licensed repo;
+- DPM dependency wiring and local build/test evidence;
+- public API review for the OpenZeppelin facade and SCU compatibility contract.
+
+## Sources Checked
+
+| Source | Current evidence |
+| --- | --- |
+| Splice source repo | `git ls-remote https://github.com/hyperledger-labs/splice.git refs/heads/token-standard-v2-upcoming` resolves to `1e34121b2b369c5dde357c098e2aaeb65250e736`. A sparse checkout at that commit was used for the files below. GitHub API responses for this repository redirect to `canton-network/splice`, but the `hyperledger-labs/splice` remote remains reachable. |
+| Splice source releases/tags | `git ls-remote --tags --refs https://github.com/hyperledger-labs/splice.git` shows source tags through `0.6.8` plus `next-cilr`; the checked commit is not exactly tagged in the checkout. The GitHub releases API for the source repo returned an empty list. |
+| Source package manifests | `token-standard/splice-api-token-*/daml.yaml` at the evidence commit declares SDK `3.4.11`, Daml target `2.1`, package `version: 1.0.0`, and Apache-2.0 SPDX headers for the relevant API packages. |
+| Upstream package-id guard | `daml/dars.lock` at the evidence commit records package IDs for the checked-in DAR set. `CONTRIBUTING.md` says Splice commits current package IDs in `daml/dars.lock` and CI verifies them. |
+| Upstream build path | `DEVELOPMENT.md` names `sbt damlBuild` for DAR creation, `sbt damlDarsLockFileUpdate` for the lock file, and `sbt updateDarResources` for generated DAR resources. `build.sbt` wires the Token Standard V2 Daml projects through Splice's SBT `DamlPlugin`. |
+| DevNet release bundle | `token-standard/TOKEN_STANDARD_V2_DEVNET.md` points to `digital-asset/decentralized-canton-sync` release tag `token-standard-v2-upcoming`, version `0.6.9-snapshot.20260615.3096.0.v27548d88`. The GitHub release is a prerelease updated 2026-06-15 with `openapi.tar.gz` and `splice-node.tar.gz` assets and SHA-256 digests. It is not an individual-DAR publication contract by itself. |
+| License/notice | The source repo root has `LICENSE` with Apache-2.0 text; no root `NOTICE` file was observed in the checked commit. Token Standard source files and manifests carry Apache-2.0 SPDX headers. |
+
+## Package Boundary
+
+The import boundary for the M1 settlement facade remains the seven Token
+Standard V2 API packages already named by the promotion ADR. The package IDs
+below are from upstream `daml/dars.lock` at
+`1e34121b2b369c5dde357c098e2aaeb65250e736`; they are package identity evidence,
+not DAR file checksums.
+
+| Package | DAR path observed upstream | Package ID from `daml/dars.lock` | Manifest data dependencies |
+| --- | --- | --- | --- |
+| `splice-api-token-metadata-v1` | `daml/dars/splice-api-token-metadata-v1-1.0.0.dar` | `4ded6b668cb3b64f7a88a30874cd41c75829f5e064b3fbbadf41ec7e8363354f` | none beyond `daml-prim`, `daml-stdlib` |
+| `splice-api-token-holding-v2` | `daml/dars/splice-api-token-holding-v2-1.0.0.dar` | `26ba27db8af91bc5554780f3e66fd5e453f4ef2a862f4197817fa69ad6598d84` | metadata v1 |
+| `splice-api-token-allocation-v2` | `daml/dars/splice-api-token-allocation-v2-1.0.0.dar` | `f0570f0d3d0be468504c662d464b445174a2809420aabfc8990526caecfac81f` | metadata v1, holding v2 |
+| `splice-api-token-allocation-request-v2` | `daml/dars/splice-api-token-allocation-request-v2-1.0.0.dar` | `94fad8bd299003ef8b0b030d47ac17c36de3307c1d36b3d18a64ab5ce366e962` | metadata v1, holding v2, allocation v2 |
+| `splice-api-token-allocation-instruction-v2` | `daml/dars/splice-api-token-allocation-instruction-v2-1.0.0.dar` | `1f76e53c4d6483fd87b85bef984132c928aeec768a49c4afbea657ca87510314` | metadata v1, holding v2, allocation v2 |
+| `splice-api-token-transfer-instruction-v2` | `daml/dars/splice-api-token-transfer-instruction-v2-1.0.0.dar` | `5031d7905fc9ac39bb6f6e7b59c380112ed74c2d523b953835d8b4c18d946d5a` | metadata v1, holding v2 |
+| `splice-api-token-transfer-events-v2` | `daml/dars/splice-api-token-transfer-events-v2-1.0.0.dar` | `5cdd2104ca9b799933970c8a44c16790489dda8c648d17a397709ff8aaf72fee` | metadata v1, holding v2 |
+
+Out of boundary for this import gate: V1 packages, Amulet packages, wallet
+packages, app/SV/validator infrastructure, examples, tests, CLI code, featured
+app APIs, reward APIs, Splice utility packages, and RI-specific business logic.
+Add any such package only through a later ADR.
+
+## Published DAR Status
+
+Current state:
+
+- The Splice source commit contains checked-in DAR paths under `daml/dars/`.
+- `daml/dars.lock` records package IDs for those DARs.
+- The source repo does not currently expose a formal GitHub release with
+  individual Token Standard V2 DAR assets.
+- The separate `digital-asset/decentralized-canton-sync` DevNet prerelease
+  exposes aggregate `openapi` and `splice-node` tarballs, not a documented
+  package-by-package DAR import contract for this repo.
+
+Therefore, `canton-contracts` must not consume upstream DARs yet. A later import
+slice must choose one of these accepted sources:
+
+- individually published Token Standard V2 DARs with upstream checksums and
+  package IDs;
+- an accepted release-bundle extraction path that identifies the exact DAR files
+  inside the bundle and verifies their SHA-256 checksums and package IDs;
+- a reproducible source build from the accepted upstream release tag/commit that
+  reproduces the expected package IDs and records the generated DAR checksums.
+
+## Reproducible Build Status
+
+Splice documents a build path, but this slice did not run it and does not accept
+it as reproducible for local import.
+
+A future reproducible-build import must record:
+
+- upstream repository URL, release tag or branch, commit, and whether GitHub has
+  redirected the repository identity;
+- required SDK, Daml target, SBT, Java, Node/OpenAPI, and cache inputs;
+- exact command sequence, at minimum reconciling Splice's `sbt damlBuild`,
+  `sbt damlDarsLockFileUpdate`, and `sbt updateDarResources` flow with local
+  DPM-only consumption in `canton-contracts`;
+- resulting DAR file paths, SHA-256 checksums, main package IDs, dependency
+  package IDs, and versions;
+- proof that those results match `daml/dars.lock` and any accepted release
+  manifest.
+
+## DPM Dependency Wiring Requirements
+
+No local `daml.yaml`, DPM package, or import file should change before the gate
+above is accepted.
+
+When accepted, the DPM wiring should be narrow:
+
+- add only the seven API DARs above as data dependencies for the settlement
+  facade package;
+- keep upstream types imported directly through Splice package modules rather
+  than mirrored under OpenZeppelin names;
+- keep OpenZeppelin-specific D1, D2, D3, and D4 extension points in a thin local
+  facade package;
+- reconcile manifest data dependencies with Splice `build.sbt` before editing
+  local package files, especially the upstream SBT wiring around
+  `splice-api-token-allocation-request-v2`;
+- run `dpm build --all` from `canton-contracts` and `dpm test` from
+  `canton-contracts/test` after any package/import change.
+
+## License And NOTICE Handling
+
+`canton-contracts` is MIT. The upstream Token Standard V2 API packages are
+Apache-2.0.
+
+Before vendoring source, redistributing DARs, or publishing a local package that
+contains upstream artifacts, add a packaging plan that:
+
+- preserves the upstream Apache-2.0 `LICENSE`;
+- preserves SPDX headers in any copied source;
+- includes upstream `NOTICE` content if a future accepted upstream source has
+  one, and records that no root `NOTICE` was observed at the current evidence
+  commit;
+- documents the mixed MIT/Apache-2.0 distribution posture in local release
+  notes or package metadata;
+- avoids implying that local MIT licensing relicenses upstream Apache-2.0
+  artifacts.
+
+## Release-Source Confirmation Requirements
+
+Before import, confirm with upstream evidence or maintainer approval:
+
+- whether `hyperledger-labs/splice`/`canton-network/splice`
+  `token-standard-v2-upcoming` is still the intended source of record;
+- whether the accepted import source is a source tag in the Splice repo, the
+  `digital-asset/decentralized-canton-sync` DevNet prerelease bundle, a future
+  non-prerelease release, or a DPM/package registry artifact;
+- how the DevNet release version
+  `0.6.9-snapshot.20260615.3096.0.v27548d88` maps back to the source commit
+  used for Token Standard V2 API package IDs;
+- whether consumers should rely on `daml/dars.lock`, `DarResources`, release
+  asset digests, a separate manifest, or a package registry for package
+  identity and artifact integrity.
+
+## Public API Review Requirements
+
+After the import evidence is accepted, public API review must still approve:
+
+- the OpenZeppelin settlement facade over upstream Token Standard V2 types;
+- SCU-safe upgrade posture: optional fields, metadata, or new choices for D1,
+  D2, D3, and D4 extensions, with no mutation of required public fields or
+  existing choice arguments;
+- D1 no-cache, fail-closed, node-side semantics without finalizing the
+  Daml-visible attestation shape in this import slice;
+- D2 lock-and-sweep to the preset admin-set custodian destination and D4
+  single-admin capability authority as the M1 defaults;
+- D3 single-domain v1 wording, with the tech-ops one-pager still pending;
+- no stability, conformance, M1 acceptance, audit, production, or release claim
+  before the later review accepts the facade.
+
+## Effect On The Existing Experiment
+
+The existing `experiments/cip112-settlement` scaffold remains a local,
+experimental witness only.
+
+This gate lets the experiment continue to use local stand-ins for:
+
+- Token Standard V2 records and interfaces;
+- toy holdings and receipts;
+- D1 reference hooks;
+- D2 in-flight lock-and-sweep state;
+- D4 single-admin capability witness behavior.
+
+The experiment must not be described as conformant or stable. It can only
+promote after the accepted import source, package IDs, DAR checksums,
+license/NOTICE handling, DPM wiring, and public API review land.
+
+## Remaining Blockers
+
+- No accepted individual-DAR publication source.
+- No accepted release-bundle extraction path for Token Standard V2 DARs.
+- No accepted reproducible-build transcript from the release source.
+- No local DAR SHA-256 list for the exact artifacts to consume.
+- No local DPM dependency edit or validation evidence.
+- No Apache-2.0 license/NOTICE packaging change in this MIT repo.
+- No public API review for the OpenZeppelin facade.
+- D1 Daml-visible attestation shape remains open.
+- D3 tech-ops one-pager remains pending.

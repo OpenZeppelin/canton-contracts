@@ -24,6 +24,13 @@ the upstream source evidence and package boundary, but it does not accept a
 Splice DAR import yet because this slice has not produced published DAR
 provenance, checksums, or license-notice packaging evidence.
 
+The follow-up import-gate evidence result is recorded in
+[`cip0112-splice-token-standard-v2-import-gate.md`](./cip0112-splice-token-standard-v2-import-gate.md).
+It confirms that source/package evidence exists at the pinned upstream commit,
+but actual import remains blocked until release-source confirmation, accepted
+DAR or reproducible-build artifacts, DAR checksums, license/NOTICE packaging,
+DPM wiring, and public API review land.
+
 Companion M1 acceptance criteria for CIP-0086, CIP-0103, and CIP-0104 are
 recorded in
 [`cip0086-cip0103-cip0104-m1-acceptance.md`](./cip0086-cip0103-cip0104-m1-acceptance.md).
@@ -204,6 +211,11 @@ must provide:
 - confirmation that the imported Token Standard V2 branch/tag is the intended
   upstream release source, not only a working branch;
 - public API review for the OpenZeppelin facade and SCU contract.
+
+The current evidence-boundary result is
+[`cip0112-splice-token-standard-v2-import-gate.md`](./cip0112-splice-token-standard-v2-import-gate.md):
+the upstream `daml/dars.lock` package IDs are useful identity evidence, but they
+do not replace an accepted release/import source or DAR checksum list.
 
 Until those gates land, the experiment remains local, non-public, and
 non-conformant.

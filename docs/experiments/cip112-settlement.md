@@ -22,6 +22,8 @@ Source evidence:
   `/Users/x/cantonator/canton-token-template/docs/CIP-0112-EXTENSION-PLAN.md`.
 - Promotion boundary ADR:
   [`../architecture/cip0112-public-api-promotion-boundary.md`](../architecture/cip0112-public-api-promotion-boundary.md).
+- Splice Token Standard V2 DAR/import evidence-boundary note:
+  [`../architecture/cip0112-splice-token-standard-v2-import-gate.md`](../architecture/cip0112-splice-token-standard-v2-import-gate.md).
 - CIP-0086 / CIP-0103 / CIP-0104 M1 acceptance boundary:
   [`../architecture/cip0086-cip0103-cip0104-m1-acceptance.md`](../architecture/cip0086-cip0103-cip0104-m1-acceptance.md).
 
@@ -31,6 +33,8 @@ primitive is not a stable public API. The promotion ADR chooses the source
 evidence pin and import posture, but it keeps Splice DAR vendoring/imports
 blocked until published DAR/checksum/package-ID, license/NOTICE, and DPM wiring
 evidence exists.
+The import-gate note records current upstream package IDs and release/build
+evidence, but it does not authorize import or public API stability.
 
 ## What CIP-0112 Settles In M1
 
