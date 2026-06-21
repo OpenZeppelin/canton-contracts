@@ -24,6 +24,12 @@ the upstream source evidence and package boundary, but it does not accept a
 Splice DAR import yet because this slice has not produced published DAR
 provenance, checksums, or license-notice packaging evidence.
 
+Companion M1 acceptance criteria for CIP-0086, CIP-0103, and CIP-0104 are
+recorded in
+[`cip0086-cip0103-cip0104-m1-acceptance.md`](./cip0086-cip0103-cip0104-m1-acceptance.md).
+Those criteria remain interoperability evidence for the CIP-112 settlement
+surface and do not widen this ADR's public API or import boundary.
+
 ## Evidence Pin
 
 | Item | Boundary |
@@ -91,6 +97,9 @@ the DAR/import evidence gate is accepted. It is not stable today.
 - Token Standard V2 `EventLog_HoldingsChange` as the promoted reporting route
   for wallet/app discoverability once the transfer-events DAR boundary is
   accepted.
+- CIP-0086 / CIP-0103 / CIP-0104 interoperability evidence that targets the
+  promoted settlement facade, not the local experiment or a standalone CIP-56
+  token foundation.
 - D2 in-flight seizure semantics from S2: marked in-flight allocations are
   lock-and-sweeped to the admin-preset custodian destination, not burned and
   not returned to sender.

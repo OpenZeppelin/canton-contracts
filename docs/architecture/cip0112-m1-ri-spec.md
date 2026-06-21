@@ -7,7 +7,11 @@ The promotion boundary for Token Standard V2 imports and the public API
 candidate surface is recorded in
 [`cip0112-public-api-promotion-boundary.md`](./cip0112-public-api-promotion-boundary.md);
 that ADR keeps this scaffold experimental until the later DAR/import evidence
-gates land.
+gates land. The M1 acceptance boundary for CIP-0086, CIP-0103, and CIP-0104 is
+recorded in
+[`cip0086-cip0103-cip0104-m1-acceptance.md`](./cip0086-cip0103-cip0104-m1-acceptance.md);
+those CIPs are settlement-interoperability criteria, not standalone CIP-56-token
+deliverables.
 
 > **Google Docs import:** paste this file into Docs with *Edit → Paste* after
 > *File → Open* of the `.md`, or use a Markdown add-on. Headings (H1/H2/H3) drive
@@ -67,6 +71,7 @@ bounded by the promotion ADR, but the ADR is not a stability claim.
 | B1 | Bounded by ADR | **Splice branch/commit of record.** Use `hyperledger-labs/splice` branch `token-standard-v2-upcoming` at `1e34121b2b369c5dde357c098e2aaeb65250e736` as the source evidence pin. The older `canton-network/splice @ token-standard-v2-daml-preview` (`b91de5d4…`) remains historical local evidence only. | Re-check if upstream cuts a release tag or changes the intended Token Standard V2 source branch. |
 | B2 | Deferred by ADR | **Token Standard V2 DAR / import & license boundary.** Do not vendor or import Splice DARs in this slice. Upstream API packages are Apache-2.0 and split across `splice-api-token-*` DARs; local stand-ins remain experimental until published DAR/checksum/package-ID, license/NOTICE, and DPM wiring evidence exists. | Later import slice. |
 | B3 | Bounded by ADR | **Public API candidate.** The ADR defines the promotable candidate surface, experimental-only scaffold surface, SCU contract, direct-vs-batch semantics, third-party custodian credit model, and post-deadline seizure-window policy. | Later stability ADR/review before any public API claim. |
+| B4 | Bounded by acceptance note | **CIP-0086 / CIP-0103 / CIP-0104 M1 criteria.** These CIPs are accepted for M1 only as interoperability evidence against the CIP-112 settlement surface. They do not add production middleware, wallet-provider, Scan/SV reward, custody, KYC, sanctions, hosted-service, or standalone CIP-56-token scope. | Use the acceptance note for downstream docs and review packets. |
 | Q1 | Open | **D1 attestation shape.** D1 is decided no-cache / fail-closed / node-side. Open: does the contract stay oblivious to the result (off-ledger gate), or verify a signed node attestation at exercise time? Shapes the audit story. | OZ architecture. |
 | Q2 | Open after DAR gate | **EventLog adoption implementation.** The ADR treats Token Standard V2 `EventLog_HoldingsChange` as the promoted reporting route, but implementation still waits on the transfer-events DAR boundary. | OZ architecture after DAR/import evidence. |
 | Q3 | Open | **Legacy package naming.** Public docs now use `canton-contracts`, but M0 package/DAR names still contain `oz-daml-contracts`. Renaming packages is a separate compatibility decision. | OZ architecture. |
@@ -324,9 +329,12 @@ the largest source of churn for downstream work, rather than leaving it open.
 1. Use the promotion ADR boundary for Splice source evidence and public API
    candidate scope; do not import Splice DARs until the ADR's published
    DAR/checksum/license/DPM gates land.
-2. Keep D1's node-side attestation shape open until Q1 is resolved; the current
+2. Use the CIP-0086 / CIP-0103 / CIP-0104 acceptance note when describing
+   middleware/indexer, wallet/dApp, or traffic-reward touch points; do not
+   describe those surfaces as standalone M1 deliverables.
+3. Keep D1's node-side attestation shape open until Q1 is resolved; the current
    hook remains only a fail-closed reference seam.
-3. After the import gates land, implement the settlement facade per the
+4. After the import gates land, implement the settlement facade per the
    promotion ADR and then build the deep settlement exemplar (Phase 3), without
    claiming stability until a later stability review accepts it.
 

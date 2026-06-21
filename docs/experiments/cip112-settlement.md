@@ -22,6 +22,8 @@ Source evidence:
   `/Users/x/cantonator/canton-token-template/docs/CIP-0112-EXTENSION-PLAN.md`.
 - Promotion boundary ADR:
   [`../architecture/cip0112-public-api-promotion-boundary.md`](../architecture/cip0112-public-api-promotion-boundary.md).
+- CIP-0086 / CIP-0103 / CIP-0104 M1 acceptance boundary:
+  [`../architecture/cip0086-cip0103-cip0104-m1-acceptance.md`](../architecture/cip0086-cip0103-cip0104-m1-acceptance.md).
 
 The CIP text is approved, but the local package added by this slice is still an
 experiment. `canton-contracts` has no stability ADR for this surface, so the
@@ -51,8 +53,8 @@ Tradeoffs:
 
 - Interface-aligned settlement preserves wallet/app/asset interoperability and
   follows the approved CIP-0112 account/allocation model. It also lets CIP-86,
-  CIP-103, and CIP-104 interoperate with the settlement surface rather than a
-  local token.
+  CIP-103, and CIP-104 interoperate with the settlement surface under the
+  acceptance boundary note rather than a local token.
 - A minimal token underneath would make local tests easier, but would recreate a
   CIP-56-like target that root `PLAN.md` explicitly superseded and would risk a
   non-standard settlement surface.

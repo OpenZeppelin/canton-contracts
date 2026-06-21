@@ -21,6 +21,11 @@ M1 target scope:
 - CIP-104 rewards support components scoped to the settlement surface.
 - Documentation, tests, security notes, and compatibility evidence.
 
+CIP-86 / CIP-103 / CIP-104 acceptance criteria are recorded as settlement
+interop criteria, not standalone CIP-56-token deliverables:
+
+- [`docs/architecture/cip0086-cip0103-cip0104-m1-acceptance.md`](docs/architecture/cip0086-cip0103-cip0104-m1-acceptance.md)
+
 CIP-56 is background and migration evidence only. The experimental CIP-112
 settlement scaffold lives under `experiments/cip112-settlement` and remains
 outside the committed public-library surface until the promotion boundary ADR's
