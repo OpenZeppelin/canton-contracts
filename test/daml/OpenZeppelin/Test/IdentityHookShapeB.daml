@@ -50,7 +50,7 @@ test_identityHookShapeB_smokeTransfer = script do
 
   holding <- mintHolding registryAdmin [trustedIssuer] alice
   claim <- createClaim trustedIssuer trustedIssuer bob KYC_VALIDATED t1 "identity-shape-b-kyc-001"
-  bobHolding <- submitMulti [alice, bob] [] do
+  bobHolding <- submit (actAs [alice, bob]) do
     exerciseCmd holding ToyHolding_Transfer with newOwner = bob, claimCid = claim
   Some transferred <- queryContractId bob bobHolding
   transferred.owner === bob
@@ -69,7 +69,7 @@ test_identityHookShapeB_staleClaimBlocksTransfer = script do
   holding <- mintHolding registryAdmin [trustedIssuer] alice
   staleClaim <- createClaim trustedIssuer trustedIssuer bob KYC_VALIDATED t1 "identity-shape-b-stale-001"
   setTime t2
-  submitMultiMustFail [alice, bob] [] do
+  submitMustFail (actAs [alice, bob]) do
     exerciseCmd holding ToyHolding_Transfer with newOwner = bob, claimCid = staleClaim
   pure ()
 
@@ -85,7 +85,7 @@ test_identityHookShapeB_wrongSubjectBlocksTransfer = script do
 
   holding <- mintHolding registryAdmin [trustedIssuer] alice
   wrongSubject <- createClaim trustedIssuer trustedIssuer alice KYC_VALIDATED t1 "identity-shape-b-wrong-subject-001"
-  submitMultiMustFail [alice, bob] [] do
+  submitMustFail (actAs [alice, bob]) do
     exerciseCmd holding ToyHolding_Transfer with newOwner = bob, claimCid = wrongSubject
   pure ()
 
@@ -102,7 +102,7 @@ test_identityHookShapeB_wrongKindBlocksTransfer = script do
 
   holding <- mintHolding registryAdmin [trustedIssuer] alice
   wrongKind <- createClaim trustedIssuer trustedIssuer bob OTHER_IDENTITY_CLAIM t1 "identity-shape-b-wrong-kind-001"
-  submitMultiMustFail [alice, bob] [] do
+  submitMustFail (actAs [alice, bob]) do
     exerciseCmd holding ToyHolding_Transfer with newOwner = bob, claimCid = wrongKind
   pure ()
 
@@ -119,7 +119,7 @@ test_identityHookShapeB_wrongIssuerBlocksTransfer = script do
 
   holding <- mintHolding registryAdmin [trustedIssuer, otherTrustedIssuer] alice
   spoofedIssuer <- createClaim otherTrustedIssuer trustedIssuer bob KYC_VALIDATED t1 "identity-shape-b-wrong-issuer-001"
-  submitMultiMustFail [alice, bob] [] do
+  submitMustFail (actAs [alice, bob]) do
     exerciseCmd holding ToyHolding_Transfer with newOwner = bob, claimCid = spoofedIssuer
   pure ()
 
@@ -136,6 +136,6 @@ test_identityHookShapeB_untrustedIssuerBlocksTransfer = script do
 
   holding <- mintHolding registryAdmin [trustedIssuer] alice
   untrustedClaim <- createClaim untrustedIssuer untrustedIssuer bob KYC_VALIDATED t1 "identity-shape-b-untrusted-001"
-  submitMultiMustFail [alice, bob] [] do
+  submitMustFail (actAs [alice, bob]) do
     exerciseCmd holding ToyHolding_Transfer with newOwner = bob, claimCid = untrustedClaim
   pure ()

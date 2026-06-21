@@ -145,7 +145,7 @@ setupScenario prefix requireD1 committed = do
       featureFlag = experimentalFeatureFlag
   Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
 
-  aliceRequest <- submitWithDisclosures app [factoryDisclosure] do
+  aliceRequest <- submit (actAs app <> discloseMany [factoryDisclosure]) do
     exerciseCmd factory SettlementFactory_CreateAllocationRequest with
       authorizer = aliceAccount
       settlement
@@ -173,7 +173,7 @@ setupScenario prefix requireD1 committed = do
       meta = emptyMetadata
       featureFlag = experimentalFeatureFlag
 
-  aliceInstruction <- submitWithDisclosures alice [factoryDisclosure] do
+  aliceInstruction <- submit (actAs alice <> discloseMany [factoryDisclosure]) do
     exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
       allocation = mkAllocation settlement admin aliceAccount [aliceSide] committed
       requestedAt = t0
@@ -186,7 +186,7 @@ setupScenario prefix requireD1 committed = do
     AllocationInstructionCompleted cid -> pure cid
     _ -> fail "expected alice allocation instruction to complete"
 
-  bobInstruction <- submitWithDisclosures bob [factoryDisclosure] do
+  bobInstruction <- submit (actAs bob <> discloseMany [factoryDisclosure]) do
     exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
       allocation = mkAllocation settlement admin bobAccount [bobSide] False
       requestedAt = t0
@@ -215,7 +215,7 @@ test_cip112Settlement_requestInstructionAllocationSettle : Script ()
 test_cip112Settlement_requestInstructionAllocationSettle = script do
   SettlementScenario{..} <- setupScenario "cip112-happy" True True
 
-  receiptCids <- submitWithDisclosures app [factoryDisclosure] do
+  receiptCids <- submit (actAs app <> discloseMany [factoryDisclosure]) do
     exerciseCmd factory SettlementFactory_SettleBatch with
       settlement
       transferLegs = [transferLeg]
@@ -237,7 +237,7 @@ test_cip112Settlement_requestInstructionAllocationSettle = script do
 test_cip112Settlement_missingD1ReferenceFails : Script ()
 test_cip112Settlement_missingD1ReferenceFails = script do
   SettlementScenario{..} <- setupScenario "cip112-missing-d1" True True
-  submitWithDisclosuresMustFail app [factoryDisclosure] do
+  submitMustFail (actAs app <> discloseMany [factoryDisclosure]) do
     exerciseCmd factory SettlementFactory_SettleBatch with
       settlement
       transferLegs = [transferLeg]
@@ -359,7 +359,7 @@ test_cip112Settlement_legMismatchFails : Script ()
 test_cip112Settlement_legMismatchFails = script do
   SettlementScenario{..} <- setupScenario "cip112-leg-mismatch" False False
   let mismatchedLeg = transferLeg with amount = 11.0
-  submitWithDisclosuresMustFail app [factoryDisclosure] do
+  submitMustFail (actAs app <> discloseMany [factoryDisclosure]) do
     exerciseCmd factory SettlementFactory_SettleBatch with
       settlement
       transferLegs = [mismatchedLeg]
@@ -373,7 +373,7 @@ test_cip112Settlement_expiredSettlementFails : Script ()
 test_cip112Settlement_expiredSettlementFails = script do
   SettlementScenario{..} <- setupScenario "cip112-expired" False False
   setTime t2
-  submitWithDisclosuresMustFail app [factoryDisclosure] do
+  submitMustFail (actAs app <> discloseMany [factoryDisclosure]) do
     exerciseCmd factory SettlementFactory_SettleBatch with
       settlement
       transferLegs = [transferLeg]
@@ -414,7 +414,7 @@ test_cip112Settlement_inputHoldingInstrumentMismatchFails = script do
       meta = emptyMetadata
       featureFlag = experimentalFeatureFlag
 
-  instruction <- submitWithDisclosures alice [factoryDisclosure] do
+  instruction <- submit (actAs alice <> discloseMany [factoryDisclosure]) do
     exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
       allocation = mkAllocation settlement admin aliceAccount [aliceSide] False
       requestedAt = t0
@@ -522,7 +522,7 @@ test_cip112Settlement_d2DelegatedBurnerSweepsToThirdPartyCustodian = script do
   case allocationCids of
     aliceAllocation :: _ -> do
       markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
-      result <- submitMulti [burner, custodianParty] [admin] do
+      result <- submit (actAs [burner, custodianParty] <> readAs [admin]) do
         exerciseCmd markedAliceAllocation Allocation_SweepD2InFlightSeizure with
           burner
           burnerCapCid = Some burnerCap
@@ -549,7 +549,7 @@ test_cip112Settlement_d2MarkedAllocationCannotSettle = script do
   case allocationCids of
     aliceAllocation :: bobAllocation :: [] -> do
       markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
-      submitWithDisclosuresMustFail app [factoryDisclosure] do
+      submitMustFail (actAs app <> discloseMany [factoryDisclosure]) do
         exerciseCmd factory SettlementFactory_SettleBatch with
           settlement
           transferLegs = [transferLeg]
@@ -581,7 +581,7 @@ test_cip112Settlement_d2SweepWrongActorFails = script do
   case allocationCids of
     aliceAllocation :: _ -> do
       markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
-      submitWithDisclosuresMustFail app [burnerCapDisclosure] do
+      submitMustFail (actAs app <> discloseMany [burnerCapDisclosure]) do
         exerciseCmd markedAliceAllocation Allocation_SweepD2InFlightSeizure with
           burner = app
           burnerCapCid = Some burnerCap

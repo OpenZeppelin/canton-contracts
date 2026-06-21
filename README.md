@@ -167,6 +167,11 @@ dpm build --all          # builds all packages, including the three libraries
 cd test && dpm test      # runs the shared test package, including experiments
 ```
 
+Latest local run (2026-06-21, SDK 3.4.11 / Java 21): `dpm build --all` builds all
+packages and `dpm test` passes **60/60** scripts (14 AccessControl, 20
+Cip112Settlement, 6 Ownable, 4 Pausable, 2 ComplianceShapeA, 6 ComplianceShapeB,
+1 IdentityHookShapeA, 6 IdentityHookShapeB, 1 IdentityHookUpgrade).
+
 Or build a single library standalone (proving its independence):
 
 ```sh
