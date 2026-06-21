@@ -1,0 +1,453 @@
+-- | Focused tests for the experimental CIP-0112 settlement scaffold.
+module OpenZeppelin.Test.Cip112Settlement where
+
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.Time (time)
+import Daml.Script
+
+import OpenZeppelin.Experimental.Settlement.Cip112
+
+t0 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+
+t1 : Time
+t1 = time (date 2026 Jan 1) 0 10 0
+
+t2 : Time
+t2 = time (date 2026 Jan 1) 0 20 0
+
+data SettlementScenario = SettlementScenario with
+    admin : Party
+    app : Party
+    alice : Party
+    bob : Party
+    factory : ContractId SettlementFactory
+    factoryDisclosure : Disclosure
+    settlement : SettlementInfo
+    transferLeg : TransferLeg
+    allocationCids : [ContractId Allocation]
+
+mkRef : Text -> Reference
+mkRef prefix = Reference with
+  id = prefix <> "-settlement"
+  cidText = None
+
+mkSettlement : Text -> Party -> SettlementInfo
+mkSettlement prefix app = SettlementInfo with
+  executors = [app]
+  settlementRef = mkRef prefix
+  settlementDeadline = Some t1
+  meta = emptyMetadata
+
+mkLeg : Text -> Account -> Account -> TransferLeg
+mkLeg prefix aliceAccount bobAccount = TransferLeg with
+  transferLegId = prefix <> "-leg-1"
+  sender = aliceAccount
+  receiver = bobAccount
+  amount = 10.0
+  instrumentId = "USD"
+  meta = emptyMetadata
+
+mkAllocation
+  : SettlementInfo
+  -> Party
+  -> Account
+  -> [TransferLegSide]
+  -> Bool
+  -> AllocationSpecification
+mkAllocation settlement admin authorizer sides committed = AllocationSpecification with
+  settlement
+  admin
+  authorizer
+  transferLegSides = sides
+  nextIterationFunding = None
+  committed
+  meta = emptyMetadata
+
+mkD1Hook : Text -> D1ComplianceHook
+mkD1Hook prefix = D1ComplianceHook with
+  hookRef = prefix <> "-node-side-check"
+  requiresPerSettlementReference = True
+
+setupScenario : Text -> Bool -> Bool -> Script SettlementScenario
+setupScenario prefix requireD1 committed = do
+  setTime t0
+  admin <- allocateParty (prefix <> "-admin")
+  app <- allocateParty (prefix <> "-app")
+  alice <- allocateParty (prefix <> "-alice")
+  bob <- allocateParty (prefix <> "-bob")
+
+  let aliceAccount = basicAccount alice
+      bobAccount = basicAccount bob
+      settlement = mkSettlement prefix app
+      transferLeg = mkLeg prefix aliceAccount bobAccount
+      aliceSide = senderSide transferLeg
+      bobSide = receiverSide transferLeg
+      d1Hook = if requireD1 then Some (mkD1Hook prefix) else None
+
+  factory <- submit admin do
+    createCmd SettlementFactory with
+      admin
+      featureFlag = experimentalFeatureFlag
+  Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
+
+  aliceRequest <- submitWithDisclosures app [factoryDisclosure] do
+    exerciseCmd factory SettlementFactory_CreateAllocationRequest with
+      authorizer = aliceAccount
+      settlement
+      allocations =
+        [ RequestedAllocation with
+            admin
+            transferLegSides = [aliceSide]
+            nextIterationFunding = None
+            committed
+            meta = emptyMetadata
+        ]
+      requestedAt = t0
+      settleAt = Some t1
+      actors = [app]
+  submit alice do
+    exerciseCmd aliceRequest AllocationRequest_Accept with actors = [alice]
+
+  aliceHolding <- submit [admin, alice] do
+    createCmd ToyHolding with
+      admin
+      account = aliceAccount
+      instrumentId = InstrumentId with admin; id = "USD"
+      amount = 10.0
+      lock = None
+      meta = emptyMetadata
+      featureFlag = experimentalFeatureFlag
+
+  aliceInstruction <- submitWithDisclosures alice [factoryDisclosure] do
+    exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
+      allocation = mkAllocation settlement admin aliceAccount [aliceSide] committed
+      requestedAt = t0
+      inputHoldingCids = [aliceHolding]
+      d1ComplianceHook = d1Hook
+      actors = [alice]
+  aliceResult <- submit alice do
+    exerciseCmd aliceInstruction AllocationInstruction_Accept with actors = [alice]
+  aliceAllocation <- case aliceResult of
+    AllocationInstructionCompleted cid -> pure cid
+    _ -> fail "expected alice allocation instruction to complete"
+
+  bobInstruction <- submitWithDisclosures bob [factoryDisclosure] do
+    exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
+      allocation = mkAllocation settlement admin bobAccount [bobSide] False
+      requestedAt = t0
+      inputHoldingCids = []
+      d1ComplianceHook = d1Hook
+      actors = [bob]
+  bobResult <- submit bob do
+    exerciseCmd bobInstruction AllocationInstruction_Accept with actors = [bob]
+  bobAllocation <- case bobResult of
+    AllocationInstructionCompleted cid -> pure cid
+    _ -> fail "expected bob allocation instruction to complete"
+
+  pure SettlementScenario with
+    admin
+    app
+    alice
+    bob
+    factory
+    factoryDisclosure
+    settlement
+    transferLeg
+    allocationCids = [aliceAllocation, bobAllocation]
+
+-- | Request -> instruction -> allocation lock -> two-sided batch settlement.
+test_cip112Settlement_requestInstructionAllocationSettle : Script ()
+test_cip112Settlement_requestInstructionAllocationSettle = script do
+  SettlementScenario{..} <- setupScenario "cip112-happy" True True
+
+  receiptCids <- submitWithDisclosures app [factoryDisclosure] do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [transferLeg]
+      allocationCids
+      actors = [app]
+      d1ComplianceRef = Some "fresh-node-side-check-cip112-happy"
+
+  length receiptCids === 2
+  case receiptCids of
+    receiptCid :: _ -> do
+      Some receipt <- queryContractId app receiptCid
+      receipt.settledTransferLegIds === [transferLeg.transferLegId]
+      receipt.d1ComplianceRef === Some "fresh-node-side-check-cip112-happy"
+    [] -> fail "expected at least one settlement receipt"
+
+-- | The optional D1 hook is fail-closed when configured and no per-settlement
+-- reference is supplied. This is an extension point, not the final D1
+-- attestation shape.
+test_cip112Settlement_missingD1ReferenceFails : Script ()
+test_cip112Settlement_missingD1ReferenceFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-missing-d1" True True
+  submitWithDisclosuresMustFail app [factoryDisclosure] do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [transferLeg]
+      allocationCids
+      actors = [app]
+      d1ComplianceRef = None
+  pure ()
+
+-- | Direct settlement of one side without peer allocation context fails the
+-- same both-sided authorization invariant enforced by the factory path.
+test_cip112Settlement_directSingleSideSettleFails : Script ()
+test_cip112Settlement_directSingleSideSettleFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-direct-missing-side" False False
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      submitMustFail [admin, app] do
+        exerciseCmd aliceAllocation Allocation_Settle with
+          actors = [admin, app]
+          settlement
+          transferLegs = [transferLeg]
+          extraTransferLegSides = []
+          peerAllocationCids = []
+          peerReceiptCids = []
+          nextIterationFunding = None
+          d1ComplianceRef = None
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | Direct settlement can use a fetched peer allocation as counterparty
+-- authorization proof; it does not co-settle or consume that peer allocation.
+test_cip112Settlement_directSettleWithPeerAllocationAuthorizationProof : Script ()
+test_cip112Settlement_directSettleWithPeerAllocationAuthorizationProof = script do
+  SettlementScenario{..} <- setupScenario "cip112-direct-peer-proof" False False
+  case allocationCids of
+    aliceAllocation :: bobAllocation :: [] -> do
+      receiptCid <- submit [admin, app] do
+        exerciseCmd aliceAllocation Allocation_Settle with
+          actors = [admin, app]
+          settlement
+          transferLegs = [transferLeg]
+          extraTransferLegSides = []
+          peerAllocationCids = [bobAllocation]
+          peerReceiptCids = []
+          nextIterationFunding = None
+          d1ComplianceRef = None
+      Some receipt <- queryContractId app receiptCid
+      receipt.settledTransferLegSides === [senderSide transferLeg]
+    _ -> fail "expected two allocations"
+
+-- | Iterated settlement remains additive: an allocation with
+-- `nextIterationFunding` can supply extra local sides for the current
+-- settlement without mutating the baseline choice shape.
+test_cip112Settlement_iteratedSettlementPositive : Script ()
+test_cip112Settlement_iteratedSettlementPositive = script do
+  setTime t0
+  admin <- allocateParty "cip112-iterated-admin"
+  app <- allocateParty "cip112-iterated-app"
+  alice <- allocateParty "cip112-iterated-alice"
+  bob <- allocateParty "cip112-iterated-bob"
+
+  let aliceAccount = basicAccount alice
+      bobAccount = basicAccount bob
+      settlement = mkSettlement "cip112-iterated" app
+      transferLeg = mkLeg "cip112-iterated" aliceAccount bobAccount
+      aliceFunding = AllocationSpecification with
+        settlement
+        admin
+        authorizer = aliceAccount
+        transferLegSides = []
+        nextIterationFunding = Some [("follow-on", 1.0)]
+        committed = False
+        meta = emptyMetadata
+      bobAllocationSpec = mkAllocation settlement admin bobAccount [receiverSide transferLeg] False
+
+  aliceInstruction <- submit [admin, alice] do
+    createCmd AllocationInstruction with
+      originalInstructionCid = None
+      allocation = aliceFunding
+      requestedAt = t0
+      inputHoldingCids = []
+      d1ComplianceHook = None
+      featureFlag = experimentalFeatureFlag
+  aliceResult <- submit alice do
+    exerciseCmd aliceInstruction AllocationInstruction_Accept with actors = [alice]
+  aliceAllocation <- case aliceResult of
+    AllocationInstructionCompleted cid -> pure cid
+    _ -> fail "expected alice allocation instruction to complete"
+
+  bobInstruction <- submit [admin, bob] do
+    createCmd AllocationInstruction with
+      originalInstructionCid = None
+      allocation = bobAllocationSpec
+      requestedAt = t0
+      inputHoldingCids = []
+      d1ComplianceHook = None
+      featureFlag = experimentalFeatureFlag
+  bobResult <- submit bob do
+    exerciseCmd bobInstruction AllocationInstruction_Accept with actors = [bob]
+  bobAllocation <- case bobResult of
+    AllocationInstructionCompleted cid -> pure cid
+    _ -> fail "expected bob allocation instruction to complete"
+
+  receiptCid <- submit [admin, app] do
+    exerciseCmd aliceAllocation Allocation_Settle with
+      actors = [admin, app]
+      settlement
+      transferLegs = [transferLeg]
+      extraTransferLegSides = [senderSide transferLeg]
+      peerAllocationCids = [bobAllocation]
+      peerReceiptCids = []
+      nextIterationFunding = Some [("follow-on", 1.0)]
+      d1ComplianceRef = None
+  Some receipt <- queryContractId app receiptCid
+  receipt.settledTransferLegSides === [senderSide transferLeg]
+
+-- | A leg whose economic fields do not match the allocation sides fails before
+-- settlement commits.
+test_cip112Settlement_legMismatchFails : Script ()
+test_cip112Settlement_legMismatchFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-leg-mismatch" False False
+  let mismatchedLeg = transferLeg with amount = 11.0
+  submitWithDisclosuresMustFail app [factoryDisclosure] do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [mismatchedLeg]
+      allocationCids
+      actors = [app]
+      d1ComplianceRef = None
+  pure ()
+
+-- | Settlement cannot execute after the settlement deadline.
+test_cip112Settlement_expiredSettlementFails : Script ()
+test_cip112Settlement_expiredSettlementFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-expired" False False
+  setTime t2
+  submitWithDisclosuresMustFail app [factoryDisclosure] do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [transferLeg]
+      allocationCids
+      actors = [app]
+      d1ComplianceRef = None
+  pure ()
+
+-- | Input holdings must match the allocation-side instrument before they can be
+-- locked for settlement.
+test_cip112Settlement_inputHoldingInstrumentMismatchFails : Script ()
+test_cip112Settlement_inputHoldingInstrumentMismatchFails = script do
+  setTime t0
+  admin <- allocateParty "cip112-input-mismatch-admin"
+  app <- allocateParty "cip112-input-mismatch-app"
+  alice <- allocateParty "cip112-input-mismatch-alice"
+  bob <- allocateParty "cip112-input-mismatch-bob"
+
+  let aliceAccount = basicAccount alice
+      bobAccount = basicAccount bob
+      settlement = mkSettlement "cip112-input-mismatch" app
+      transferLeg = mkLeg "cip112-input-mismatch" aliceAccount bobAccount
+      aliceSide = senderSide transferLeg
+
+  factory <- submit admin do
+    createCmd SettlementFactory with
+      admin
+      featureFlag = experimentalFeatureFlag
+  Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
+
+  wrongInstrumentHolding <- submit [admin, alice] do
+    createCmd ToyHolding with
+      admin
+      account = aliceAccount
+      instrumentId = InstrumentId with admin; id = "EUR"
+      amount = 10.0
+      lock = None
+      meta = emptyMetadata
+      featureFlag = experimentalFeatureFlag
+
+  instruction <- submitWithDisclosures alice [factoryDisclosure] do
+    exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
+      allocation = mkAllocation settlement admin aliceAccount [aliceSide] False
+      requestedAt = t0
+      inputHoldingCids = [wrongInstrumentHolding]
+      d1ComplianceHook = None
+      actors = [alice]
+
+  submitMustFail alice do
+    exerciseCmd instruction AllocationInstruction_Accept with actors = [alice]
+  pure ()
+
+-- | A committed allocation cannot be withdrawn by the authorizer before the
+-- settlement deadline.
+test_cip112Settlement_committedWithdrawBeforeDeadlineFails : Script ()
+test_cip112Settlement_committedWithdrawBeforeDeadlineFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-committed" False True
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      submitMustFail alice do
+        exerciseCmd aliceAllocation Allocation_Withdraw with actors = [alice]
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | Only settlement executors can cancel an allocation.
+test_cip112Settlement_cancelWrongActorFails : Script ()
+test_cip112Settlement_cancelWrongActorFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-cancel-wrong-actor" False False
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      submitMustFail alice do
+        exerciseCmd aliceAllocation Allocation_Cancel with actors = [alice]
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | Executor cancellation releases the locked authorizer holding.
+test_cip112Settlement_cancelUnlocksHolding : Script ()
+test_cip112Settlement_cancelUnlocksHolding = script do
+  SettlementScenario{..} <- setupScenario "cip112-cancel" False False
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      result <- submit app do
+        exerciseCmd aliceAllocation Allocation_Cancel with actors = [app]
+      case result of
+        AllocationCancelled returnedHoldingCids -> do
+          length returnedHoldingCids === 1
+          case returnedHoldingCids of
+            returnedCid :: _ -> do
+              Some returnedHolding <- queryContractId alice returnedCid
+              returnedHolding.lock === None
+            [] -> fail "expected an unlocked holding"
+        _ -> fail "expected AllocationCancelled"
+    [] -> fail "expected an alice allocation"
+
+-- | Only the authorizer account parties can withdraw an allocation.
+test_cip112Settlement_withdrawWrongActorFails : Script ()
+test_cip112Settlement_withdrawWrongActorFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-withdraw-wrong-actor" False False
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      submitMustFail app do
+        exerciseCmd aliceAllocation Allocation_Withdraw with actors = [app]
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | Marking an allocation with the D2 in-flight seizure extension blocks
+-- settlement until the reopened in-flight handling decision is resolved.
+test_cip112Settlement_d2InFlightSeizureBlocksSettlement : Script ()
+test_cip112Settlement_d2InFlightSeizureBlocksSettlement = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2" False False
+  let custodian = basicAccount admin
+      seizureHook = D2SeizureHook with
+        seizureCaseRef = "case-cip112-d2"
+        custodianDestination = custodian
+        inFlightHandlingStatus = "open per root PLAN.md D2/S1"
+  case allocationCids of
+    aliceAllocation :: bobAllocation :: [] -> do
+      markedAliceAllocation <- submit admin do
+        exerciseCmd aliceAllocation Allocation_MarkD2InFlightSeizure with
+          actors = [admin]
+          seizureHook
+      submitWithDisclosuresMustFail app [factoryDisclosure] do
+        exerciseCmd factory SettlementFactory_SettleBatch with
+          settlement
+          transferLegs = [transferLeg]
+          allocationCids = [markedAliceAllocation, bobAllocation]
+          actors = [app]
+          d1ComplianceRef = None
+      pure ()
+    _ -> fail "expected two allocations"

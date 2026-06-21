@@ -1,0 +1,222 @@
+-- | Experimental compliance-check shape B.
+--
+-- This package is a non-public spike for root PLAN.md -> "June Decision Gate"
+-- D1 follow-up clarification: whether the transfer hook should verify a
+-- node-signed attestation at exercise time. The minimum checked field set is
+-- subject, decision, valid-until, and signer.
+--
+-- Not public M1 surface. The runtime flag must be present on every toy
+-- contract so downstream code cannot accidentally treat the shape as stable.
+module OpenZeppelin.Experimental.Compliance.ShapeB where
+
+data ComplianceDecision
+  = Allow
+  | Deny
+  deriving (Eq, Show)
+
+experimentalFeatureFlag : Text
+experimentalFeatureFlag = "experimental.compliance-shape-b.enabled"
+
+-- | A node-signed compliance attestation.
+--
+-- Signatories: `node`, the party whose ledger signature makes the attestation
+-- unforgeable in this toy model.
+-- Observers: `subjectParty`, the party allowed to present and consume the
+-- attestation.
+-- Controllers: `subjectParty` controls `NodeAttestation_Consume`.
+-- Choices: `NodeAttestation_Consume`.
+-- Disclosed parties: node and subject party are stakeholders; the toy transfer
+-- can fetch the attestation only when the subject party supplies it.
+-- Privacy expectations: the attestation is visible only to the node,
+-- subject party, and explicitly-disclosed verifiers.
+-- Authorization assumptions: the hook verifies `node == signer`, checks the
+-- expected signer, expected subject, allow decision, and expiry at exercise
+-- time. It does not implement production key rotation or off-ledger transcript
+-- validation.
+-- Archival behavior: consuming the attestation archives it to prevent exact
+-- attestation replay in the toy flow.
+-- Failure modes: wrong signer, wrong subject, deny decision, and expired
+-- attestations fail on-ledger; compromised node credentials or a too-broad
+-- subject string remain outside this toy package. `nonce` is not checked for
+-- uniqueness on-ledger; replay protection in this toy flow rests only on
+-- archiving the consumed attestation contract.
+-- Upgrade and migration assumptions: experimental-only, not public API, and
+-- removable once the D1 clarification selects the M1 hook shape.
+template NodeAttestation
+  with
+    node : Party
+    subjectParty : Party
+    subject : Text
+    decision : ComplianceDecision
+    validUntil : Time
+    signer : Party
+    nonce : Text
+  where
+    signatory node
+    observer subjectParty
+
+    choice NodeAttestation_Consume : ()
+      controller subjectParty
+      do pure ()
+
+-- | Toy issuer registry used only to compose the candidate hook with minting.
+--
+-- Signatories: `issuer`.
+-- Observers: none.
+-- Controllers: `issuer` controls `ToyRegistry_Mint`.
+-- Choices: `ToyRegistry_Mint`.
+-- Disclosed parties: the issuer discloses the registry only to parties or test
+-- flows that need to see it.
+-- Privacy expectations: registry configuration is private to the issuer unless
+-- explicitly disclosed.
+-- Authorization assumptions: this is a stub issuer authority, not a D4
+-- multi-sig decision. `issuerNode` is the expected signer for transfer
+-- attestations, but the package does not choose between D4 Option A or B for
+-- controlling the issuer.
+-- Archival behavior: nonconsuming mint; the registry persists.
+-- Failure modes: mint rejects if the experimental feature flag is absent or the
+-- amount is non-positive.
+-- Upgrade and migration assumptions: toy-only and excluded from the public M1
+-- library surface.
+template ToyRegistry
+  with
+    issuer : Party
+    issuerNode : Party
+    featureFlag : Text
+    seizureDestination : Party
+  where
+    signatory issuer
+
+    nonconsuming choice ToyRegistry_Mint : ContractId ToyHolding
+      with
+        owner : Party
+        amount : Int
+      controller issuer
+      do
+        requireExperimentalFlag featureFlag
+        assertMsg eNonPositiveAmount (amount > 0)
+        create ToyHolding with
+          issuer
+          issuerNode
+          owner
+          amount
+          featureFlag
+          seizureDestination
+
+-- | Toy transferable holding used to exercise transfer, burn, and seizure.
+--
+-- Signatories: `issuer`, so the issuer authority can create successor holdings
+-- during owner-controlled transfer and burn/seizure flows.
+-- Observers: `owner`.
+-- Controllers: `owner` controls `ToyHolding_Transfer` and `ToyHolding_Burn`;
+-- `issuer` controls `ToyHolding_Seize`.
+-- Choices: `ToyHolding_Transfer`, `ToyHolding_Burn`, `ToyHolding_Seize`.
+-- Disclosed parties: current owner observes the holding; successor owners or
+-- seizure destination observe only the successor contract; the node attestation
+-- is separately disclosed by its subject party.
+-- Privacy expectations: holdings are private to issuer and current owner,
+-- while the attestation remains private to its own stakeholders.
+-- Authorization assumptions: the transfer hook verifies the node-signed
+-- attestation's minimum fields at exercise time. Mint, burn, and seizure are
+-- toy authority paths for composition, not accepted D2 or D4 implementations.
+-- Archival behavior: all choices are consuming; transfer and seizure create a
+-- successor holding, burn creates nothing.
+-- Failure modes: deny, wrong subject, wrong signer, or expired attestations
+-- block transfer; compromised node credentials and issuer-node availability are
+-- operational concerns outside this package.
+-- Upgrade and migration assumptions: toy-only and removable after the
+-- compliance-check shape decision.
+template ToyHolding
+  with
+    issuer : Party
+    issuerNode : Party
+    owner : Party
+    amount : Int
+    featureFlag : Text
+    seizureDestination : Party
+  where
+    signatory issuer
+    observer owner
+
+    choice ToyHolding_Transfer : ContractId ToyHolding
+      with
+        newOwner : Party
+        attestationCid : ContractId NodeAttestation
+      controller owner
+      do
+        requireExperimentalFlag featureFlag
+        assertMsg eSelfTransfer (newOwner /= owner)
+        attestation <- fetch attestationCid
+        now <- getTime
+        requireNodeAttestation
+          issuerNode
+          owner
+          (transferSubject issuer owner newOwner amount)
+          now
+          attestation
+        exercise attestationCid NodeAttestation_Consume
+        create this with owner = newOwner
+
+    choice ToyHolding_Burn : ()
+      with
+        reason : Text
+      controller owner
+      do
+        requireExperimentalFlag featureFlag
+        pure ()
+
+    choice ToyHolding_Seize : ContractId ToyHolding
+      with
+        reason : Text
+      controller issuer
+      do
+        requireExperimentalFlag featureFlag
+        assertMsg eSeizureNoop (seizureDestination /= owner)
+        create this with owner = seizureDestination
+
+requireNodeAttestation : Party -> Party -> Text -> Time -> NodeAttestation -> Update ()
+requireNodeAttestation expectedSigner expectedSubjectParty expectedSubject now attestation = do
+  assertMsg eSignerMismatch (attestation.signer == expectedSigner)
+  assertMsg eNodeSignerMismatch (attestation.node == attestation.signer)
+  assertMsg eSubjectPartyMismatch (attestation.subjectParty == expectedSubjectParty)
+  assertMsg eSubjectMismatch (attestation.subject == expectedSubject)
+  assertMsg eComplianceDenied (attestation.decision == Allow)
+  assertMsg eAttestationExpired (now <= attestation.validUntil)
+
+transferSubject : Party -> Party -> Party -> Int -> Text
+transferSubject issuer from to amount =
+  "toy-transfer|" <> show issuer <> "|" <> show from <> "|" <> show to <> "|" <> show amount
+
+requireExperimentalFlag : Text -> Update ()
+requireExperimentalFlag flag =
+  assertMsg eFeatureDisabled (flag == experimentalFeatureFlag)
+
+eFeatureDisabled : Text
+eFeatureDisabled = "ComplianceShapeB: experimental feature flag disabled"
+
+eNonPositiveAmount : Text
+eNonPositiveAmount = "ComplianceShapeB: amount must be positive"
+
+eSelfTransfer : Text
+eSelfTransfer = "ComplianceShapeB: self-transfer is not part of the toy flow"
+
+eSignerMismatch : Text
+eSignerMismatch = "ComplianceShapeB: attestation signer mismatch"
+
+eNodeSignerMismatch : Text
+eNodeSignerMismatch = "ComplianceShapeB: attestation node and signer differ"
+
+eSubjectPartyMismatch : Text
+eSubjectPartyMismatch = "ComplianceShapeB: attestation subject party mismatch"
+
+eSubjectMismatch : Text
+eSubjectMismatch = "ComplianceShapeB: attestation subject mismatch"
+
+eComplianceDenied : Text
+eComplianceDenied = "ComplianceShapeB: attestation denied"
+
+eAttestationExpired : Text
+eAttestationExpired = "ComplianceShapeB: attestation expired"
+
+eSeizureNoop : Text
+eSeizureNoop = "ComplianceShapeB: seizure destination already owns holding"

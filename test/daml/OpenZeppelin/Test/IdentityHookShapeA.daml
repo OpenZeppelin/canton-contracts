@@ -1,0 +1,31 @@
+-- | Smoke test for experimental identity hook shape A.
+module OpenZeppelin.Test.IdentityHookShapeA where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import OpenZeppelin.Experimental.Identity.ShapeA
+
+-- | Candidate A composes an opaque identity attestation argument with the toy
+-- single-domain mint and transfer path.
+test_identityHookShapeA_smokeTransfer : Script ()
+test_identityHookShapeA_smokeTransfer = script do
+  issuer <- allocateParty "identity-shape-a-issuer"
+  alice <- allocateParty "identity-shape-a-alice"
+  bob <- allocateParty "identity-shape-a-bob"
+
+  registry <- submit issuer do
+    createCmd ToyRegistry with
+      issuer
+      featureFlag = experimentalFeatureFlag
+  holding <- submit issuer do
+    exerciseCmd registry ToyRegistry_Mint with owner = alice, amount = 100
+  bobHolding <- submit alice do
+    exerciseCmd holding ToyHolding_Transfer with
+      newOwner = bob
+      identityAttestation = OpaqueIdentityAttestation with
+        envelope = "opaque-single-domain-identity-attestation"
+  Some transferred <- queryContractId bob bobHolding
+  transferred.owner === bob
+  transferred.amount === 100
+  pure ()

@@ -1,0 +1,66 @@
+-- | Smoke tests for experimental compliance-check shape A.
+module OpenZeppelin.Test.ComplianceShapeA where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import OpenZeppelin.Experimental.Compliance.ShapeA
+
+-- | Candidate A composes the off-ledger allow token with toy mint, transfer,
+-- seizure to a deployer-configured destination, and burn.
+test_shapeA_smokeTransferMintSeizeBurn : Script ()
+test_shapeA_smokeTransferMintSeizeBurn = script do
+  issuer <- allocateParty "shape-a-issuer"
+  provider <- allocateParty "shape-a-provider"
+  alice <- allocateParty "shape-a-alice"
+  bob <- allocateParty "shape-a-bob"
+  custodian <- allocateParty "shape-a-custodian"
+
+  registry <- submit issuer do
+    createCmd ToyRegistry with
+      issuer
+      featureFlag = experimentalFeatureFlag
+      seizureDestination = custodian
+  holding <- submit issuer do
+    exerciseCmd registry ToyRegistry_Mint with owner = alice, amount = 100
+  allow <- submit provider do
+    createCmd OffLedgerComplianceResult with
+      provider
+      presenter = alice
+      decision = Allow
+      opaqueResultId = "shape-a-allow-001"
+  bobHolding <- submit alice do
+    exerciseCmd holding ToyHolding_Transfer with newOwner = bob, resultCid = allow
+  seized <- submit issuer do
+    exerciseCmd bobHolding ToyHolding_Seize with reason = "toy seizure composition"
+  Some seizedHolding <- queryContractId custodian seized
+  seizedHolding.owner === custodian
+  submit custodian do
+    exerciseCmd seized ToyHolding_Burn with reason = "toy burn composition"
+  pure ()
+
+-- | A deny result blocks the same toy transfer.
+test_shapeA_denyBlocksTransfer : Script ()
+test_shapeA_denyBlocksTransfer = script do
+  issuer <- allocateParty "shape-a-deny-issuer"
+  provider <- allocateParty "shape-a-deny-provider"
+  alice <- allocateParty "shape-a-deny-alice"
+  bob <- allocateParty "shape-a-deny-bob"
+  custodian <- allocateParty "shape-a-deny-custodian"
+
+  registry <- submit issuer do
+    createCmd ToyRegistry with
+      issuer
+      featureFlag = experimentalFeatureFlag
+      seizureDestination = custodian
+  holding <- submit issuer do
+    exerciseCmd registry ToyRegistry_Mint with owner = alice, amount = 100
+  deny <- submit provider do
+    createCmd OffLedgerComplianceResult with
+      provider
+      presenter = alice
+      decision = Deny
+      opaqueResultId = "shape-a-deny-001"
+  submitMustFail alice do
+    exerciseCmd holding ToyHolding_Transfer with newOwner = bob, resultCid = deny
+  pure ()

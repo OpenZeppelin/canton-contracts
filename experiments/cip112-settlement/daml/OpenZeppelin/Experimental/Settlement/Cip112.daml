@@ -1,0 +1,904 @@
+-- | Experimental CIP-0112 / Token Standard V2 settlement scaffold.
+--
+-- Source-of-record basis:
+-- - Canton Foundation CIP-0112, "Canton Network Token Standard V2 -
+--   Improvements for Privacy, Performance and Traditional Accounting".
+-- - canton-network/splice branch token-standard-v2-daml-preview at
+--   b91de5d4b910ded598151981654dce2acc6f84ba.
+--
+-- This package is non-public and proposed-only. It intentionally mirrors the
+-- names of the CIP-0112 V2 settlement concepts, but it does not vendor or
+-- replace the Splice API packages. It is a small local scaffold for the M1
+-- scoping decision in root PLAN.md.
+module OpenZeppelin.Experimental.Settlement.Cip112 where
+
+data Metadata = Metadata with
+    entries : [(Text, Text)]
+  deriving (Eq, Ord, Show)
+
+emptyMetadata : Metadata
+emptyMetadata = Metadata with entries = []
+
+data InstrumentId = InstrumentId with
+    admin : Party
+    id : Text
+  deriving (Eq, Ord, Show)
+
+data Account = Account with
+    owner : Optional Party
+    provider : Optional Party
+    id : Text
+  deriving (Eq, Ord, Show)
+
+basicAccount : Party -> Account
+basicAccount owner = Account with
+  owner = Some owner
+  provider = None
+  id = ""
+
+data Lock = Lock with
+    holders : [Party]
+    expiresAt : Optional Time
+    context : Optional Text
+  deriving (Eq, Show)
+
+data Reference = Reference with
+    id : Text
+    -- Local stand-in for CIP-0112's optional AnyContractId reference. This
+    -- package avoids importing the Splice preview DARs, so contract references
+    -- are represented textually in the experiment only.
+    cidText : Optional Text
+  deriving (Eq, Show)
+
+data SettlementInfo = SettlementInfo with
+    executors : [Party]
+    settlementRef : Reference
+    settlementDeadline : Optional Time
+    meta : Metadata
+  deriving (Eq, Show)
+
+data TransferSide
+  = SenderSide
+  | ReceiverSide
+  deriving (Eq, Ord, Show)
+
+data TransferLeg = TransferLeg with
+    transferLegId : Text
+    sender : Account
+    receiver : Account
+    amount : Decimal
+    instrumentId : Text
+    meta : Metadata
+  deriving (Eq, Ord, Show)
+
+data TransferLegSide = TransferLegSide with
+    transferLegId : Text
+    side : TransferSide
+    otherside : Account
+    amount : Decimal
+    instrumentId : Text
+    meta : Metadata
+  deriving (Eq, Ord, Show)
+
+data RequestedAllocation = RequestedAllocation with
+    admin : Party
+    transferLegSides : [TransferLegSide]
+    nextIterationFunding : Optional [(Text, Decimal)]
+    committed : Bool
+    meta : Metadata
+  deriving (Eq, Show)
+
+data AllocationSpecification = AllocationSpecification with
+    settlement : SettlementInfo
+    admin : Party
+    authorizer : Account
+    transferLegSides : [TransferLegSide]
+    nextIterationFunding : Optional [(Text, Decimal)]
+    committed : Bool
+    meta : Metadata
+  deriving (Eq, Show)
+
+data D1ComplianceHook = D1ComplianceHook with
+    hookRef : Text
+    requiresPerSettlementReference : Bool
+  deriving (Eq, Show)
+
+data D2SeizureHook = D2SeizureHook with
+    seizureCaseRef : Text
+    custodianDestination : Account
+    inFlightHandlingStatus : Text
+  deriving (Eq, Show)
+
+data AllocationRequestResult
+  = AllocationRequestAccepted
+  | AllocationRequestRejected
+  | AllocationRequestWithdrawn
+  deriving (Eq, Show)
+
+data AllocationInstructionResult
+  = AllocationInstructionPending
+  | AllocationInstructionCompleted with allocationCid : ContractId Allocation
+  | AllocationInstructionFailed
+  deriving (Eq, Show)
+
+data AllocationResult
+  = AllocationSettled with receiptCid : ContractId SettlementReceipt
+  | AllocationCancelled with returnedHoldingCids : [ContractId ToyHolding]
+  | AllocationWithdrawn with returnedHoldingCids : [ContractId ToyHolding]
+  deriving (Eq, Show)
+
+experimentalFeatureFlag : Text
+experimentalFeatureFlag = "experimental.cip112-settlement.enabled"
+
+-- | Toy holding used only to make allocation locking testable without creating
+-- a public token package.
+--
+-- Signatories: `admin` plus the account parties returned by `accountParties`.
+-- Observers: none beyond signatories.
+-- Locked holdings additionally observe `lock.holders`, which gives settlement
+-- executors visibility to the in-flight locked funds they are authorized to
+-- settle or cancel.
+-- Controllers: none.
+-- Choices: none.
+-- Disclosed parties: the instrument admin and account owner/provider are
+-- stakeholders; tests disclose CIDs only where a settlement step needs them.
+-- Privacy expectations: a holding is visible to the asset admin and affected
+-- account parties, not to unrelated settlement counterparties.
+-- Authorization assumptions: this is a toy asset witness. Real CIP-0112 assets
+-- implement the Token Standard V2 holding interface and choose account-provider
+-- authorization rules themselves.
+-- Archival behavior: holdings are archived by allocation-instruction accept,
+-- allocation settle, allocation cancel, or allocation withdraw.
+-- Failure modes: creation rejects non-positive amounts or a missing feature
+-- flag. No production freeze, seize, KYC, sanctions, custody, or relayer logic
+-- is implemented.
+-- Upgrade and migration assumptions: non-public experiment. If promoted, this
+-- witness should be replaced by the accepted Token Standard V2 package import.
+template ToyHolding
+  with
+    admin : Party
+    account : Account
+    instrumentId : InstrumentId
+    amount : Decimal
+    lock : Optional Lock
+    meta : Metadata
+    featureFlag : Text
+  where
+    signatory admin, accountParties admin account
+    observer lockObservers lock
+    ensure amount > 0.0 && featureFlag == experimentalFeatureFlag
+
+-- | Experimental settlement factory covering request, instruction, allocation,
+-- and batch settlement entrypoints.
+--
+-- Signatories: `admin`.
+-- Observers: none.
+-- Controllers: settlement executors create allocation requests and settle
+-- batches; authorizer account parties create allocation instructions.
+-- Choices: `SettlementFactory_CreateAllocationRequest`,
+-- `SettlementFactory_CreateAllocationInstruction`,
+-- `SettlementFactory_SettleBatch`.
+-- Disclosed parties: the factory is private to `admin` and must be explicitly
+-- disclosed to executors or account parties in tests and consumers.
+-- Privacy expectations: the factory does not make a settlement public. Requests
+-- and allocations carry only the parties needed for that lifecycle step.
+-- Authorization assumptions: D4 is open. `admin`, executors, and account
+-- parties are plain Daml parties here; this does not choose on-ledger multi-sig
+-- or topology multi-hosting.
+-- Archival behavior: nonconsuming choices; the factory persists.
+-- Failure modes: wrong actors, empty transfer-leg lists, missing authorization
+-- sides, settlement mismatch, expired allocations, missing D1 references, and
+-- marked D2 in-flight seizure state fail before the transaction commits.
+-- Upgrade and migration assumptions: non-public experiment. Optional D1 and D2
+-- hook fields follow the SCU pattern from the identity-hook upgrade spike:
+-- append optional fields and add choices rather than mutating baseline choice
+-- arguments once a public surface exists.
+template SettlementFactory
+  with
+    admin : Party
+    featureFlag : Text
+  where
+    signatory admin
+    ensure featureFlag == experimentalFeatureFlag
+
+    nonconsuming choice SettlementFactory_CreateAllocationRequest : ContractId AllocationRequest
+      with
+        authorizer : Account
+        settlement : SettlementInfo
+        allocations : [RequestedAllocation]
+        requestedAt : Time
+        settleAt : Optional Time
+        actors : [Party]
+      controller actors
+      do
+        requireExperimentalFlag featureFlag
+        assertMsg eExecutorsMismatch (actors == settlement.executors)
+        assertMsg eEmptyRequestedAllocations (not (null allocations))
+        assertMsg eRequestedAllocationAdminMismatch (allRequestedAdminsMatch admin allocations)
+        create AllocationRequest with
+          originalRequestCid = None
+          authorizer
+          settlement
+          allocations
+          requestedAt
+          settleAt
+          featureFlag
+
+    nonconsuming choice SettlementFactory_CreateAllocationInstruction : ContractId AllocationInstruction
+      with
+        allocation : AllocationSpecification
+        requestedAt : Time
+        inputHoldingCids : [ContractId ToyHolding]
+        d1ComplianceHook : Optional D1ComplianceHook
+        actors : [Party]
+      controller actors
+      do
+        requireExperimentalFlag featureFlag
+        assertMsg eAdminMismatch (allocation.admin == admin)
+        assertMsg eAuthorizerActorsMismatch (actors == accountParties admin allocation.authorizer)
+        requireValidAllocationSpecification allocation
+        create AllocationInstruction with
+          originalInstructionCid = None
+          allocation
+          requestedAt
+          inputHoldingCids
+          d1ComplianceHook
+          featureFlag
+
+    nonconsuming choice SettlementFactory_SettleBatch : [ContractId SettlementReceipt]
+      with
+        settlement : SettlementInfo
+        transferLegs : [TransferLeg]
+        allocationCids : [ContractId Allocation]
+        actors : [Party]
+        d1ComplianceRef : Optional Text
+      controller actors
+      do
+        requireExperimentalFlag featureFlag
+        assertMsg eExecutorsMismatch (actors == settlement.executors)
+        assertMsg eNoTransferLegs (not (null transferLegs))
+        assertMsg eBadTransferLegAmount (allTransferLegAmountsPositive transferLegs)
+        allocationValues <- fetchAllocations allocationCids
+        let authorizedSides = collectAllocationSides allocationValues
+        assertMsg eSettlementMissingAuthorization (allTransferLegsAuthorized transferLegs authorizedSides)
+        settleAllocations (admin :: actors) settlement transferLegs d1ComplianceRef [] allocationCids
+
+-- | Request emitted by a settlement app/executor asking an account to create
+-- allocations.
+--
+-- Signatories: `settlement.executors`.
+-- Observers: authorizer account parties.
+-- Controllers: authorizer account parties accept or reject; executors withdraw.
+-- Choices: `AllocationRequest_Accept`, `AllocationRequest_Reject`,
+-- `AllocationRequest_Withdraw`.
+-- Disclosed parties: executors and authorizer account parties only.
+-- Privacy expectations: apps may emit one or more requests per settlement to
+-- limit which authorizers see which transfer-leg sides, matching CIP-0112's
+-- confidentiality guidance.
+-- Authorization assumptions: accepting the request signals readiness; actual
+-- allocation creation is separate because CIP-0112 says wallets may call accept
+-- in the same transaction but apps must clean up independently.
+-- Archival behavior: all choices are consuming and archive the request.
+-- Failure modes: wrong actor set fails; accepting does not by itself guarantee
+-- allocation creation.
+-- Upgrade and migration assumptions: `originalRequestCid` is reserved for
+-- future request updates, matching the CIP-0112 correlation pattern.
+template AllocationRequest
+  with
+    originalRequestCid : Optional (ContractId AllocationRequest)
+    authorizer : Account
+    settlement : SettlementInfo
+    allocations : [RequestedAllocation]
+    requestedAt : Time
+    settleAt : Optional Time
+    featureFlag : Text
+  where
+    signatory settlement.executors
+    observer accountObservers authorizer
+    ensure featureFlag == experimentalFeatureFlag && not (null allocations)
+
+    choice AllocationRequest_Accept : AllocationRequestResult
+      with actors : [Party]
+      controller actors
+      do
+        assertMsg eAuthorizerActorsMismatch (actors == accountObservers authorizer)
+        pure AllocationRequestAccepted
+
+    choice AllocationRequest_Reject : AllocationRequestResult
+      with actors : [Party]
+      controller actors
+      do
+        assertMsg eAuthorizerActorsMismatch (actors == accountObservers authorizer)
+        pure AllocationRequestRejected
+
+    choice AllocationRequest_Withdraw : AllocationRequestResult
+      with actors : [Party]
+      controller actors
+      do
+        assertMsg eExecutorsMismatch (actors == settlement.executors)
+        pure AllocationRequestWithdrawn
+
+-- | Wallet/registry instruction to create an allocation by locking input
+-- holdings.
+--
+-- Signatories: allocation `admin` plus authorizer account parties.
+-- Observers: settlement executors.
+-- Controllers: authorizer account parties accept or withdraw.
+-- Choices: `AllocationInstruction_Accept`, `AllocationInstruction_Withdraw`.
+-- Disclosed parties: admin, authorizer account parties, and executors.
+-- Privacy expectations: the instruction exposes only one authorizer's funding
+-- and transfer-leg sides. Other settlement parties do not see it unless they
+-- are executors or explicitly disclosed.
+-- Authorization assumptions: the toy accept path requires the authorizer
+-- account parties exactly. Provider-managed account authority is represented by
+-- `Account.provider`, but production provider policy is out of scope.
+-- Archival behavior: accept archives the instruction and input holdings, then
+-- creates locked holdings and an `Allocation`. Withdraw archives only the
+-- instruction.
+-- Failure modes: wrong actors, non-positive amounts, wrong input owner/admin,
+-- and wrong input instrument fail.
+-- Upgrade and migration assumptions: `originalInstructionCid` and optional
+-- `d1ComplianceHook` reserve the CIP-0112 update/correlation and D1 extension
+-- paths without committing to final attestation shape.
+template AllocationInstruction
+  with
+    originalInstructionCid : Optional (ContractId AllocationInstruction)
+    allocation : AllocationSpecification
+    requestedAt : Time
+    inputHoldingCids : [ContractId ToyHolding]
+    d1ComplianceHook : Optional D1ComplianceHook
+    featureFlag : Text
+  where
+    signatory allocation.admin, accountParties allocation.admin allocation.authorizer
+    observer allocation.settlement.executors
+    ensure featureFlag == experimentalFeatureFlag
+
+    choice AllocationInstruction_Accept : AllocationInstructionResult
+      with actors : [Party]
+      controller actors
+      do
+        assertMsg eAuthorizerActorsMismatch (actors == accountParties allocation.admin allocation.authorizer)
+        requireValidAllocationSpecification allocation
+        lockedHoldingCids <- lockInputHoldings allocation inputHoldingCids
+        allocationCid <- create Allocation with
+          originalAllocationCid = None
+          allocation
+          lockedHoldingCids
+          createdAt = requestedAt
+          numIterations = 0
+          d1ComplianceHook
+          d2SeizureHook = None
+          featureFlag
+        pure AllocationInstructionCompleted with allocationCid
+
+    choice AllocationInstruction_Withdraw : AllocationInstructionResult
+      with actors : [Party]
+      controller actors
+      do
+        assertMsg eAuthorizerActorsMismatch (actors == accountParties allocation.admin allocation.authorizer)
+        pure AllocationInstructionFailed
+
+-- | Ready-to-settle allocation backed by locked toy holdings.
+--
+-- Signatories: allocation `admin` plus authorizer account parties.
+-- Observers: settlement executors.
+-- Controllers: `admin :: settlement.executors` settle; settlement executors
+-- cancel; authorizer account parties withdraw; admin marks an unresolved D2
+-- in-flight seizure hook.
+-- Choices: `Allocation_Settle`, `Allocation_Cancel`, `Allocation_Withdraw`,
+-- `Allocation_MarkD2InFlightSeizure`.
+-- Disclosed parties: admin, authorizer account parties, and executors.
+-- Privacy expectations: allocation visibility is per authorizer and executor.
+-- Batch settlement receipts expose only leg ids and the parties already
+-- involved in the allocation.
+-- Authorization assumptions: settlement uses the CIP-0112 default posture:
+-- executor authority supplied by the settlement app plus instrument admin
+-- authority from the settlement factory. D4 multi-sig form remains open.
+-- Archival behavior: settle, cancel, and withdraw are consuming; D2 marking is
+-- consuming and creates a successor allocation. `Allocation_Settle` archives
+-- only this allocation's locked holdings; peer allocation and receipt proof
+-- CIDs are fetched as authorization evidence, not co-settled by this choice.
+-- Atomic multi-allocation settlement is a property of
+-- `SettlementFactory_SettleBatch`.
+-- Failure modes: wrong actors, settlement mismatch, expired settlement, missing
+-- D1 reference when the optional hook requires one, unauthorized leg sides, and
+-- unresolved D2 in-flight seizure state fail before commit.
+-- Upgrade and migration assumptions: optional D1/D2 hook fields are additive.
+-- `peerAllocationCids` and `peerReceiptCids` are experimental proof inputs
+-- added before public stability. They prove matching authorization exists; they
+-- do not prove atomic delivery-versus-payment at the direct-choice level. If a
+-- promoted direct path needs atomic co-settlement, it must consume or settle the
+-- peer allocations too, or the direct choice should stay non-public. Future
+-- typed compliance/seizure behavior should be added through new choices or
+-- optional fields, not by changing baseline choice arguments once a public
+-- surface exists.
+template Allocation
+  with
+    originalAllocationCid : Optional (ContractId Allocation)
+    allocation : AllocationSpecification
+    lockedHoldingCids : [ContractId ToyHolding]
+    createdAt : Time
+    numIterations : Int
+    d1ComplianceHook : Optional D1ComplianceHook
+    d2SeizureHook : Optional D2SeizureHook
+    featureFlag : Text
+  where
+    signatory allocation.admin, accountParties allocation.admin allocation.authorizer
+    observer allocation.settlement.executors
+    ensure featureFlag == experimentalFeatureFlag
+
+    choice Allocation_Settle : ContractId SettlementReceipt
+      with
+        actors : [Party]
+        settlement : SettlementInfo
+        transferLegs : [TransferLeg]
+        extraTransferLegSides : [TransferLegSide]
+        peerAllocationCids : [ContractId Allocation]
+        peerReceiptCids : [ContractId SettlementReceipt]
+        nextIterationFunding : Optional [(Text, Decimal)]
+        d1ComplianceRef : Optional Text
+      controller actors
+      do
+        assertMsg eSettlementActorsMismatch (actors == allocation.admin :: allocation.settlement.executors)
+        assertMsg eSettlementMismatch (settlement == allocation.settlement)
+        assertMsg eNoTransferLegs (not (null transferLegs))
+        assertMsg eBadTransferLegAmount (allTransferLegAmountsPositive transferLegs)
+        requireBeforeSettlementDeadline allocation.settlement
+        requireD1Reference d1ComplianceHook d1ComplianceRef
+        requireNoUnresolvedD2InFlight d2SeizureHook
+        requireIteratedSettlementAllowed allocation extraTransferLegSides nextIterationFunding
+        peerAllocations <- fetchAllocations peerAllocationCids
+        peerReceipts <- fetchReceipts peerReceiptCids
+        assertMsg ePeerAllocationMismatch (allPeerAllocationsMatch allocation peerAllocations)
+        assertMsg ePeerReceiptMismatch (allPeerReceiptsMatch allocation peerReceipts)
+        let localSides = allocation.transferLegSides <> extraTransferLegSides
+            authorizedSides =
+              localSides
+                <> collectAllocationSides peerAllocations
+                <> collectReceiptSides peerReceipts
+        assertMsg eSettlementMissingAuthorization (allTransferLegsAuthorized transferLegs authorizedSides)
+        assertMsg eAllocationLegMismatch (allAllocationSidesBackedByLegs transferLegs authorizedSides)
+        assertMsg eAllocationLegMismatch (allAuthorizerLegSidesPresent allocation.authorizer transferLegs localSides)
+        archiveHoldings lockedHoldingCids
+        create SettlementReceipt with
+          admin = allocation.admin
+          authorizer = allocation.authorizer
+          settlement
+          settledTransferLegIds = transferLegIds transferLegs
+          settledTransferLegSides = localSides
+          d1ComplianceRef
+          d2SeizureHook
+          featureFlag
+
+    choice Allocation_Cancel : AllocationResult
+      with actors : [Party]
+      controller actors
+      do
+        assertMsg eExecutorsMismatch (actors == allocation.settlement.executors)
+        returnedHoldingCids <- unlockHoldings lockedHoldingCids
+        pure AllocationCancelled with returnedHoldingCids
+
+    choice Allocation_Withdraw : AllocationResult
+      with actors : [Party]
+      controller actors
+      do
+        assertMsg eAuthorizerActorsMismatch (actors == accountParties allocation.admin allocation.authorizer)
+        requireWithdrawAllowed allocation
+        returnedHoldingCids <- unlockHoldings lockedHoldingCids
+        pure AllocationWithdrawn with returnedHoldingCids
+
+    choice Allocation_MarkD2InFlightSeizure : ContractId Allocation
+      with
+        actors : [Party]
+        seizureHook : D2SeizureHook
+      controller actors
+      do
+        assertMsg eAdminActorsMismatch (actors == [allocation.admin])
+        create this with d2SeizureHook = Some seizureHook
+
+-- | Minimal settlement receipt used by the experiment to prove successful
+-- atomic settlement without implementing a production asset ledger.
+--
+-- Signatories: `admin`.
+-- Observers: authorizer account parties and settlement executors.
+-- Controllers: none.
+-- Choices: none.
+-- Disclosed parties: admin, authorizer account parties, and executors.
+-- Privacy expectations: receipt carries settlement reference, leg ids, local
+-- transfer-leg sides, and optional D1/D2 references. It is visible to the
+-- allocation participants and executors, and can serve as a contract-level
+-- proof that a peer side already settled in the same batch sequence.
+-- Authorization assumptions: created only by `Allocation_Settle` after the
+-- factory/allocation checks and peer allocation or receipt proof pass.
+-- Archival behavior: no choices; lifecycle management is intentionally out of
+-- scope for the experiment.
+-- Failure modes: none after creation; failed settlement rolls back the receipt
+-- with the whole transaction.
+-- Upgrade and migration assumptions: receipt is an experiment-only event stand
+-- in. A real implementation should use CIP-0112 `EventLog_HoldingsChange`.
+template SettlementReceipt
+  with
+    admin : Party
+    authorizer : Account
+    settlement : SettlementInfo
+    settledTransferLegIds : [Text]
+    settledTransferLegSides : [TransferLegSide]
+    d1ComplianceRef : Optional Text
+    d2SeizureHook : Optional D2SeizureHook
+    featureFlag : Text
+  where
+    signatory admin
+    observer accountParties admin authorizer, settlement.executors
+    ensure featureFlag == experimentalFeatureFlag
+
+requireExperimentalFlag : Text -> Update ()
+requireExperimentalFlag flag =
+  assertMsg eFeatureDisabled (flag == experimentalFeatureFlag)
+
+accountObservers : Account -> [Party]
+accountObservers account =
+  case (account.owner, account.provider) of
+    (Some owner, Some provider) -> if owner == provider then [owner] else [owner, provider]
+    (Some owner, None) -> [owner]
+    (None, Some provider) -> [provider]
+    (None, None) -> []
+
+accountParties : Party -> Account -> [Party]
+accountParties admin account =
+  case account.owner of
+    Some _ -> accountObservers account
+    None ->
+      case account.provider of
+        Some provider -> if provider == admin then [admin] else [admin, provider]
+        None -> [admin]
+
+lockObservers : Optional Lock -> [Party]
+lockObservers lock =
+  case lock of
+    None -> []
+    Some l -> l.holders
+
+allRequestedAdminsMatch : Party -> [RequestedAllocation] -> Bool
+allRequestedAdminsMatch admin allocations =
+  case allocations of
+    [] -> True
+    allocation :: rest -> allocation.admin == admin && allRequestedAdminsMatch admin rest
+
+requireValidAllocationSpecification : AllocationSpecification -> Update ()
+requireValidAllocationSpecification allocation = do
+  assertMsg eNoTransferLegSides (not (null allocation.transferLegSides) || allocation.nextIterationFunding /= None)
+  assertMsg eBadTransferLegSideAmount (allTransferLegSideAmountsPositive allocation.transferLegSides)
+  assertMsg eBadNextIterationFunding (validNextIterationFunding allocation.nextIterationFunding)
+
+allTransferLegAmountsPositive : [TransferLeg] -> Bool
+allTransferLegAmountsPositive legs =
+  case legs of
+    [] -> True
+    leg :: rest -> leg.amount > 0.0 && allTransferLegAmountsPositive rest
+
+allTransferLegSideAmountsPositive : [TransferLegSide] -> Bool
+allTransferLegSideAmountsPositive sides =
+  case sides of
+    [] -> True
+    side :: rest -> side.amount > 0.0 && allTransferLegSideAmountsPositive rest
+
+validNextIterationFunding : Optional [(Text, Decimal)] -> Bool
+validNextIterationFunding funding =
+  case funding of
+    None -> True
+    Some entries -> allFundingPositive entries
+
+allFundingPositive : [(Text, Decimal)] -> Bool
+allFundingPositive entries =
+  case entries of
+    [] -> True
+    (_, amount) :: rest -> amount > 0.0 && allFundingPositive rest
+
+lockInputHoldings : AllocationSpecification -> [ContractId ToyHolding] -> Update [ContractId ToyHolding]
+lockInputHoldings allocation cids =
+  case cids of
+    [] -> pure []
+    cid :: rest -> do
+      holding <- fetch cid
+      assertMsg eInputHoldingWrongAccount (holding.account == allocation.authorizer)
+      assertMsg eInputHoldingWrongAdmin (holding.admin == allocation.admin)
+      assertMsg eInputHoldingWrongInstrument (sideInstrumentPresent holding.instrumentId.id allocation.transferLegSides)
+      archive cid
+      lockedCid <- create holding with
+        lock = Some Lock with
+          holders = allocation.admin :: allocation.settlement.executors
+          expiresAt = allocation.settlement.settlementDeadline
+          context = Some ("allocation for settlement " <> allocation.settlement.settlementRef.id)
+      lockedRest <- lockInputHoldings allocation rest
+      pure (lockedCid :: lockedRest)
+
+sideInstrumentPresent : Text -> [TransferLegSide] -> Bool
+sideInstrumentPresent instrumentId sides =
+  case sides of
+    [] -> False
+    side :: rest -> side.instrumentId == instrumentId || sideInstrumentPresent instrumentId rest
+
+archiveHoldings : [ContractId ToyHolding] -> Update ()
+archiveHoldings cids =
+  case cids of
+    [] -> pure ()
+    cid :: rest -> do
+      archive cid
+      archiveHoldings rest
+
+unlockHoldings : [ContractId ToyHolding] -> Update [ContractId ToyHolding]
+unlockHoldings cids =
+  case cids of
+    [] -> pure []
+    cid :: rest -> do
+      holding <- fetch cid
+      archive cid
+      unlockedCid <- create holding with lock = None
+      unlockedRest <- unlockHoldings rest
+      pure (unlockedCid :: unlockedRest)
+
+fetchAllocations : [ContractId Allocation] -> Update [Allocation]
+fetchAllocations cids =
+  case cids of
+    [] -> pure []
+    cid :: rest -> do
+      allocation <- fetch cid
+      allocations <- fetchAllocations rest
+      pure (allocation :: allocations)
+
+collectAllocationSides : [Allocation] -> [TransferLegSide]
+collectAllocationSides allocations =
+  case allocations of
+    [] -> []
+    allocation :: rest -> allocation.allocation.transferLegSides <> collectAllocationSides rest
+
+fetchReceipts : [ContractId SettlementReceipt] -> Update [SettlementReceipt]
+fetchReceipts cids =
+  case cids of
+    [] -> pure []
+    cid :: rest -> do
+      receipt <- fetch cid
+      receipts <- fetchReceipts rest
+      pure (receipt :: receipts)
+
+collectReceiptSides : [SettlementReceipt] -> [TransferLegSide]
+collectReceiptSides receipts =
+  case receipts of
+    [] -> []
+    receipt :: rest -> receipt.settledTransferLegSides <> collectReceiptSides rest
+
+allPeerAllocationsMatch : AllocationSpecification -> [Allocation] -> Bool
+allPeerAllocationsMatch allocation peers =
+  case peers of
+    [] -> True
+    peer :: rest ->
+      peer.allocation.admin == allocation.admin
+        && peer.allocation.settlement == allocation.settlement
+        && peer.featureFlag == experimentalFeatureFlag
+        && allPeerAllocationsMatch allocation rest
+
+allPeerReceiptsMatch : AllocationSpecification -> [SettlementReceipt] -> Bool
+allPeerReceiptsMatch allocation receipts =
+  case receipts of
+    [] -> True
+    receipt :: rest ->
+      receipt.admin == allocation.admin
+        && receipt.settlement == allocation.settlement
+        && receipt.featureFlag == experimentalFeatureFlag
+        && allPeerReceiptsMatch allocation rest
+
+allTransferLegsAuthorized : [TransferLeg] -> [TransferLegSide] -> Bool
+allTransferLegsAuthorized legs sides =
+  case legs of
+    [] -> True
+    leg :: rest ->
+      containsSide sides (senderSide leg)
+        && containsSide sides (receiverSide leg)
+        && allTransferLegsAuthorized rest sides
+
+allAllocationSidesBackedByLegs : [TransferLeg] -> [TransferLegSide] -> Bool
+allAllocationSidesBackedByLegs legs sides =
+  case sides of
+    [] -> True
+    side :: rest -> sideHasMatchingLeg legs side && allAllocationSidesBackedByLegs legs rest
+
+allAuthorizerLegSidesPresent : Account -> [TransferLeg] -> [TransferLegSide] -> Bool
+allAuthorizerLegSidesPresent authorizer legs sides =
+  case legs of
+    [] -> True
+    leg :: rest ->
+      authorizerSidePresent authorizer leg sides && allAuthorizerLegSidesPresent authorizer rest sides
+
+authorizerSidePresent : Account -> TransferLeg -> [TransferLegSide] -> Bool
+authorizerSidePresent authorizer leg sides =
+  let senderOk = if leg.sender == authorizer then containsSide sides (senderSide leg) else True
+      receiverOk = if leg.receiver == authorizer then containsSide sides (receiverSide leg) else True
+   in senderOk && receiverOk
+
+sideHasMatchingLeg : [TransferLeg] -> TransferLegSide -> Bool
+sideHasMatchingLeg legs side =
+  case legs of
+    [] -> False
+    leg :: rest -> sideMatchesLeg side leg || sideHasMatchingLeg rest side
+
+sideMatchesLeg : TransferLegSide -> TransferLeg -> Bool
+sideMatchesLeg side leg =
+  case side.side of
+    SenderSide -> side == senderSide leg
+    ReceiverSide -> side == receiverSide leg
+
+senderSide : TransferLeg -> TransferLegSide
+senderSide leg = TransferLegSide with
+  transferLegId = leg.transferLegId
+  side = SenderSide
+  otherside = leg.receiver
+  amount = leg.amount
+  instrumentId = leg.instrumentId
+  meta = leg.meta
+
+receiverSide : TransferLeg -> TransferLegSide
+receiverSide leg = TransferLegSide with
+  transferLegId = leg.transferLegId
+  side = ReceiverSide
+  otherside = leg.sender
+  amount = leg.amount
+  instrumentId = leg.instrumentId
+  meta = leg.meta
+
+containsSide : [TransferLegSide] -> TransferLegSide -> Bool
+containsSide sides needle =
+  case sides of
+    [] -> False
+    side :: rest -> side == needle || containsSide rest needle
+
+settleAllocations
+  : [Party]
+  -> SettlementInfo
+  -> [TransferLeg]
+  -> Optional Text
+  -> [ContractId SettlementReceipt]
+  -> [ContractId Allocation]
+  -> Update [ContractId SettlementReceipt]
+settleAllocations actors settlement transferLegs d1ComplianceRef settledReceiptCids allocationCids =
+  case allocationCids of
+    [] -> pure []
+    allocationCid :: rest -> do
+      receiptCid <- exercise allocationCid Allocation_Settle with
+        actors
+        settlement
+        transferLegs
+        extraTransferLegSides = []
+        peerAllocationCids = rest
+        peerReceiptCids = settledReceiptCids
+        nextIterationFunding = None
+        d1ComplianceRef
+      receiptRest <- settleAllocations actors settlement transferLegs d1ComplianceRef (receiptCid :: settledReceiptCids) rest
+      pure (receiptCid :: receiptRest)
+
+requireBeforeSettlementDeadline : SettlementInfo -> Update ()
+requireBeforeSettlementDeadline settlement = do
+  now <- getTime
+  case settlement.settlementDeadline of
+    None -> pure ()
+    Some deadline -> assertMsg eSettlementDeadlinePassed (now <= deadline)
+
+requireD1Reference : Optional D1ComplianceHook -> Optional Text -> Update ()
+requireD1Reference hook ref =
+  case hook of
+    None -> pure ()
+    Some h ->
+      if h.requiresPerSettlementReference
+        then assertMsg eD1ComplianceReferenceMissing (ref /= None)
+        else pure ()
+
+requireNoUnresolvedD2InFlight : Optional D2SeizureHook -> Update ()
+requireNoUnresolvedD2InFlight hook =
+  case hook of
+    None -> pure ()
+    Some _ -> abort eD2InFlightUnresolved
+
+requireIteratedSettlementAllowed
+  : AllocationSpecification
+  -> [TransferLegSide]
+  -> Optional [(Text, Decimal)]
+  -> Update ()
+requireIteratedSettlementAllowed allocation extraSides nextFunding = do
+  case allocation.nextIterationFunding of
+    None -> do
+      assertMsg eIteratedSettlementDisabled (null extraSides)
+      assertMsg eIteratedSettlementDisabled (nextFunding == None)
+    Some _ -> assertMsg eBadNextIterationFunding (validNextIterationFunding nextFunding)
+
+requireWithdrawAllowed : AllocationSpecification -> Update ()
+requireWithdrawAllowed allocation =
+  if allocation.committed
+    then do
+      now <- getTime
+      case allocation.settlement.settlementDeadline of
+        None -> abort eCommittedWithdrawBlocked
+        Some deadline -> assertMsg eCommittedWithdrawBlocked (now > deadline)
+    else pure ()
+
+transferLegIds : [TransferLeg] -> [Text]
+transferLegIds legs =
+  case legs of
+    [] -> []
+    leg :: rest -> leg.transferLegId :: transferLegIds rest
+
+eFeatureDisabled : Text
+eFeatureDisabled = "Cip112Settlement: experimental feature flag disabled"
+
+eExecutorsMismatch : Text
+eExecutorsMismatch = "Cip112Settlement: actors must equal settlement executors"
+
+eAdminActorsMismatch : Text
+eAdminActorsMismatch = "Cip112Settlement: actors must equal admin"
+
+eSettlementActorsMismatch : Text
+eSettlementActorsMismatch = "Cip112Settlement: actors must equal admin plus settlement executors"
+
+eAuthorizerActorsMismatch : Text
+eAuthorizerActorsMismatch = "Cip112Settlement: actors must equal authorizer account parties"
+
+eAdminMismatch : Text
+eAdminMismatch = "Cip112Settlement: allocation admin must match factory admin"
+
+eRequestedAllocationAdminMismatch : Text
+eRequestedAllocationAdminMismatch = "Cip112Settlement: requested allocation admin must match factory admin"
+
+eEmptyRequestedAllocations : Text
+eEmptyRequestedAllocations = "Cip112Settlement: allocation request must include at least one requested allocation"
+
+eNoTransferLegSides : Text
+eNoTransferLegSides = "Cip112Settlement: allocation must include transfer leg sides unless iterated settlement is enabled"
+
+eNoTransferLegs : Text
+eNoTransferLegs = "Cip112Settlement: settlement must include transfer legs"
+
+eBadTransferLegAmount : Text
+eBadTransferLegAmount = "Cip112Settlement: transfer leg amount must be positive"
+
+eBadTransferLegSideAmount : Text
+eBadTransferLegSideAmount = "Cip112Settlement: transfer leg side amount must be positive"
+
+eBadNextIterationFunding : Text
+eBadNextIterationFunding = "Cip112Settlement: next iteration funding amounts must be positive"
+
+eInputHoldingWrongAccount : Text
+eInputHoldingWrongAccount = "Cip112Settlement: input holding account mismatch"
+
+eInputHoldingWrongAdmin : Text
+eInputHoldingWrongAdmin = "Cip112Settlement: input holding admin mismatch"
+
+eInputHoldingWrongInstrument : Text
+eInputHoldingWrongInstrument = "Cip112Settlement: input holding instrument not referenced by allocation"
+
+eSettlementMissingAuthorization : Text
+eSettlementMissingAuthorization = "Cip112Settlement: transfer legs must have sender and receiver allocation sides"
+
+ePeerAllocationMismatch : Text
+ePeerAllocationMismatch = "Cip112Settlement: peer allocation proof must match settlement"
+
+ePeerReceiptMismatch : Text
+ePeerReceiptMismatch = "Cip112Settlement: peer receipt proof must match settlement"
+
+eAllocationLegMismatch : Text
+eAllocationLegMismatch = "Cip112Settlement: allocation transfer-leg sides do not match settlement legs"
+
+eSettlementMismatch : Text
+eSettlementMismatch = "Cip112Settlement: allocation settlement mismatch"
+
+eSettlementDeadlinePassed : Text
+eSettlementDeadlinePassed = "Cip112Settlement: settlement deadline passed"
+
+eD1ComplianceReferenceMissing : Text
+eD1ComplianceReferenceMissing = "Cip112Settlement: D1 compliance reference required by experimental hook"
+
+eD2InFlightUnresolved : Text
+eD2InFlightUnresolved = "Cip112Settlement: D2 in-flight seizure handling unresolved"
+
+eIteratedSettlementDisabled : Text
+eIteratedSettlementDisabled = "Cip112Settlement: iterated settlement arguments require nextIterationFunding"
+
+eCommittedWithdrawBlocked : Text
+eCommittedWithdrawBlocked = "Cip112Settlement: committed allocation cannot withdraw before settlement deadline"

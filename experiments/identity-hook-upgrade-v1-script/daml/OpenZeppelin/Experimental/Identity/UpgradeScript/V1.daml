@@ -1,0 +1,64 @@
+-- | Daml Script driver for the experimental identity hook upgrade v0.1.0 DAR.
+module OpenZeppelin.Experimental.Identity.UpgradeScript.V1 where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import OpenZeppelin.Experimental.Identity.Upgrade
+
+data MigrationFixture = MigrationFixture with
+    issuer : Party
+    alice : Party
+    bob : Party
+    holding : ContractId ToyHolding
+  deriving (Eq, Show)
+
+data MigrationRun = MigrationRun with
+    runId : Text
+  deriving (Eq, Show)
+
+baselineAttestation : OpaqueIdentityAttestation
+baselineAttestation = OpaqueIdentityAttestation with
+  envelope = "opaque-single-domain-identity-attestation"
+
+scriptPartyHint : Text -> Text -> Text
+scriptPartyHint runId role = "identity-hook-upgrade-script-v1-" <> role <> "-" <> runId
+
+-- | Creates a v0.1.0 holding and returns the parties/contract id for a v0.2.0
+-- migration script running on the same ledger.
+createV1HoldingFixture : Script MigrationFixture
+createV1HoldingFixture = createV1HoldingFixtureWithRunId "test"
+
+-- | Same fixture as createV1HoldingFixture, with caller-provided party hints so
+-- the live sandbox migration proof can be rerun against a persistent
+-- participant without colliding with previous parties.
+createV1HoldingFixtureForRun : MigrationRun -> Script MigrationFixture
+createV1HoldingFixtureForRun run = createV1HoldingFixtureWithRunId run.runId
+
+createV1HoldingFixtureWithRunId : Text -> Script MigrationFixture
+createV1HoldingFixtureWithRunId runId = script do
+  issuer <- allocateParty (scriptPartyHint runId "issuer")
+  alice <- allocateParty (scriptPartyHint runId "alice")
+  bob <- allocateParty (scriptPartyHint runId "bob")
+
+  registry <- submit issuer do
+    createCmd ToyRegistry with
+      issuer
+      featureFlag = experimentalFeatureFlag
+  holding <- submit issuer do
+    exerciseCmd registry ToyRegistry_Mint with owner = alice, amount = 125
+  pure MigrationFixture with issuer, alice, bob, holding
+
+-- | v0.1.0 script smoke: mint a toy holding and transfer it with the baseline
+-- opaque single-domain identity-attestation argument.
+test_identityHookUpgradeV1Script_smokeTransfer : Script ()
+test_identityHookUpgradeV1Script_smokeTransfer = script do
+  fixture <- createV1HoldingFixture
+  bobHolding <- submit fixture.alice do
+    exerciseCmd fixture.holding ToyHolding_Transfer with
+      newOwner = fixture.bob
+      identityAttestation = baselineAttestation
+  Some transferred <- queryContractId fixture.bob bobHolding
+  transferred.owner === fixture.bob
+  transferred.amount === 125
+  pure ()

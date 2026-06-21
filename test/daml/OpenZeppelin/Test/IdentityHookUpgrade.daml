@@ -1,0 +1,56 @@
+-- | Smoke and upgrade tests for the experimental identity hook SCU spike.
+module OpenZeppelin.Test.IdentityHookUpgrade where
+
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.Time (time)
+import Daml.Script
+
+import OpenZeppelin.Experimental.Identity.Upgrade
+
+t0 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+
+t1 : Time
+t1 = time (date 2026 Jan 1) 0 1 0
+
+baselineAttestation : OpaqueIdentityAttestation
+baselineAttestation = OpaqueIdentityAttestation with
+  envelope = "opaque-single-domain-identity-attestation"
+
+-- | v0.2.0 extension smoke: a new holding minted with an identity extension can
+-- use the added typed-claim transfer choice without changing the baseline
+-- transfer choice.
+test_identityHookUpgrade_v2_typedClaimTransfer : Script ()
+test_identityHookUpgrade_v2_typedClaimTransfer = script do
+  setTime t0
+  issuer <- allocateParty "identity-hook-upgrade-v2-issuer"
+  trustedIssuer <- allocateParty "identity-hook-upgrade-v2-trusted-issuer"
+  alice <- allocateParty "identity-hook-upgrade-v2-alice"
+  bob <- allocateParty "identity-hook-upgrade-v2-bob"
+
+  registry <- submit issuer do
+    createCmd ToyRegistry with
+      issuer
+      featureFlag = experimentalFeatureFlag
+      identityExtension = Some IdentityExtensionConfig with
+        trustedIssuers = [trustedIssuer]
+  holding <- submit issuer do
+    exerciseCmd registry ToyRegistry_Mint with owner = alice, amount = 150
+  claim <- submit trustedIssuer do
+    createCmd KycClaim with
+      claimSigner = trustedIssuer
+      declaredIssuer = trustedIssuer
+      subjectParty = bob
+      claimKind = KYC_VALIDATED
+      validUntil = t1
+      claimId = "identity-hook-upgrade-v2-kyc-001"
+  bobHolding <- submit [alice, bob] do
+    exerciseCmd holding ToyHolding_TransferWithClaim with
+      newOwner = bob
+      identityAttestation = baselineAttestation
+      claimCid = claim
+  Some transferred <- queryContractId bob bobHolding
+  transferred.owner === bob
+  transferred.amount === 150
+  pure ()

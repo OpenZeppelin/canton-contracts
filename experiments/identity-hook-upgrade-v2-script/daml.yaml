@@ -1,0 +1,12 @@
+sdk-version: 3.4.11
+name: oz-experimental-identity-hook-upgrade-v2-script
+source: daml
+version: 0.2.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+data-dependencies:
+  - ../identity-hook-upgrade-v2/.daml/dist/oz-experimental-identity-hook-upgrade-0.2.0.dar
+build-options:
+  - --target=2.1

@@ -9,12 +9,11 @@ workspace. Keep changes small, auditable, and tied to M1 library deliverables.
 
 Before changing this repo:
 
-1. Read root `../../AGENTS.md`.
-2. Read root `../../SCOPE.md`.
-3. Read root `../../PLAN.md`.
-4. Read this file.
-5. Read `README.md`.
-6. Check the accepted SDK/CIP ADR before adding or changing `daml.yaml`.
+1. Read root `../AGENTS.md`.
+2. Read root `../PLAN.md`.
+3. Read this file.
+4. Read `README.md`.
+5. Check the accepted SDK/CIP ADR before adding or changing `daml.yaml`.
 
 ## Boundaries
 
@@ -60,14 +59,12 @@ If any item is unclear, document the uncertainty before implementation.
 
 ## Validation
 
-Use root scripts when available:
+Use repo-local scripts for standalone validation:
 
 ```sh
-../../scripts/check-all.sh
-../../scripts/test-all.sh
-../../scripts/fmt-all.sh
-../../scripts/check-no-github-workflows.sh
-../../scripts/manual-workflow-tests.sh
+scripts/check-scaffold.sh
+scripts/check-no-github-workflows.sh
+scripts/manual-workflow-test.sh
 ```
 
 The accepted M0 proof baseline uses DPM with SDK 3.4.11. Because `daml.yaml`
@@ -76,6 +73,6 @@ skip. Use `OZ_DAML_TOOLCHAIN=dpm` for the M0 proof baseline; Daml Assistant
 requires a superseding ADR or explicit exception.
 
 This repo uses local manual workflow tests instead of GitHub CI. The repo-local
-entrypoint is `scripts/manual-workflow-test.sh`, and the root guard
-`../../scripts/check-no-github-workflows.sh` must remain green so hosted
-workflow files are not reintroduced accidentally.
+entrypoint is `scripts/manual-workflow-test.sh`, and
+`scripts/check-no-github-workflows.sh` must remain green so hosted workflow files
+are not reintroduced accidentally.

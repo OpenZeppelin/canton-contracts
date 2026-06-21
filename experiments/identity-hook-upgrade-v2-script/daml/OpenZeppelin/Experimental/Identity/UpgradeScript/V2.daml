@@ -1,0 +1,33 @@
+-- | Daml Script driver for the experimental identity hook upgrade v0.2.0 DAR.
+module OpenZeppelin.Experimental.Identity.UpgradeScript.V2 where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import OpenZeppelin.Experimental.Identity.Upgrade
+
+data MigrationFixture = MigrationFixture with
+    issuer : Party
+    alice : Party
+    bob : Party
+    holding : ContractId ToyHolding
+  deriving (Eq, Show)
+
+baselineAttestation : OpaqueIdentityAttestation
+baselineAttestation = OpaqueIdentityAttestation with
+  envelope = "opaque-single-domain-identity-attestation"
+
+-- | Takes the v0.1.0 script output and exercises the unchanged baseline
+-- transfer through v0.2.0. A successful run proves a v1-created holding remains
+-- transferable under the additive SCU package.
+migrateV1HoldingTransferUnderV2 : MigrationFixture -> Script ()
+migrateV1HoldingTransferUnderV2 fixture = script do
+  bobHolding <- submit fixture.alice do
+    exerciseCmd fixture.holding ToyHolding_Transfer with
+      newOwner = fixture.bob
+      identityAttestation = baselineAttestation
+  Some transferred <- queryContractId fixture.bob bobHolding
+  transferred.owner === fixture.bob
+  transferred.amount === 125
+  transferred.identityExtension === None
+  pure ()

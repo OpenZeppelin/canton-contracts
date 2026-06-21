@@ -13,4 +13,13 @@ packages:
   - access-control
   - ownable
   - pausable
+  - experiments/compliance-shape-a
+  - experiments/compliance-shape-b
+  - experiments/identity-hook-shape-a
+  - experiments/identity-hook-shape-b
+  - experiments/identity-hook-upgrade-v1
+  - experiments/identity-hook-upgrade-v2
+  - experiments/identity-hook-upgrade-v1-script
+  - experiments/identity-hook-upgrade-v2-script
+  - experiments/cip112-settlement
   - test
