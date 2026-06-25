@@ -34,8 +34,6 @@ Do not add:
 - Full relayer infrastructure.
 - Year 2 components before scope review approval.
 - Public APIs without an ADR once implementation begins.
-- GitHub Actions, hosted CI workflows, or `.github/workflows` files unless a
-  superseding root ADR or explicit scope decision accepts hosted CI.
 
 ## Daml Requirements
 
@@ -73,7 +71,6 @@ Use repo-local scripts for standalone validation:
 
 ```sh
 scripts/check-scaffold.sh
-scripts/check-no-github-workflows.sh
 scripts/manual-workflow-test.sh
 ```
 
@@ -82,7 +79,7 @@ exists, missing DPM or Java 21 tooling is a validation failure, not a green
 skip. Use `OZ_DAML_TOOLCHAIN=dpm` for the M0 proof baseline; Daml Assistant
 requires a superseding ADR or explicit exception.
 
-This repo uses local manual workflow tests instead of GitHub CI. The repo-local
-entrypoint is `scripts/manual-workflow-test.sh`, and
-`scripts/check-no-github-workflows.sh` must remain green so hosted workflow files
-are not reintroduced accidentally.
+The repo-local manual validation entrypoint is
+`scripts/manual-workflow-test.sh`. GitHub Actions / hosted CI workflows are
+allowed here like in any OpenZeppelin repo; nothing in this repo forbids
+`.github/workflows`.

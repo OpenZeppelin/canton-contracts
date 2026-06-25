@@ -44,12 +44,9 @@ require_file README.md
 require_file AGENTS.md
 require_file LICENSE
 require_file scripts/manual-workflow-test.sh
-require_file scripts/check-no-github-workflows.sh
 require_file daml/HelloWorld/HelloWorld.daml
 require_file proof/daml.yaml
 require_file proof/daml/HelloWorld/Proof.daml
-
-"$ROOT/scripts/check-no-github-workflows.sh"
 
 if [ -f "$ROOT/daml.yaml" ]; then
 	reject_production_daml_script
