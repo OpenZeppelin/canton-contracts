@@ -1,48 +1,50 @@
 # canton-contracts
 
-Reusable Daml contracts library scaffold for the OpenZeppelin Canton ecosystem
-workspace.
+The decoupled, ergonomic general Daml contracts library for the OpenZeppelin
+Canton ecosystem.
 
 Status: M0 scaffold + the first reusable access-control primitives (slice AL-7,
-see [Access Control Library](#access-control-library-al-7) below), plus a
-non-public experimental CIP-0112 / Token Standard V2 settlement scaffold. The
-M1 target is now CIP-112 settlement, not the superseded CIP-56 token foundation.
-No stable M1 public API, CIP-0112 conformance, audit readiness, production
-readiness, or release readiness is claimed.
+see [Access Control Library](#access-control-library-al-7) below). No stable M1
+public API, conformance, audit readiness, production readiness, or release
+readiness is claimed.
 
 ## Scope
 
-M1 target scope:
+This repo is **only** the general, decoupled contracts library: small,
+independent, reusable Daml packages that any application — including the
+OpenZeppelin Canton Reference Implementations (RIs) — can consume by importing
+just the DAR(s) it needs. Each package stays ergonomic and standalone; the
+library never absorbs application or RI-specific business logic.
 
-- CIP-0112 / Token Standard V2 interface-aligned settlement primitive.
-- CIP-86 compatibility surface scoped to interoperate with the settlement work.
-- CIP-103 dApp and wallet-provider support components scoped to the settlement
-  surface.
-- CIP-104 rewards support components scoped to the settlement surface.
-- Documentation, tests, security notes, and compatibility evidence.
+In scope:
 
-CIP-86 / CIP-103 / CIP-104 acceptance criteria are recorded as settlement
-interop criteria, not standalone CIP-56-token deliverables:
+- Reusable access-control primitives (`oz-access-control`, `oz-ownable`,
+  `oz-pausable`) with the role-admin hierarchy and timelocked admin handoff.
+- Future general primitives that pass a promotion-boundary review (e.g. a
+  stabilized CIP-0112 settlement package), promoted **into** this library only
+  after the gates recorded in `canton-specs` are met.
+- Documentation, tests, and security notes for the library packages.
 
-- [`docs/architecture/cip0086-cip0103-cip0104-m1-acceptance.md`](docs/architecture/cip0086-cip0103-cip0104-m1-acceptance.md)
+Out of scope for this repo (these live in
+[`OpenZeppelin/canton-specs`](https://github.com/OpenZeppelin/canton-specs),
+which consumes this library):
 
-CIP-56 is background and migration evidence only. The experimental CIP-112
-settlement scaffold lives under `experiments/cip112-settlement` and remains
-outside the committed public-library surface until the promotion boundary ADR's
-Splice DAR/import, license/NOTICE, package-ID/checksum, DPM wiring, and public
-API gates land:
-
-- [`docs/architecture/cip0112-public-api-promotion-boundary.md`](docs/architecture/cip0112-public-api-promotion-boundary.md)
-- [`docs/architecture/cip0112-m1-ri-spec.md`](docs/architecture/cip0112-m1-ri-spec.md)
-- [`docs/experiments/cip112-settlement.md`](docs/experiments/cip112-settlement.md)
-
-Out of scope for this repo:
-
+- The CIP-0112 / Token Standard V2 settlement **RI scaffold** and the
+  compliance / identity design experiments.
+- CIP specs, architecture reports, and the four Year-1 RI architectural
+  overviews (DEX, Lending, Cross-Chain Stablecoin, Confidential Auction).
 - DEX, lending, payments, or auction business logic.
 - Production private integrations.
 - Production KYC, sanctions, custody, validator, bridge, or relayer services.
 - Full off-chain relayer infrastructure.
 - Year 2 components before approval.
+
+The companion `canton-specs` repo holds the RI implementation code and the
+specs/architecture/RI reports, and depends on the packages here. Keeping the RI
+out of this repo is what keeps the library decoupled and ergonomic. See
+`canton-specs` `docs/ri-reports/` for the RI reports that reference this
+library, and its CIP-0112 promotion-boundary ADR for the rules a primitive must
+satisfy before it is promoted into this library.
 
 ## Build Instructions
 
@@ -163,14 +165,15 @@ all three DARs.
 Build and test the whole workspace in dependency order:
 
 ```sh
-dpm build --all          # builds all packages, including the three libraries
-cd test && dpm test      # runs the shared test package, including experiments
+dpm build --all          # builds the root, proof, and the three libraries
+cd test && dpm test      # runs the shared library test package
 ```
 
-Latest local run (2026-06-21, SDK 3.4.11 / Java 21): `dpm build --all` builds all
-packages and `dpm test` passes **60/60** scripts (14 AccessControl, 20
-Cip112Settlement, 6 Ownable, 4 Pausable, 2 ComplianceShapeA, 6 ComplianceShapeB,
-1 IdentityHookShapeA, 6 IdentityHookShapeB, 1 IdentityHookUpgrade).
+The `test/` package exercises the three library packages (`AccessControl`,
+`Ownable`, `Pausable`) plus the `Gated` example consumer. In the last full-suite
+run (2026-06-21, SDK 3.4.11 / Java 21) these accounted for 24 passing scripts
+(14 AccessControl, 6 Ownable, 4 Pausable). Re-run `dpm test` to confirm the
+library subset after the RI/experiment packages were moved to `canton-specs`.
 
 Or build a single library standalone (proving its independence):
 
@@ -181,20 +184,18 @@ cd pausable && dpm build
 Status: `0.1.0`, **unstable** — these are not yet public API (no stability ADR),
 so DAR SHAs are intentionally not pinned here while the shape may still change.
 
-## CIP-112 Settlement Experiment
+## Reference Implementations
 
-The experimental settlement package models a Token Standard V2-aligned
-request/instruction/allocation/settlement lifecycle with optional D1 and D2
-extension points. Its source evidence pin is `hyperledger-labs/splice` branch
-`token-standard-v2-upcoming` at
-`1e34121b2b369c5dde357c098e2aaeb65250e736`; the older
-`canton-network/splice` `token-standard-v2-daml-preview` branch is historical
-evidence only.
-
-The package intentionally uses local stand-ins and toy holdings. Do not import
-or vendor Splice DARs from this repo until a later slice satisfies the promotion
-boundary ADR's published-DAR or reproducible-build evidence, package
-ID/checksum, Apache-2.0 license/NOTICE, and DPM dependency requirements.
+This library is consumed by — and does not contain — the OpenZeppelin Canton
+Reference Implementations. The CIP-0112 / Token Standard V2 settlement RI
+scaffold, the compliance/identity experiments, the CIP architecture specs, and
+the four Year-1 RI architectural overview reports live in
+[`OpenZeppelin/canton-specs`](https://github.com/OpenZeppelin/canton-specs).
+Those reports cite this library by package, module, template, and choice as the
+`[IMPLEMENTED]` library base they build on. A primitive is promoted from the RI
+scaffold into this library only after it satisfies the CIP-0112 promotion
+boundary ADR (Splice DAR/import, license/NOTICE, package-ID/checksum, DPM
+wiring, and public-API gates), which is tracked in `canton-specs`.
 
 ## License
 

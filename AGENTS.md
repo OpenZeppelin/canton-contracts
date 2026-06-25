@@ -2,8 +2,18 @@
 
 ## Role
 
-This repo is the canonical reusable Daml contracts library for the Canton
-workspace. Keep changes small, auditable, and tied to M1 library deliverables.
+This repo is the canonical **decoupled, ergonomic general Daml contracts
+library** for the Canton workspace: small, independent, reusable packages that
+applications import individually. Keep changes small, auditable, and tied to
+library deliverables.
+
+The OpenZeppelin Canton Reference Implementations — the CIP-0112 settlement RI
+scaffold, the compliance/identity experiments, the CIP specs/architecture
+reports, and the four Year-1 RI architectural overviews — live in
+`OpenZeppelin/canton-specs`, which **consumes** this library. Keeping the RI out
+of this repo is what keeps the library decoupled and ergonomic. A primitive is
+promoted from the RI scaffold into this library only after it satisfies the
+CIP-0112 promotion-boundary ADR tracked in `canton-specs`.
 
 ## Read Order
 

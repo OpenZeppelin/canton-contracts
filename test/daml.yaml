@@ -10,12 +10,6 @@ data-dependencies:
   - ../access-control/.daml/dist/oz-access-control-0.1.0.dar
   - ../ownable/.daml/dist/oz-ownable-0.1.0.dar
   - ../pausable/.daml/dist/oz-pausable-0.1.0.dar
-  - ../experiments/compliance-shape-a/.daml/dist/oz-experimental-compliance-shape-a-0.1.0.dar
-  - ../experiments/compliance-shape-b/.daml/dist/oz-experimental-compliance-shape-b-0.1.0.dar
-  - ../experiments/identity-hook-shape-a/.daml/dist/oz-experimental-identity-hook-shape-a-0.1.0.dar
-  - ../experiments/identity-hook-shape-b/.daml/dist/oz-experimental-identity-hook-shape-b-0.1.0.dar
-  - ../experiments/identity-hook-upgrade-v2/.daml/dist/oz-experimental-identity-hook-upgrade-0.2.0.dar
-  - ../experiments/cip112-settlement/.daml/dist/oz-experimental-cip112-settlement-0.1.0.dar
 build-options:
   - --target=2.1
   # This is a test-only package: its example-consumer templates (Gated.daml)
