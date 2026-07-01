@@ -6,6 +6,11 @@
 # `test` data-depends on all three and is not shipped. The root package and
 # `proof` are the pre-existing M0 hello-world baseline.
 #
+# POLICY: this repo is the decoupled general library only. The RI scaffold,
+# compliance/identity experiments, and CIP specs live in canton-specs, which
+# consumes these packages. Do not add RI-specific or experimental packages here
+# except as a promotion behind the CIP-0112 promotion-boundary ADR.
+#
 # The CIP-0112 interop slice (branch `cip-interop-m1`) adds three packages,
 # promoted out of `canton-specs/experiments/` per the CIP-0112 promotion-boundary
 # ADR: `token-standard-v2-mock` (a local V2-interface mock — a build/test
