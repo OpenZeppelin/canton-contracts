@@ -25,8 +25,11 @@ Do not add:
 - Full relayer infrastructure.
 - Year 2 components before scope review approval.
 - Public APIs without an ADR once implementation begins.
-- GitHub Actions, hosted CI workflows, or `.github/workflows` files unless a
-  superseding root ADR or explicit scope decision accepts hosted CI.
+
+Hosted CI is accepted for this repo: `.github/workflows/ci.yml` provisions DPM,
+builds every package, runs the script suites, and captures coverage reports
+(`scripts/run-tests.sh`). This supersedes the prior "no `.github/workflows`"
+boundary, per the CIP-0112 interop delivery decision.
 
 ## Daml Requirements
 

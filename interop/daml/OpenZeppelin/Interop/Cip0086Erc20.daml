@@ -1,0 +1,277 @@
+-- | CIP-0086 interoperability proof: an ERC-20-style middleware can both
+-- **observe** and **command** the CIP-0112 / Token Standard V2 settlement
+-- surface. Rather than asserting this in prose, these scripts execute the
+-- mapping against the real settlement engine
+-- (`OpenZeppelin.Settlement.Cip112`):
+--
+--   * `balanceOf` / `totalSupply`  -> queries over `ToyHolding` (observe);
+--   * `transfer`                   -> `SettlementFactory_SettleBatch` (command);
+--   * `approve` / `allowance`      -> the `Erc20Allowance` delegation record;
+--   * `transferFrom`               -> `Erc20Allowance_AuthorizeSpend`, which turns
+--                                     the owner's funds into a ready-to-settle V2
+--                                     `Allocation` (reusing the engine's own
+--                                     `lockInputHoldings`), then settled normally.
+--
+-- It also pins the two CIP-0086 boundaries the acceptance note calls out: ERC-20
+-- reads are projection-**scoped** (no globally-correct `balanceOf`), and a D2
+-- seizure is a **seizure-resolution** state, NOT an ERC-20 burn or a sender
+-- refund (supply is conserved; funds move to the preset custodian).
+--
+-- NON-PUBLIC, experiment-only. No ERC-20 conformance / ChainSafe / production
+-- claim; `ToyHolding` is the toy asset stand-in.
+module OpenZeppelin.Interop.Cip0086Erc20 where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import OpenZeppelin.Settlement.Cip112
+import OpenZeppelin.Interop.Common
+import OpenZeppelin.TokenStandard.V2.Metadata
+import OpenZeppelin.TokenStandard.V2.Holding
+import OpenZeppelin.TokenStandard.V2.Allocation
+  ( SettlementInfo(..)
+  , TransferLeg(..)
+  , AllocationSpecification(..)
+  )
+
+-- | ERC-20 `approve` / `allowance` as a delegation record. Mirrors the CIP-0086
+-- allowance/delegation facade onto Token Standard V2.
+--
+-- Signatories: `owner` only — `approve` is owner-authorised, faithful to ERC-20
+-- (the issuer does not consent to an allowance). Observers: `admin`, `spender`.
+-- Controllers: `spender` AND `admin` co-authorise `transferFrom`
+-- (`Erc20Allowance_AuthorizeSpend`): the owner's authority to move the funds
+-- comes from the owner-signed allowance, and the asset issuer's authority
+-- (`ToyHolding` is admin-signed) is contributed by `admin` — the Canton-correct
+-- split of a delegated, issuer-mediated spend. Choices:
+-- `Erc20Allowance_AuthorizeSpend`. Privacy: only owner, admin, and spender see
+-- the allowance. Authorization assumptions: a delegated spend can mobilise the
+-- owner's funds but can only credit a recipient that authorizes receipt (or a
+-- provider-managed account) — Canton has no unilateral credit, so an unscoped
+-- ERC-20 `transferFrom` to an arbitrary recipient is not globally correct.
+-- Archival behavior: `Erc20Allowance_AuthorizeSpend` is consuming and creates a
+-- decremented successor. Failure modes: non-positive or over-allowance spend,
+-- and leg/owner/instrument mismatch, fail closed. Upgrade and migration:
+-- experiment-only; a promoted facade targets the real Token Standard V2 imports.
+template Erc20Allowance
+  with
+    admin : Party
+    owner : Party
+    ownerAccount : Account
+    spender : Party
+    instrumentId : Text
+    allowance : Decimal
+    featureFlag : Text
+  where
+    signatory owner
+    observer admin, spender
+    ensure allowance >= 0.0 && featureFlag == experimentalFeatureFlag
+
+    -- ERC-20 `transferFrom`, mapped onto the V2 surface: within the approved
+    -- allowance, mobilise the owner's funds into a ready-to-settle `Allocation`
+    -- (owner SenderSide), reusing the settlement engine's own `lockInputHoldings`
+    -- to lock them. The owner's authority comes from the owner-signed allowance;
+    -- the issuer's asset authority comes from `admin` as a co-controller, so no
+    -- further owner action is needed at call time. The value move is then the
+    -- ordinary `SettlementFactory_SettleBatch` over this allocation and the
+    -- recipient's.
+    choice Erc20Allowance_AuthorizeSpend : (ContractId Allocation, ContractId Erc20Allowance)
+      with
+        settlement : SettlementInfo
+        leg : TransferLeg
+        amount : Decimal
+        ownerHoldingCids : [ContractId ToyHolding]
+      controller spender, admin
+      do
+        assertMsg eErc20AmountNotPositive (amount > 0.0)
+        assertMsg eErc20InsufficientAllowance (amount <= allowance)
+        assertMsg eErc20LegMismatch
+          (leg.sender == ownerAccount && leg.instrumentId == instrumentId && leg.amount == amount)
+        let spec = AllocationSpecification with
+              settlement
+              admin
+              authorizer = ownerAccount
+              transferLegSides = [senderSide leg]
+              nextIterationFunding = None
+              committed = False
+              meta = emptyMetadata
+        lockedCids <- lockInputHoldings spec ownerHoldingCids
+        allocationCid <- create Allocation with
+          originalAllocationCid = None
+          allocation = spec
+          lockedHoldingCids = lockedCids
+          createdAt = i0
+          numIterations = 0
+          d1ComplianceHook = None
+          d2SeizureHook = None
+          seizureWindowEnd = None
+          featureFlag
+        successor <- create this with allowance = allowance - amount
+        pure (allocationCid, successor)
+
+-- | ERC-20 `transfer`: a holder moving value to a counterparty maps 1:1 onto a
+-- single-leg atomic `SettlementFactory_SettleBatch`. `balanceOf`/`totalSupply`
+-- read the holdings before and after; supply is conserved by the settlement
+-- engine, so this is the ERC-20 "no inflation on transfer" invariant.
+test_cip0086_transferMovesValueAndConservesSupply : Script ()
+test_cip0086_transferMovesValueAndConservesSupply = script do
+  setTime i0
+  admin <- allocateParty "erc20-xfer-admin"
+  app <- allocateParty "erc20-xfer-app"
+  alice <- allocateParty "erc20-xfer-alice"
+  bob <- allocateParty "erc20-xfer-bob"
+  let aliceAcct = basicAccount alice
+      bobAcct = basicAccount bob
+  aliceHolding <- mintUsd [admin, alice] admin aliceAcct 100.0
+
+  -- balanceOf / totalSupply before.
+  aliceBefore <- erc20BalanceOf admin aliceAcct
+  aliceBefore === 100.0
+  (erc20BalanceOf admin bobAcct) >>= \b -> b === 0.0
+  (erc20TotalSupply admin) >>= \s -> s === 100.0
+
+  _ <- settleUsdTransfer admin app aliceAcct bobAcct aliceHolding 30.0 "erc20-xfer"
+
+  -- balanceOf / totalSupply after: 30 moved, 70 returned as change, supply intact.
+  (erc20BalanceOf admin aliceAcct) >>= \b -> b === 70.0
+  (erc20BalanceOf admin bobAcct) >>= \b -> b === 30.0
+  (erc20TotalSupply admin) >>= \s -> s === 100.0
+
+-- | CIP-0086 scoped-visibility boundary: `balanceOf` is projection-scoped. A
+-- party with no projection of an account's holdings reads 0 — an unscoped,
+-- globally-correct ERC-20 `balanceOf` is not possible on Canton.
+test_cip0086_balanceOfIsProjectionScoped : Script ()
+test_cip0086_balanceOfIsProjectionScoped = script do
+  setTime i0
+  admin <- allocateParty "erc20-scope-admin"
+  alice <- allocateParty "erc20-scope-alice"
+  mallory <- allocateParty "erc20-scope-mallory"
+  let aliceAcct = basicAccount alice
+  _ <- mintUsd [admin, alice] admin aliceAcct 100.0
+  -- The issuer (a stakeholder of every holding) sees the balance; an unrelated
+  -- party with no projection sees nothing.
+  (erc20BalanceOf admin aliceAcct) >>= \b -> b === 100.0
+  (erc20BalanceOf mallory aliceAcct) >>= \b -> b === 0.0
+
+-- | CIP-0086 `approve` + `transferFrom`: a spender, within the approved
+-- allowance, mobilises the owner's funds into a V2 `Allocation` and the batch
+-- settles owner -> recipient. Supply is conserved, change returns to the owner,
+-- and the allowance is decremented.
+test_cip0086_approveTransferFromMovesViaSettlement : Script ()
+test_cip0086_approveTransferFromMovesViaSettlement = script do
+  setTime i0
+  admin <- allocateParty "erc20-tf-admin"
+  app <- allocateParty "erc20-tf-app"
+  owner <- allocateParty "erc20-tf-owner"
+  spender <- allocateParty "erc20-tf-spender"
+  recipient <- allocateParty "erc20-tf-recipient"
+  let ownerAcct = basicAccount owner
+      recipientAcct = basicAccount recipient
+  ownerHolding <- mintUsd [admin, owner] admin ownerAcct 100.0
+
+  -- approve(spender, 40) — owner-only, faithful to ERC-20.
+  allowanceCid <- submit owner do
+    createCmd Erc20Allowance with
+      admin; owner; ownerAccount = ownerAcct; spender
+      instrumentId = usdSymbol; allowance = 40.0; featureFlag = experimentalFeatureFlag
+
+  -- transferFrom: spender + admin co-authorise a 30 spend of the owner's funds.
+  -- The owner's move authority comes from the owner-signed allowance; the
+  -- issuer's asset authority comes from admin as co-controller.
+  (factory, factoryDisc) <- mkFactory admin
+  let settlement = mkSettlementInfo "erc20-tf" app
+      leg = mkUsdLeg "erc20-tf" ownerAcct recipientAcct 30.0
+  (ownerAlloc, allowanceCid2) <- submit [spender, admin] do
+    exerciseCmd allowanceCid Erc20Allowance_AuthorizeSpend with
+      settlement; leg; amount = 30.0; ownerHoldingCids = [ownerHolding]
+
+  -- recipient's receiver side, then atomic settlement.
+  recipientAlloc <- createAndAcceptAllocation admin factory factoryDisc settlement recipientAcct [receiverSide leg] []
+  receipts <- submit (actAs [app] <> discloseMany [factoryDisc]) do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement; transferLegs = [leg]; allocationCids = [ownerAlloc, recipientAlloc]
+      actors = [app]; d1ComplianceRef = None
+  length receipts === 2
+
+  (erc20BalanceOf admin ownerAcct) >>= \b -> b === 70.0
+  (erc20BalanceOf admin recipientAcct) >>= \b -> b === 30.0
+  (erc20TotalSupply admin) >>= \s -> s === 100.0
+  Some allow2 <- queryContractId admin allowanceCid2
+  allow2.allowance === 10.0
+
+-- | CIP-0086 fail-closed: `transferFrom` beyond the approved allowance is
+-- rejected before any funds move.
+test_cip0086_transferFromExceedsAllowanceFails : Script ()
+test_cip0086_transferFromExceedsAllowanceFails = script do
+  setTime i0
+  admin <- allocateParty "erc20-over-admin"
+  app <- allocateParty "erc20-over-app"
+  owner <- allocateParty "erc20-over-owner"
+  spender <- allocateParty "erc20-over-spender"
+  recipient <- allocateParty "erc20-over-recipient"
+  let ownerAcct = basicAccount owner
+      recipientAcct = basicAccount recipient
+  ownerHolding <- mintUsd [admin, owner] admin ownerAcct 100.0
+  allowanceCid <- submit owner do
+    createCmd Erc20Allowance with
+      admin; owner; ownerAccount = ownerAcct; spender
+      instrumentId = usdSymbol; allowance = 20.0; featureFlag = experimentalFeatureFlag
+  let settlement = mkSettlementInfo "erc20-over" app
+      leg = mkUsdLeg "erc20-over" ownerAcct recipientAcct 30.0
+  submitMustFail [spender, admin] do
+    exerciseCmd allowanceCid Erc20Allowance_AuthorizeSpend with
+      settlement; leg; amount = 30.0; ownerHoldingCids = [ownerHolding]
+  pure ()
+
+-- | CIP-0086 D2 boundary: a seizure is a seizure-resolution state, NOT an ERC-20
+-- burn or a sender refund. After a lock-and-sweep, total supply is unchanged
+-- (the funds exist at the custodian), the owner is not refunded, and nothing was
+-- burned.
+test_cip0086_d2SeizureIsNotBurnOrRefund : Script ()
+test_cip0086_d2SeizureIsNotBurnOrRefund = script do
+  setTime i0
+  admin <- allocateParty "erc20-d2-admin"
+  app <- allocateParty "erc20-d2-app"
+  alice <- allocateParty "erc20-d2-alice"
+  bob <- allocateParty "erc20-d2-bob"
+  let aliceAcct = basicAccount alice
+      bobAcct = basicAccount bob
+      custodian = Account with owner = None; provider = Some admin; id = "erc20-d2-custodian"
+  aliceHolding <- mintUsd [admin, alice] admin aliceAcct 100.0
+  (erc20TotalSupply admin) >>= \s -> s === 100.0
+
+  (factory, factoryDisc) <- mkFactory admin
+  let settlement = mkSettlementInfo "erc20-d2" app
+      leg = mkUsdLeg "erc20-d2" aliceAcct bobAcct 100.0
+  aliceAlloc <- createAndAcceptAllocation admin factory factoryDisc settlement aliceAcct [senderSide leg] [aliceHolding]
+
+  -- Mark the in-flight seizure and sweep to the admin-preset custodian.
+  burnerCap <- submit admin do
+    createCmd BurnerCapability with
+      admin; assignee = admin; instrumentScope = Some (usdId admin)
+      featureFlag = experimentalFeatureFlag
+  let seizureHook = D2SeizureHook with
+        seizureCaseRef = "erc20-d2-case"
+        custodianDestination = custodian
+        inFlightHandlingStatus = "lock-and-sweep"
+  marked <- submit admin do
+    exerciseCmd aliceAlloc Allocation_MarkD2InFlightSeizure with actors = [admin]; seizureHook
+  result <- submit admin do
+    exerciseCmd marked Allocation_SweepD2InFlightSeizure with burner = admin; burnerCapCid = Some burnerCap
+  case result of
+    AllocationD2Swept cids -> length cids === 1
+    _ -> fail "expected AllocationD2Swept"
+
+  -- Supply intact (no burn); custodian holds the funds; alice not refunded.
+  (erc20TotalSupply admin) >>= \s -> s === 100.0
+  (erc20BalanceOf admin custodian) >>= \b -> b === 100.0
+  (erc20BalanceOf admin aliceAcct) >>= \b -> b === 0.0
+
+eErc20AmountNotPositive : Text
+eErc20AmountNotPositive = "Cip0086Erc20: transferFrom amount must be positive"
+
+eErc20InsufficientAllowance : Text
+eErc20InsufficientAllowance = "Cip0086Erc20: transferFrom amount exceeds approved allowance"
+
+eErc20LegMismatch : Text
+eErc20LegMismatch = "Cip0086Erc20: transfer leg must match the allowance owner, instrument, and amount"

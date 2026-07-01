@@ -1,0 +1,56 @@
+-- | Experimental local mock of the Canton Token Standard V2 holding package.
+--
+-- Mirrors `splice-api-token-holding-v2` (`Splice.Api.Token.HoldingV2`):
+-- `InstrumentId`, `Account`, `Lock`, and the `Holding` interface (viewtype
+-- `HoldingView`). NON-PUBLIC, experiment-only stand-in (import-gate Option D).
+--
+-- The real upstream `Holding` interface is data-only (no behaviour methods); a
+-- holding is moved via the allocation/transfer interfaces. This mock keeps the
+-- interface viewtype-only for the same reason; concrete crediting/locking
+-- behaviour lives on the implementing templates in the settlement scaffold.
+module OpenZeppelin.TokenStandard.V2.Holding where
+
+import OpenZeppelin.TokenStandard.V2.Metadata
+
+-- | Instrument identity: the issuing admin plus a textual id. Mirrors
+-- `HoldingV2.InstrumentId`.
+data InstrumentId = InstrumentId with
+    admin : Party
+    id : Text
+  deriving (Eq, Ord, Show)
+
+-- | Holding account. Mirrors `HoldingV2.Account` (`owner`/`provider`/`id`).
+data Account = Account with
+    owner : Optional Party
+    provider : Optional Party
+    id : Text
+  deriving (Eq, Ord, Show)
+
+-- | A basic owner-only account, matching the upstream `basicAccount` helper.
+basicAccount : Party -> Account
+basicAccount owner = Account with
+  owner = Some owner
+  provider = None
+  id = ""
+
+-- | Lock embedded on a locked holding. Mirrors `HoldingV1.Lock` as surfaced on
+-- the V2 holding view.
+data Lock = Lock with
+    holders : [Party]
+    expiresAt : Optional Time
+    context : Optional Text
+  deriving (Eq, Show)
+
+-- | Viewtype for the `Holding` interface. Mirrors `HoldingV2.HoldingView`.
+data HoldingView = HoldingView with
+    account : Account
+    instrumentId : InstrumentId
+    amount : Decimal
+    lock : Optional Lock
+    meta : Metadata
+  deriving (Eq, Show)
+
+-- | The V2 holding interface. Data-only by design; implementers are concrete
+-- holding templates that own signatory/observer/lock/credit semantics.
+interface Holding where
+  viewtype HoldingView

@@ -1,0 +1,17 @@
+sdk-version: 3.4.11
+name: oz-token-standard-v2-mock
+source: daml
+version: 0.1.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+build-options:
+  - --target=2.1
+# LOCAL MOCK, not a stable public API. This package mirrors the seven
+# `splice-api-token-*-v2` interface packages 1:1 so the settlement engine and the
+# interop facades can build and be exercised end-to-end before the upstream DARs
+# are importable. Per the CIP-0112 public-API promotion-boundary ADR (tracked in
+# OpenZeppelin/canton-specs), upstream Token Standard V2 types must NOT be
+# republished under local names as the stable API: this mock stays a build/test
+# dependency and is replaced by the real Splice imports once the import gate
+# (published DARs + checksums + license/NOTICE + DPM wiring) clears.

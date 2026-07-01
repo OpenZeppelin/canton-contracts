@@ -6,6 +6,14 @@
 # `test` data-depends on all three and is not shipped. The root package and
 # `proof` are the pre-existing M0 hello-world baseline.
 #
+# The CIP-0112 interop slice (branch `cip-interop-m1`) adds three packages,
+# promoted out of `canton-specs/experiments/` per the CIP-0112 promotion-boundary
+# ADR: `token-standard-v2-mock` (a local V2-interface mock — a build/test
+# dependency, NOT a stable public API, kept until the Splice DAR import gate
+# clears), the `settlement` engine that depends on it, and the `interop` proof
+# (CIP-0086/0103/0104 facades + executable scripts) that depends on both. `test`
+# now also covers the settlement engine.
+#
 # Build everything in dependency order with `dpm build --all`.
 packages:
   - .
@@ -13,4 +21,7 @@ packages:
   - access-control
   - ownable
   - pausable
+  - token-standard-v2-mock
+  - settlement
+  - interop
   - test

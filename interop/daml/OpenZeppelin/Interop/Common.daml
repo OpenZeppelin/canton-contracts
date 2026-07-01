@@ -1,0 +1,157 @@
+-- | Shared harness for the CIP interoperability exemplars. These are NOT new
+-- settlement primitives — they only drive the experimental CIP-0112 settlement
+-- surface (`OpenZeppelin.Settlement.Cip112`) so the per-CIP
+-- exemplars can assert real, executable interop instead of prose. NON-PUBLIC,
+-- experiment-only; no public-API / conformance / audit / production claim.
+module OpenZeppelin.Interop.Common where
+
+import Daml.Script
+import DA.Date (date, Month(Jan))
+import DA.Time (time)
+
+import OpenZeppelin.Settlement.Cip112
+import OpenZeppelin.TokenStandard.V2.Metadata
+import OpenZeppelin.TokenStandard.V2.Holding
+import OpenZeppelin.TokenStandard.V2.Allocation
+  ( Reference(..)
+  , SettlementInfo(..)
+  , TransferLeg(..)
+  , TransferLegSide(..)
+  , AllocationSpecification(..)
+  )
+
+-- Settlement timeline: settle within (i0, deadline i1]; i2 is past the deadline.
+i0 : Time
+i0 = time (date 2026 Jan 1) 0 0 0
+
+i1 : Time
+i1 = time (date 2026 Jan 1) 1 0 0
+
+i2 : Time
+i2 = time (date 2026 Jan 1) 2 0 0
+
+-- | The single USD instrument used across the exemplars.
+usdId : Party -> InstrumentId
+usdId admin = InstrumentId with admin; id = "USD"
+
+usdSymbol : Text
+usdSymbol = "USD"
+
+mkSettlementInfo : Text -> Party -> SettlementInfo
+mkSettlementInfo ref app = SettlementInfo with
+  executors = [app]
+  settlementRef = Reference with id = ref; cidText = None
+  settlementDeadline = Some i1
+  meta = emptyMetadata
+
+mkUsdLeg : Text -> Account -> Account -> Decimal -> TransferLeg
+mkUsdLeg ref sender receiver amount = TransferLeg with
+  transferLegId = ref <> "-leg"
+  sender
+  receiver
+  amount
+  instrumentId = usdSymbol
+  meta = emptyMetadata
+
+-- | Mint an unlocked USD holding. `submitters` must satisfy the `ToyHolding`
+-- signatories (`admin` plus the account parties).
+mintUsd : [Party] -> Party -> Account -> Decimal -> Script (ContractId ToyHolding)
+mintUsd submitters admin account amount =
+  submit submitters do
+    createCmd ToyHolding with
+      admin
+      account
+      instrumentId = usdId admin
+      amount
+      lock = None
+      meta = emptyMetadata
+      featureFlag = experimentalFeatureFlag
+
+-- | Create a settlement factory and return it with its disclosure.
+mkFactory : Party -> Script (ContractId SettlementFactory, Disclosure)
+mkFactory admin = do
+  factory <- submit admin do
+    createCmd SettlementFactory with
+      admin
+      featureFlag = experimentalFeatureFlag
+  Some disc <- queryDisclosure @SettlementFactory admin factory
+  pure (factory, disc)
+
+-- | Drive the V1-wallet-compatible direct-factory path: create an allocation
+-- instruction for `authorizer` and accept it, returning the ready `Allocation`.
+-- `inputHoldingCids` are locked on accept (empty for a pure receiver side).
+createAndAcceptAllocation
+  : Party
+  -> ContractId SettlementFactory
+  -> Disclosure
+  -> SettlementInfo
+  -> Account
+  -> [TransferLegSide]
+  -> [ContractId ToyHolding]
+  -> Script (ContractId Allocation)
+createAndAcceptAllocation admin factory factoryDisc settlement authorizer sides inputHoldingCids = do
+  let authorizerParties = accountParties admin authorizer
+  instruction <- submit (actAs authorizerParties <> discloseMany [factoryDisc]) do
+    exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
+      allocation = AllocationSpecification with
+        settlement
+        admin
+        authorizer
+        transferLegSides = sides
+        nextIterationFunding = None
+        committed = False
+        meta = emptyMetadata
+      requestedAt = i0
+      inputHoldingCids
+      d1ComplianceHook = None
+      actors = authorizerParties
+  result <- submit (actAs authorizerParties) do
+    exerciseCmd instruction AllocationInstruction_Accept with actors = authorizerParties
+  case result of
+    AllocationInstructionCompleted cid -> pure cid
+    _ -> abort "interop: allocation instruction did not complete"
+
+-- | Build a sender->receiver USD transfer's two allocations and settle them
+-- atomically through the real `SettlementFactory_SettleBatch`. The sender must
+-- already hold `senderHoldingCid` (>= `amount`); change is returned to the
+-- sender by the settlement engine. Returns the receipts.
+settleUsdTransfer
+  : Party
+  -> Party
+  -> Account
+  -> Account
+  -> ContractId ToyHolding
+  -> Decimal
+  -> Text
+  -> Script [ContractId SettlementReceipt]
+settleUsdTransfer admin app senderAcct recvAcct senderHoldingCid amount ref = do
+  (factory, factoryDisc) <- mkFactory admin
+  let settlement = mkSettlementInfo ref app
+      leg = mkUsdLeg ref senderAcct recvAcct amount
+  senderAlloc <- createAndAcceptAllocation admin factory factoryDisc settlement senderAcct [senderSide leg] [senderHoldingCid]
+  recvAlloc <- createAndAcceptAllocation admin factory factoryDisc settlement recvAcct [receiverSide leg] []
+  submit (actAs [app] <> discloseMany [factoryDisc]) do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [leg]
+      allocationCids = [senderAlloc, recvAlloc]
+      actors = [app]
+      d1ComplianceRef = None
+
+-- | ERC-20 `balanceOf`: the spendable (unlocked) USD a `reader` can see for an
+-- account. It is intentionally projection-scoped — a party with no projection of
+-- the account's holdings sees 0, which is the CIP-0086 "scoped-visibility"
+-- reality (an unscoped global `balanceOf` is not correct on Canton).
+erc20BalanceOf : Party -> Account -> Script Decimal
+erc20BalanceOf reader account = do
+  hs <- query @ToyHolding reader
+  let mine = filter (\(_, h) -> h.account == account && h.instrumentId.id == usdSymbol && h.lock == None) hs
+  pure (sum (map (\(_, h) -> h.amount) mine))
+
+-- | ERC-20 `totalSupply`: every USD holding the `admin` (issuer) can see —
+-- locked or unlocked. Conservation across settlement keeps this invariant.
+erc20TotalSupply : Party -> Script Decimal
+erc20TotalSupply admin = do
+  hs <- query @ToyHolding admin
+  let usd = filter (\(_, h) -> h.instrumentId.id == usdSymbol) hs
+  pure (sum (map (\(_, h) -> h.amount) usd))
