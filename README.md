@@ -1,27 +1,41 @@
-# oz-daml-contracts
+# canton-contracts
 
-Reusable Daml contracts library scaffold for the OpenZeppelin Canton ecosystem
-workspace.
+The decoupled, ergonomic general Daml contracts library for the OpenZeppelin
+Canton ecosystem.
 
 Status: M0 scaffold + the first reusable access-control primitives (slice AL-7,
-see [Access Control Library](#access-control-library-al-7) below). This repo does
-not yet implement CIP-56, CIP-86, CIP-103, CIP-104, or reference-implementation
-logic.
+see [Access Control Library](#access-control-library-al-7) below). No stable M1
+public API, conformance, audit readiness, production readiness, or release
+readiness is claimed.
 
 ## Scope
 
-M1 target scope:
+This repo is **only** the general, decoupled contracts library: small,
+independent, reusable Daml packages that any application — including the
+OpenZeppelin Canton Reference Implementations (RIs) — can consume by importing
+just the DAR(s) it needs. Each package stays ergonomic and standalone; the
+library never absorbs application or RI-specific business logic.
 
-- CIP-56 token foundation.
-- CIP-86 compatibility surface.
-- CIP-103 dApp and wallet-provider support components.
-- CIP-104 rewards support components.
-- Documentation, tests, security notes, and compatibility evidence.
+In scope:
 
-Out of scope for this repo:
+- Reusable access-control primitives (`oz-access-control`, `oz-ownable`,
+  `oz-pausable`) with the role-admin hierarchy and timelocked admin handoff.
+- Future general primitives that pass a promotion-boundary review (e.g. a
+  stabilized CIP-0112 settlement package), promoted **into** this library only
+  after the gates recorded in `canton-specs` are met.
+- Documentation, tests, and security notes for the library packages.
 
+Out of scope for this repo (these live in
+[`OpenZeppelin/canton-specs`](https://github.com/OpenZeppelin/canton-specs),
+which consumes this library):
+
+- The CIP-0112 / Token Standard V2 settlement **RI scaffold** and the
+  compliance / identity design experiments.
+- CIP specs, architecture reports, and the four Year-1 RI architectural
+  overviews (DEX, Lending, Cross-Chain Stablecoin, Confidential Auction).
 - DEX, lending, payments, or auction business logic.
 - Production private integrations.
+- Production KYC, sanctions, custody, validator, bridge, or relayer services.
 - Full off-chain relayer infrastructure.
 - Year 2 components before approval.
 

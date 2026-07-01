@@ -1,4 +1,4 @@
-# AGENTS.md - oz-daml-contracts
+# AGENTS.md - canton-contracts
 
 ## Role
 
@@ -8,12 +8,13 @@ applications import individually. Keep changes small, auditable, and tied to
 library deliverables.
 
 The OpenZeppelin Canton Reference Implementations — the CIP-0112 settlement RI
-scaffold, the compliance/identity experiments, and the CIP specs/architecture
-reports — live in `OpenZeppelin/canton-specs`, which **consumes** this library.
-Keeping the RI out of this repo is what keeps the library decoupled and
-ergonomic. **Do not add RI-specific or experimental packages here**; a primitive
-is promoted from the RI scaffold into this library only after it satisfies the
-CIP-0112 promotion-boundary ADR tracked in `canton-specs`.
+scaffold, the compliance/identity experiments, the CIP specs/architecture
+reports, and the four Year-1 RI architectural overviews — live in
+`OpenZeppelin/canton-specs`, which **consumes** this library. Keeping the RI out
+of this repo is what keeps the library decoupled and ergonomic. **Do not add
+RI-specific or experimental packages here**; a primitive is promoted from the RI
+scaffold into this library only after it satisfies the CIP-0112
+promotion-boundary ADR tracked in `canton-specs`.
 
 The `settlement`, `token-standard-v2-mock`, and `interop` packages are exactly
 such a promotion, in progress on the `cip-interop-m1` branch: the interop facades
@@ -25,12 +26,11 @@ V2 import gate has not cleared) until that ADR step completes.
 
 Before changing this repo:
 
-1. Read root `../../AGENTS.md`.
-2. Read root `../../SCOPE.md`.
-3. Read root `../../PLAN.md`.
-4. Read this file.
-5. Read `README.md`.
-6. Check the accepted SDK/CIP ADR before adding or changing `daml.yaml`.
+1. Read root `../AGENTS.md`.
+2. Read root `../PLAN.md`.
+3. Read this file.
+4. Read `README.md`.
+5. Check the accepted SDK/CIP ADR before adding or changing `daml.yaml`.
 
 ## Boundaries
 
