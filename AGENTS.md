@@ -79,14 +79,12 @@ If any item is unclear, document the uncertainty before implementation.
 
 ## Validation
 
-Use root scripts when available:
+Use repo-local scripts for standalone validation:
 
 ```sh
-../../scripts/check-all.sh
-../../scripts/test-all.sh
-../../scripts/fmt-all.sh
-../../scripts/check-no-github-workflows.sh
-../../scripts/manual-workflow-tests.sh
+scripts/check-scaffold.sh
+scripts/run-tests.sh
+scripts/manual-workflow-test.sh
 ```
 
 The accepted M0 proof baseline uses DPM with SDK 3.4.11. Because `daml.yaml`
@@ -94,7 +92,7 @@ exists, missing DPM or Java 21 tooling is a validation failure, not a green
 skip. Use `OZ_DAML_TOOLCHAIN=dpm` for the M0 proof baseline; Daml Assistant
 requires a superseding ADR or explicit exception.
 
-This repo uses local manual workflow tests instead of GitHub CI. The repo-local
-entrypoint is `scripts/manual-workflow-test.sh`, and the root guard
-`../../scripts/check-no-github-workflows.sh` must remain green so hosted
-workflow files are not reintroduced accidentally.
+GitHub Actions / hosted CI is accepted here (`.github/workflows/ci.yml`): it
+provisions DPM, builds every package, runs the script suites via
+`scripts/run-tests.sh`, and captures coverage. The repo-local manual validation
+entrypoint remains `scripts/manual-workflow-test.sh`.
