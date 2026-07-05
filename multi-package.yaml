@@ -1,10 +1,17 @@
-# Multi-package layout for the OpenZeppelin Daml contracts workspace.
+# Multi-package layout for the OpenZeppelin Daml contracts library.
 #
 # The access-control library ships as three INDEPENDENT packages — a consumer
 # imports only the DAR(s) it needs (e.g. just `oz-pausable`), which is the whole
 # point of the decoupling (see canton-token-template docs/ARCHITECTURE.md, AL-7).
 # `test` data-depends on all three and is not shipped. The root package and
 # `proof` are the pre-existing M0 hello-world baseline.
+#
+# This repo is the decoupled, ergonomic general contracts library only. The
+# CIP-0112 settlement RI scaffold, the compliance/identity experiments, and the
+# CIP specs/architecture reports live in OpenZeppelin/canton-specs, which
+# consumes these packages. Do not re-add RI-specific or experimental packages
+# here; promote a stabilized library package only behind the promotion-boundary
+# ADR gates recorded in canton-specs.
 #
 # Build everything in dependency order with `dpm build --all`.
 packages:
