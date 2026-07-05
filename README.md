@@ -39,11 +39,18 @@ which consumes this library):
 - Full off-chain relayer infrastructure.
 - Year 2 components before approval.
 
+The companion `canton-specs` repo holds the RI implementation code and the
+specs/architecture/RI reports, and depends on the packages here. Keeping the RI
+out of this repo is what keeps the library decoupled and ergonomic. See
+`canton-specs` `docs/ri-reports/` for the RI reports that reference this
+library, and its CIP-0112 promotion-boundary ADR for the rules a primitive must
+satisfy before it is promoted into this library.
+
 ## Build Instructions
 
 The M0 proof baseline accepts Daml SDK / Canton 3.4.11 through DPM only for the
-hello-world compile/deploy proof. M1 public API pins remain open until the
-required 3.5 re-evaluation.
+hello-world compile/deploy proof. M1 public API and Splice DAR import pins
+remain open until the CIP-112 promotion boundary gates are accepted.
 
 For the M0 proof baseline:
 
@@ -158,9 +165,15 @@ all three DARs.
 Build and test the whole workspace in dependency order:
 
 ```sh
-dpm build --all          # builds all packages, including the three libraries
-cd test && dpm test      # 16 scripts: 6 AccessControl, 6 Ownable, 4 Pausable
+dpm build --all          # builds the root, proof, and the three libraries
+cd test && dpm test      # runs the shared library test package
 ```
+
+The `test/` package exercises the three library packages (`AccessControl`,
+`Ownable`, `Pausable`) plus the `Gated` example consumer. In the last full-suite
+run (2026-06-21, SDK 3.4.11 / Java 21) these accounted for 24 passing scripts
+(14 AccessControl, 6 Ownable, 4 Pausable). Re-run `dpm test` to confirm the
+library subset after the RI/experiment packages were moved to `canton-specs`.
 
 Or build a single library standalone (proving its independence):
 

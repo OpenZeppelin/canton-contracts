@@ -1,4 +1,4 @@
-# Multi-package layout for the OpenZeppelin Daml contracts workspace.
+# Multi-package layout for the OpenZeppelin Daml contracts library.
 #
 # The access-control library ships as three INDEPENDENT packages — a consumer
 # imports only the DAR(s) it needs (e.g. just `oz-pausable`), which is the whole
@@ -6,18 +6,12 @@
 # `test` data-depends on all three and is not shipped. The root package and
 # `proof` are the pre-existing M0 hello-world baseline.
 #
-# POLICY: this repo is the decoupled general library only. The RI scaffold,
-# compliance/identity experiments, and CIP specs live in canton-specs, which
-# consumes these packages. Do not add RI-specific or experimental packages here
-# except as a promotion behind the CIP-0112 promotion-boundary ADR.
-#
-# The CIP-0112 interop slice (branch `cip-interop-m1`) adds three packages,
-# promoted out of `canton-specs/experiments/` per the CIP-0112 promotion-boundary
-# ADR: `token-standard-v2-mock` (a local V2-interface mock — a build/test
-# dependency, NOT a stable public API, kept until the Splice DAR import gate
-# clears), the `settlement` engine that depends on it, and the `interop` proof
-# (CIP-0086/0103/0104 facades + executable scripts) that depends on both. `test`
-# now also covers the settlement engine.
+# This repo is the decoupled, ergonomic general contracts library only. The
+# CIP-0112 settlement RI scaffold, the compliance/identity experiments, and the
+# CIP specs/architecture reports live in OpenZeppelin/canton-specs, which
+# consumes these packages. Do not re-add RI-specific or experimental packages
+# here; promote a stabilized library package only behind the promotion-boundary
+# ADR gates recorded in canton-specs.
 #
 # Build everything in dependency order with `dpm build --all`.
 packages:
