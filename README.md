@@ -184,18 +184,32 @@ cd pausable && dpm build
 Status: `0.1.0`, **unstable** — these are not yet public API (no stability ADR),
 so DAR SHAs are intentionally not pinned here while the shape may still change.
 
-## Reference Implementations
+## CIP-0112 Settlement + Interop (cip-interop-m1)
 
-This library is consumed by — and does not contain — the OpenZeppelin Canton
-Reference Implementations. The CIP-0112 / Token Standard V2 settlement RI
-scaffold, the compliance/identity experiments, the CIP architecture specs, and
-the four Year-1 RI architectural overview reports live in
-[`OpenZeppelin/canton-specs`](https://github.com/OpenZeppelin/canton-specs).
-Those reports cite this library by package, module, template, and choice as the
-`[IMPLEMENTED]` library base they build on. A primitive is promoted from the RI
-scaffold into this library only after it satisfies the CIP-0112 promotion
-boundary ADR (Splice DAR/import, license/NOTICE, package-ID/checksum, DPM
-wiring, and public-API gates), which is tracked in `canton-specs`.
+The CIP-0112 settlement engine and the CIP-0086/0103/0104 interop proof are
+promoted here out of `canton-specs/experiments/`, per the CIP-0112
+promotion-boundary ADR tracked in `canton-specs`. Three packages, in dependency
+order:
+
+| Package | Module(s) | Notes |
+|---|---|---|
+| `oz-token-standard-v2-mock` | `OpenZeppelin.TokenStandard.V2.*` | **Local mock, not a stable public API.** Mirrors the seven `splice-api-token-*-v2` interface packages 1:1 so the engine and proof build and run before the upstream DARs are importable. Kept as a build/test dependency until the import gate (published DARs + checksums + license/NOTICE + DPM wiring) clears — the ADR forbids republishing upstream types under local names as the stable API. |
+| `oz-settlement` | `OpenZeppelin.Settlement.Cip112` | The CIP-0112 settlement engine. `daml-script`-free library; its scripts live in `test/`. |
+| `oz-interop` | `OpenZeppelin.Interop.{Common,Cip0086Erc20,Cip0103Wallet,Cip0104AppRewards}` | The interop proof: CIP-0086 (ERC-20 facade), CIP-0103 (wallet), CIP-0104 (app rewards) executed as real scripts against the engine. A consumer/exemplar package (facade template + scripts together, `-Wno-template-interface-depends-on-daml-script`), never shipped as a library DAR. |
+
+Tests and coverage are wired into the standard gate: `test/` now also covers the
+settlement engine (`Cip112Settlement`), and `scripts/run-tests.sh` additionally
+runs the `interop/` scripts and writes coverage reports to `test-reports/`.
+Hosted CI (`.github/workflows/ci.yml`) runs the whole gate on every PR.
+
+```sh
+dpm build --all            # includes token-standard-v2-mock, settlement, interop
+scripts/run-tests.sh       # spine + settlement + interop suites, with coverage
+```
+
+Status: `0.1.0`, **experimental / unstable** — gated behind the CIP-0112
+promotion-boundary ADR; not public API and not a conformance/audit/production
+claim.
 
 ## License
 

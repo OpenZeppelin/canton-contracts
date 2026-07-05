@@ -1,0 +1,152 @@
+-- | CIP-0103 interoperability proof: a wallet / dApp can drive the CIP-0112
+-- settlement lifecycle through the account/command/event surface CIP-0103
+-- defines, and Canton privacy scopes what the wallet sees. Executed against the
+-- real settlement engine rather than asserted in prose:
+--
+--   * account discovery / selection -> choosing a Token Standard V2 `Account`;
+--   * prepareExecute / command       -> request -> accept -> instruction -> accept;
+--   * txChanged lifecycle events      -> the wallet observing its own
+--                                        `SettlementReceipt` + `EventLog` entry;
+--   * V1-wallet compatibility path    -> calling the factory's instruction
+--                                        entrypoint directly, with no persisted
+--                                        `AllocationRequest`;
+--   * predictable error handling      -> fail-closed paths surface as failures;
+--   * privacy                         -> a non-participant wallet sees nothing.
+--
+-- NON-PUBLIC, experiment-only. No CIP-0103 API-conformance or wallet-provider
+-- claim.
+module OpenZeppelin.Interop.Cip0103Wallet where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import OpenZeppelin.Settlement.Cip112
+import OpenZeppelin.Interop.Common
+import OpenZeppelin.TokenStandard.V2.Metadata
+import OpenZeppelin.TokenStandard.V2.Holding
+import OpenZeppelin.TokenStandard.V2.Allocation
+  ( RequestedAllocation(..)
+  )
+
+-- | Full CIP-0103 lifecycle: the dApp emits an `AllocationRequest`, the wallet
+-- accepts it (prepareExecute analogue) and creates + accepts its funding
+-- instruction, and the batch settles. The wallet then observes its own
+-- txChanged lifecycle artifacts — the `SettlementReceipt` and the
+-- `EventLog_HoldingsChange` entry — proving the reporting surface is visible to
+-- the wallet, not only to the executor.
+test_cip0103_walletDrivesFullLifecycleAndSeesEvents : Script ()
+test_cip0103_walletDrivesFullLifecycleAndSeesEvents = script do
+  setTime i0
+  admin <- allocateParty "wallet-life-admin"
+  app <- allocateParty "wallet-life-app"
+  alice <- allocateParty "wallet-life-alice"
+  bob <- allocateParty "wallet-life-bob"
+
+  -- Account discovery / selection: the wallet selects its Token Standard V2 account.
+  let aliceAcct = basicAccount alice
+      bobAcct = basicAccount bob
+      settlement = mkSettlementInfo "wallet-life" app
+      leg = mkUsdLeg "wallet-life" aliceAcct bobAcct 25.0
+  (factory, factoryDisc) <- mkFactory admin
+
+  -- dApp emits a request; wallet accepts it (prepareExecute analogue).
+  request <- submit (actAs [app] <> discloseMany [factoryDisc]) do
+    exerciseCmd factory SettlementFactory_CreateAllocationRequest with
+      authorizer = aliceAcct
+      settlement
+      allocations =
+        [ RequestedAllocation with
+            admin
+            transferLegSides = [senderSide leg]
+            nextIterationFunding = None
+            committed = False
+            meta = emptyMetadata
+        ]
+      requestedAt = i0
+      settleAt = Some i1
+      actors = [app]
+  _ <- submit alice do exerciseCmd request AllocationRequest_Accept with actors = [alice]
+
+  -- Wallet funds + creates its allocation, counterparty creates its side, settle.
+  aliceHolding <- mintUsd [admin, alice] admin aliceAcct 25.0
+  aliceAlloc <- createAndAcceptAllocation admin factory factoryDisc settlement aliceAcct [senderSide leg] [aliceHolding]
+  bobAlloc <- createAndAcceptAllocation admin factory factoryDisc settlement bobAcct [receiverSide leg] []
+  receipts <- submit (actAs [app] <> discloseMany [factoryDisc]) do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement; transferLegs = [leg]; allocationCids = [aliceAlloc, bobAlloc]
+      actors = [app]; d1ComplianceRef = None
+  length receipts === 2
+
+  -- txChanged: the wallet observes its own lifecycle artifacts.
+  aliceReceipts <- query @SettlementReceipt alice
+  length aliceReceipts === 1
+  aliceEvents <- query @SettlementEventLogEntry alice
+  length aliceEvents === 1
+  -- and the value landed for the receiver wallet.
+  (erc20BalanceOf admin bobAcct) >>= \b -> b === 25.0
+
+-- | CIP-0103 V1-wallet compatibility: a signing flow may call the factory's
+-- allocation-instruction entrypoint directly, without persisting an
+-- `AllocationRequest`. `createAndAcceptAllocation` is exactly that direct path;
+-- the batch still settles.
+test_cip0103_v1WalletDirectFactoryPath : Script ()
+test_cip0103_v1WalletDirectFactoryPath = script do
+  setTime i0
+  admin <- allocateParty "wallet-v1-admin"
+  app <- allocateParty "wallet-v1-app"
+  alice <- allocateParty "wallet-v1-alice"
+  bob <- allocateParty "wallet-v1-bob"
+  let aliceAcct = basicAccount alice
+      bobAcct = basicAccount bob
+  aliceHolding <- mintUsd [admin, alice] admin aliceAcct 40.0
+  -- No AllocationRequest is created anywhere in this flow.
+  requests <- query @AllocationRequest app
+  length requests === 0
+  receipts <- settleUsdTransfer admin app aliceAcct bobAcct aliceHolding 40.0 "wallet-v1"
+  length receipts === 2
+  (erc20BalanceOf admin bobAcct) >>= \b -> b === 40.0
+
+-- | CIP-0103 privacy: a wallet with no role in a settlement has no projection of
+-- it. An unrelated wallet party sees neither the allocations nor the receipts.
+test_cip0103_privacyScopedToParticipants : Script ()
+test_cip0103_privacyScopedToParticipants = script do
+  setTime i0
+  admin <- allocateParty "wallet-priv-admin"
+  app <- allocateParty "wallet-priv-app"
+  alice <- allocateParty "wallet-priv-alice"
+  bob <- allocateParty "wallet-priv-bob"
+  outsider <- allocateParty "wallet-priv-outsider"
+  let aliceAcct = basicAccount alice
+      bobAcct = basicAccount bob
+  aliceHolding <- mintUsd [admin, alice] admin aliceAcct 10.0
+  _ <- settleUsdTransfer admin app aliceAcct bobAcct aliceHolding 10.0 "wallet-priv"
+  -- The uninvolved wallet has no projection of the settlement.
+  (query @SettlementReceipt outsider) >>= \rs -> length rs === 0
+  (query @SettlementEventLogEntry outsider) >>= \es -> length es === 0
+  (query @ToyHolding outsider) >>= \hs -> length hs === 0
+
+-- | CIP-0103 predictable error handling: fail-closed settlement paths surface as
+-- command failures a wallet/dApp can map to errors — here, settling after the
+-- settlement deadline.
+test_cip0103_failClosedSurfacesToWallet : Script ()
+test_cip0103_failClosedSurfacesToWallet = script do
+  setTime i0
+  admin <- allocateParty "wallet-fail-admin"
+  app <- allocateParty "wallet-fail-app"
+  alice <- allocateParty "wallet-fail-alice"
+  bob <- allocateParty "wallet-fail-bob"
+  let aliceAcct = basicAccount alice
+      bobAcct = basicAccount bob
+      settlement = mkSettlementInfo "wallet-fail" app
+      leg = mkUsdLeg "wallet-fail" aliceAcct bobAcct 10.0
+  aliceHolding <- mintUsd [admin, alice] admin aliceAcct 10.0
+  (factory, factoryDisc) <- mkFactory admin
+  aliceAlloc <- createAndAcceptAllocation admin factory factoryDisc settlement aliceAcct [senderSide leg] [aliceHolding]
+  bobAlloc <- createAndAcceptAllocation admin factory factoryDisc settlement bobAcct [receiverSide leg] []
+  -- Advance past the deadline; the settle command fails closed.
+  setTime i2
+  submitMustFail (actAs [app] <> discloseMany [factoryDisc]) do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement; transferLegs = [leg]; allocationCids = [aliceAlloc, bobAlloc]
+      actors = [app]; d1ComplianceRef = None
+  pure ()

@@ -11,9 +11,16 @@ The OpenZeppelin Canton Reference Implementations — the CIP-0112 settlement RI
 scaffold, the compliance/identity experiments, the CIP specs/architecture
 reports, and the four Year-1 RI architectural overviews — live in
 `OpenZeppelin/canton-specs`, which **consumes** this library. Keeping the RI out
-of this repo is what keeps the library decoupled and ergonomic. A primitive is
-promoted from the RI scaffold into this library only after it satisfies the
-CIP-0112 promotion-boundary ADR tracked in `canton-specs`.
+of this repo is what keeps the library decoupled and ergonomic. **Do not add
+RI-specific or experimental packages here**; a primitive is promoted from the RI
+scaffold into this library only after it satisfies the CIP-0112
+promotion-boundary ADR tracked in `canton-specs`.
+
+The `settlement`, `token-standard-v2-mock`, and `interop` packages are exactly
+such a promotion, in progress on the `cip-interop-m1` branch: the interop facades
+are the promoted deliverable; `settlement` + `token-standard-v2-mock` come along
+as their build dependencies and remain **gated/experimental** (the Token Standard
+V2 import gate has not cleared) until that ADR step completes.
 
 ## Read Order
 
@@ -34,6 +41,11 @@ Do not add:
 - Full relayer infrastructure.
 - Year 2 components before scope review approval.
 - Public APIs without an ADR once implementation begins.
+
+Hosted CI is accepted for this repo: `.github/workflows/ci.yml` provisions DPM,
+builds every package, runs the script suites, and captures coverage reports
+(`scripts/run-tests.sh`). This supersedes the prior "no `.github/workflows`"
+boundary, per the CIP-0112 interop delivery decision.
 
 ## Daml Requirements
 
@@ -71,6 +83,7 @@ Use repo-local scripts for standalone validation:
 
 ```sh
 scripts/check-scaffold.sh
+scripts/run-tests.sh
 scripts/manual-workflow-test.sh
 ```
 
@@ -79,7 +92,7 @@ exists, missing DPM or Java 21 tooling is a validation failure, not a green
 skip. Use `OZ_DAML_TOOLCHAIN=dpm` for the M0 proof baseline; Daml Assistant
 requires a superseding ADR or explicit exception.
 
-The repo-local manual validation entrypoint is
-`scripts/manual-workflow-test.sh`. GitHub Actions / hosted CI workflows are
-allowed here like in any OpenZeppelin repo; nothing in this repo forbids
-`.github/workflows`.
+GitHub Actions / hosted CI is accepted here (`.github/workflows/ci.yml`): it
+provisions DPM, builds every package, runs the script suites via
+`scripts/run-tests.sh`, and captures coverage. The repo-local manual validation
+entrypoint remains `scripts/manual-workflow-test.sh`.
