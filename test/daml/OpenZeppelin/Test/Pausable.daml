@@ -43,3 +43,33 @@ test_guardBlocksWhenPaused = script do
   check <- submit pauser do createCmd PauseCheck with party = pauser
   submitMustFail pauser do exerciseCmd check PauseCheck_Run with psCid = psPaused
   pure ()
+
+-- Destruction authority (the implicit Archive choice)
+-------------------------------------------------------
+
+-- | Only the pauser can destroy the `PauseState`, and a guarded operation that
+-- still points at the archived cid fails — the dangling-pointer hazard behind
+-- the "pass the current PauseState as a choice argument, never store its cid"
+-- rule.
+test_pauseStateArchiveDanglesStoredCids : Script ()
+test_pauseStateArchiveDanglesStoredCids = script do
+  pauser <- allocateParty "pauser"
+  stranger <- allocateParty "stranger"
+  ps <- submit pauser do createCmd PauseState with pauser, paused = False
+  check <- submit pauser do createCmd PauseCheck with party = pauser
+  submitMustFail stranger do archiveCmd ps
+  submit pauser do archiveCmd ps
+  submitMustFail pauser do exerciseCmd check PauseCheck_Run with psCid = ps
+  pure ()
+
+-- | The pause-gated harness contract is destroyed only by its signatory (its
+-- cleanup path).
+test_pauseCheckArchiveIsSignatoryOnly : Script ()
+test_pauseCheckArchiveIsSignatoryOnly = script do
+  pauser <- allocateParty "pauser"
+  stranger <- allocateParty "stranger"
+  check <- submit pauser do createCmd PauseCheck with party = pauser
+  submitMustFail stranger do archiveCmd check
+  submit pauser do archiveCmd check
+  res <- queryContractId pauser check
+  res === None

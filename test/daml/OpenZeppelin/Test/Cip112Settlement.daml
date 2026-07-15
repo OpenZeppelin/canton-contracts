@@ -485,6 +485,90 @@ test_cip112Settlement_requestInstructionAllocationSettle = script do
       receipt.d1ComplianceRef === Some "fresh-node-side-check-cip112-happy"
     [] -> fail "expected at least one settlement receipt"
 
+-- | PRIVACY SCOPING (leg projection): a batch with two DISJOINT sender→receiver
+-- pairs settles, with each allocation exercised with ONLY the legs its authorizer
+-- is party to (`legsForAuthorizer` in `settleAllocations`) — an allocation's
+-- authorizer is a signatory and witnesses the exercise arguments, so passing the
+-- full batch would project every recipient's counterparties/amounts onto every
+-- other recipient. Daml Script cannot inspect exercise-node arguments, so this
+-- test guards the CHECK-EQUIVALENCE of the scoping (the filtered path settles a
+-- multi-recipient batch and produces correctly scoped receipts + credits), while
+-- the projection property itself is enforced by construction in
+-- `settleAllocations`.
+test_cip112Settlement_multiRecipientBatchScopedLegs : Script ()
+test_cip112Settlement_multiRecipientBatchScopedLegs = script do
+  setTime t0
+  admin <- allocateParty "cip112-scoped-admin"
+  app <- allocateParty "cip112-scoped-app"
+  alice <- allocateParty "cip112-scoped-alice"
+  bob <- allocateParty "cip112-scoped-bob"
+  carol <- allocateParty "cip112-scoped-carol"
+  dave <- allocateParty "cip112-scoped-dave"
+
+  let settlement = mkSettlement "cip112-scoped" app
+      leg1 = (mkLeg "cip112-scoped-ab" (basicAccount alice) (basicAccount bob))
+      leg2 = (mkLeg "cip112-scoped-cd" (basicAccount carol) (basicAccount dave)) with amount = 7.0
+
+  factory <- submit admin do
+    createCmd SettlementFactory with
+      admin
+      requiresNodeAttestation = None
+      featureFlag = experimentalFeatureFlag
+  Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
+
+  let mkSide party sides funding = do
+        inputs <- case funding of
+          None -> pure []
+          Some amount -> do
+            holding <- submit [admin, party] do
+              createCmd ToyHolding with
+                admin
+                account = basicAccount party
+                instrumentId = usdInstrument admin
+                amount
+                lock = None
+                meta = emptyMetadata
+                featureFlag = experimentalFeatureFlag
+            pure [holding]
+        instruction <- submit (actAs party <> discloseMany [factoryDisclosure]) do
+          exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
+            allocation = mkAllocation settlement admin (basicAccount party) sides False
+            requestedAt = t0
+            inputHoldingCids = inputs
+            d1ComplianceHook = None
+            actors = [party]
+        result <- submit party do
+          exerciseCmd instruction AllocationInstruction_Accept with actors = [party]
+        case result of
+          AllocationInstructionCompleted cid -> pure cid
+          _ -> fail "expected allocation instruction to complete"
+
+  aliceAlloc <- mkSide alice [senderSide leg1] (Some 10.0)
+  bobAlloc <- mkSide bob [receiverSide leg1] None
+  carolAlloc <- mkSide carol [senderSide leg2] (Some 7.0)
+  daveAlloc <- mkSide dave [receiverSide leg2] None
+
+  receiptCids <- submit (actAs app <> discloseMany [factoryDisclosure]) do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [leg1, leg2]
+      allocationCids = [aliceAlloc, bobAlloc, carolAlloc, daveAlloc]
+      actors = [app]
+      d1ComplianceRef = None
+
+  length receiptCids === 4
+  -- Each receipt is scoped to its own leg only — no foreign leg ids.
+  receipts <- forA receiptCids \cid -> do
+    Some receipt <- queryContractId app cid
+    pure receipt
+  _ <- forA receipts \receipt ->
+    length receipt.settledTransferLegIds === 1
+  -- Both receivers are credited their own leg amount, nothing else.
+  bobHoldings <- query @ToyHolding bob
+  map (\(_, h) -> h.amount) bobHoldings === [10.0]
+  daveHoldings <- query @ToyHolding dave
+  map (\(_, h) -> h.amount) daveHoldings === [7.0]
+
 -- | Settlement moves value: bob's ReceiverSide leg mints a new unlocked holding
 -- at bob's account for the leg amount, and alice's locked input holding is
 -- consumed. This is the receiver-crediting behaviour (true DvP across the batch),
@@ -1305,87 +1389,291 @@ test_cip112Settlement_attestedSettleUnboundAttestationFails = script do
       registryCid = registry
   pure ()
 
--- | PRIVACY SCOPING (leg projection): a batch with two DISJOINT sender→receiver
--- pairs settles, with each allocation exercised with ONLY the legs its authorizer
--- is party to (`legsForAuthorizer` in `settleAllocations`) — an allocation's
--- authorizer is a signatory and witnesses the exercise arguments, so passing the
--- full batch would project every recipient's counterparties/amounts onto every
--- other recipient. Daml Script cannot inspect exercise-node arguments, so this
--- test guards the CHECK-EQUIVALENCE of the scoping (the filtered path settles a
--- multi-recipient batch and produces correctly scoped receipts + credits), while
--- the projection property itself is enforced by construction in
--- `settleAllocations`.
-test_cip112Settlement_multiRecipientBatchScopedLegs : Script ()
-test_cip112Settlement_multiRecipientBatchScopedLegs = script do
+-- Request/instruction lifecycle: reject and withdraw
+------------------------------------------------------
+
+-- | Build only the factory and an executor-created allocation request toward
+-- alice, for the request-lifecycle tests.
+setupRequestScenario : Text -> Script (Party, Party, ContractId AllocationRequest)
+setupRequestScenario prefix = do
   setTime t0
-  admin <- allocateParty "cip112-scoped-admin"
-  app <- allocateParty "cip112-scoped-app"
-  alice <- allocateParty "cip112-scoped-alice"
-  bob <- allocateParty "cip112-scoped-bob"
-  carol <- allocateParty "cip112-scoped-carol"
-  dave <- allocateParty "cip112-scoped-dave"
-
-  let settlement = mkSettlement "cip112-scoped" app
-      leg1 = (mkLeg "cip112-scoped-ab" (basicAccount alice) (basicAccount bob))
-      leg2 = (mkLeg "cip112-scoped-cd" (basicAccount carol) (basicAccount dave)) with amount = 7.0
-
+  admin <- allocateParty (prefix <> "-admin")
+  app <- allocateParty (prefix <> "-app")
+  alice <- allocateParty (prefix <> "-alice")
+  bob <- allocateParty (prefix <> "-bob")
+  let aliceAccount = basicAccount alice
+      settlement = mkSettlement prefix app
+      leg = mkLeg prefix aliceAccount (basicAccount bob)
   factory <- submit admin do
     createCmd SettlementFactory with
       admin
       requiresNodeAttestation = None
       featureFlag = experimentalFeatureFlag
   Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
+  request <- submit (actAs app <> discloseMany [factoryDisclosure]) do
+    exerciseCmd factory SettlementFactory_CreateAllocationRequest with
+      authorizer = aliceAccount
+      settlement
+      allocations =
+        [ RequestedAllocation with
+            admin
+            transferLegSides = [senderSide leg]
+            nextIterationFunding = None
+            committed = False
+            meta = emptyMetadata
+        ]
+      requestedAt = t0
+      settleAt = Some t1
+      actors = [app]
+  pure (app, alice, request)
 
-  let mkSide party sides funding = do
-        inputs <- case funding of
-          None -> pure []
-          Some amount -> do
-            holding <- submit [admin, party] do
-              createCmd ToyHolding with
-                admin
-                account = basicAccount party
-                instrumentId = usdInstrument admin
-                amount
-                lock = None
-                meta = emptyMetadata
-                featureFlag = experimentalFeatureFlag
-            pure [holding]
-        instruction <- submit (actAs party <> discloseMany [factoryDisclosure]) do
-          exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
-            allocation = mkAllocation settlement admin (basicAccount party) sides False
-            requestedAt = t0
-            inputHoldingCids = inputs
-            d1ComplianceHook = None
-            actors = [party]
-        result <- submit party do
-          exerciseCmd instruction AllocationInstruction_Accept with actors = [party]
-        case result of
-          AllocationInstructionCompleted cid -> pure cid
-          _ -> fail "expected allocation instruction to complete"
+-- | The authorizer rejects a routed allocation request; the request is
+-- archived. The executors cannot reject on the authorizer's behalf.
+test_cip112Settlement_requestRejectByAuthorizer : Script ()
+test_cip112Settlement_requestRejectByAuthorizer = script do
+  (app, alice, request) <- setupRequestScenario "cip112-request-reject"
+  submitMustFail app do
+    exerciseCmd request AllocationRequest_Reject with actors = [app]
+  result <- submit alice do
+    exerciseCmd request AllocationRequest_Reject with actors = [alice]
+  result === AllocationRequestRejected
+  None <- queryContractId app request
+  pure ()
 
-  aliceAlloc <- mkSide alice [senderSide leg1] (Some 10.0)
-  bobAlloc <- mkSide bob [receiverSide leg1] None
-  carolAlloc <- mkSide carol [senderSide leg2] (Some 7.0)
-  daveAlloc <- mkSide dave [receiverSide leg2] None
+-- | The executors withdraw their own pending request; the authorizer cannot
+-- withdraw on the executors' behalf.
+test_cip112Settlement_requestWithdrawByExecutors : Script ()
+test_cip112Settlement_requestWithdrawByExecutors = script do
+  (app, alice, request) <- setupRequestScenario "cip112-request-withdraw"
+  submitMustFail alice do
+    exerciseCmd request AllocationRequest_Withdraw with actors = [alice]
+  result <- submit app do
+    exerciseCmd request AllocationRequest_Withdraw with actors = [app]
+  result === AllocationRequestWithdrawn
+  None <- queryContractId app request
+  pure ()
 
+-- | The authorizer withdraws a pending (not yet accepted) instruction: only
+-- the instruction is archived — the input holding is untouched and stays
+-- unlocked. Executors cannot withdraw the authorizer's instruction.
+test_cip112Settlement_instructionWithdrawLeavesHoldingUnlocked : Script ()
+test_cip112Settlement_instructionWithdrawLeavesHoldingUnlocked = script do
+  setTime t0
+  admin <- allocateParty "cip112-instr-withdraw-admin"
+  app <- allocateParty "cip112-instr-withdraw-app"
+  alice <- allocateParty "cip112-instr-withdraw-alice"
+  bob <- allocateParty "cip112-instr-withdraw-bob"
+  let aliceAccount = basicAccount alice
+      settlement = mkSettlement "cip112-instr-withdraw" app
+      leg = mkLeg "cip112-instr-withdraw" aliceAccount (basicAccount bob)
+  factory <- submit admin do
+    createCmd SettlementFactory with
+      admin
+      requiresNodeAttestation = None
+      featureFlag = experimentalFeatureFlag
+  Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
+  aliceHolding <- submit [admin, alice] do
+    createCmd ToyHolding with
+      admin
+      account = aliceAccount
+      instrumentId = usdInstrument admin
+      amount = 10.0
+      lock = None
+      meta = emptyMetadata
+      featureFlag = experimentalFeatureFlag
+  instruction <- submit (actAs alice <> discloseMany [factoryDisclosure]) do
+    exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
+      allocation = mkAllocation settlement admin aliceAccount [senderSide leg] False
+      requestedAt = t0
+      inputHoldingCids = [aliceHolding]
+      d1ComplianceHook = None
+      actors = [alice]
+  submitMustFail app do
+    exerciseCmd instruction AllocationInstruction_Withdraw with actors = [app]
+  result <- submit alice do
+    exerciseCmd instruction AllocationInstruction_Withdraw with actors = [alice]
+  result === AllocationInstructionFailed
+  None <- queryContractId alice instruction
+  Some holding <- queryContractId alice aliceHolding
+  holding.lock === None
+
+-- Destruction authority (the implicit Archive choice)
+------------------------------------------------------
+
+-- | A routed request belongs to the executors that signed it: they can
+-- raw-archive it (the untyped equivalent of `AllocationRequest_Withdraw`),
+-- while the authorizer — an observer — cannot destroy it.
+test_cip112Settlement_requestArchiveIsExecutorOnly : Script ()
+test_cip112Settlement_requestArchiveIsExecutorOnly = script do
+  (app, alice, request) <- setupRequestScenario "cip112-request-archive"
+  submitMustFail alice do archiveCmd request
+  submit app do archiveCmd request
+  None <- queryContractId app request
+  pure ()
+
+-- | A pending instruction is co-signed by the instrument admin and the
+-- authorizer: neither can unilaterally destroy it; jointly they can, and the
+-- not-yet-locked input holding is untouched by the destruction.
+test_cip112Settlement_instructionArchiveNeedsAllSignatories : Script ()
+test_cip112Settlement_instructionArchiveNeedsAllSignatories = script do
+  setTime t0
+  admin <- allocateParty "cip112-instr-archive-admin"
+  app <- allocateParty "cip112-instr-archive-app"
+  alice <- allocateParty "cip112-instr-archive-alice"
+  bob <- allocateParty "cip112-instr-archive-bob"
+  let aliceAccount = basicAccount alice
+      settlement = mkSettlement "cip112-instr-archive" app
+      leg = mkLeg "cip112-instr-archive" aliceAccount (basicAccount bob)
+  factory <- submit admin do
+    createCmd SettlementFactory with
+      admin
+      requiresNodeAttestation = None
+      featureFlag = experimentalFeatureFlag
+  Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
+  aliceHolding <- submit [admin, alice] do
+    createCmd ToyHolding with
+      admin
+      account = aliceAccount
+      instrumentId = usdInstrument admin
+      amount = 10.0
+      lock = None
+      meta = emptyMetadata
+      featureFlag = experimentalFeatureFlag
+  instruction <- submit (actAs alice <> discloseMany [factoryDisclosure]) do
+    exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
+      allocation = mkAllocation settlement admin aliceAccount [senderSide leg] False
+      requestedAt = t0
+      inputHoldingCids = [aliceHolding]
+      d1ComplianceHook = None
+      actors = [alice]
+  submitMustFail admin do archiveCmd instruction
+  submitMustFail alice do archiveCmd instruction
+  submit [admin, alice] do archiveCmd instruction
+  None <- queryContractId alice instruction
+  Some holding <- queryContractId alice aliceHolding
+  holding.lock === None
+
+-- | D2 revocation is structural: the admin (sole signatory) archives the
+-- capability, and a sweep presenting the stale capability cid fails. The
+-- assignee (observer) cannot destroy its own credential.
+test_cip112Settlement_d2ArchivedBurnerCapabilityBlocksSweep : Script ()
+test_cip112Settlement_d2ArchivedBurnerCapabilityBlocksSweep = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2-cap-archive" False False
+  burnerParty <- allocateParty "cip112-d2-cap-archive-burner"
+  custodianParty <- allocateParty "cip112-d2-cap-archive-custodian"
+  let custodian = mkD2ThirdPartyCustodianAccount "cip112-d2-cap-archive" custodianParty
+      seizureHook = mkD2Hook "cip112-d2-cap-archive" custodian
+  (burnerCap, _) <- createBurnerCapability admin burnerParty (Some (usdInstrument admin))
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      markedAliceAllocation <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      submitMustFail burnerParty do archiveCmd burnerCap
+      submit admin do archiveCmd burnerCap
+      submitMustFail (actAs [burnerParty, custodianParty] <> readAs [admin]) do
+        exerciseCmd markedAliceAllocation Allocation_SweepD2InFlightSeizure with
+          burner = burnerParty
+          burnerCapCid = Some burnerCap
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | Neither side can unilaterally destroy a live escrow: the admin alone and
+-- the authorizer alone both fail to archive an `Allocation`. All signatories
+-- jointly can — and a raw joint archive strands the locked holding (still
+-- locked, nothing released), which is why the lifecycle choices (settle,
+-- cancel, withdraw) are the real exits.
+test_cip112Settlement_allocationArchiveNeedsAllSignatories : Script ()
+test_cip112Settlement_allocationArchiveNeedsAllSignatories = script do
+  SettlementScenario{..} <- setupScenario "cip112-alloc-archive" False False
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      submitMustFail admin do archiveCmd aliceAllocation
+      submitMustFail alice do archiveCmd aliceAllocation
+      submit [admin, alice] do archiveCmd aliceAllocation
+      None <- queryContractId alice aliceAllocation
+      aliceHoldings <- query @ToyHolding alice
+      let lockedHoldings = filter (\(_, h) -> h.lock /= None) aliceHoldings
+      length lockedHoldings === 1
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | Only the admin can destroy the factory; the batch entrypoint on the stale
+-- cid is gone afterwards.
+test_cip112Settlement_factoryArchiveRemovesEntrypoints : Script ()
+test_cip112Settlement_factoryArchiveRemovesEntrypoints = script do
+  SettlementScenario{..} <- setupScenario "cip112-factory-archive" False False
+  submitMustFail app do archiveCmd factory
+  submit admin do archiveCmd factory
+  submitMustFail (actAs app <> discloseMany [factoryDisclosure]) do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [transferLeg]
+      allocationCids
+      actors = [app]
+      d1ComplianceRef = None
+  pure ()
+
+-- | Only the registry admin can destroy the attester registry — the archive
+-- step of the archive-and-recreate membership change; an attester cannot
+-- destroy the trust anchor.
+test_cip112Settlement_attesterRegistryArchiveIsAdminOnly : Script ()
+test_cip112Settlement_attesterRegistryArchiveIsAdminOnly = script do
+  admin <- allocateParty "cip112-att-reg-archive-admin"
+  attester <- allocateParty "cip112-att-reg-archive-attester"
+  registry <- submit admin do
+    createCmd TrustedAttesterRegistry with
+      admin
+      attesters = [attester]
+      featureFlag = experimentalFeatureFlag
+  submitMustFail attester do archiveCmd registry
+  submit admin do archiveCmd registry
+  None <- queryContractId admin registry
+  pure ()
+
+-- | An attester revokes an unconsumed attestation by archiving it; the
+-- attested settle presenting the stale cid fails. The observing registry
+-- admin cannot destroy the attester's attestation.
+test_cip112Settlement_archivedAttestationBlocksAttestedSettle : Script ()
+test_cip112Settlement_archivedAttestationBlocksAttestedSettle = script do
+  SettlementScenario{..} <- setupScenario "cip112-att-archive" True True
+  attester <- allocateParty "cip112-att-archive-attester"
+  (attestation, registry, discs) <- mkAttestation admin attester admin [attester] settlement.settlementRef.id [transferLeg.transferLegId] t0 t1
+  submitMustFail admin do archiveCmd attestation
+  submit attester do archiveCmd attestation
+  submitMustFail (actAs app <> discloseMany ([factoryDisclosure] <> discs)) do
+    exerciseCmd factory SettlementFactory_SettleBatchWithAttestation with
+      settlement
+      transferLegs = [transferLeg]
+      allocationCids
+      actors = [app]
+      attestationCid = attestation
+      registryCid = registry
+  pure ()
+
+-- | Settlement audit artifacts are admin-owned: the receipt and the emitted
+-- event-log entry can be archived only by the admin that signed them, not by
+-- the executors or account parties observing them.
+test_cip112Settlement_receiptAndEventLogArchiveIsAdminOnly : Script ()
+test_cip112Settlement_receiptAndEventLogArchiveIsAdminOnly = script do
+  SettlementScenario{..} <- setupScenario "cip112-receipt-archive" False False
   receiptCids <- submit (actAs app <> discloseMany [factoryDisclosure]) do
     exerciseCmd factory SettlementFactory_SettleBatch with
       settlement
-      transferLegs = [leg1, leg2]
-      allocationCids = [aliceAlloc, bobAlloc, carolAlloc, daveAlloc]
+      transferLegs = [transferLeg]
+      allocationCids
       actors = [app]
       d1ComplianceRef = None
-
-  length receiptCids === 4
-  -- Each receipt is scoped to its own leg only — no foreign leg ids.
-  receipts <- forA receiptCids \cid -> do
-    Some receipt <- queryContractId app cid
-    pure receipt
-  _ <- forA receipts \receipt ->
-    length receipt.settledTransferLegIds === 1
-  -- Both receivers are credited their own leg amount, nothing else.
-  bobHoldings <- query @ToyHolding bob
-  map (\(_, h) -> h.amount) bobHoldings === [10.0]
-  daveHoldings <- query @ToyHolding dave
-  map (\(_, h) -> h.amount) daveHoldings === [7.0]
-
+  case receiptCids of
+    receiptCid :: _ -> do
+      submitMustFail app do archiveCmd receiptCid
+      submit admin do archiveCmd receiptCid
+      None <- queryContractId admin receiptCid
+      pure ()
+    [] -> fail "expected a settlement receipt"
+  entries <- query @SettlementEventLogEntry admin
+  case entries of
+    (entryCid, _) :: _ -> do
+      submitMustFail app do archiveCmd entryCid
+      submit admin do archiveCmd entryCid
+      None <- queryContractId admin entryCid
+      pure ()
+    [] -> fail "expected a holdings-change event entry"
