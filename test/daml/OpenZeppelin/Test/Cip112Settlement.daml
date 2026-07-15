@@ -1304,3 +1304,88 @@ test_cip112Settlement_attestedSettleUnboundAttestationFails = script do
       attestationCid = attestation
       registryCid = registry
   pure ()
+
+-- | PRIVACY SCOPING (leg projection): a batch with two DISJOINT sender→receiver
+-- pairs settles, with each allocation exercised with ONLY the legs its authorizer
+-- is party to (`legsForAuthorizer` in `settleAllocations`) — an allocation's
+-- authorizer is a signatory and witnesses the exercise arguments, so passing the
+-- full batch would project every recipient's counterparties/amounts onto every
+-- other recipient. Daml Script cannot inspect exercise-node arguments, so this
+-- test guards the CHECK-EQUIVALENCE of the scoping (the filtered path settles a
+-- multi-recipient batch and produces correctly scoped receipts + credits), while
+-- the projection property itself is enforced by construction in
+-- `settleAllocations`.
+test_cip112Settlement_multiRecipientBatchScopedLegs : Script ()
+test_cip112Settlement_multiRecipientBatchScopedLegs = script do
+  setTime t0
+  admin <- allocateParty "cip112-scoped-admin"
+  app <- allocateParty "cip112-scoped-app"
+  alice <- allocateParty "cip112-scoped-alice"
+  bob <- allocateParty "cip112-scoped-bob"
+  carol <- allocateParty "cip112-scoped-carol"
+  dave <- allocateParty "cip112-scoped-dave"
+
+  let settlement = mkSettlement "cip112-scoped" app
+      leg1 = (mkLeg "cip112-scoped-ab" (basicAccount alice) (basicAccount bob))
+      leg2 = (mkLeg "cip112-scoped-cd" (basicAccount carol) (basicAccount dave)) with amount = 7.0
+
+  factory <- submit admin do
+    createCmd SettlementFactory with
+      admin
+      requiresNodeAttestation = None
+      featureFlag = experimentalFeatureFlag
+  Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
+
+  let mkSide party sides funding = do
+        inputs <- case funding of
+          None -> pure []
+          Some amount -> do
+            holding <- submit [admin, party] do
+              createCmd ToyHolding with
+                admin
+                account = basicAccount party
+                instrumentId = usdInstrument admin
+                amount
+                lock = None
+                meta = emptyMetadata
+                featureFlag = experimentalFeatureFlag
+            pure [holding]
+        instruction <- submit (actAs party <> discloseMany [factoryDisclosure]) do
+          exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
+            allocation = mkAllocation settlement admin (basicAccount party) sides False
+            requestedAt = t0
+            inputHoldingCids = inputs
+            d1ComplianceHook = None
+            actors = [party]
+        result <- submit party do
+          exerciseCmd instruction AllocationInstruction_Accept with actors = [party]
+        case result of
+          AllocationInstructionCompleted cid -> pure cid
+          _ -> fail "expected allocation instruction to complete"
+
+  aliceAlloc <- mkSide alice [senderSide leg1] (Some 10.0)
+  bobAlloc <- mkSide bob [receiverSide leg1] None
+  carolAlloc <- mkSide carol [senderSide leg2] (Some 7.0)
+  daveAlloc <- mkSide dave [receiverSide leg2] None
+
+  receiptCids <- submit (actAs app <> discloseMany [factoryDisclosure]) do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [leg1, leg2]
+      allocationCids = [aliceAlloc, bobAlloc, carolAlloc, daveAlloc]
+      actors = [app]
+      d1ComplianceRef = None
+
+  length receiptCids === 4
+  -- Each receipt is scoped to its own leg only — no foreign leg ids.
+  receipts <- forA receiptCids \cid -> do
+    Some receipt <- queryContractId app cid
+    pure receipt
+  _ <- forA receipts \receipt ->
+    length receipt.settledTransferLegIds === 1
+  -- Both receivers are credited their own leg amount, nothing else.
+  bobHoldings <- query @ToyHolding bob
+  map (\(_, h) -> h.amount) bobHoldings === [10.0]
+  daveHoldings <- query @ToyHolding dave
+  map (\(_, h) -> h.amount) daveHoldings === [7.0]
+
