@@ -242,3 +242,50 @@ test_defaultAdminSelfOfferFails = script do
     exerciseCmd roleAdmin RoleAdmin_BeginDefaultAdminTransfer with
       newAdmin = admin; role = "DEFAULT_ADMIN_ROLE"; effectiveTime = t1
   pure ()
+
+-- Destruction authority (the implicit Archive choice)
+-------------------------------------------------------
+
+-- | Only the admin can destroy the `RoleAdmin` surface; once archived, the
+-- grant/revoke entrypoints on the stale cid are gone.
+test_roleAdminArchiveRemovesGrantSurface : Script ()
+test_roleAdminArchiveRemovesGrantSurface = script do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  roleAdmin <- submit admin do createCmd RoleAdmin with admin
+  submitMustFail alice do archiveCmd roleAdmin
+  submit admin do archiveCmd roleAdmin
+  submitMustFail admin do
+    exerciseCmd roleAdmin RoleAdmin_GrantRole with account = alice, role = "MINTER_ROLE"
+  pure ()
+
+-- | Only the offering admin can destroy a pending default-admin handoff (the
+-- raw-archive equivalent of cancelling it); the nominee cannot, and can no
+-- longer accept afterwards even once the timelock elapses.
+test_defaultAdminOfferArchiveIsAdminOnly : Script ()
+test_defaultAdminOfferArchiveIsAdminOnly = script do
+  setTime t0
+  admin <- allocateParty "admin"
+  bob <- allocateParty "bob"
+  roleAdmin <- submit admin do createCmd RoleAdmin with admin
+  offer <- submit admin do
+    exerciseCmd roleAdmin RoleAdmin_BeginDefaultAdminTransfer with
+      newAdmin = bob; role = "DEFAULT_ADMIN_ROLE"; effectiveTime = t1
+  submitMustFail bob do archiveCmd offer
+  submit admin do archiveCmd offer
+  setTime t1
+  submitMustFail bob do exerciseCmd offer DefaultAdminTransferOffer_Accept
+  pure ()
+
+-- | The RBAC-gated harness contract is destroyed only by its signatory (its
+-- cleanup path).
+test_roleCheckArchiveIsSignatoryOnly : Script ()
+test_roleCheckArchiveIsSignatoryOnly = script do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  check <- submit alice do createCmd RoleCheck with caller = alice, admin, role = "MINTER_ROLE"
+  submitMustFail bob do archiveCmd check
+  submit alice do archiveCmd check
+  None <- queryContractId alice check
+  pure ()

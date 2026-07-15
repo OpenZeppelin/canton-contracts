@@ -67,3 +67,34 @@ test_renounce = script do
   submit alice do exerciseCmd own Ownership_RenounceOwnership
   res <- queryContractId alice own
   res === None
+
+-- Destruction authority (the implicit Archive choice)
+-------------------------------------------------------
+
+-- | Only the owner can destroy its `Ownership`; archiving it directly is the
+-- structural equivalent of renounce (nothing replaces the contract).
+test_ownershipArchiveIsOwnerOnly : Script ()
+test_ownershipArchiveIsOwnerOnly = script do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  own <- submit alice do createCmd Ownership with owner = alice
+  submitMustFail bob do archiveCmd own
+  submit alice do archiveCmd own
+  res <- queryContractId alice own
+  res === None
+
+-- | Only the offerer (signatory) can destroy a pending offer; the nominee
+-- cannot, and can no longer accept afterwards. Unlike
+-- `OwnershipOffer_Withdraw`, a raw archive does not restore the offerer's
+-- `Ownership` — the resource ends up ownerless, which is why the withdraw
+-- choice exists.
+test_offerArchiveIsOffererOnly : Script ()
+test_offerArchiveIsOffererOnly = script do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  own <- submit alice do createCmd Ownership with owner = alice
+  offer <- submit alice do exerciseCmd own Ownership_OfferOwnership with newOwner = bob
+  submitMustFail bob do archiveCmd offer
+  submit alice do archiveCmd offer
+  submitMustFail bob do exerciseCmd offer OwnershipOffer_Accept
+  pure ()
