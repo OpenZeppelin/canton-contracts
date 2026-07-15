@@ -265,7 +265,7 @@ template SettlementFactory
         allocationValues <- fetchAllocations allocationCids
         let authorizedSides = collectAllocationSides allocationValues
         assertMsg eSettlementMissingAuthorization (allTransferLegsAuthorized transferLegs authorizedSides)
-        settleAllocations (admin :: actors) settlement transferLegs d1ComplianceRef allocationCids
+        settleAllocations (admin :: actors) settlement transferLegs d1ComplianceRef (zip allocationCids allocationValues)
 
     -- Typed, node-applied D1 path (additive; SCU-safe new choice — SettleBatch is
     -- unchanged). Verifies a signed NodeComplianceAttestation from a trusted
@@ -297,7 +297,7 @@ template SettlementFactory
         allocationValues <- fetchAllocations allocationCids
         let authorizedSides = collectAllocationSides allocationValues
         assertMsg eSettlementMissingAuthorization (allTransferLegsAuthorized transferLegs authorizedSides)
-        settleAllocations (admin :: actors) settlement transferLegs (Some claimKind) allocationCids
+        settleAllocations (admin :: actors) settlement transferLegs (Some claimKind) (zip allocationCids allocationValues)
 
 -- | Request emitted by a settlement app/executor asking an account to create
 -- allocations.
@@ -1309,24 +1309,42 @@ containsSide sides needle =
 -- batch at O(N) fetches rather than the O(N^2) the peer-proving direct path would
 -- incur. `peerAllocationCids`/`peerReceiptCids` are reserved for the standalone
 -- `Allocation_Settle` direct path.
+--
+-- PRIVACY: each allocation receives only the legs its OWN authorizer is party
+-- to, never the full batch. An allocation's authorizer is a signatory, so it
+-- witnesses the `Allocation_SettleInBatch` exercise INCLUDING its arguments —
+-- passing the full leg list would project every recipient's counterparties and
+-- amounts onto every other recipient in the batch (CIP-0112 confidentiality
+-- guidance; cf. the `AllocationRequest` scoping note). The per-allocation checks
+-- (`allAllocationSidesBackedByLegs`, `allAuthorizerLegSidesPresent`) and
+-- `performSettle`'s conservation only ever inspect legs touching the authorizer,
+-- so scoping is check-equivalent; batch-wide both-sidedness
+-- (`allTransferLegsAuthorized`) is proven at the factory level, whose informees
+-- are the admin and executors only.
 settleAllocations
   : [Party]
   -> SettlementInfo
   -> [TransferLeg]
   -> Optional Text
-  -> [ContractId Allocation]
+  -> [(ContractId Allocation, Allocation)]
   -> Update [ContractId SettlementReceipt]
-settleAllocations actors settlement transferLegs d1ComplianceRef allocationCids =
-  case allocationCids of
+settleAllocations actors settlement transferLegs d1ComplianceRef allocations =
+  case allocations of
     [] -> pure []
-    allocationCid :: rest -> do
+    (allocationCid, allocationValue) :: rest -> do
       receiptCid <- exercise allocationCid Allocation_SettleInBatch with
         actors
         settlement
-        transferLegs
+        transferLegs = legsForAuthorizer allocationValue.allocation.authorizer transferLegs
         d1ComplianceRef
       receiptRest <- settleAllocations actors settlement transferLegs d1ComplianceRef rest
       pure (receiptCid :: receiptRest)
+
+-- | The legs an authorizer is party to (as sender or receiver) — the scoped
+-- projection an allocation may see at settlement.
+legsForAuthorizer : Account -> [TransferLeg] -> [TransferLeg]
+legsForAuthorizer authorizer =
+  filter (\leg -> leg.sender == authorizer || leg.receiver == authorizer)
 
 requireBeforeSettlementDeadline : SettlementInfo -> Update ()
 requireBeforeSettlementDeadline settlement = do
