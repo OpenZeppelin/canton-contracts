@@ -101,7 +101,6 @@ template Erc20Allowance
           allocation = spec
           lockedHoldingCids = lockedCids
           createdAt = i0
-          numIterations = 0
           d1ComplianceHook = None
           d2SeizureHook = None
           seizureWindowEnd = None

@@ -154,6 +154,7 @@ setupScenario prefix requireD1 committed = do
   factory <- submit admin do
     createCmd SettlementFactory with
       admin
+      requiresNodeAttestation = None
       featureFlag = experimentalFeatureFlag
   Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
 
@@ -259,6 +260,7 @@ setupConservationScenario prefix aliceLocked legAmount = do
   factory <- submit admin do
     createCmd SettlementFactory with
       admin
+      requiresNodeAttestation = None
       featureFlag = experimentalFeatureFlag
   Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
 
@@ -380,7 +382,7 @@ test_cip112Settlement_settleMultiInstrumentConservesPerInstrument = script do
       bobSides = [receiverSide usdLeg, receiverSide eurLeg]
 
   factory <- submit admin do
-    createCmd SettlementFactory with admin; featureFlag = experimentalFeatureFlag
+    createCmd SettlementFactory with admin; requiresNodeAttestation = None; featureFlag = experimentalFeatureFlag
   Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
 
   usdHolding <- submit [admin, alice] do
@@ -554,24 +556,25 @@ test_cip112Settlement_eventLogInterfaceConformance = script do
 -- Build a trusted-attester registry plus a signed node attestation, returning
 -- the cids and their disclosures for the settlement executor.
 mkAttestation
-  : Party -> Party -> [Party] -> Text -> Time -> Time
+  : Party -> Party -> Party -> [Party] -> Text -> [Text] -> Time -> Time
   -> Script (ContractId NodeComplianceAttestation, ContractId TrustedAttesterRegistry, [Disclosure])
-mkAttestation admin attester attesters ref issued expires = do
-  registry <- submit admin do
+mkAttestation registryAdmin attester attestationObserver attesters ref boundLegIds issued expires = do
+  registry <- submit registryAdmin do
     createCmd TrustedAttesterRegistry with
-      admin
+      admin = registryAdmin
       attesters
       featureFlag = experimentalFeatureFlag
   attestation <- submit attester do
     createCmd NodeComplianceAttestation with
       attester
-      attestationObservers = [admin]
+      attestationObservers = [attestationObserver]
       settlementRef = ref
+      boundTransferLegIds = Some boundLegIds
       claimKind = "OFAC_CLEARED"
       issuedAt = issued
       expiresAt = expires
       featureFlag = experimentalFeatureFlag
-  Some regDisc <- queryDisclosure @TrustedAttesterRegistry admin registry
+  Some regDisc <- queryDisclosure @TrustedAttesterRegistry registryAdmin registry
   Some attDisc <- queryDisclosure @NodeComplianceAttestation attester attestation
   pure (attestation, registry, [regDisc, attDisc])
 
@@ -581,7 +584,7 @@ test_cip112Settlement_attestedSettlePositive : Script ()
 test_cip112Settlement_attestedSettlePositive = script do
   SettlementScenario{..} <- setupScenario "cip112-attest" True True
   attester <- allocateParty "cip112-attest-attester"
-  (attestation, registry, discs) <- mkAttestation admin attester [attester] settlement.settlementRef.id t0 t1
+  (attestation, registry, discs) <- mkAttestation admin attester admin [attester] settlement.settlementRef.id [transferLeg.transferLegId] t0 t1
   receiptCids <- submit (actAs app <> discloseMany ([factoryDisclosure] <> discs)) do
     exerciseCmd factory SettlementFactory_SettleBatchWithAttestation with
       settlement
@@ -597,7 +600,7 @@ test_cip112Settlement_attestedSettleUntrustedFails : Script ()
 test_cip112Settlement_attestedSettleUntrustedFails = script do
   SettlementScenario{..} <- setupScenario "cip112-attest-untrusted" True True
   attester <- allocateParty "cip112-attest-untrusted-attester"
-  (attestation, registry, discs) <- mkAttestation admin attester [] settlement.settlementRef.id t0 t1
+  (attestation, registry, discs) <- mkAttestation admin attester admin [] settlement.settlementRef.id [transferLeg.transferLegId] t0 t1
   submitMustFail (actAs app <> discloseMany ([factoryDisclosure] <> discs)) do
     exerciseCmd factory SettlementFactory_SettleBatchWithAttestation with
       settlement
@@ -613,7 +616,7 @@ test_cip112Settlement_attestedSettleWrongRefFails : Script ()
 test_cip112Settlement_attestedSettleWrongRefFails = script do
   SettlementScenario{..} <- setupScenario "cip112-attest-wrongref" True True
   attester <- allocateParty "cip112-attest-wrongref-attester"
-  (attestation, registry, discs) <- mkAttestation admin attester [attester] "some-other-settlement" t0 t1
+  (attestation, registry, discs) <- mkAttestation admin attester admin [attester] "some-other-settlement" [transferLeg.transferLegId] t0 t1
   submitMustFail (actAs app <> discloseMany ([factoryDisclosure] <> discs)) do
     exerciseCmd factory SettlementFactory_SettleBatchWithAttestation with
       settlement
@@ -629,7 +632,7 @@ test_cip112Settlement_attestedSettleExpiredFails : Script ()
 test_cip112Settlement_attestedSettleExpiredFails = script do
   SettlementScenario{..} <- setupScenario "cip112-attest-expired" True True
   attester <- allocateParty "cip112-attest-expired-attester"
-  (attestation, registry, discs) <- mkAttestation admin attester [attester] settlement.settlementRef.id t0 t0
+  (attestation, registry, discs) <- mkAttestation admin attester admin [attester] settlement.settlementRef.id [transferLeg.transferLegId] t0 t0
   setTime t1
   submitMustFail (actAs app <> discloseMany ([factoryDisclosure] <> discs)) do
     exerciseCmd factory SettlementFactory_SettleBatchWithAttestation with
@@ -716,10 +719,8 @@ test_cip112Settlement_directSingleSideSettleFails = script do
           actors = [admin, app]
           settlement
           transferLegs = [transferLeg]
-          extraTransferLegSides = []
           peerAllocationCids = []
           peerReceiptCids = []
-          nextIterationFunding = None
           d1ComplianceRef = None
       pure ()
     [] -> fail "expected an alice allocation"
@@ -736,87 +737,12 @@ test_cip112Settlement_directSettleWithPeerAllocationAuthorizationProof = script 
           actors = [admin, app]
           settlement
           transferLegs = [transferLeg]
-          extraTransferLegSides = []
           peerAllocationCids = [bobAllocation]
           peerReceiptCids = []
-          nextIterationFunding = None
           d1ComplianceRef = None
       Some receipt <- queryContractId app receiptCid
       receipt.settledTransferLegSides === [senderSide transferLeg]
     _ -> fail "expected two allocations"
-
--- | Iterated settlement remains additive: an allocation with
--- `nextIterationFunding` can supply extra local sides for the current
--- settlement without mutating the baseline choice shape.
---
--- NOTE (deliberate exemption): this settles a SenderSide with no locked funds.
--- That is the documented iterated-settlement carve-out — per-iteration
--- conservation is deferred because funding spans iterations and
--- `nextIterationFunding` is positivity-checked only. It is gated by admin +
--- authorizer authority and is NOT the mint-from-nothing that the standard path
--- fails closed on (see `test_cip112Settlement_settleUnderfundedSenderFails`).
-test_cip112Settlement_iteratedSettlementPositive : Script ()
-test_cip112Settlement_iteratedSettlementPositive = script do
-  setTime t0
-  admin <- allocateParty "cip112-iterated-admin"
-  app <- allocateParty "cip112-iterated-app"
-  alice <- allocateParty "cip112-iterated-alice"
-  bob <- allocateParty "cip112-iterated-bob"
-
-  let aliceAccount = basicAccount alice
-      bobAccount = basicAccount bob
-      settlement = mkSettlement "cip112-iterated" app
-      transferLeg = mkLeg "cip112-iterated" aliceAccount bobAccount
-      aliceFunding = AllocationSpecification with
-        settlement
-        admin
-        authorizer = aliceAccount
-        transferLegSides = []
-        nextIterationFunding = Some [("follow-on", 1.0)]
-        committed = False
-        meta = emptyMetadata
-      bobAllocationSpec = mkAllocation settlement admin bobAccount [receiverSide transferLeg] False
-
-  aliceInstruction <- submit [admin, alice] do
-    createCmd AllocationInstruction with
-      originalInstructionCid = None
-      allocation = aliceFunding
-      requestedAt = t0
-      inputHoldingCids = []
-      d1ComplianceHook = None
-      featureFlag = experimentalFeatureFlag
-  aliceResult <- submit alice do
-    exerciseCmd aliceInstruction AllocationInstruction_Accept with actors = [alice]
-  aliceAllocation <- case aliceResult of
-    AllocationInstructionCompleted cid -> pure cid
-    _ -> fail "expected alice allocation instruction to complete"
-
-  bobInstruction <- submit [admin, bob] do
-    createCmd AllocationInstruction with
-      originalInstructionCid = None
-      allocation = bobAllocationSpec
-      requestedAt = t0
-      inputHoldingCids = []
-      d1ComplianceHook = None
-      featureFlag = experimentalFeatureFlag
-  bobResult <- submit bob do
-    exerciseCmd bobInstruction AllocationInstruction_Accept with actors = [bob]
-  bobAllocation <- case bobResult of
-    AllocationInstructionCompleted cid -> pure cid
-    _ -> fail "expected bob allocation instruction to complete"
-
-  receiptCid <- submit [admin, app] do
-    exerciseCmd aliceAllocation Allocation_Settle with
-      actors = [admin, app]
-      settlement
-      transferLegs = [transferLeg]
-      extraTransferLegSides = [senderSide transferLeg]
-      peerAllocationCids = [bobAllocation]
-      peerReceiptCids = []
-      nextIterationFunding = Some [("follow-on", 1.0)]
-      d1ComplianceRef = None
-  Some receipt <- queryContractId app receiptCid
-  receipt.settledTransferLegSides === [senderSide transferLeg]
 
 -- | A leg whose economic fields do not match the allocation sides fails before
 -- settlement commits.
@@ -866,6 +792,7 @@ test_cip112Settlement_inputHoldingInstrumentMismatchFails = script do
   factory <- submit admin do
     createCmd SettlementFactory with
       admin
+      requiresNodeAttestation = None
       featureFlag = experimentalFeatureFlag
   Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
 
@@ -1026,10 +953,8 @@ test_cip112Settlement_d2MarkedAllocationCannotSettle = script do
           actors = [admin, app]
           settlement
           transferLegs = [transferLeg]
-          extraTransferLegSides = []
           peerAllocationCids = [bobAllocation]
           peerReceiptCids = []
-          nextIterationFunding = None
           d1ComplianceRef = None
       Some _ <- queryContractId admin markedAliceAllocation
       pure ()
@@ -1124,3 +1049,258 @@ test_cip112Settlement_d2SweepAfterDeadlineFails = script do
           burnerCapCid = Some burnerCap
       pure ()
     [] -> fail "expected an alice allocation"
+
+-- ---------------------------------------------------------------------------
+-- Regression tests for the confirmed settlement findings (F1-F4 + adjacent).
+-- ---------------------------------------------------------------------------
+
+-- | F1 (registry substitution): a caller-supplied attester registry whose admin
+-- is NOT the settling factory's admin cannot vouch for an attestation. An
+-- attacker who mints their own registry (self as admin + self as attester) and a
+-- self-signed attestation is rejected — trust is rooted in the factory admin.
+test_cip112Settlement_attestedSettleSubstitutedRegistryFails : Script ()
+test_cip112Settlement_attestedSettleSubstitutedRegistryFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-attest-substreg" True True
+  evil <- allocateParty "cip112-attest-substreg-evil"
+  -- Registry admin = evil (a party other than the factory admin), listing evil.
+  (attestation, registry, discs) <-
+    mkAttestation evil evil app [evil] settlement.settlementRef.id [transferLeg.transferLegId] t0 t1
+  submitMustFail (actAs app <> discloseMany ([factoryDisclosure] <> discs)) do
+    exerciseCmd factory SettlementFactory_SettleBatchWithAttestation with
+      settlement
+      transferLegs = [transferLeg]
+      allocationCids
+      actors = [app]
+      attestationCid = attestation
+      registryCid = registry
+  pure ()
+
+-- | F2 (replay): the attestation is CONSUMED on use, so it cannot be replayed.
+-- After one successful attested settle the attestation contract is archived.
+test_cip112Settlement_attestationSingleUseNoReplay : Script ()
+test_cip112Settlement_attestationSingleUseNoReplay = script do
+  SettlementScenario{..} <- setupScenario "cip112-attest-replay" True True
+  attester <- allocateParty "cip112-attest-replay-attester"
+  (attestation, registry, discs) <-
+    mkAttestation admin attester admin [attester] settlement.settlementRef.id [transferLeg.transferLegId] t0 t1
+  _ <- submit (actAs app <> discloseMany ([factoryDisclosure] <> discs)) do
+    exerciseCmd factory SettlementFactory_SettleBatchWithAttestation with
+      settlement
+      transferLegs = [transferLeg]
+      allocationCids
+      actors = [app]
+      attestationCid = attestation
+      registryCid = registry
+  archived <- queryContractId attester attestation
+  archived === None
+
+-- | F2 (batch binding): an attestation bound to a different transfer-leg id set
+-- than the batch's legs is rejected — one attestation authorizes exactly one
+-- leg set, not any batch sharing the settlement reference.
+test_cip112Settlement_attestedSettleWrongBatchBindingFails : Script ()
+test_cip112Settlement_attestedSettleWrongBatchBindingFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-attest-wrongbatch" True True
+  attester <- allocateParty "cip112-attest-wrongbatch-attester"
+  (attestation, registry, discs) <-
+    mkAttestation admin attester admin [attester] settlement.settlementRef.id ["some-other-leg"] t0 t1
+  submitMustFail (actAs app <> discloseMany ([factoryDisclosure] <> discs)) do
+    exerciseCmd factory SettlementFactory_SettleBatchWithAttestation with
+      settlement
+      transferLegs = [transferLeg]
+      allocationCids
+      actors = [app]
+      attestationCid = attestation
+      registryCid = registry
+  pure ()
+
+-- | F3 (freeze escape via cancel): a settlement executor cannot cancel an
+-- allocation with an active D2 in-flight seizure — funds cannot escape a freeze
+-- through the cancel path.
+test_cip112Settlement_frozenAllocationCannotCancel : Script ()
+test_cip112Settlement_frozenAllocationCannotCancel = script do
+  SettlementScenario{..} <- setupScenario "cip112-frozen-cancel" False False
+  let custodian = mkD2CustodianAccount "cip112-frozen-cancel" admin
+      seizureHook = mkD2Hook "cip112-frozen-cancel" custodian
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      marked <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      submitMustFail app do
+        exerciseCmd marked Allocation_Cancel with actors = [app]
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | F3 (freeze self-escape via withdraw): the authorizer being seized cannot
+-- withdraw funds out from under an active D2 in-flight seizure.
+test_cip112Settlement_frozenAllocationCannotWithdraw : Script ()
+test_cip112Settlement_frozenAllocationCannotWithdraw = script do
+  SettlementScenario{..} <- setupScenario "cip112-frozen-withdraw" False False
+  let custodian = mkD2CustodianAccount "cip112-frozen-withdraw" admin
+      seizureHook = mkD2Hook "cip112-frozen-withdraw" custodian
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      marked <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      submitMustFail alice do
+        exerciseCmd marked Allocation_Withdraw with actors = [alice]
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | A1 (commitment symmetry): a committed allocation cannot be cancelled by the
+-- executor before the settlement deadline, mirroring the authorizer's withdraw.
+test_cip112Settlement_committedCancelBeforeDeadlineFails : Script ()
+test_cip112Settlement_committedCancelBeforeDeadlineFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-committed-cancel" False True
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      submitMustFail app do
+        exerciseCmd aliceAllocation Allocation_Cancel with actors = [app]
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+-- | A2 (unsweepable frozen state): a baseline (windowless) D2 mark placed after
+-- the settlement deadline is rejected — no sweep could resolve it, so the frozen
+-- state is refused. Post-deadline seizure must use the windowed variant.
+test_cip112Settlement_markD2AfterDeadlineFails : Script ()
+test_cip112Settlement_markD2AfterDeadlineFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-mark-afterdeadline" False False
+  let custodian = mkD2CustodianAccount "cip112-mark-afterdeadline" admin
+      seizureHook = mkD2Hook "cip112-mark-afterdeadline" custodian
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      setTime t2
+      submitMustFail admin do
+        exerciseCmd aliceAllocation Allocation_MarkD2InFlightSeizure with
+          actors = [admin]
+          seizureHook
+      pure ()
+    [] -> fail "expected an alice allocation"
+
+
+-- | M1 (binding D1 posture): when a factory mandates node attestation, the plain
+-- SettleBatch path is refused and only the attested path settles — the typed D1
+-- control is a factory property, not an executor's per-transaction choice.
+test_cip112Settlement_attestationMandatoryFactoryBindsPath : Script ()
+test_cip112Settlement_attestationMandatoryFactoryBindsPath = script do
+  setTime t0
+  admin <- allocateParty "cip112-m1-admin"
+  app <- allocateParty "cip112-m1-app"
+  alice <- allocateParty "cip112-m1-alice"
+  bob <- allocateParty "cip112-m1-bob"
+  attester <- allocateParty "cip112-m1-attester"
+  let aliceAccount = basicAccount alice
+      bobAccount = basicAccount bob
+      settlement = mkSettlement "cip112-m1" app
+      leg = mkLeg "cip112-m1" aliceAccount bobAccount
+  factory <- submit admin do
+    createCmd SettlementFactory with admin; requiresNodeAttestation = Some True; featureFlag = experimentalFeatureFlag
+  Some factoryDisclosure <- queryDisclosure @SettlementFactory admin factory
+  aliceHolding <- submit [admin, alice] do
+    createCmd ToyHolding with
+      admin
+      account = aliceAccount
+      instrumentId = usdInstrument admin
+      amount = 10.0
+      lock = None
+      meta = emptyMetadata
+      featureFlag = experimentalFeatureFlag
+  aliceInstruction <- submit (actAs alice <> discloseMany [factoryDisclosure]) do
+    exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
+      allocation = mkAllocation settlement admin aliceAccount [senderSide leg] False
+      requestedAt = t0
+      inputHoldingCids = [aliceHolding]
+      d1ComplianceHook = None
+      actors = [alice]
+  aliceResult <- submit alice do exerciseCmd aliceInstruction AllocationInstruction_Accept with actors = [alice]
+  aliceAllocation <- case aliceResult of
+    AllocationInstructionCompleted cid -> pure cid
+    _ -> fail "expected alice allocation instruction to complete"
+  bobInstruction <- submit (actAs bob <> discloseMany [factoryDisclosure]) do
+    exerciseCmd factory SettlementFactory_CreateAllocationInstruction with
+      allocation = mkAllocation settlement admin bobAccount [receiverSide leg] False
+      requestedAt = t0
+      inputHoldingCids = []
+      d1ComplianceHook = None
+      actors = [bob]
+  bobResult <- submit bob do exerciseCmd bobInstruction AllocationInstruction_Accept with actors = [bob]
+  bobAllocation <- case bobResult of
+    AllocationInstructionCompleted cid -> pure cid
+    _ -> fail "expected bob allocation instruction to complete"
+  let allocationCids = [aliceAllocation, bobAllocation]
+  -- The attestation-less path is refused on a mandating factory.
+  submitMustFail (actAs app <> discloseMany [factoryDisclosure]) do
+    exerciseCmd factory SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [leg]
+      allocationCids
+      actors = [app]
+      d1ComplianceRef = None
+  -- The mandated attested path settles.
+  (attestation, registry, discs) <-
+    mkAttestation admin attester admin [attester] settlement.settlementRef.id [leg.transferLegId] t0 t1
+  receiptCids <- submit (actAs app <> discloseMany ([factoryDisclosure] <> discs)) do
+    exerciseCmd factory SettlementFactory_SettleBatchWithAttestation with
+      settlement
+      transferLegs = [leg]
+      allocationCids
+      actors = [app]
+      attestationCid = attestation
+      registryCid = registry
+  length receiptCids === 2
+
+-- | M2 (no stranded funds): an admin can release (unmark) an in-flight seizure
+-- that will not be swept, restoring the normal lifecycle. A marked allocation
+-- blocks withdraw; after unmark the authorizer can withdraw the funds.
+test_cip112Settlement_d2UnmarkReleasesFrozenFunds : Script ()
+test_cip112Settlement_d2UnmarkReleasesFrozenFunds = script do
+  SettlementScenario{..} <- setupScenario "cip112-d2-unmark" False False
+  let custodian = mkD2CustodianAccount "cip112-d2-unmark" admin
+      seizureHook = mkD2Hook "cip112-d2-unmark" custodian
+  case allocationCids of
+    aliceAllocation :: _ -> do
+      marked <- markD2InFlightSeizure admin aliceAllocation seizureHook
+      -- Frozen: withdraw is blocked.
+      submitMustFail alice do
+        exerciseCmd marked Allocation_Withdraw with actors = [alice]
+      -- Admin releases the seizure.
+      released <- submit admin do
+        exerciseCmd marked Allocation_UnmarkD2InFlightSeizure with actors = [admin]
+      -- The authorizer can now withdraw the previously-frozen funds.
+      result <- submit alice do
+        exerciseCmd released Allocation_Withdraw with actors = [alice]
+      case result of
+        AllocationWithdrawn returnedHoldingCids -> length returnedHoldingCids === 1
+        _ -> fail "expected AllocationWithdrawn"
+    [] -> fail "expected an alice allocation"
+
+-- | N1 (SCU-safe binding): `boundTransferLegIds` is an Optional appended field,
+-- but an UNBOUND (`None`) attestation is rejected — batch binding is mandatory in
+-- practice, so the Optional shape cannot be used to sidestep replay protection.
+test_cip112Settlement_attestedSettleUnboundAttestationFails : Script ()
+test_cip112Settlement_attestedSettleUnboundAttestationFails = script do
+  SettlementScenario{..} <- setupScenario "cip112-attest-unbound" True True
+  attester <- allocateParty "cip112-attest-unbound-attester"
+  registry <- submit admin do
+    createCmd TrustedAttesterRegistry with
+      admin
+      attesters = [attester]
+      featureFlag = experimentalFeatureFlag
+  attestation <- submit attester do
+    createCmd NodeComplianceAttestation with
+      attester
+      attestationObservers = [admin]
+      settlementRef = settlement.settlementRef.id
+      claimKind = "OFAC_CLEARED"
+      issuedAt = t0
+      expiresAt = t1
+      featureFlag = experimentalFeatureFlag
+      boundTransferLegIds = None
+  Some regDisc <- queryDisclosure @TrustedAttesterRegistry admin registry
+  Some attDisc <- queryDisclosure @NodeComplianceAttestation attester attestation
+  submitMustFail (actAs app <> discloseMany [factoryDisclosure, regDisc, attDisc]) do
+    exerciseCmd factory SettlementFactory_SettleBatchWithAttestation with
+      settlement
+      transferLegs = [transferLeg]
+      allocationCids
+      actors = [app]
+      attestationCid = attestation
+      registryCid = registry
+  pure ()

@@ -14,8 +14,6 @@
 -- scoping decision in root PLAN.md and the promotion boundary ADR.
 module OpenZeppelin.Settlement.Cip112 where
 
-import DA.Action (when)
-
 -- Shared Token Standard V2 types come from the experimental mock interface layer
 -- (`experiments/token-standard-v2-mock`), which mirrors the seven
 -- `splice-api-token-*-v2` packages 1:1. The `Allocation`/`SettlementFactory`
@@ -180,6 +178,12 @@ template ToyHolding
 -- under-funded senders (locked funds must cover sender obligations — fail
 -- closed), and active D2 in-flight seizure state fail before settlement commits;
 -- the D2 state is resolved through `Allocation_SweepD2InFlightSeizure`.
+-- Attestation policy: when `requiresNodeAttestation` is set, the plain
+-- `SettlementFactory_SettleBatch` path is refused, so every settlement this
+-- factory mediates MUST go through `SettlementFactory_SettleBatchWithAttestation`
+-- and present a verified node-compliance attestation. This makes the typed D1
+-- control a binding factory-level property rather than a per-transaction choice
+-- of the (semi-trusted) executor.
 -- Upgrade and migration assumptions: non-public experiment. Optional D1 and D2
 -- hook fields follow the SCU pattern from the identity-hook upgrade spike:
 -- append optional fields and add choices rather than mutating baseline choice
@@ -188,6 +192,12 @@ template SettlementFactory
   with
     admin : Party
     featureFlag : Text
+    -- SCU-safe addition: new fields are Optional and APPENDED after the original
+    -- record so a versioned upgrade can fill legacy contracts with `None`.
+    -- `None`/`Some False` → attestation not required; `Some True` → the plain
+    -- `SettlementFactory_SettleBatch` entrypoint is closed and the attested path
+    -- (`SettlementFactory_SettleBatchWithAttestation`) is mandatory.
+    requiresNodeAttestation : Optional Bool
   where
     signatory admin
     ensure featureFlag == experimentalFeatureFlag
@@ -246,6 +256,9 @@ template SettlementFactory
       controller actors
       do
         requireExperimentalFlag featureFlag
+        -- M1: if this factory mandates node attestation, the plain (attestation-less)
+        -- batch path is closed; the caller must use SettleBatchWithAttestation.
+        assertMsg eAttestationRequired (requiresNodeAttestation /= Some True)
         assertMsg eExecutorsMismatch (actors == settlement.executors)
         assertMsg eNoTransferLegs (not (null transferLegs))
         assertMsg eBadTransferLegAmount (allTransferLegAmountsPositive transferLegs)
@@ -272,11 +285,19 @@ template SettlementFactory
         assertMsg eExecutorsMismatch (actors == settlement.executors)
         assertMsg eNoTransferLegs (not (null transferLegs))
         assertMsg eBadTransferLegAmount (allTransferLegAmountsPositive transferLegs)
-        att <- requireNodeAttestation registryCid attestationCid settlement.settlementRef.id
+        -- F1/F2: verify a signed attestation via its own CONSUMING choice, so it
+        -- is single-use (no replay) and bound to THIS batch's legs, and rooted in
+        -- the factory admin's registry (a caller-supplied foreign registry whose
+        -- admin is not this factory's admin is rejected).
+        claimKind <- exercise attestationCid NodeComplianceAttestation_Verify with
+          settlement
+          transferLegs
+          registryCid
+          factoryAdmin = admin
         allocationValues <- fetchAllocations allocationCids
         let authorizedSides = collectAllocationSides allocationValues
         assertMsg eSettlementMissingAuthorization (allTransferLegsAuthorized transferLegs authorizedSides)
-        settleAllocations (admin :: actors) settlement transferLegs (Some att.claimKind) allocationCids
+        settleAllocations (admin :: actors) settlement transferLegs (Some claimKind) allocationCids
 
 -- | Request emitted by a settlement app/executor asking an account to create
 -- allocations.
@@ -380,7 +401,6 @@ template AllocationInstruction
           allocation
           lockedHoldingCids
           createdAt = requestedAt
-          numIterations = 0
           d1ComplianceHook
           d2SeizureHook = None
           seizureWindowEnd = None
@@ -457,7 +477,6 @@ template Allocation
     allocation : AllocationSpecification
     lockedHoldingCids : [ContractId ToyHolding]
     createdAt : Time
-    numIterations : Int
     d1ComplianceHook : Optional D1ComplianceHook
     d2SeizureHook : Optional D2SeizureHook
     -- Additive (SCU-safe) D2 refinement: an optional lawful seizure window. When
@@ -476,10 +495,8 @@ template Allocation
         actors : [Party]
         settlement : SettlementInfo
         transferLegs : [TransferLeg]
-        extraTransferLegSides : [TransferLegSide]
         peerAllocationCids : [ContractId Allocation]
         peerReceiptCids : [ContractId SettlementReceipt]
-        nextIterationFunding : Optional [(Text, Decimal)]
         d1ComplianceRef : Optional Text
       controller actors
       do
@@ -490,12 +507,15 @@ template Allocation
         requireBeforeSettlementDeadline allocation.settlement
         requireD1Reference d1ComplianceHook d1ComplianceRef
         requireNoActiveD2InFlight d2SeizureHook
-        requireIteratedSettlementAllowed allocation extraTransferLegSides nextIterationFunding
+        -- The counterparty side of each leg is proven with fetched peer
+        -- allocations/receipts, not self-authorized: this allocation only ever
+        -- authorizes its OWN transfer-leg sides. `performSettle` then enforces
+        -- value conservation on those sides, so no path mints from nothing.
         peerAllocations <- fetchAllocations peerAllocationCids
         peerReceipts <- fetchReceipts peerReceiptCids
         assertMsg ePeerAllocationMismatch (allPeerAllocationsMatch allocation peerAllocations)
         assertMsg ePeerReceiptMismatch (allPeerReceiptsMatch allocation peerReceipts)
-        let localSides = allocation.transferLegSides <> extraTransferLegSides
+        let localSides = allocation.transferLegSides
             authorizedSides =
               localSides
                 <> collectAllocationSides peerAllocations
@@ -542,7 +562,6 @@ template Allocation
         requireBeforeSettlementDeadline allocation.settlement
         requireD1Reference d1ComplianceHook d1ComplianceRef
         requireNoActiveD2InFlight d2SeizureHook
-        requireIteratedSettlementAllowed allocation [] None
         let localSides = allocation.transferLegSides
         assertMsg eAllocationLegMismatch (allAllocationSidesBackedByLegs transferLegs localSides)
         assertMsg eAllocationLegMismatch (allAuthorizerLegSidesPresent allocation.authorizer transferLegs localSides)
@@ -553,6 +572,11 @@ template Allocation
       controller actors
       do
         assertMsg eExecutorsMismatch (actors == allocation.settlement.executors)
+        -- Value-releasing choice: it must honour the same freeze and commitment
+        -- guards as settle/withdraw, or funds could escape an active D2 seizure
+        -- or a commitment via the cancel path.
+        requireNoActiveD2InFlight d2SeizureHook
+        requireCancelAllowed allocation
         returnedHoldingCids <- unlockHoldings lockedHoldingCids
         pure AllocationCancelled with returnedHoldingCids
 
@@ -561,6 +585,9 @@ template Allocation
       controller actors
       do
         assertMsg eAuthorizerActorsMismatch (actors == accountParties allocation.admin allocation.authorizer)
+        -- Value-releasing choice: block while a D2 seizure is active so the
+        -- authorizer cannot withdraw funds out from under an in-flight seizure.
+        requireNoActiveD2InFlight d2SeizureHook
         requireWithdrawAllowed allocation
         returnedHoldingCids <- unlockHoldings lockedHoldingCids
         pure AllocationWithdrawn with returnedHoldingCids
@@ -572,7 +599,28 @@ template Allocation
       controller actors
       do
         assertMsg eAdminActorsMismatch (actors == [allocation.admin])
+        -- A2: a baseline (windowless) mark is resolvable only by the
+        -- before-deadline sweep, so refuse to create a frozen state that no
+        -- sweep can resolve. Post-deadline seizure must use the windowed variant.
+        requireBeforeSettlementDeadline allocation.settlement
         create this with d2SeizureHook = Some seizureHook
+
+    -- M2: admin releases an in-flight seizure that will not be swept, clearing the
+    -- hook (and any window) so the allocation's normal lifecycle — settle, cancel,
+    -- withdraw — resumes. Without this, a mark that is never swept before the
+    -- deadline would strand the locked funds permanently (baseline sweep is
+    -- past-deadline closed, and every release path is D2-gated). Admin-only,
+    -- mirroring the mark authority; the admin is the trusted seizer, so the admin
+    -- may also un-seize.
+    choice Allocation_UnmarkD2InFlightSeizure : ContractId Allocation
+      with actors : [Party]
+      controller actors
+      do
+        assertMsg eAdminActorsMismatch (actors == [allocation.admin])
+        _ <- requireD2InFlightSeizure d2SeizureHook
+        create this with
+          d2SeizureHook = None
+          seizureWindowEnd = None
 
     choice Allocation_SweepD2InFlightSeizure : AllocationResult
       with
@@ -742,8 +790,26 @@ template TrustedAttesterRegistry
 -- Daml-visible alternative to the contract-oblivious D1 reference hook: the node
 -- emits this and settlement verifies it at exercise time.
 --
--- Signatories: `attester`. Observers: none. Choices: none. Privacy: held by the
--- attester and disclosed to the settlement executor when settling.
+-- Signatories: `attester`. Observers: `attestationObservers` (the registry admin
+-- / settlement executors, so the settlement transaction can fetch and verify it).
+-- Controllers: the settlement executors named in the presented settlement, via
+-- the consuming `NodeComplianceAttestation_Verify` choice (pre-authorized by the
+-- attester signatory). Choices: `NodeComplianceAttestation_Verify`.
+-- Privacy: held by the attester and disclosed to the settlement executor when
+-- settling.
+--
+-- Replay/binding model (F1/F2): the attestation is bound to a specific batch by
+-- `boundTransferLegIds` (the exact set of transfer-leg ids it authorizes) in
+-- addition to `settlementRef`, and it is CONSUMED when used (the verify choice is
+-- consuming). One signed attestation therefore authorizes exactly one settlement
+-- of exactly one leg set — it cannot be replayed across batches or reused within
+-- its validity window. Trust is rooted in the factory admin's registry:
+-- verification rejects any registry whose `admin` is not the settling factory's
+-- admin, defeating registry-substitution.
+--
+-- `boundTransferLegIds` is an SCU-safe Optional appended field. Verification
+-- REJECTS an unbound (`None`) attestation, so binding is mandatory in practice
+-- while the field stays upgrade-compatible.
 template NodeComplianceAttestation
   with
     attester : Party
@@ -753,30 +819,53 @@ template NodeComplianceAttestation
     issuedAt : Time
     expiresAt : Time
     featureFlag : Text
+    -- SCU-safe addition: Optional, appended after the original record.
+    boundTransferLegIds : Optional [Text]
   where
     signatory attester
-    -- The registry admin / settlement executors observe the attestation so the
-    -- settlement transaction can fetch and verify it at exercise time.
     observer attestationObservers
     ensure featureFlag == experimentalFeatureFlag
 
--- | Verify a typed node attestation: signer is a registry-trusted attester, it
--- covers this settlement reference, and it is within its validity window. Returns
--- the attestation so the caller can carry its claim kind as the D1 reference.
-requireNodeAttestation
-  : ContractId TrustedAttesterRegistry
-  -> ContractId NodeComplianceAttestation
-  -> Text
-  -> Update NodeComplianceAttestation
-requireNodeAttestation registryCid attestationCid settlementRefId = do
-  registry <- fetch registryCid
-  att <- fetch attestationCid
-  now <- getTime
-  assertMsg eD1AttesterNotTrusted (att.attester `elem` registry.attesters)
-  assertMsg eD1AttestationSettlementMismatch (att.settlementRef == settlementRefId)
-  assertMsg eD1AttestationNotYetValid (now >= att.issuedAt)
-  assertMsg eD1AttestationExpired (now <= att.expiresAt)
-  pure att
+    -- | Verify and CONSUME the attestation: the signer must be trusted by a
+    -- registry that belongs to `factoryAdmin`, the attestation must cover this
+    -- settlement reference AND exactly this batch's transfer-leg id set, and it
+    -- must be within its validity window. Consuming archival gives single-use
+    -- (no replay). Controlled by the settlement executors (pre-authorized by the
+    -- attester signatory); the enclosing factory choice supplies that authority
+    -- because it asserts `actors == settlement.executors`.
+    choice NodeComplianceAttestation_Verify : Text
+      with
+        settlement : SettlementInfo
+        transferLegs : [TransferLeg]
+        registryCid : ContractId TrustedAttesterRegistry
+        factoryAdmin : Party
+      controller settlement.executors
+      do
+        registry <- fetch registryCid
+        now <- getTime
+        assertMsg eD1RegistryAdminMismatch (registry.admin == factoryAdmin)
+        assertMsg eD1AttesterNotTrusted (attester `elem` registry.attesters)
+        assertMsg eD1AttestationSettlementMismatch (settlementRef == settlement.settlementRef.id)
+        -- An unbound (None) attestation is rejected: binding to the exact batch
+        -- leg set is mandatory (no replay across batches).
+        case boundTransferLegIds of
+          None -> assertMsg eD1AttestationUnbound False
+          Some ids -> assertMsg eD1AttestationBatchMismatch (sameTextSet ids (transferLegIds transferLegs))
+        assertMsg eD1AttestationNotYetValid (now >= issuedAt)
+        assertMsg eD1AttestationExpired (now <= expiresAt)
+        pure claimKind
+
+-- | Order-independent set equality of two `Text` lists (used to bind an
+-- attestation to exactly the batch's transfer-leg id set — no missing legs, no
+-- extra legs).
+sameTextSet : [Text] -> [Text] -> Bool
+sameTextSet xs ys = allElem xs ys && allElem ys xs
+
+allElem : [Text] -> [Text] -> Bool
+allElem needles haystack =
+  case needles of
+    [] -> True
+    n :: rest -> (n `elem` haystack) && allElem rest haystack
 
 -- | Lawful seizure-window check. With no window, the terminal settlement
 -- deadline applies (promotion ADR default). With a window, seizure is permitted
@@ -842,9 +931,12 @@ allRequestedAdminsMatch admin allocations =
 
 requireValidAllocationSpecification : AllocationSpecification -> Update ()
 requireValidAllocationSpecification allocation = do
-  assertMsg eNoTransferLegSides (not (null allocation.transferLegSides) || allocation.nextIterationFunding /= None)
+  assertMsg eNoTransferLegSides (not (null allocation.transferLegSides))
   assertMsg eBadTransferLegSideAmount (allTransferLegSideAmountsPositive allocation.transferLegSides)
-  assertMsg eBadNextIterationFunding (validNextIterationFunding allocation.nextIterationFunding)
+  -- `nextIterationFunding` and `numIterations` (from the Token Standard V2
+  -- allocation shape) are inert here: M1 does not implement iterated settlement,
+  -- so they are carried as forward-compatible metadata and NOT validated or acted
+  -- on. A future iterated-settlement feature must (re)introduce real semantics.
 
 allTransferLegAmountsPositive : [TransferLeg] -> Bool
 allTransferLegAmountsPositive legs =
@@ -857,18 +949,6 @@ allTransferLegSideAmountsPositive sides =
   case sides of
     [] -> True
     side :: rest -> side.amount > 0.0 && allTransferLegSideAmountsPositive rest
-
-validNextIterationFunding : Optional [(Text, Decimal)] -> Bool
-validNextIterationFunding funding =
-  case funding of
-    None -> True
-    Some entries -> allFundingPositive entries
-
-allFundingPositive : [(Text, Decimal)] -> Bool
-allFundingPositive entries =
-  case entries of
-    [] -> True
-    (_, amount) :: rest -> amount > 0.0 && allFundingPositive rest
 
 lockInputHoldings : AllocationSpecification -> [ContractId ToyHolding] -> Update [ContractId ToyHolding]
 lockInputHoldings allocation cids =
@@ -920,14 +1000,11 @@ performSettle
   -> Update (ContractId SettlementReceipt)
 performSettle allocation lockedHoldingCids settlement transferLegs localSides d1ComplianceRef d2SeizureHook flag = do
   lockedTally <- archiveAndTallyLockedHoldings lockedHoldingCids
-  -- Value conservation: the locked funds must cover this authorizer's SenderSide
-  -- obligations per instrument; surplus is returned as change. Iterated
-  -- settlement (nextIterationFunding set) defers per-iteration conservation —
-  -- funding spans iterations and is positivity-checked only, never value
-  -- accounted here — so the coverage assertion is skipped on that path while
-  -- surplus is still returned so no value is silently burned.
-  changeCids <- conserveSenderSides allocation.admin allocation.authorizer flag
-                  (allocation.nextIterationFunding == None) lockedTally localSides
+  -- Value conservation (always enforced): the locked funds must cover this
+  -- authorizer's SenderSide obligations per instrument, and any surplus is
+  -- returned to the authorizer as unlocked "change" — no settle path mints value
+  -- from nothing.
+  changeCids <- conserveSenderSides allocation.admin allocation.authorizer flag lockedTally localSides
   creditedCids <- creditReceiverSides allocation.admin allocation.authorizer flag localSides
   -- Emit a V2-aligned holdings-change event for wallet/indexer discovery (the
   -- promoted reporting route is EventLog_HoldingsChange). Returned change and
@@ -961,9 +1038,8 @@ archiveAndTallyLockedHoldings cids =
 -- | Enforce per-instrument value conservation on the settlement path: for each
 -- instrument involved, the locked funds archived for this allocation must cover
 -- the authorizer's SenderSide leg amounts, and any surplus is returned to the
--- authorizer's account as a fresh unlocked "change" holding. When `enforce` is
--- False (iterated settlement, where funding spans iterations) the coverage
--- assertion is skipped, but surplus is still returned so no value is burned.
+-- authorizer's account as a fresh unlocked "change" holding. Coverage is ALWAYS
+-- enforced — no settle path may mint value from nothing.
 -- Authorized by the enclosing allocation's signatories (admin + authorizer), so
 -- the change create needs no extra authority. All of an allocation's locked
 -- holdings carry `allocation.admin` (asserted at lock time), so constructing a
@@ -973,31 +1049,30 @@ conserveSenderSides
   : Party
   -> Account
   -> Text
-  -> Bool
   -> [(InstrumentId, Decimal, Metadata)]
   -> [TransferLegSide]
   -> Update [ContractId ToyHolding]
-conserveSenderSides admin authorizer flag enforce lockedTally sides =
-  conserveByInstrument admin authorizer flag enforce lockedTally sides
+conserveSenderSides admin authorizer flag lockedTally sides =
+  conserveByInstrument admin authorizer flag lockedTally sides
     (settlementInstrumentIds admin lockedTally sides)
 
 conserveByInstrument
   : Party
   -> Account
   -> Text
-  -> Bool
   -> [(InstrumentId, Decimal, Metadata)]
   -> [TransferLegSide]
   -> [InstrumentId]
   -> Update [ContractId ToyHolding]
-conserveByInstrument admin authorizer flag enforce lockedTally sides instruments =
+conserveByInstrument admin authorizer flag lockedTally sides instruments =
   case instruments of
     [] -> pure []
     instrumentId :: rest -> do
       let lockedSum = lockedSumForInstrument instrumentId lockedTally
           senderSum = senderSumForInstrument instrumentId.id sides
-      when enforce $
-        assertMsg eSettlementNotConserved (lockedSum >= senderSum)
+      -- Value conservation is ALWAYS enforced: no settle path may mint from
+      -- nothing. Surplus (locked > owed) is returned below as unlocked change.
+      assertMsg eSettlementNotConserved (lockedSum >= senderSum)
       changeCids <-
         if lockedSum > senderSum
           then do
@@ -1011,7 +1086,7 @@ conserveByInstrument admin authorizer flag enforce lockedTally sides instruments
               featureFlag = flag
             pure [cid]
           else pure []
-      restCids <- conserveByInstrument admin authorizer flag enforce lockedTally sides rest
+      restCids <- conserveByInstrument admin authorizer flag lockedTally sides rest
       pure (changeCids <> restCids)
 
 -- | The distinct instruments a settle must reconcile: those backing the locked
@@ -1313,18 +1388,6 @@ accountHasOwnerOrProvider account =
     (Some _, _) -> True
     (_, Some _) -> True
 
-requireIteratedSettlementAllowed
-  : AllocationSpecification
-  -> [TransferLegSide]
-  -> Optional [(Text, Decimal)]
-  -> Update ()
-requireIteratedSettlementAllowed allocation extraSides nextFunding = do
-  case allocation.nextIterationFunding of
-    None -> do
-      assertMsg eIteratedSettlementDisabled (null extraSides)
-      assertMsg eIteratedSettlementDisabled (nextFunding == None)
-    Some _ -> assertMsg eBadNextIterationFunding (validNextIterationFunding nextFunding)
-
 requireWithdrawAllowed : AllocationSpecification -> Update ()
 requireWithdrawAllowed allocation =
   if allocation.committed
@@ -1333,6 +1396,19 @@ requireWithdrawAllowed allocation =
       case allocation.settlement.settlementDeadline of
         None -> abort eCommittedWithdrawBlocked
         Some deadline -> assertMsg eCommittedWithdrawBlocked (now > deadline)
+    else pure ()
+
+-- | A1: a committed allocation cannot be cancelled (executor-abort) before its
+-- settlement deadline either — the commitment must bind executors symmetrically
+-- with the authorizer's withdraw. Uncommitted allocations cancel freely.
+requireCancelAllowed : AllocationSpecification -> Update ()
+requireCancelAllowed allocation =
+  if allocation.committed
+    then do
+      now <- getTime
+      case allocation.settlement.settlementDeadline of
+        None -> abort eCommittedCancelBlocked
+        Some deadline -> assertMsg eCommittedCancelBlocked (now > deadline)
     else pure ()
 
 transferLegIds : [TransferLeg] -> [Text]
@@ -1366,7 +1442,7 @@ eEmptyRequestedAllocations : Text
 eEmptyRequestedAllocations = "Cip112Settlement: allocation request must include at least one requested allocation"
 
 eNoTransferLegSides : Text
-eNoTransferLegSides = "Cip112Settlement: allocation must include transfer leg sides unless iterated settlement is enabled"
+eNoTransferLegSides = "Cip112Settlement: allocation must include at least one transfer leg side"
 
 eNoTransferLegs : Text
 eNoTransferLegs = "Cip112Settlement: settlement must include transfer legs"
@@ -1377,8 +1453,6 @@ eBadTransferLegAmount = "Cip112Settlement: transfer leg amount must be positive"
 eBadTransferLegSideAmount : Text
 eBadTransferLegSideAmount = "Cip112Settlement: transfer leg side amount must be positive"
 
-eBadNextIterationFunding : Text
-eBadNextIterationFunding = "Cip112Settlement: next iteration funding amounts must be positive"
 
 eInputHoldingWrongAccount : Text
 eInputHoldingWrongAccount = "Cip112Settlement: input holding account mismatch"
@@ -1406,6 +1480,18 @@ eAllocationLegMismatch = "Cip112Settlement: allocation transfer-leg sides do not
 
 eD1AttesterNotTrusted : Text
 eD1AttesterNotTrusted = "Cip112Settlement: node attestation signer is not in the trusted-attester registry"
+
+eD1RegistryAdminMismatch : Text
+eD1RegistryAdminMismatch = "Cip112Settlement: attester registry admin must equal the settlement factory admin"
+
+eAttestationRequired : Text
+eAttestationRequired = "Cip112Settlement: this factory requires node attestation; use SettleBatchWithAttestation"
+
+eD1AttestationBatchMismatch : Text
+eD1AttestationBatchMismatch = "Cip112Settlement: node attestation is not bound to this batch's transfer legs"
+
+eD1AttestationUnbound : Text
+eD1AttestationUnbound = "Cip112Settlement: node attestation must be bound to a transfer-leg set"
 
 eD1AttestationSettlementMismatch : Text
 eD1AttestationSettlementMismatch = "Cip112Settlement: node attestation does not cover this settlement reference"
@@ -1458,8 +1544,8 @@ eBurnerCapabilityAssigneeMismatch = "Cip112Settlement: Burner capability assigne
 eBurnerCapabilityScopeMismatch : Text
 eBurnerCapabilityScopeMismatch = "Cip112Settlement: Burner capability scope mismatch"
 
-eIteratedSettlementDisabled : Text
-eIteratedSettlementDisabled = "Cip112Settlement: iterated settlement arguments require nextIterationFunding"
-
 eCommittedWithdrawBlocked : Text
 eCommittedWithdrawBlocked = "Cip112Settlement: committed allocation cannot withdraw before settlement deadline"
+
+eCommittedCancelBlocked : Text
+eCommittedCancelBlocked = "Cip112Settlement: committed allocation cannot cancel before settlement deadline"
