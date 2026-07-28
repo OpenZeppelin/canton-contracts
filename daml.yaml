@@ -1,5 +1,5 @@
 sdk-version: 3.4.11
-name: oz-daml-contracts
+name: openzeppelin-daml-contracts
 source: daml
 version: 0.0.0
 dependencies:

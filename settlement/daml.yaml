@@ -1,12 +1,12 @@
 sdk-version: 3.4.11
-name: oz-settlement
+name: openzeppelin-settlement
 source: daml
 version: 0.1.0
 dependencies:
   - daml-prim
   - daml-stdlib
 data-dependencies:
-  - ../token-standard-v2-mock/.daml/dist/oz-token-standard-v2-mock-0.1.0.dar
+  - ../token-standard-v2-mock/.daml/dist/openzeppelin-token-standard-v2-mock-0.1.0.dar
 build-options:
   - --target=2.1
 # The CIP-0112 settlement engine (`OpenZeppelin.Settlement.Cip112`). Shipped as a

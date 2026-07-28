@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Intentionally duplicated at scripts/dpm-env.sh and
-# repos/oz-daml-contracts/scripts/dpm-env.sh so the repo remains independently
+# repos/canton-contracts/scripts/dpm-env.sh so the repo remains independently
 # buildable. Keep both copies in sync until an accepted vendoring step replaces
 # the duplication.
 

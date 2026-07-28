@@ -1,11 +1,11 @@
 sdk-version: 3.4.11
-name: oz-daml-contracts-hello-world-proof
+name: openzeppelin-daml-contracts-hello-world-proof
 source: daml
 version: 0.0.0
 dependencies:
   - daml-prim
   - daml-stdlib
   - daml-script
-  - ../.daml/dist/oz-daml-contracts-0.0.0.dar
+  - ../.daml/dist/openzeppelin-daml-contracts-0.0.0.dar
 build-options:
   - --target=2.1
