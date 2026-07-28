@@ -202,13 +202,13 @@ template RoleAdmin
         create DefaultAdminTransferOffer with admin; newAdmin; role; effectiveTime
 
 -- | A pending, timelocked transfer of a role to `newAdmin` — the
--- `AccessControlDefaultAdminRules` analogue. It is the oz-ownable two-step
+-- `AccessControlDefaultAdminRules` analogue. It is the openzeppelin-ownable two-step
 -- handshake shape (offer → accept, with a cancel) plus a ledger-time gate:
 -- `newAdmin` cannot accept before `effectiveTime`. Acceptance grants `role` by
 -- creating a `RoleGrant` for `newAdmin`.
 --
 -- Self-contained on purpose: this package deliberately carries **no dependency**
--- on oz-ownable (the three library packages stay independent, see
+-- on openzeppelin-ownable (the three library packages stay independent, see
 -- canton-token-template docs/ARCHITECTURE.md §3/§8), so it re-expresses the
 -- handshake rather than importing `OwnershipOffer` — exactly as Solidity's
 -- `AccessControlDefaultAdminRules` reimplements its own two-step instead of

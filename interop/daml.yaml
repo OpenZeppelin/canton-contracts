@@ -1,5 +1,5 @@
 sdk-version: 3.4.11
-name: oz-interop
+name: openzeppelin-interop
 source: daml
 version: 0.1.0
 dependencies:
@@ -7,8 +7,8 @@ dependencies:
   - daml-stdlib
   - daml-script
 data-dependencies:
-  - ../token-standard-v2-mock/.daml/dist/oz-token-standard-v2-mock-0.1.0.dar
-  - ../settlement/.daml/dist/oz-settlement-0.1.0.dar
+  - ../token-standard-v2-mock/.daml/dist/openzeppelin-token-standard-v2-mock-0.1.0.dar
+  - ../settlement/.daml/dist/openzeppelin-settlement-0.1.0.dar
 build-options:
   - --target=2.1
   # The CIP-0086/0103/0104 interop proof (`OpenZeppelin.Interop.*`). This is a

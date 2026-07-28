@@ -18,8 +18,8 @@ library never absorbs application or RI-specific business logic.
 
 In scope:
 
-- Reusable access-control primitives (`oz-access-control`, `oz-ownable`,
-  `oz-pausable`) with the role-admin hierarchy and timelocked admin handoff.
+- Reusable access-control primitives (`openzeppelin-access-control`, `openzeppelin-ownable`,
+  `openzeppelin-pausable`) with the role-admin hierarchy and timelocked admin handoff.
 - Future general primitives that pass a promotion-boundary review (e.g. a
   stabilized CIP-0112 settlement package), promoted **into** this library only
   after the gates recorded in `canton-specs` are met.
@@ -69,19 +69,19 @@ The production package is the repo root DPM package. It intentionally has no
 
 Current M0 production DAR:
 
-- Path: `.daml/dist/oz-daml-contracts-0.0.0.dar`
+- Path: `.daml/dist/openzeppelin-daml-contracts-0.0.0.dar`
 - SHA-256:
-  `54741b03baadcc9b0ac4ddeb7abb4128edec52d0c553f53298c35234cd9b62c5`
+  `33b647c5c560521e3846421a6198fa0862db8f261ff6d1fa6d8c6c9ca99ab2a2`
 - Main package ID:
-  `8a4ff09828c0cb27ec9291721524aa6ec88958dd4aac2b9ee725e180ad338a60`
+  `76c8855ecfa7c320002deb43fb7b7d81c1cc11befed62fec5c46c2509e481684`
 
 Current M0 proof DAR:
 
-- Path: `proof/.daml/dist/oz-daml-contracts-hello-world-proof-0.0.0.dar`
+- Path: `proof/.daml/dist/openzeppelin-daml-contracts-hello-world-proof-0.0.0.dar`
 - SHA-256:
-  `d3a4d14d4ebccf3b2594ff2ae6ffce4a115d52adf48adf28776345bdd9ff7887`
+  `03c57dd76b1fd023bdb96fee9a86b63e5f49f967905635346e74db125043f7c5`
 - Main package ID:
-  `9b11bf9f0d678e581c846772196bc5dd79b263e4b6dc75c234c52bfe6e0649f3`
+  `82210594570ec1844679e7a2034eab12742aebc260fd3963c4c076080a16f455`
 
 The root and scaffold scripts use `OZ_DAML_TOOLCHAIN=auto` by default. Auto
 selection requires DPM and does not fall back to Daml Assistant. The scripts
@@ -145,7 +145,7 @@ package.
 
 The first reusable primitives land here as **three independent packages**, each
 its own DAR with no dependency on the others — so a consumer imports only what it
-needs (e.g. just `oz-pausable`). This is the Daml-idiomatic form of OpenZeppelin's
+needs (e.g. just `openzeppelin-pausable`). This is the Daml-idiomatic form of OpenZeppelin's
 decoupled-module promise: independence is at the **package** boundary, since Daml
 has no inheritance and the unit of reuse is the DAR. The full rationale, the
 options weighed, and the Daml-specific genericity trade are documented in the
@@ -153,9 +153,9 @@ canton-token-template `docs/ARCHITECTURE.md` (slice AL-7).
 
 | Package | Module | Mirrors | Notes |
 |---|---|---|---|
-| `oz-access-control` | `OpenZeppelin.AccessControl` | `AccessControl.sol` | `RoleGrant` / `RoleAdmin` + pure `requireRole` / `hasRole`. Roles are `Text` ids (the `bytes32` analogue) because Daml templates are monomorphic; a consumer layers a closed role sum on top via a `roleId : MyRole -> Text` wrapper. |
-| `oz-ownable` | `OpenZeppelin.Ownable` | `Ownable2Step.sol` | `Ownership` + `OwnershipOffer`. Transfer is a two-step handshake **by necessity** — a new owner is a signatory and cannot be bound unilaterally. |
-| `oz-pausable` | `OpenZeppelin.Pausable` | `Pausable.sol` | `PauseState` + `whenNotPaused` guard. Pause is origination control on a keyless ledger. |
+| `openzeppelin-access-control` | `OpenZeppelin.AccessControl` | `AccessControl.sol` | `RoleGrant` / `RoleAdmin` + pure `requireRole` / `hasRole`. Roles are `Text` ids (the `bytes32` analogue) because Daml templates are monomorphic; a consumer layers a closed role sum on top via a `roleId : MyRole -> Text` wrapper. |
+| `openzeppelin-ownable` | `OpenZeppelin.Ownable` | `Ownable2Step.sol` | `Ownership` + `OwnershipOffer`. Transfer is a two-step handshake **by necessity** — a new owner is a signatory and cannot be bound unilaterally. |
+| `openzeppelin-pausable` | `OpenZeppelin.Pausable` | `Pausable.sol` | `PauseState` + `whenNotPaused` guard. Pause is origination control on a keyless ledger. |
 
 Each library package is `daml-script`-free. Tests and the example-consumer
 templates that demonstrate the usage pattern (`RoleCheck`, `PauseCheck`, the
@@ -193,9 +193,9 @@ order:
 
 | Package | Module(s) | Notes |
 |---|---|---|
-| `oz-token-standard-v2-mock` | `OpenZeppelin.TokenStandard.V2.*` | **Local mock, not a stable public API.** Mirrors the seven `splice-api-token-*-v2` interface packages 1:1 so the engine and proof build and run before the upstream DARs are importable. Kept as a build/test dependency until the import gate (published DARs + checksums + license/NOTICE + DPM wiring) clears — the ADR forbids republishing upstream types under local names as the stable API. |
-| `oz-settlement` | `OpenZeppelin.Settlement.Cip112` | The CIP-0112 settlement engine. `daml-script`-free library; its scripts live in `test/`. |
-| `oz-interop` | `OpenZeppelin.Interop.{Common,Cip0086Erc20,Cip0103Wallet,Cip0104AppRewards}` | The interop proof: CIP-0086 (ERC-20 facade), CIP-0103 (wallet), CIP-0104 (app rewards) executed as real scripts against the engine. A consumer/exemplar package (facade template + scripts together, `-Wno-template-interface-depends-on-daml-script`), never shipped as a library DAR. |
+| `openzeppelin-token-standard-v2-mock` | `OpenZeppelin.TokenStandard.V2.*` | **Local mock, not a stable public API.** Mirrors the seven `splice-api-token-*-v2` interface packages 1:1 so the engine and proof build and run before the upstream DARs are importable. Kept as a build/test dependency until the import gate (published DARs + checksums + license/NOTICE + DPM wiring) clears — the ADR forbids republishing upstream types under local names as the stable API. |
+| `openzeppelin-settlement` | `OpenZeppelin.Settlement.Cip112` | The CIP-0112 settlement engine. `daml-script`-free library; its scripts live in `test/`. |
+| `openzeppelin-interop` | `OpenZeppelin.Interop.{Common,Cip0086Erc20,Cip0103Wallet,Cip0104AppRewards}` | The interop proof: CIP-0086 (ERC-20 facade), CIP-0103 (wallet), CIP-0104 (app rewards) executed as real scripts against the engine. A consumer/exemplar package (facade template + scripts together, `-Wno-template-interface-depends-on-daml-script`), never shipped as a library DAR. |
 
 Tests and coverage are wired into the standard gate: `test/` now also covers the
 settlement engine (`Cip112Settlement`), and `scripts/run-tests.sh` additionally
