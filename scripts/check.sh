@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Static repository-policy checks. Build and Daml Script execution live in
-# scripts/test.sh so this check stays fast and produces focused failures.
+# Static repository-policy checks. Build and Daml Script execution use DPM
+# directly so this check stays fast and produces focused failures.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,7 +17,8 @@ require_file() {
 for file in \
 	README.md ARCHITECTURE.md RELEASING.md CHANGELOG.md CONTRIBUTING.md \
 	SECURITY.md AGENTS.md LICENSE multi-package.yaml dars/README.md \
-	dars/dars.lock audits/README.md examples/README.md; do
+	dars/dars.lock audits/README.md examples/README.md \
+	scripts/check-coverage.sh; do
 	require_file "$file"
 done
 

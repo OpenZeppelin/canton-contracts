@@ -20,7 +20,7 @@
 -- archived and re-created on accept (to the new owner) or on withdraw/decline
 -- (back to the current owner). Consumers that gate on "owner exists" must treat
 -- the offer window accordingly.
-module OpenZeppelin.Ownable.V1 where
+module OpenZeppelin.OwnableV1 where
 
 -- | Sole ownership of a resource by `owner`.
 --

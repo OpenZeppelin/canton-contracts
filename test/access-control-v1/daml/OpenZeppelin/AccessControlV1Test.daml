@@ -1,13 +1,13 @@
--- | Tests for OpenZeppelin.AccessControl.V1: grant/revoke, the requireRole gates
+-- | Tests for OpenZeppelin.AccessControlV1: grant/revoke, the requireRole gates
 -- (admin / assignee / role), and the typed-wrapper pattern.
-module OpenZeppelin.AccessControl.V1.Test where
+module OpenZeppelin.AccessControlV1Test where
 
 import DA.Date (date, Month(Jan))
 import DA.Time (time)
 import Daml.Script
 
-import OpenZeppelin.AccessControl.V1
-import OpenZeppelin.AccessControl.V1.TestSupport
+import OpenZeppelin.AccessControlV1
+import OpenZeppelin.AccessControlV1TestSupport
 
 -- | Disclose `cid` (owned by `p`) so a non-stakeholder controller can exercise a
 -- choice on it — the off-ledger service's job in production. Used to let a

@@ -1,7 +1,7 @@
 -- | Fixtures for testing role-gated choices and typed role identifiers.
-module OpenZeppelin.AccessControl.V1.TestSupport where
+module OpenZeppelin.AccessControlV1TestSupport where
 
-import OpenZeppelin.AccessControl.V1
+import OpenZeppelin.AccessControlV1
 
 template RoleCheck
   with

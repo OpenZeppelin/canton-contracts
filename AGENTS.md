@@ -27,8 +27,8 @@ workspace files exist.
 ## Package rules
 
 - One independently released unit equals one package and one DAR.
-- Package names use `openzeppelin-<component>-vN`; module namespaces use
-  `OpenZeppelin.<Component>.VN`.
+- Package names use `openzeppelin-<component>-vN`; module names use
+  `OpenZeppelin.<Component>VN`.
 - A component that defines Daml interfaces or exceptions uses a frozen
   `-api-vN` package containing no templates. Template-only components do not get
   empty API packages.
@@ -63,16 +63,43 @@ changes this.
 Run from the repository root:
 
 ```sh
+dpm build --all
 scripts/check.sh
-scripts/test.sh
+dpm test --package-root test/access-control-v1 --all --show-coverage
+dpm test --package-root test/ownable-v1 --all --show-coverage
+dpm test --package-root test/pausable-v1 --all --show-coverage
 ```
 
-`scripts/check.sh` enforces the package boundaries. `scripts/test.sh` builds the
-multi-package workspace and executes every component test suite with coverage.
+`scripts/check.sh` enforces package boundaries. Component tests and production
+template/choice coverage run directly through DPM; keep `--all` so the report
+includes the production DAR dependency.
 
 ## Documentation
 
-The root README is for consumers. Do not add milestone-review language, internal
-delivery shorthand, stale generated hashes, or commands that require an absent
-parent workspace. Package-specific behavior and caveats belong beside the
-package's `daml.yaml`.
+The root README is a consumer landing page. It presents the available production
+packages, their purpose, how to build and consume them, their compatibility
+model, and security guidance. Contributor testing, coverage, maintenance, and CI
+instructions belong in `CONTRIBUTING.md` or the workflow itself; the root README
+links to the contributing guide.
+
+All READMEs use present-tense, user-facing language that describes the current
+repository contents, the purpose of each directory, and supported usage. Do not
+describe removed content, previous layouts, rejected alternatives, empty
+scaffolding, milestones, internal review context, or planned future work.
+Architectural trade-offs and design rationale belong in `ARCHITECTURE.md`.
+Security limitations and operational assumptions describe current behavior and
+must remain visible in the relevant package README.
+
+Use repository-relative paths in documentation and configuration. Never include
+a developer username, home directory, temporary directory, or another
+machine-specific absolute path. Package READMEs document the public module,
+capabilities, authority and lifecycle model, build command, consumption example,
+and security caveats.
+
+`CHANGELOG.md` contains only user-visible changes to downloadable production
+packages and their public APIs. Exclude repository organization, CI, tests,
+tooling, and documentation-only changes.
+
+The CI-only `scripts/check-coverage.sh` discovers and validates every production
+package. Public and contributor documentation shows native DPM commands instead
+of presenting that helper as the testing interface.

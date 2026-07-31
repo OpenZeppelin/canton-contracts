@@ -4,11 +4,11 @@ This directory records binary inputs and outputs that affect reproducibility,
 SCU compatibility, and operator vetting.
 
 - `released/` contains immutable OpenZeppelin production DARs copied from tagged
-  GitHub Releases. It never contains test or example DARs.
-- `vendor/` contains verified third-party DAR dependencies when a remote source
-  cannot be used reliably during a build.
+  GitHub Releases.
+- `vendor/` contains verified third-party DAR dependencies used for reproducible
+  local builds.
 - `dars.lock` indexes package names, versions, package IDs, SHA-256 hashes,
   provenance URLs, and licenses.
 
-Generated `.daml/dist` output does not belong here. Follow `RELEASING.md` before
-adding an artifact.
+DPM writes local build output under each package's `.daml/dist` directory.
+`RELEASING.md` defines how production artifacts are added here.

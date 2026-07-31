@@ -1,12 +1,12 @@
--- | Tests for OpenZeppelin.Pausable.V1: flip/read, redundant-change rejection, and
+-- | Tests for OpenZeppelin.PausableV1: flip/read, redundant-change rejection, and
 -- the whenNotPaused guard gating an operation.
-module OpenZeppelin.Pausable.V1.Test where
+module OpenZeppelin.PausableV1Test where
 
 import DA.Assert ((===))
 import Daml.Script
 
-import OpenZeppelin.Pausable.V1
-import OpenZeppelin.Pausable.V1.TestSupport
+import OpenZeppelin.PausableV1
+import OpenZeppelin.PausableV1TestSupport
 
 -- | Flip from unpaused to paused, then read it back.
 test_setAndGet : Script ()

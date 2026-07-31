@@ -6,7 +6,7 @@ acceptance, decline, withdrawal, and renunciation.
 | Field | Value |
 |---|---|
 | Package | `openzeppelin-ownable-v1` |
-| Public module | `OpenZeppelin.Ownable.V1` |
+| Public module | `OpenZeppelin.OwnableV1` |
 | Version | `0.1.0` |
 | Status | Experimental; unaudited |
 | Solidity analogue | `Ownable2Step` |
@@ -38,26 +38,21 @@ decline or withdrawal restores ownership to the original owner.
 - The consuming application is responsible for selecting and disclosing the
   authoritative ownership contract for its resource.
 
-## Build and test
+## Build
 
 From the repository root:
 
 ```sh
-dpm build --all
-cd test/ownable-v1
-dpm test
+dpm build --package-root packages/access/ownable-v1
 ```
-
-The test package is not a release artifact and must not be uploaded to a
-production participant.
 
 ## Consume a local build
 
 ```yaml
 data-dependencies:
-  - /absolute/path/to/canton-contracts/packages/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+  - ../canton-contracts/packages/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
 ```
 
 ```daml
-import OpenZeppelin.Ownable.V1
+import OpenZeppelin.OwnableV1
 ```

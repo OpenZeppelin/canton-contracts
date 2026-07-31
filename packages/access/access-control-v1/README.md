@@ -6,7 +6,7 @@ two-step role handoff for Daml applications.
 | Field | Value |
 |---|---|
 | Package | `openzeppelin-access-control-v1` |
-| Public module | `OpenZeppelin.AccessControl.V1` |
+| Public module | `OpenZeppelin.AccessControlV1` |
 | Version | `0.1.0` |
 | Status | Experimental; unaudited |
 | Solidity analogue | `AccessControl` and `AccessControlDefaultAdminRules` |
@@ -44,18 +44,13 @@ it to stable textual identifiers at the package boundary.
 The Daml source documents controllers, disclosure, privacy, archival behavior,
 failure modes, and upgrade assumptions for every template.
 
-## Build and test
+## Build
 
 From the repository root:
 
 ```sh
-dpm build --all
-cd test/access-control-v1
-dpm test
+dpm build --package-root packages/access/access-control-v1
 ```
-
-The test package is not a release artifact and must not be uploaded to a
-production participant.
 
 ## Consume a local build
 
@@ -64,9 +59,9 @@ Build the package, then add its generated DAR to another project's
 
 ```yaml
 data-dependencies:
-  - /absolute/path/to/canton-contracts/packages/access/access-control-v1/.daml/dist/openzeppelin-access-control-v1-0.1.0.dar
+  - ../canton-contracts/packages/access/access-control-v1/.daml/dist/openzeppelin-access-control-v1-0.1.0.dar
 ```
 
 ```daml
-import OpenZeppelin.AccessControl.V1
+import OpenZeppelin.AccessControlV1
 ```

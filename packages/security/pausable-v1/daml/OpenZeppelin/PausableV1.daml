@@ -19,7 +19,7 @@
 -- Here the flag lives in an immutable `PauseState` contract; flipping it
 -- archives the old contract and creates the next one (state transition by
 -- re-creation, as everywhere in Daml).
-module OpenZeppelin.Pausable.V1 where
+module OpenZeppelin.PausableV1 where
 
 -- | The current pause state of a resource, administered by `pauser`.
 --

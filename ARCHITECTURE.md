@@ -61,8 +61,8 @@ interfaces, so each presently has one production package.
 
 ## Naming and public modules
 
-Production package names use reverse-DNS ownership and an explicit contract-model
-generation:
+Production package names use an organization prefix and an explicit
+contract-model generation:
 
 ```text
 openzeppelin-ownable-v1
@@ -73,15 +73,15 @@ openzeppelin-rbac-v1
 Public modules use matching major-version namespaces:
 
 ```daml
-OpenZeppelin.Ownable.V1
-OpenZeppelin.Rbac.V1
-OpenZeppelin.Rbac.V1.Internal
+OpenZeppelin.OwnableV1
+OpenZeppelin.RbacV1
+OpenZeppelin.RbacV1.Internal
 ```
 
 Compatible SCU releases keep the same package name and increment the package
-version. A breaking change creates a sibling `-v2` package and `.V2` namespace so
-both generations can coexist while consumers migrate. Template names do not
-carry version suffixes.
+version. A breaking change creates a sibling `-v2` package and a `V2` module
+suffix so both generations can coexist while consumers migrate. Template names
+remain stable component terms such as `Ownership` and `RoleGrant`.
 
 `exposed-modules` is not used as an API boundary: export information is not
 preserved when a consumer imports a compiled DAR through `data-dependencies`.

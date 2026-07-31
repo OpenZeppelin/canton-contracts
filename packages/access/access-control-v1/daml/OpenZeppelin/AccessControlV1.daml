@@ -28,7 +28,7 @@
 -- Soundness without keys: the grant is `admin`-signed (unforgeable) and names a
 -- specific `account`, so the worst an adversary can do is present a grant they
 -- do not hold and fail their own authorization.
-module OpenZeppelin.AccessControl.V1 where
+module OpenZeppelin.AccessControlV1 where
 
 -- | A role granted by `admin` to `account`. Possession is authorization.
 --

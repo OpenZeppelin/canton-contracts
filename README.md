@@ -1,6 +1,7 @@
 # OpenZeppelin Contracts for Canton
 
 [![CI](https://github.com/OpenZeppelin/canton-contracts/actions/workflows/ci.yml/badge.svg)](https://github.com/OpenZeppelin/canton-contracts/actions/workflows/ci.yml)
+[![Choice coverage: 100%](https://img.shields.io/badge/choice%20coverage-100%25-brightgreen)](https://github.com/OpenZeppelin/canton-contracts/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Reusable, security-focused Daml packages for applications on Canton.
@@ -16,13 +17,13 @@ upload, and vet only the DARs they need.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|
-| [Access Control](packages/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControl.V1` | Experimental; unaudited |
-| [Ownable](packages/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.Ownable.V1` | Experimental; unaudited |
-| [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.Pausable.V1` | Experimental; unaudited |
+| [Access Control](packages/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | Experimental; unaudited |
+| [Ownable](packages/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | Experimental; unaudited |
+| [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Experimental; unaudited |
 
-There is no umbrella package. A DAR contains its transitive package closure, so
-bundling unrelated components permanently couples their dependency,
-upgrade, audit, and vetting surfaces.
+Each component is a separate dependency and release unit. Applications select
+the components they use, and participant operators review and vet the matching
+package IDs.
 
 ## Get started
 
@@ -42,13 +43,8 @@ explains DPM workspaces, DARs, and `data-dependencies`.
 git clone https://github.com/OpenZeppelin/canton-contracts.git
 cd canton-contracts
 dpm install package
-scripts/check.sh
-scripts/test.sh
+dpm build --all
 ```
-
-`scripts/test.sh` builds every package and runs each component's isolated Daml
-Script suite. Test packages depend on `daml-script`; production packages do not,
-and test DARs must never be uploaded to a production participant.
 
 To build one component independently:
 
@@ -73,11 +69,11 @@ dependencies:
   - daml-prim
   - daml-stdlib
 data-dependencies:
-  - /absolute/path/to/canton-contracts/packages/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+  - ../canton-contracts/packages/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
 ```
 
 ```daml
-import OpenZeppelin.Ownable.V1
+import OpenZeppelin.OwnableV1
 ```
 
 ## Repository layout
@@ -86,41 +82,41 @@ import OpenZeppelin.Ownable.V1
 packages/
   access/                 Category for authorization and ownership components
   security/               Category for operational security components
-test/                     Isolated, never-released component test packages
+test/                     Isolated component test packages
 dars/
   released/               Immutable OpenZeppelin release baselines
   vendor/                 Verified third-party DAR inputs
 examples/                 Standalone projects that consume packaged DARs
 audits/                   Reports keyed to exact package releases
-scripts/                  Repository checks and test entrypoints
+scripts/                  Repository validation tooling
 ```
 
-Category directories are navigation only. They do not appear in package names,
-module namespaces, dependencies, or DAR identity, so moving a component between
-categories does not create a new package lineage.
+Category directories organize related components for navigation. Package names,
+module names, dependency declarations, and DAR identity define each component's
+release lineage.
 
 ## Package and compatibility model
 
 - One independently released unit is one Daml package and one DAR.
 - Components defining Daml interfaces use a frozen `-api-vN` package and a
-  separate upgradeable implementation package. No empty API package is created
-  for template-only components.
-- Breaking changes create a sibling `-v2` package and `.V2` module namespace;
+  separate upgradeable implementation package. Template-only components use one
+  implementation package.
+- Breaking changes create a sibling `-v2` package and `V2` module suffix;
   compatible SCU releases retain the existing package name.
-- Implementation packages do not depend on other implementation packages.
-  Composition happens through interfaces or in the consuming application.
-- `.Internal` communicates a non-public module; `exposed-modules` is not used as
-  an API boundary because consumers normally import compiled DARs.
+- Composition between implementations happens through interfaces or in the
+  consuming application.
+- Documented modules form the public API; implementation details use an
+  `.Internal` suffix.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full rationale and dependency
 rules, and [RELEASING.md](RELEASING.md) for release process guidance.
 
 ## Security
 
-These packages are building blocks, not complete applications. A consuming
-application remains responsible for selecting canonical contract instances,
-binding authority and state to the correct resource, managing disclosure, and
-reviewing its complete dependency graph.
+These packages provide reusable building blocks. A consuming application is
+responsible for selecting canonical contract instances, binding authority and
+state to the correct resource, managing disclosure, and reviewing its complete
+dependency graph.
 
 Do not use a library candidate as a substitute for an application-specific
 security review. See [SECURITY.md](SECURITY.md) to report a vulnerability

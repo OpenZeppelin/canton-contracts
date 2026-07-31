@@ -2,7 +2,7 @@ name: ci
 
 # Validation gate for the OpenZeppelin Daml contracts library: enforce package
 # boundaries, build every package in dependency order, run each isolated test
-# package, and retain coverage reports.
+# package directly with DPM, and enforce production template/choice coverage.
 #
 # DPM is Digital Asset's package manager, installed from Digital Asset's public,
 # no-auth installer (https://get.digitalasset.com) into ~/.dpm and added to
@@ -70,8 +70,11 @@ jobs:
       - name: Check repository structure and package boundaries
         run: scripts/check.sh
 
-      - name: Build all packages, run all scripts, capture coverage
-        run: scripts/test.sh
+      - name: Build all packages
+        run: dpm build --all
+
+      - name: Test all packages and enforce production coverage
+        run: scripts/check-coverage.sh
 
       - name: Upload coverage reports
         if: always()

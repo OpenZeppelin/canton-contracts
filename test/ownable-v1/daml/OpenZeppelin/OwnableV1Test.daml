@@ -1,11 +1,11 @@
--- | Tests for OpenZeppelin.Ownable.V1: the two-step transfer handshake, decline,
+-- | Tests for OpenZeppelin.OwnableV1: the two-step transfer handshake, decline,
 -- withdraw, renounce, and the self-offer guard.
-module OpenZeppelin.Ownable.V1.Test where
+module OpenZeppelin.OwnableV1Test where
 
 import DA.Assert ((===))
 import Daml.Script
 
-import OpenZeppelin.Ownable.V1
+import OpenZeppelin.OwnableV1
 
 -- | Offer → accept transfers ownership to the new owner.
 test_transferAccept : Script ()

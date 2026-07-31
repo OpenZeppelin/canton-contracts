@@ -6,7 +6,7 @@ application operations.
 | Field | Value |
 |---|---|
 | Package | `openzeppelin-pausable-v1` |
-| Public module | `OpenZeppelin.Pausable.V1` |
+| Public module | `OpenZeppelin.PausableV1` |
 | Version | `0.1.0` |
 | Status | Experimental; unaudited |
 | Solidity analogue | `Pausable` |
@@ -37,26 +37,21 @@ guard. It should not retain a stale contract ID across state transitions.
 - The consuming application is responsible for binding the state to the correct
   resource and making the authoritative contract visible to the caller.
 
-## Build and test
+## Build
 
 From the repository root:
 
 ```sh
-dpm build --all
-cd test/pausable-v1
-dpm test
+dpm build --package-root packages/security/pausable-v1
 ```
-
-The test package is not a release artifact and must not be uploaded to a
-production participant.
 
 ## Consume a local build
 
 ```yaml
 data-dependencies:
-  - /absolute/path/to/canton-contracts/packages/security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
 ```
 
 ```daml
-import OpenZeppelin.Pausable.V1
+import OpenZeppelin.PausableV1
 ```
