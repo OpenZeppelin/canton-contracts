@@ -1,0 +1,5 @@
+# OpenZeppelin Canton DAR lock manifest.
+#
+# This is a repository release/provenance contract, not DPM's native daml.lock.
+# One artifact per line after the header:
+# kind package-name version package-id sha256 source-url license

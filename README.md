@@ -1,216 +1,142 @@
-# canton-contracts
+# OpenZeppelin Contracts for Canton
 
-The decoupled, ergonomic general Daml contracts library for the OpenZeppelin
-Canton ecosystem.
+[![CI](https://github.com/OpenZeppelin/canton-contracts/actions/workflows/ci.yml/badge.svg)](https://github.com/OpenZeppelin/canton-contracts/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Status: M0 scaffold + the first reusable access-control primitives (slice AL-7,
-see [Access Control Library](#access-control-library-al-7) below). No stable M1
-public API, conformance, audit readiness, production readiness, or release
-readiness is claimed.
+Reusable, security-focused Daml packages for applications on Canton.
+Each component is an independent Daml package so applications can build, review,
+upload, and vet only the DARs they need.
 
-## Scope
+> [!WARNING]
+> This is experimental software and is provided on an "as is" and "as available"
+> basis. We do not give any warranties and will not be liable for any losses
+> incurred through any use of this code base.
 
-This repo is **only** the general, decoupled contracts library: small,
-independent, reusable Daml packages that any application — including the
-OpenZeppelin Canton Reference Implementations (RIs) — can consume by importing
-just the DAR(s) it needs. Each package stays ergonomic and standalone; the
-library never absorbs application or RI-specific business logic.
+## Packages
 
-In scope:
-
-- Reusable access-control primitives (`openzeppelin-access-control`, `openzeppelin-ownable`,
-  `openzeppelin-pausable`) with the role-admin hierarchy and timelocked admin handoff.
-- Future general primitives that pass a promotion-boundary review (e.g. a
-  stabilized CIP-0112 settlement package), promoted **into** this library only
-  after the gates recorded in `canton-specs` are met.
-- Documentation, tests, and security notes for the library packages.
-
-Out of scope for this repo (these live in
-[`OpenZeppelin/canton-specs`](https://github.com/OpenZeppelin/canton-specs),
-which consumes this library):
-
-- The CIP-0112 / Token Standard V2 settlement **RI scaffold** and the
-  compliance / identity design experiments.
-- CIP specs, architecture reports, and the four Year-1 RI architectural
-  overviews (DEX, Lending, Cross-Chain Stablecoin, Confidential Auction).
-- DEX, lending, payments, or auction business logic.
-- Production private integrations.
-- Production KYC, sanctions, custody, validator, bridge, or relayer services.
-- Full off-chain relayer infrastructure.
-- Year 2 components before approval.
-
-The companion `canton-specs` repo holds the RI implementation code and the
-specs/architecture/RI reports, and depends on the packages here. Keeping the RI
-out of this repo is what keeps the library decoupled and ergonomic. See
-`canton-specs` `docs/ri-reports/` for the RI reports that reference this
-library, and its CIP-0112 promotion-boundary ADR for the rules a primitive must
-satisfy before it is promoted into this library.
-
-## Build Instructions
-
-The M0 proof baseline accepts Daml SDK / Canton 3.4.11 through DPM only for the
-hello-world compile/deploy proof. M1 public API and Splice DAR import pins
-remain open until the CIP-112 promotion boundary gates are accepted.
-
-For the M0 proof baseline:
-
-1. Install or expose DPM.
-2. Run `dpm install 3.4.11`.
-3. Run the accepted build command:
-
-```sh
-OZ_DAML_TOOLCHAIN=dpm dpm build
-```
-
-The production package is the repo root DPM package. It intentionally has no
-`daml-script` dependency. Disposable script/test code lives in the separate
-`proof/` DPM package, which depends on the production DAR and owns
-`daml-script`.
-
-Current M0 production DAR:
-
-- Path: `.daml/dist/openzeppelin-daml-contracts-0.0.0.dar`
-- SHA-256:
-  `33b647c5c560521e3846421a6198fa0862db8f261ff6d1fa6d8c6c9ca99ab2a2`
-- Main package ID:
-  `76c8855ecfa7c320002deb43fb7b7d81c1cc11befed62fec5c46c2509e481684`
-
-Current M0 proof DAR:
-
-- Path: `proof/.daml/dist/openzeppelin-daml-contracts-hello-world-proof-0.0.0.dar`
-- SHA-256:
-  `03c57dd76b1fd023bdb96fee9a86b63e5f49f967905635346e74db125043f7c5`
-- Main package ID:
-  `82210594570ec1844679e7a2034eab12742aebc260fd3963c4c076080a16f455`
-
-The root and scaffold scripts use `OZ_DAML_TOOLCHAIN=auto` by default. Auto
-selection requires DPM and does not fall back to Daml Assistant. The scripts
-make `~/.dpm/bin/dpm` visible for non-interactive shells when present and
-default DPM/DAML cache writes to the repo-local ignored `.cache/` directory.
-The scaffold check uses `scripts/dpm-env.sh` inside this repo so standalone
-manual validation does not depend on the coordinating workspace root. Set
-`OZ_DAML_TOOLCHAIN=dpm` when manually validating the accepted M0 proof baseline.
-Daml Assistant use requires a superseding ADR or explicit exception.
-
-The repo-local `scripts/dpm-env.sh` is intentionally kept byte-for-byte in sync
-with the coordinating root helper until an accepted vendoring step replaces the
-duplication. Root `./scripts/check-all.sh` fails if the two helper copies drift.
-Manual validation machines should install or expose DPM and Java 21 before
-running `scripts/manual-workflow-test.sh` or `scripts/check-scaffold.sh`.
-
-From the workspace root, run:
-
-```sh
-./scripts/check-all.sh
-./scripts/test-all.sh
-./scripts/manual-workflow-tests.sh
-```
-
-Because `daml.yaml` is committed, missing DPM tooling is a hard failure. Daml
-Assistant is not an accepted M0 proof path.
-
-## LocalNet Proof
-
-The M0 LocalNet proof uses the root Canton sandbox config and Daml Script over
-the Ledger API gRPC endpoint from the separate `proof/` package. DAR upload
-uses `dpm script --upload-dar true`; the sandbox participant vets the uploaded
-packages for this single-participant proof. Party allocation uses
-`allocatePartyByHint` inside `HelloWorld.Proof:helloWorldProof`.
-
-From the workspace root:
-
-```sh
-./scripts/localnet-up.sh
-./scripts/localnet-hello-world-proof.sh
-./scripts/localnet-down.sh
-```
-
-`localnet-up.sh` requires `tmux`, starts Canton in a detached session, and waits
-for the Ledger API port to be reachable before returning. The proof script
-performs the same DPM bootstrap as the build/test scripts, so the default
-up/proof/down sequence works in non-interactive validation shells when DPM is
-installed on `PATH` or at `~/.dpm/bin/dpm`.
-
-## Hello-World Scaffold
-
-`daml/HelloWorld/HelloWorld.daml` is a minimal Daml source file for the M0
-compile proof. It records its signatory, observer, controller, privacy, archive,
-failure, and migration assumptions in the source comments.
-
-`proof/daml/HelloWorld/Proof.daml` is a disposable M0 LocalNet proof script. It
-is not public API and keeps the Daml Script dependency out of the production
-package.
-
-## Access Control Library (AL-7)
-
-The first reusable primitives land here as **three independent packages**, each
-its own DAR with no dependency on the others — so a consumer imports only what it
-needs (e.g. just `openzeppelin-pausable`). This is the Daml-idiomatic form of OpenZeppelin's
-decoupled-module promise: independence is at the **package** boundary, since Daml
-has no inheritance and the unit of reuse is the DAR. The full rationale, the
-options weighed, and the Daml-specific genericity trade are documented in the
-canton-token-template `docs/ARCHITECTURE.md` (slice AL-7).
-
-| Package | Module | Mirrors | Notes |
+| Component | Package | Public module | Status |
 |---|---|---|---|
-| `openzeppelin-access-control` | `OpenZeppelin.AccessControl` | `AccessControl.sol` | `RoleGrant` / `RoleAdmin` + pure `requireRole` / `hasRole`. Roles are `Text` ids (the `bytes32` analogue) because Daml templates are monomorphic; a consumer layers a closed role sum on top via a `roleId : MyRole -> Text` wrapper. |
-| `openzeppelin-ownable` | `OpenZeppelin.Ownable` | `Ownable2Step.sol` | `Ownership` + `OwnershipOffer`. Transfer is a two-step handshake **by necessity** — a new owner is a signatory and cannot be bound unilaterally. |
-| `openzeppelin-pausable` | `OpenZeppelin.Pausable` | `Pausable.sol` | `PauseState` + `whenNotPaused` guard. Pause is origination control on a keyless ledger. |
+| [Access Control](packages/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControl.V1` | Experimental; unaudited |
+| [Ownable](packages/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.Ownable.V1` | Experimental; unaudited |
+| [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.Pausable.V1` | Experimental; unaudited |
 
-Each library package is `daml-script`-free. Tests and the example-consumer
-templates that demonstrate the usage pattern (`RoleCheck`, `PauseCheck`, the
-typed-wrapper bridge) live in the separate `test/` package, which data-depends on
-all three DARs.
+There is no umbrella package. A DAR contains its transitive package closure, so
+bundling unrelated components permanently couples their dependency,
+upgrade, audit, and vetting surfaces.
 
-Build and test the whole workspace in dependency order:
+## Get started
 
-```sh
-dpm build --all          # builds the root, proof, and the three libraries
-cd test && dpm test      # runs the shared library test package
-```
+### Requirements
 
-The `test/` package exercises the three library packages (`AccessControl`,
-`Ownable`, `Pausable`) plus the `Gated` example consumer. In the last full-suite
-run (2026-06-21, SDK 3.4.11 / Java 21) these accounted for 24 passing scripts
-(14 AccessControl, 6 Ownable, 4 Pausable). Re-run `dpm test` to confirm the
-library subset after the RI/experiment packages were moved to `canton-specs`.
+- DPM
+- Java 21
 
-Or build a single library standalone (proving its independence):
+The workspace declares its Daml SDK in
+[`multi-package.yaml`](multi-package.yaml). Package manifests mirror that value
+for Daml 3.4 compatibility, and repository checks keep them synchronized.
+
+The [Canton building and packaging guide](https://docs.canton.network/appdev/modules/m3-building-packaging)
+explains DPM workspaces, DARs, and `data-dependencies`.
 
 ```sh
-cd pausable && dpm build
+git clone https://github.com/OpenZeppelin/canton-contracts.git
+cd canton-contracts
+dpm install package
+scripts/check.sh
+scripts/test.sh
 ```
 
-Status: `0.1.0`, **unstable** — these are not yet public API (no stability ADR),
-so DAR SHAs are intentionally not pinned here while the shape may still change.
+`scripts/test.sh` builds every package and runs each component's isolated Daml
+Script suite. Test packages depend on `daml-script`; production packages do not,
+and test DARs must never be uploaded to a production participant.
 
-## CIP-0112 Settlement + Interop (cip-interop-m1)
-
-The CIP-0112 settlement engine and the CIP-0086/0103/0104 interop proof are
-promoted here out of `canton-specs/experiments/`, per the CIP-0112
-promotion-boundary ADR tracked in `canton-specs`. Three packages, in dependency
-order:
-
-| Package | Module(s) | Notes |
-|---|---|---|
-| `openzeppelin-token-standard-v2-mock` | `OpenZeppelin.TokenStandard.V2.*` | **Local mock, not a stable public API.** Mirrors the seven `splice-api-token-*-v2` interface packages 1:1 so the engine and proof build and run before the upstream DARs are importable. Kept as a build/test dependency until the import gate (published DARs + checksums + license/NOTICE + DPM wiring) clears — the ADR forbids republishing upstream types under local names as the stable API. |
-| `openzeppelin-settlement` | `OpenZeppelin.Settlement.Cip112` | The CIP-0112 settlement engine. `daml-script`-free library; its scripts live in `test/`. |
-| `openzeppelin-interop` | `OpenZeppelin.Interop.{Common,Cip0086Erc20,Cip0103Wallet,Cip0104AppRewards}` | The interop proof: CIP-0086 (ERC-20 facade), CIP-0103 (wallet), CIP-0104 (app rewards) executed as real scripts against the engine. A consumer/exemplar package (facade template + scripts together, `-Wno-template-interface-depends-on-daml-script`), never shipped as a library DAR. |
-
-Tests and coverage are wired into the standard gate: `test/` now also covers the
-settlement engine (`Cip112Settlement`), and `scripts/run-tests.sh` additionally
-runs the `interop/` scripts and writes coverage reports to `test-reports/`.
-Hosted CI (`.github/workflows/ci.yml`) runs the whole gate on every PR.
+To build one component independently:
 
 ```sh
-dpm build --all            # includes token-standard-v2-mock, settlement, interop
-scripts/run-tests.sh       # spine + settlement + interop suites, with coverage
+cd packages/access/ownable-v1
+dpm build
 ```
 
-Status: `0.1.0`, **experimental / unstable** — gated behind the CIP-0112
-promotion-boundary ADR; not public API and not a conformance/audit/production
-claim.
+The resulting evaluation DAR is written to:
+
+```text
+packages/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+```
+
+## Consume a local build
+
+Build a package from a pinned source commit and reference the resulting DAR from
+a separate Daml project:
+
+```yaml
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  - /absolute/path/to/canton-contracts/packages/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+```
+
+```daml
+import OpenZeppelin.Ownable.V1
+```
+
+## Repository layout
+
+```text
+packages/
+  access/                 Category for authorization and ownership components
+  security/               Category for operational security components
+test/                     Isolated, never-released component test packages
+dars/
+  released/               Immutable OpenZeppelin release baselines
+  vendor/                 Verified third-party DAR inputs
+examples/                 Standalone projects that consume packaged DARs
+audits/                   Reports keyed to exact package releases
+scripts/                  Repository checks and test entrypoints
+```
+
+Category directories are navigation only. They do not appear in package names,
+module namespaces, dependencies, or DAR identity, so moving a component between
+categories does not create a new package lineage.
+
+## Package and compatibility model
+
+- One independently released unit is one Daml package and one DAR.
+- Components defining Daml interfaces use a frozen `-api-vN` package and a
+  separate upgradeable implementation package. No empty API package is created
+  for template-only components.
+- Breaking changes create a sibling `-v2` package and `.V2` module namespace;
+  compatible SCU releases retain the existing package name.
+- Implementation packages do not depend on other implementation packages.
+  Composition happens through interfaces or in the consuming application.
+- `.Internal` communicates a non-public module; `exposed-modules` is not used as
+  an API boundary because consumers normally import compiled DARs.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full rationale and dependency
+rules, and [RELEASING.md](RELEASING.md) for release process guidance.
+
+## Security
+
+These packages are building blocks, not complete applications. A consuming
+application remains responsible for selecting canonical contract instances,
+binding authority and state to the correct resource, managing disclosure, and
+reviewing its complete dependency graph.
+
+Do not use a library candidate as a substitute for an application-specific
+security review. See [SECURITY.md](SECURITY.md) to report a vulnerability
+privately.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, package boundaries,
+testing requirements, and the checklist for new components.
+
+## Related projects
+
+- [Canton Improvement Proposals](https://github.com/canton-foundation/cips) — canonical Canton standards
+- [OpenZeppelin Canton specs](https://github.com/OpenZeppelin/canton-specs) — research, prototypes, reference architectures, and interoperability evidence
+- [OpenZeppelin Canton ecosystem-stack proposal](https://github.com/canton-foundation/canton-dev-fund/blob/main/proposals/2026-04-OpenZeppelin-canton-ecosystem-stack.md) — ecosystem program context
 
 ## License
 
-MIT. See `LICENSE`.
+[MIT](LICENSE)

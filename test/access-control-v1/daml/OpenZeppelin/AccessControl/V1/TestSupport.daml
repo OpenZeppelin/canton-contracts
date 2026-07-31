@@ -1,0 +1,31 @@
+-- | Fixtures for testing role-gated choices and typed role identifiers.
+module OpenZeppelin.AccessControl.V1.TestSupport where
+
+import OpenZeppelin.AccessControl.V1
+
+template RoleCheck
+  with
+    caller : Party
+    admin : Party
+    role : Text
+  where
+    signatory caller
+
+    nonconsuming choice RoleCheck_Run : ()
+      with
+        grantCid : ContractId RoleGrant
+      controller caller
+      do
+        grant <- fetch grantCid
+        requireRole caller role admin grant
+
+data DemoRole
+  = Minter
+  | Burner
+  | DemoPauser
+  deriving (Eq, Show)
+
+roleId : DemoRole -> Text
+roleId Minter = "MINTER_ROLE"
+roleId Burner = "BURNER_ROLE"
+roleId DemoPauser = "PAUSER_ROLE"

@@ -1,0 +1,18 @@
+-- | A consumer fixture for testing choices guarded by a PauseState.
+module OpenZeppelin.Pausable.V1.TestSupport where
+
+import OpenZeppelin.Pausable.V1
+
+template PauseCheck
+  with
+    party : Party
+  where
+    signatory party
+
+    nonconsuming choice PauseCheck_Run : ()
+      with
+        psCid : ContractId PauseState
+      controller party
+      do
+        ps <- fetch psCid
+        whenNotPaused ps
