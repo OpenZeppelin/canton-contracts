@@ -23,6 +23,10 @@ check_zero() {
 	[ "$value" -eq 0 ] || fail "$metric: $value ($report)"
 }
 
+production_manifests="$(find packages -type d -name .daml -prune -o -name daml.yaml -type f -print | sort)" ||
+	fail "failed to discover production package manifests"
+[ -n "$production_manifests" ] || fail "no production package manifests found"
+
 package_count=0
 while IFS= read -r manifest; do
 	package_dir="$(dirname "$manifest")"
@@ -37,8 +41,7 @@ while IFS= read -r manifest; do
 		fail "$test_manifest must data-depend on $package_dir"
 
 	printf 'coverage: testing %s\n' "$component"
-	dpm test \
-		--package-root "$test_package" \
+	DAML_PACKAGE="$test_package" dpm test \
 		--all \
 		--show-coverage \
 		--junit "../../$REPORTS/$component-junit.xml" \
@@ -50,9 +53,7 @@ while IFS= read -r manifest; do
 	check_zero "$coverage_report" "external interface choices never exercised"
 
 	package_count=$((package_count + 1))
-done < <(find packages -type d -name .daml -prune -o -name daml.yaml -type f -print | sort)
-
-[ "$package_count" -gt 0 ] || fail "no production packages found"
+done <<< "$production_manifests"
 
 printf 'coverage: OK (%d production packages)\n' "$package_count"
 

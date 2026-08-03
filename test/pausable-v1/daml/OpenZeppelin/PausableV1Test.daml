@@ -48,7 +48,7 @@ test_guardBlocksWhenPaused = script do
 -------------------------------------------------------
 
 -- | Only the pauser can destroy the `PauseState`, and a guarded operation that
--- still points at the archived cid fails — the dangling-pointer hazard behind
+-- still points at the archived cid fails - the dangling-pointer hazard behind
 -- the "pass the current PauseState as a choice argument, never store its cid"
 -- rule.
 test_pauseStateArchiveDanglesStoredCids : Script ()

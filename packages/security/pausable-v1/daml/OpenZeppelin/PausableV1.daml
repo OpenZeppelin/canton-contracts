@@ -1,8 +1,8 @@
--- | OpenZeppelin Pausable — a standalone, token-agnostic emergency-stop switch.
+-- | OpenZeppelin Pausable - a standalone, token-agnostic emergency-stop switch.
 --
 -- This is the Daml analogue of OpenZeppelin's `Pausable.sol`: a single boolean
 -- the authority can flip, plus a guard (`whenNotPaused`) that gated operations
--- call to refuse work while paused. It is deliberately independent — it carries
+-- call to refuse work while paused. It is deliberately independent - it carries
 -- no role type and depends on no other OpenZeppelin package, so a project that
 -- wants only a pause switch imports only this DAR.
 --
@@ -12,7 +12,7 @@
 -- read by `ContractId` (disclosed to them by the pauser) and check via
 -- `whenNotPaused`. "Pause" is therefore *origination control*: new operations
 -- that consult the flag refuse to start while paused; already-committed work is
--- unaffected — the only robustly enforceable pause semantic on a UTXO ledger.
+-- unaffected - the only robustly enforceable pause semantic on a UTXO ledger.
 --
 -- # Semantics vs. Solidity
 -- Solidity stores `_paused` in contract storage and reads it via a modifier.
@@ -24,7 +24,7 @@ module OpenZeppelin.PausableV1 where
 -- | The current pause state of a resource, administered by `pauser`.
 --
 -- Signatories: `pauser` (the only authority over the switch).
--- Observers: none on the template itself — consumers are granted read access by
+-- Observers: none on the template itself - consumers are granted read access by
 --   explicit disclosure of this contract's `ContractId` (the pauser discloses
 --   the active `PauseState` to the operations that gate on it). Keeping the
 --   observer set empty avoids an unbounded observer-list field and keeps the
@@ -37,7 +37,7 @@ module OpenZeppelin.PausableV1 where
 --   the pause state.
 -- Authorization assumptions: only `pauser` can create or flip the switch; the
 --   contract is `pauser`-signed and therefore unforgeable.
--- Archival behavior: `PauseState_Set` is consuming — it archives the current
+-- Archival behavior: `PauseState_Set` is consuming - it archives the current
 --   state and creates the successor; no standalone archive choice is exposed.
 -- Failure modes: `PauseState_Set` rejects a redundant change (setting the flag
 --   to its current value) so the on-ledger history records only real

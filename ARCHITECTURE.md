@@ -55,8 +55,9 @@ interfaces, so each presently has one production package.
   interfaces, exceptions, or serializable public state.
 - Adding a production dependency requires explicit architecture review because
   an SCU lineage cannot later drop or downgrade that dependency.
-- Third-party DARs are pinned by source, version, package ID, SHA-256, and license
-  in `dars/dars.lock`; binaries live in `dars/vendor/` when vendoring is needed.
+- Third-party DARs are pinned by source, version, package IDs, SHA-256, and
+  license in `dars/manifest.yaml`; binaries live in `dars/vendor/` when
+  vendoring is needed.
 - Upstream interfaces retain their upstream package identity and namespace.
 
 ## Naming and public modules
@@ -94,9 +95,9 @@ and version, main and dependency package IDs, SDK and LF versions, SHA-256,
 signature/provenance, license information, changelog, and audit status.
 
 Release DARs are distributed through GitHub Releases and retained under
-`dars/released/` as immutable compatibility baselines. `dars/dars.lock` is the
-reviewable package-ID and provenance index. CI verifies a candidate against the
-previous released DAR before claiming SCU compatibility.
+`dars/released/` as immutable compatibility baselines. `dars/manifest.yaml` is
+the reviewable package-ID and provenance index. CI verifies a candidate against
+the previous released DAR before claiming SCU compatibility.
 
 Participant vetting behavior varies by Canton version and topology. Publishing
 the exact package closure lets each operator review and vet the package IDs its

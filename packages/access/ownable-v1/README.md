@@ -43,7 +43,7 @@ decline or withdrawal restores ownership to the original owner.
 From the repository root:
 
 ```sh
-dpm build --package-root packages/access/ownable-v1
+DAML_PACKAGE=packages/access/ownable-v1 dpm build
 ```
 
 ## Consume a local build

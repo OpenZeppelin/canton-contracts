@@ -1,15 +1,15 @@
--- | OpenZeppelin Ownable — a standalone, token-agnostic single-owner primitive.
+-- | OpenZeppelin Ownable - a standalone, token-agnostic single-owner primitive.
 --
 -- The Daml analogue of `Ownable.sol` / `Ownable2Step.sol`: exactly one `owner`
 -- party at a time, with an explicit transfer handshake and a renounce path.
--- Independent — no role type, no dependency on the AccessControl package — so a
+-- Independent - no role type, no dependency on the AccessControl package - so a
 -- project that wants only "an owner" imports only this DAR.
 --
 -- # Why ownership transfer is necessarily two-step in Daml
 -- In Solidity `transferOwnership(newOwner)` is a single call: the old owner
 -- writes the new owner into storage. That is impossible in Daml. The owner is a
 -- *signatory* of the `Ownership` contract, and a contract cannot be created
--- without the authorization of every signatory — the current owner cannot
+-- without the authorization of every signatory - the current owner cannot
 -- unilaterally bind a new owner. So transfer is a handshake: the owner makes an
 -- `OwnershipOffer`, and the prospective owner accepts it (this is exactly why
 -- OpenZeppelin itself recommends `Ownable2Step`, and why this is the *only*
@@ -72,7 +72,7 @@ template Ownership
 -- Disclosed parties: `owner` and `newOwner` are stakeholders.
 -- Privacy expectations: limited to the two parties to the handshake.
 -- Authorization assumptions: accept creates `Ownership` signed by `newOwner`,
---   so the new owner's authorization is what binds the transfer — exactly the
+--   so the new owner's authorization is what binds the transfer - exactly the
 --   guarantee a single-step transfer could not provide.
 -- Archival behavior: all three choices are consuming; accept creates the new
 --   `Ownership`, withdraw/decline restore the offerer's `Ownership`.
@@ -89,7 +89,7 @@ template OwnershipOffer
     signatory owner
     observer newOwner
 
-    -- | Accept the transfer. Creates `Ownership` signed by `newOwner` — the new
+    -- | Accept the transfer. Creates `Ownership` signed by `newOwner` - the new
     -- owner's authorization here is what makes the transfer sound.
     choice OwnershipOffer_Accept : ContractId Ownership
       controller newOwner

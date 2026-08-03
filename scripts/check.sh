@@ -17,7 +17,7 @@ require_file() {
 for file in \
 	README.md ARCHITECTURE.md RELEASING.md CHANGELOG.md CONTRIBUTING.md \
 	SECURITY.md AGENTS.md LICENSE multi-package.yaml dars/README.md \
-	dars/dars.lock audits/README.md examples/README.md \
+	dars/manifest.yaml audits/README.md examples/README.md \
 	scripts/check-coverage.sh; do
 	require_file "$file"
 done
@@ -34,15 +34,29 @@ fi
 
 workspace_sdk="$(sed -n 's/^sdk-version:[[:space:]]*//p' "$ROOT/multi-package.yaml")"
 
-while IFS= read -r manifest; do
-	package_sdk="$(sed -n 's/^sdk-version:[[:space:]]*//p' "$manifest")"
-	[ "$package_sdk" = "$workspace_sdk" ] ||
-		fail "${manifest#"$ROOT/"} sdk-version must match multi-package.yaml"
-done < <(find "$ROOT/packages" "$ROOT/test" -name daml.yaml -type f | sort)
+production_manifests="$(find "$ROOT/packages" -name daml.yaml -type f | sort)" ||
+	fail "failed to discover production package manifests"
+[ -n "$production_manifests" ] || fail "no production package manifests found"
+
+test_manifests="$(find "$ROOT/test" -name daml.yaml -type f | sort)" ||
+	fail "failed to discover test package manifests"
+[ -n "$test_manifests" ] || fail "no test package manifests found"
+
+for manifest_list in "$production_manifests" "$test_manifests"; do
+	while IFS= read -r manifest; do
+		package_sdk="$(sed -n 's/^sdk-version:[[:space:]]*//p' "$manifest")"
+		[ "$package_sdk" = "$workspace_sdk" ] ||
+			fail "${manifest#"$ROOT/"} sdk-version must match multi-package.yaml"
+	done <<< "$manifest_list"
+done
+
+package_paths="$(sed -n 's/^[[:space:]]*-[[:space:]]*//p' "$ROOT/multi-package.yaml")" ||
+	fail "failed to read package paths from multi-package.yaml"
+[ -n "$package_paths" ] || fail "multi-package.yaml declares no packages"
 
 while IFS= read -r package_path; do
 	require_file "$package_path/daml.yaml"
-done < <(sed -n 's/^[[:space:]]*-[[:space:]]*//p' "$ROOT/multi-package.yaml")
+done <<< "$package_paths"
 
 if grep -R -n -E --include='daml.yaml' '^[[:space:]]*exposed-modules:' "$ROOT/packages"; then
 	fail "exposed-modules is not a supported public-API boundary"
@@ -73,7 +87,7 @@ while IFS= read -r manifest; do
 	fi
 
 	require_file "${package_dir#"$ROOT/"}/README.md"
-done < <(find "$ROOT/packages" -name daml.yaml -type f | sort)
+done <<< "$production_manifests"
 
 while IFS= read -r manifest; do
 	package_name="$(sed -n 's/^name:[[:space:]]*//p' "$manifest")"
@@ -95,6 +109,6 @@ while IFS= read -r manifest; do
 
 	grep -Eq '^[[:space:]]*-[[:space:]]*\.\./\.\./packages/.+\.dar$' "$manifest" ||
 		fail "test package ${manifest#"$ROOT/"} must data-depend on a production DAR"
-done < <(find "$ROOT/test" -name daml.yaml -type f | sort)
+done <<< "$test_manifests"
 
 printf 'check: OK\n'

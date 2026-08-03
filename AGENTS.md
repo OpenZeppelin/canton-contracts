@@ -1,4 +1,4 @@
-# AGENTS.md — canton-contracts
+# AGENTS.md - canton-contracts
 
 ## Repository role
 
@@ -56,7 +56,9 @@ and every package manifest mirrors that version because Daml 3.4 requires the
 field locally; `scripts/check.sh` enforces consistency. Package manifests target
 Daml-LF `2.1`. Use `dpm build`, `dpm test`, and `dpm upgrade-check`; do not
 introduce legacy Daml Assistant commands unless a documented toolchain decision
-changes this.
+changes this. For package-scoped commands run from the repository root, set
+`DAML_PACKAGE` to the repository-relative package path instead of using
+`--package-root`.
 
 ## Validation
 
@@ -65,9 +67,9 @@ Run from the repository root:
 ```sh
 dpm build --all
 scripts/check.sh
-dpm test --package-root test/access-control-v1 --all --show-coverage
-dpm test --package-root test/ownable-v1 --all --show-coverage
-dpm test --package-root test/pausable-v1 --all --show-coverage
+DAML_PACKAGE=test/access-control-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/ownable-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/pausable-v1 dpm test --all --show-coverage
 ```
 
 `scripts/check.sh` enforces package boundaries. Component tests and production
@@ -76,25 +78,27 @@ includes the production DAR dependency.
 
 ## Documentation
 
-The root README is a consumer landing page. It presents the available production
-packages, their purpose, how to build and consume them, their compatibility
-model, and security guidance. Contributor testing, coverage, maintenance, and CI
-instructions belong in `CONTRIBUTING.md` or the workflow itself; the root README
-links to the contributing guide.
+The root `README.md` is a consumer landing page. It presents the available
+production packages, their purpose, how to build and consume them, their
+compatibility model, and security guidance. Contributor testing, coverage,
+maintenance, and CI instructions belong in `CONTRIBUTING.md` or the workflow
+itself; the root `README.md` links to the contributing guide.
 
-All READMEs use present-tense, user-facing language that describes the current
-repository contents, the purpose of each directory, and supported usage. Do not
-describe removed content, previous layouts, rejected alternatives, empty
+All `README.md` files use present-tense, user-facing language that describes the
+current repository contents, the purpose of each directory, and supported usage.
+Do not describe removed content, previous layouts, rejected alternatives, empty
 scaffolding, milestones, internal review context, or planned future work.
 Architectural trade-offs and design rationale belong in `ARCHITECTURE.md`.
 Security limitations and operational assumptions describe current behavior and
-must remain visible in the relevant package README.
+must remain visible in the relevant package `README.md`.
 
 Use repository-relative paths in documentation and configuration. Never include
 a developer username, home directory, temporary directory, or another
-machine-specific absolute path. Package READMEs document the public module,
-capabilities, authority and lifecycle model, build command, consumption example,
-and security caveats.
+machine-specific absolute path. Refer to repository files by their exact
+filenames, including extensions, and format literal filenames and paths with
+backticks. Package `README.md` files document the public module, capabilities,
+authority and lifecycle model, build command, consumption example, and security
+caveats.
 
 `CHANGELOG.md` contains only user-visible changes to downloadable production
 packages and their public APIs. Exclude repository organization, CI, tests,

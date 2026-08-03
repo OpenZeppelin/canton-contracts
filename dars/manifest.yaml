@@ -1,0 +1,32 @@
+# OpenZeppelin Canton DAR manifest.
+#
+# This manifest records the identity and provenance of released OpenZeppelin
+# DARs and vendored third-party DARs. It is not DPM's native daml.lock and does
+# not install, upload, or vet packages.
+#
+# Each artifact entry contains:
+# - kind: `release` for an OpenZeppelin release or `vendor` for a third-party DAR
+# - package: Daml package name
+# - version: Daml package version
+# - file: repository-relative path to the DAR
+# - main-package-id: package ID of the DAR's main package
+# - package-ids: complete package-ID closure represented by the DAR
+# - sha256: lowercase SHA-256 digest of the DAR file
+# - source: canonical release or upstream artifact URL
+# - license: SPDX license identifier
+#
+# Entry shape:
+# - kind: release
+#   package: openzeppelin-ownable-v1
+#   version: 1.0.0
+#   file: dars/released/openzeppelin-ownable-v1/1.0.0/openzeppelin-ownable-v1-1.0.0.dar
+#   main-package-id: <package-id>
+#   package-ids:
+#     - <main-package-id>
+#     - <dependency-package-id>
+#   sha256: <dar-sha256>
+#   source: <canonical-artifact-url>
+#   license: MIT
+
+schema-version: 1
+artifacts: []

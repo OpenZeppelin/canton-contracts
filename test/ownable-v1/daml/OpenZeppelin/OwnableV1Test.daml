@@ -86,7 +86,7 @@ test_ownershipArchiveIsOwnerOnly = script do
 -- | Only the offerer (signatory) can destroy a pending offer; the nominee
 -- cannot, and can no longer accept afterwards. Unlike
 -- `OwnershipOffer_Withdraw`, a raw archive does not restore the offerer's
--- `Ownership` — the resource ends up ownerless, which is why the withdraw
+-- `Ownership` - the resource ends up ownerless, which is why the withdraw
 -- choice exists.
 test_offerArchiveIsOffererOnly : Script ()
 test_offerArchiveIsOffererOnly = script do

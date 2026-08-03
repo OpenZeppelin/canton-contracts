@@ -49,7 +49,7 @@ failure modes, and upgrade assumptions for every template.
 From the repository root:
 
 ```sh
-dpm build --package-root packages/access/access-control-v1
+DAML_PACKAGE=packages/access/access-control-v1 dpm build
 ```
 
 ## Consume a local build

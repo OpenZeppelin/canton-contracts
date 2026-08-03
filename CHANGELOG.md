@@ -11,21 +11,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ### `openzeppelin-access-control-v1`
 
-#### Changed
+#### Changed (Breaking)
 
 - Renamed the pre-release package and public module into the `v1` lineage
   without changing contract behavior.
 
 ### `openzeppelin-ownable-v1`
 
-#### Changed
+#### Changed (Breaking)
 
 - Renamed the pre-release package and public module into the `v1` lineage
   without changing contract behavior.
 
 ### `openzeppelin-pausable-v1`
 
-#### Changed
+#### Changed (Breaking)
 
 - Renamed the pre-release package and public module into the `v1` lineage
   without changing contract behavior.

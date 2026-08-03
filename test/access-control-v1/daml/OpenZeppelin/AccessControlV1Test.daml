@@ -10,7 +10,7 @@ import OpenZeppelin.AccessControlV1
 import OpenZeppelin.AccessControlV1TestSupport
 
 -- | Disclose `cid` (owned by `p`) so a non-stakeholder controller can exercise a
--- choice on it — the off-ledger service's job in production. Used to let a
+-- choice on it - the off-ledger service's job in production. Used to let a
 -- role-admin delegate exercise the admin-signed `RoleAdmin`.
 discloseTo : forall t. Template t => Party -> ContractId t -> Script Disclosure
 discloseTo p cid = do
@@ -122,7 +122,7 @@ test_grantRoleAsAdminRolePasses = script do
   pure ()
 
 -- | A caller that does not hold the supplied admin role cannot grant. Alice
--- holds only MINTER_ROLE and presents it as if it were the admin role — the
+-- holds only MINTER_ROLE and presents it as if it were the admin role - the
 -- `requireRole` gate (A3) rejects it.
 test_grantRoleAsWrongAdminRoleFails : Script ()
 test_grantRoleAsWrongAdminRoleFails = script do

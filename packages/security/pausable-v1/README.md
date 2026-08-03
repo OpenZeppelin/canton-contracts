@@ -42,7 +42,7 @@ guard. It should not retain a stale contract ID across state transitions.
 From the repository root:
 
 ```sh
-dpm build --package-root packages/security/pausable-v1
+DAML_PACKAGE=packages/security/pausable-v1 dpm build
 ```
 
 ## Consume a local build

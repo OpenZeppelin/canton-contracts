@@ -30,7 +30,7 @@ package IDs.
 ### Requirements
 
 - DPM
-- Java 21
+- Java 21+
 
 The workspace declares its Daml SDK in
 [`multi-package.yaml`](multi-package.yaml). Package manifests mirror that value
@@ -129,9 +129,9 @@ testing requirements, and the checklist for new components.
 
 ## Related projects
 
-- [Canton Improvement Proposals](https://github.com/canton-foundation/cips) — canonical Canton standards
-- [OpenZeppelin Canton specs](https://github.com/OpenZeppelin/canton-specs) — research, prototypes, reference architectures, and interoperability evidence
-- [OpenZeppelin Canton ecosystem-stack proposal](https://github.com/canton-foundation/canton-dev-fund/blob/main/proposals/2026-04-OpenZeppelin-canton-ecosystem-stack.md) — ecosystem program context
+- [Canton Improvement Proposals](https://github.com/canton-foundation/cips) - canonical Canton standards
+- [OpenZeppelin Canton specs](https://github.com/OpenZeppelin/canton-specs) - research, prototypes, reference architectures, and interoperability evidence
+- [OpenZeppelin Canton ecosystem-stack proposal](https://github.com/canton-foundation/canton-dev-fund/blob/main/proposals/2026-04-OpenZeppelin-canton-ecosystem-stack.md) - ecosystem program context
 
 ## License
 

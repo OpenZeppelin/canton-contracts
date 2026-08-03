@@ -2,7 +2,7 @@
 
 ## Development setup
 
-Install DPM and Java 21. From the repository root, install the Daml SDK declared
+Install DPM and Java 21+. From the repository root, install the Daml SDK declared
 by [`multi-package.yaml`](multi-package.yaml), then build and validate the
 workspace:
 
@@ -15,7 +15,7 @@ scripts/check.sh
 Run an affected component's isolated test package directly with DPM:
 
 ```sh
-dpm test --package-root test/access-control-v1 --all --show-coverage
+DAML_PACKAGE=test/access-control-v1 dpm test --all --show-coverage
 ```
 
 Use the corresponding path under `test/` for another component.
