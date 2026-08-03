@@ -11,4 +11,4 @@ SCU compatibility, and operator vetting.
   provenance URLs, and licenses.
 
 DPM writes local build output under each package's `.daml/dist` directory.
-`RELEASING.md` defines how production artifacts are added here.
+[RELEASING.md](../RELEASING.md) defines how production artifacts are added here.
