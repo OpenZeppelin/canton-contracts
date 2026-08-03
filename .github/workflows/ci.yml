@@ -73,6 +73,9 @@ jobs:
       - name: Build all packages
         run: dpm build --all
 
+      - name: Lint all packages
+        run: scripts/check-lint.sh
+
       - name: Test all packages and enforce production coverage
         run: scripts/check-coverage.sh
 

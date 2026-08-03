@@ -18,7 +18,7 @@ for file in \
 	README.md ARCHITECTURE.md RELEASING.md CHANGELOG.md CONTRIBUTING.md \
 	SECURITY.md AGENTS.md LICENSE multi-package.yaml dars/README.md \
 	dars/manifest.yaml audits/README.md examples/README.md \
-	scripts/check-coverage.sh; do
+	scripts/check-coverage.sh scripts/check-lint.sh; do
 	require_file "$file"
 done
 

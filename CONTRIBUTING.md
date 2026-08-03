@@ -12,6 +12,15 @@ dpm build --all
 scripts/check.sh
 ```
 
+Lint an affected package directly with DPM:
+
+```sh
+DAML_PACKAGE=packages/access/access-control-v1 dpm damlc lint
+```
+
+Use the corresponding package path from `multi-package.yaml` for another
+production or test package.
+
 Run an affected component's isolated test package directly with DPM:
 
 ```sh

@@ -54,11 +54,11 @@ assumptions, archival behavior, failure modes, and upgrade/migration assumptions
 The repository is DPM-native. `multi-package.yaml` declares the workspace SDK,
 and every package manifest mirrors that version because Daml 3.4 requires the
 field locally; `scripts/check.sh` enforces consistency. Package manifests target
-Daml-LF `2.1`. Use `dpm build`, `dpm test`, and `dpm upgrade-check`; do not
-introduce legacy Daml Assistant commands unless a documented toolchain decision
-changes this. For package-scoped commands run from the repository root, set
-`DAML_PACKAGE` to the repository-relative package path instead of using
-`--package-root`.
+Daml-LF `2.1`. Use `dpm build`, `dpm damlc lint`, `dpm test`, and
+`dpm upgrade-check`; do not introduce legacy Daml Assistant commands unless a
+documented toolchain decision changes this. For package-scoped commands run from
+the repository root, set `DAML_PACKAGE` to the repository-relative package path
+instead of using `--package-root`.
 
 ## Validation
 
@@ -67,6 +67,12 @@ Run from the repository root:
 ```sh
 dpm build --all
 scripts/check.sh
+DAML_PACKAGE=packages/access/access-control-v1 dpm damlc lint
+DAML_PACKAGE=packages/access/ownable-v1 dpm damlc lint
+DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
+DAML_PACKAGE=test/access-control-v1 dpm damlc lint
+DAML_PACKAGE=test/ownable-v1 dpm damlc lint
+DAML_PACKAGE=test/pausable-v1 dpm damlc lint
 DAML_PACKAGE=test/access-control-v1 dpm test --all --show-coverage
 DAML_PACKAGE=test/ownable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=test/pausable-v1 dpm test --all --show-coverage
@@ -104,6 +110,6 @@ caveats.
 packages and their public APIs. Exclude repository organization, CI, tests,
 tooling, and documentation-only changes.
 
-The CI-only `scripts/check-coverage.sh` discovers and validates every production
-package. Public and contributor documentation shows native DPM commands instead
-of presenting that helper as the testing interface.
+The CI-only `scripts/check-lint.sh` and `scripts/check-coverage.sh` discover and
+validate workspace packages. Public and contributor documentation shows native
+DPM commands instead of presenting those helpers as the development interface.
