@@ -1,7 +1,7 @@
 # OpenZeppelin Contracts for Canton
 
 [![CI](https://github.com/OpenZeppelin/canton-contracts/actions/workflows/ci.yml/badge.svg)](https://github.com/OpenZeppelin/canton-contracts/actions/workflows/ci.yml)
-[![Choice coverage: 100%](https://img.shields.io/badge/choice%20coverage-100%25-brightgreen)](https://github.com/OpenZeppelin/canton-contracts/actions/workflows/ci.yml)
+[![Choice coverage](https://github.com/OpenZeppelin/canton-contracts/actions/workflows/coverage.yml/badge.svg?branch=main&event=push)](https://github.com/OpenZeppelin/canton-contracts/actions/workflows/coverage.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Reusable, security-focused Daml packages for applications on Canton.

@@ -1,0 +1,45 @@
+name: Set up Daml
+description: Set up Java, DPM, and the workspace Daml SDK.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Java 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: "21"
+
+    - name: Cache DPM and SDKs
+      uses: actions/cache@v4
+      with:
+        path: ~/.dpm
+        key: dpm-${{ runner.os }}-sdk-${{ hashFiles('multi-package.yaml') }}-v2
+
+    - name: Provision DPM and the project SDK
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ ! -x "$HOME/.dpm/bin/dpm" ]; then
+          version="$(curl -sSf https://get.digitalasset.com/install/latest)"
+          arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+          os="$(uname | tr '[:upper:]' '[:lower:]')"
+          tarball="dpm-${version}-${os}-${arch}.tar.gz"
+          tmp="$(mktemp -d)"
+
+          curl -SLf "https://get.digitalasset.com/install/dpm-sdk/${tarball}" -o "${tmp}/${tarball}"
+          mkdir -p "${tmp}/extracted"
+          tar xzf "${tmp}/${tarball}" -C "${tmp}/extracted" --strip-components 1
+          "${tmp}/extracted/bin/dpm" bootstrap "${tmp}/extracted"
+          rm -rf "${tmp}"
+        fi
+
+        echo "$HOME/.dpm/bin" >> "$GITHUB_PATH"
+        export PATH="$HOME/.dpm/bin:$PATH"
+        command -v dpm >/dev/null 2>&1 || {
+          echo "::error::dpm not on PATH after install (expected ~/.dpm/bin/dpm)." >&2
+          exit 1
+        }
+
+        dpm install package
