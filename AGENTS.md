@@ -1,98 +1,115 @@
 # AGENTS.md - canton-contracts
 
-## Role
+## Repository role
 
-This repo is the canonical **decoupled, ergonomic general Daml contracts
-library** for the Canton workspace: small, independent, reusable packages that
-applications import individually. Keep changes small, auditable, and tied to
-library deliverables.
+This repository is the reusable OpenZeppelin Daml contracts library for Canton.
+Keep components independent, auditable, and useful outside any single reference
+implementation.
 
-The OpenZeppelin Canton Reference Implementations — the CIP-0112 settlement RI
-scaffold, the compliance/identity experiments, the CIP specs/architecture
-reports, and the four Year-1 RI architectural overviews — live in
-`OpenZeppelin/canton-specs`, which **consumes** this library. Keeping the RI out
-of this repo is what keeps the library decoupled and ergonomic. **Do not add
-RI-specific or experimental packages here**; a primitive is promoted from the RI
-scaffold into this library only after it satisfies the CIP-0112
-promotion-boundary ADR tracked in `canton-specs`.
+Research prototypes, local replicas of upstream standards, interoperability
+harnesses, and application-specific business logic belong in `canton-specs` or
+the relevant application repository. A component enters this repository only
+after its promotion boundary is accepted.
 
-The `settlement`, `token-standard-v2-mock`, and `interop` packages are exactly
-such a promotion, in progress on the `cip-interop-m1` branch: the interop facades
-are the promoted deliverable; `settlement` + `token-standard-v2-mock` come along
-as their build dependencies and remain **gated/experimental** (the Token Standard
-V2 import gate has not cleared) until that ADR step completes.
+## Read order
 
-## Read Order
+Before changing the repository, read:
 
-Before changing this repo:
+1. `README.md`
+2. `ARCHITECTURE.md`
+3. The affected package `README.md`
+4. `CONTRIBUTING.md`
+5. `RELEASING.md` when changing package identity or artifacts
 
-1. Read root `../AGENTS.md`.
-2. Read root `../PLAN.md`.
-3. Read this file.
-4. Read `README.md`.
-5. Check the accepted SDK/CIP ADR before adding or changing `daml.yaml`.
+All instructions are self-contained in this checkout; do not assume parent
+workspace files exist.
 
-## Boundaries
+## Package rules
 
-Do not add:
+- One independently released unit equals one package and one DAR.
+- Package names use `openzeppelin-<component>-vN`; module names use
+  `OpenZeppelin.<Component>VN`.
+- A component that defines Daml interfaces or exceptions uses a frozen
+  `-api-vN` package containing no templates. Template-only components do not get
+  empty API packages.
+- API packages may depend only on API packages. Implementation packages must not
+  depend on other implementation packages without an accepted architecture
+  decision; prefer interface composition or consumer-side wiring.
+- Production packages must not depend on `daml-script`.
+- Test code lives in an isolated `-test` package under the root `test/`
+  directory and is never released or uploaded.
+- Do not use `exposed-modules` as an API boundary. Use documented public modules
+  and `.Internal` naming for implementation details.
+- Category directories under `packages/` are navigation only and never appear
+  in package names or module namespaces.
+- Do not publish upstream Canton or Splice interfaces under an OpenZeppelin
+  namespace. Consume exact, verified upstream DARs.
 
-- Reference-implementation-specific business logic.
-- Production private integrations.
-- Full relayer infrastructure.
-- Year 2 components before scope review approval.
-- Public APIs without an ADR once implementation begins.
+Every production template or interface must document signatories, observers,
+controllers, choices, disclosure and privacy expectations, authorization
+assumptions, archival behavior, failure modes, and upgrade/migration assumptions.
 
-Hosted CI is accepted for this repo: `.github/workflows/ci.yml` provisions DPM,
-builds every package, runs the script suites, and captures coverage reports
-(`scripts/run-tests.sh`). This supersedes the prior "no `.github/workflows`"
-boundary, per the CIP-0112 interop delivery decision.
+## Daml toolchain
 
-## Daml Requirements
-
-This repo is DPM-native. Use `dpm build`, `dpm test`, `dpm script`, and
-`dpm init`; do not use legacy `daml ...` commands or stale SDK binaries unless
-a superseding ADR or explicit temporary exception accepts them. Daml Assistant
-absence is expected for the M0 proof path and must not be treated as a reason
-to fall back from DPM.
-
-Local scripts bootstrap DPM from PATH or `~/.dpm/bin/dpm`, require Java 21 for
-the accepted DPM build/test/script path, and default DPM/DAML cache writes to
-the repo-local ignored `.cache/` directory. The repo-local
-`scripts/dpm-env.sh` is intentionally duplicated with the coordinating root
-helper so standalone checkouts remain buildable; update both copies together
-until an accepted vendoring step replaces the duplication.
-
-Every template or interface must document:
-
-- Signatories
-- Observers
-- Controllers
-- Choices
-- Disclosed parties
-- Privacy expectations
-- Authorization assumptions
-- Archival behavior
-- Failure modes
-- Upgrade and migration assumptions
-
-If any item is unclear, document the uncertainty before implementation.
+The repository is DPM-native. `multi-package.yaml` declares the workspace SDK,
+and every package manifest mirrors that version because Daml 3.4 requires the
+field locally; `scripts/check.sh` enforces consistency. Package manifests target
+Daml-LF `2.1`. Use `dpm build`, `dpm damlc lint`, `dpm test`, and
+`dpm upgrade-check`; do not introduce legacy Daml Assistant commands unless a
+documented toolchain decision changes this. For package-scoped commands run from
+the repository root, set `DAML_PACKAGE` to the repository-relative package path
+instead of using `--package-root`.
 
 ## Validation
 
-Use repo-local scripts for standalone validation:
+Run from the repository root:
 
 ```sh
-scripts/check-scaffold.sh
-scripts/run-tests.sh
-scripts/manual-workflow-test.sh
+dpm build --all
+scripts/check.sh
+DAML_PACKAGE=packages/access/access-control-v1 dpm damlc lint
+DAML_PACKAGE=packages/access/ownable-v1 dpm damlc lint
+DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
+DAML_PACKAGE=test/access-control-v1 dpm damlc lint
+DAML_PACKAGE=test/ownable-v1 dpm damlc lint
+DAML_PACKAGE=test/pausable-v1 dpm damlc lint
+DAML_PACKAGE=test/access-control-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/ownable-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/pausable-v1 dpm test --all --show-coverage
 ```
 
-The accepted M0 proof baseline uses DPM with SDK 3.4.11. Because `daml.yaml`
-exists, missing DPM or Java 21 tooling is a validation failure, not a green
-skip. Use `OZ_DAML_TOOLCHAIN=dpm` for the M0 proof baseline; Daml Assistant
-requires a superseding ADR or explicit exception.
+`scripts/check.sh` enforces package boundaries. Component tests and production
+template/choice coverage run directly through DPM; keep `--all` so the report
+includes the production DAR dependency.
 
-GitHub Actions / hosted CI is accepted here (`.github/workflows/ci.yml`): it
-provisions DPM, builds every package, runs the script suites via
-`scripts/run-tests.sh`, and captures coverage. The repo-local manual validation
-entrypoint remains `scripts/manual-workflow-test.sh`.
+## Documentation
+
+The root `README.md` is a consumer landing page. It presents the available
+production packages, their purpose, how to build and consume them, their
+compatibility model, and security guidance. Contributor testing, coverage,
+maintenance, and CI instructions belong in `CONTRIBUTING.md` or the workflow
+itself; the root `README.md` links to the contributing guide.
+
+All `README.md` files use present-tense, user-facing language that describes the
+current repository contents, the purpose of each directory, and supported usage.
+Do not describe removed content, previous layouts, rejected alternatives, empty
+scaffolding, milestones, internal review context, or planned future work.
+Architectural trade-offs and design rationale belong in `ARCHITECTURE.md`.
+Security limitations and operational assumptions describe current behavior and
+must remain visible in the relevant package `README.md`.
+
+Use repository-relative paths in documentation and configuration. Never include
+a developer username, home directory, temporary directory, or another
+machine-specific absolute path. Refer to repository files by their exact
+filenames, including extensions, and format literal filenames and paths with
+backticks. Package `README.md` files document the public module, capabilities,
+authority and lifecycle model, build command, consumption example, and security
+caveats.
+
+`CHANGELOG.md` contains only user-visible changes to downloadable production
+packages and their public APIs. Exclude repository organization, CI, tests,
+tooling, and documentation-only changes.
+
+The CI-only `scripts/check-lint.sh` and `scripts/check-coverage.sh` discover and
+validate workspace packages. Public and contributor documentation shows native
+DPM commands instead of presenting those helpers as the development interface.

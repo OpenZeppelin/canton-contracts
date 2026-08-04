@@ -1,16 +1,12 @@
 name: ci
 
-# Validation gate for the OpenZeppelin Daml contracts library. Automated
-# counterpart to the manual gate in AGENTS.md / README.md: build every package in
-# dependency order, validate the scaffold (scripts/check-scaffold.sh), then run
-# the full script suite AND capture coverage reports (scripts/run-tests.sh) —
-# the access-control/ownable/pausable spine, the CIP-0112 settlement engine, and
-# the CIP-0086/0103/0104 interop proof.
+# Validation gate for the OpenZeppelin Daml contracts library: enforce package
+# boundaries, build every package in dependency order, run each isolated test
+# package directly with DPM, and enforce production template/choice coverage.
 #
 # DPM is Digital Asset's package manager, installed from Digital Asset's public,
-# no-auth installer (https://get.digitalasset.com) into ~/.dpm — the location
-# scripts/dpm-env.sh expects locally. ~/.dpm is cached so the SDK tarball is
-# downloaded once.
+# no-auth installer (https://get.digitalasset.com) into ~/.dpm and added to
+# PATH. ~/.dpm is cached so the SDK tarball is downloaded once.
 
 on:
   push:
@@ -43,9 +39,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.dpm
-          key: dpm-${{ runner.os }}-sdk-3.4.11-v2
+          key: dpm-${{ runner.os }}-sdk-${{ hashFiles('multi-package.yaml') }}-v2
 
-      - name: Provision DPM and the 3.4.11 SDK
+      - name: Provision DPM and the project SDK
         run: |
           set -euo pipefail
           # Reuse a DPM under ~/.dpm (runner image or restored cache); otherwise
@@ -68,15 +64,20 @@ jobs:
             echo "::error::dpm not on PATH after install (expected ~/.dpm/bin/dpm)." >&2
             exit 1
           }
-          # Install the project SDK from $HOME so dpm does not resolve this repo's
-          # daml.yaml sdk-version (3.4.11) before it is installed.
-          (cd "$HOME" && dpm install 3.4.11)
+          # Install the SDK selected by the workspace configuration.
+          dpm install package
 
-      - name: Validate scaffold (build root + proof)
-        run: scripts/check-scaffold.sh
+      - name: Check repository structure and package boundaries
+        run: scripts/check.sh
 
-      - name: Build all packages, run all scripts, capture coverage
-        run: scripts/run-tests.sh
+      - name: Build all packages
+        run: dpm build --all
+
+      - name: Lint all packages
+        run: scripts/check-lint.sh
+
+      - name: Test all packages and enforce production coverage
+        run: scripts/check-coverage.sh
 
       - name: Upload coverage reports
         if: always()
