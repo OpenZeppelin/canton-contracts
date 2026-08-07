@@ -1,0 +1,12 @@
+-- | Placeholder keeping test/ present in git until the first component
+-- graduates from experiments/. Delete alongside this package when real
+-- tests arrive.
+module OpenZeppelin.PlaceholderTest where
+
+import DA.Assert ((===))
+import Daml.Script
+
+-- | Trivially passes; exists so the package holds one valid test.
+test_placeholder : Script ()
+test_placeholder = script do
+  1 === 1

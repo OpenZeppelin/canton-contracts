@@ -1,0 +1,16 @@
+# Placeholder package keeping test/ present in git until the first component
+# graduates from experiments/. Delete this package when real tests arrive.
+# The data-dependency is unused; scripts/check.sh requires every test package
+# to data-depend on a production DAR.
+sdk-version: 3.4.11
+name: openzeppelin-placeholder-test
+source: daml
+version: 0.0.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+data-dependencies:
+  - ../../experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+build-options:
+  - --target=2.1
