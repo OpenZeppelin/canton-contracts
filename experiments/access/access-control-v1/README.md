@@ -49,7 +49,7 @@ failure modes, and upgrade assumptions for every template.
 From the repository root:
 
 ```sh
-DAML_PACKAGE=packages/access/access-control-v1 dpm build
+DAML_PACKAGE=experiments/access/access-control-v1 dpm build
 ```
 
 ## Consume a local build
@@ -59,7 +59,7 @@ Build the package, then add its generated DAR to another project's
 
 ```yaml
 data-dependencies:
-  - ../canton-contracts/packages/access/access-control-v1/.daml/dist/openzeppelin-access-control-v1-0.1.0.dar
+  - ../canton-contracts/experiments/access/access-control-v1/.daml/dist/openzeppelin-access-control-v1-0.1.0.dar
 ```
 
 ```daml

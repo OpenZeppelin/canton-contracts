@@ -7,7 +7,7 @@ dependencies:
   - daml-stdlib
   - daml-script
 data-dependencies:
-  - ../../packages/security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
+  - ../../security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
 build-options:
   - --target=2.1
   - -Wno-template-interface-depends-on-daml-script

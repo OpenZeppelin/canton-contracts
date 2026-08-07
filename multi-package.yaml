@@ -3,9 +3,9 @@
 sdk-version: 3.4.11
 
 packages:
-  - packages/access/access-control-v1
-  - packages/access/ownable-v1
-  - packages/security/pausable-v1
-  - test/access-control-v1
-  - test/ownable-v1
-  - test/pausable-v1
+  - experiments/access/access-control-v1
+  - experiments/access/ownable-v1
+  - experiments/security/pausable-v1
+  - experiments/test/access-control-v1
+  - experiments/test/ownable-v1
+  - experiments/test/pausable-v1
