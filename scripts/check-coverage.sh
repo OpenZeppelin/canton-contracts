@@ -8,9 +8,9 @@ cd "$ROOT"
 REPORTS="test-reports"
 mkdir -p "$REPORTS"
 
-# Trees under policy; keep in sync with scripts/check.sh.
-SOURCE_TREE="experiments"
-TEST_TREE="experiments/test"
+# Trees under policy as "<source tree>:<test tree>" pairs; keep in sync with
+# scripts/check.sh.
+TREES=("packages:test" "experiments:experiments/test")
 
 fail() {
 	printf 'coverage: %s\n' "$*" >&2
@@ -27,40 +27,49 @@ check_zero() {
 	[ "$value" -eq 0 ] || fail "$metric: $value ($report)"
 }
 
-production_manifests="$(find "$SOURCE_TREE" -type d -name .daml -prune -o -path "$TEST_TREE" -prune -o -name daml.yaml -type f -print | sort)" ||
-	fail "failed to discover production package manifests"
-[ -n "$production_manifests" ] || fail "no production package manifests found"
-
 package_count=0
-while IFS= read -r manifest; do
-	package_dir="$(dirname "$manifest")"
-	component="$(basename "$package_dir")"
-	test_package="$TEST_TREE/$component"
-	test_manifest="$test_package/daml.yaml"
-	coverage_report="$REPORTS/$component-coverage.txt"
 
-	[ -f "$test_manifest" ] ||
-		fail "missing test package for $package_dir: $test_manifest"
-	dar_dir="$(realpath --relative-to="$test_package" "$package_dir")/.daml/dist/"
-	grep -Fq "$dar_dir" "$test_manifest" ||
-		fail "$test_manifest must data-depend on $package_dir"
+for tree_pair in "${TREES[@]}"; do
+	source_tree="${tree_pair%%:*}"
+	test_tree="${tree_pair##*:}"
 
-	printf 'coverage: testing %s\n' "$component"
-	# Report paths are absolute: dpm resolves --save-coverage against the package
-	# directory and --junit against the working directory.
-	DAML_PACKAGE="$test_package" dpm test \
-		--all \
-		--show-coverage \
-		--junit "$ROOT/$REPORTS/$component-junit.xml" \
-		--save-coverage "$ROOT/$REPORTS/$component.coverage" \
-		| tee "$coverage_report"
+	[ -d "$source_tree" ] || continue
+	production_manifests="$(find "$source_tree" -type d -name .daml -prune -o -path "$test_tree" -prune -o -name daml.yaml -type f -print | sort)" ||
+		fail "failed to discover production package manifests under $source_tree"
+	[ -n "$production_manifests" ] || continue
 
-	check_zero "$coverage_report" "external templates never created"
-	check_zero "$coverage_report" "external template choices never exercised"
-	check_zero "$coverage_report" "external interface choices never exercised"
+	while IFS= read -r manifest; do
+		package_dir="$(dirname "$manifest")"
+		component="$(basename "$package_dir")"
+		test_package="$test_tree/$component"
+		test_manifest="$test_package/daml.yaml"
+		coverage_report="$REPORTS/$component-coverage.txt"
 
-	package_count=$((package_count + 1))
-done <<< "$production_manifests"
+		[ -f "$test_manifest" ] ||
+			fail "missing test package for $package_dir: $test_manifest"
+		dar_dir="$(realpath --relative-to="$test_package" "$package_dir")/.daml/dist/"
+		grep -Fq "$dar_dir" "$test_manifest" ||
+			fail "$test_manifest must data-depend on $package_dir"
+
+		printf 'coverage: testing %s\n' "$component"
+		# Report paths are absolute: dpm resolves --save-coverage against the package
+		# directory and --junit against the working directory.
+		DAML_PACKAGE="$test_package" dpm test \
+			--all \
+			--show-coverage \
+			--junit "$ROOT/$REPORTS/$component-junit.xml" \
+			--save-coverage "$ROOT/$REPORTS/$component.coverage" \
+			| tee "$coverage_report"
+
+		check_zero "$coverage_report" "external templates never created"
+		check_zero "$coverage_report" "external template choices never exercised"
+		check_zero "$coverage_report" "external interface choices never exercised"
+
+		package_count=$((package_count + 1))
+	done <<< "$production_manifests"
+done
+
+[ "$package_count" -gt 0 ] || fail "no production package manifests found"
 
 printf 'coverage: OK (%d production packages)\n' "$package_count"
 
