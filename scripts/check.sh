@@ -5,6 +5,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Trees under policy. Every component currently lives in experiments/ as a
+# pre-release candidate; a component graduating to packages/ moves both values.
+SOURCE_TREE="experiments"
+TEST_TREE="experiments/test"
+
 fail() {
 	printf 'check: %s\n' "$*" >&2
 	exit 1
@@ -18,6 +23,7 @@ for file in \
 	README.md ARCHITECTURE.md RELEASING.md CHANGELOG.md CONTRIBUTING.md \
 	SECURITY.md AGENTS.md LICENSE multi-package.yaml dars/README.md \
 	dars/manifest.yaml audits/README.md examples/README.md \
+	experiments/README.md \
 	scripts/check-coverage.sh scripts/check-lint.sh; do
 	require_file "$file"
 done
@@ -26,7 +32,7 @@ if [ -f "$ROOT/daml.yaml" ]; then
 	fail "the repository root is a workspace, not a Daml package"
 fi
 
-[ -d "$ROOT/test" ] || fail "missing root test directory"
+[ -d "$ROOT/$TEST_TREE" ] || fail "missing $TEST_TREE directory"
 
 if ! grep -Eq '^sdk-version:[[:space:]]*[^[:space:]]+' "$ROOT/multi-package.yaml"; then
 	fail "multi-package.yaml must pin the workspace SDK version"
@@ -34,11 +40,11 @@ fi
 
 workspace_sdk="$(sed -n 's/^sdk-version:[[:space:]]*//p' "$ROOT/multi-package.yaml")"
 
-production_manifests="$(find "$ROOT/packages" -name daml.yaml -type f | sort)" ||
+production_manifests="$(find "$ROOT/$SOURCE_TREE" -path "$ROOT/$TEST_TREE" -prune -o -name daml.yaml -type f -print | sort)" ||
 	fail "failed to discover production package manifests"
 [ -n "$production_manifests" ] || fail "no production package manifests found"
 
-test_manifests="$(find "$ROOT/test" -name daml.yaml -type f | sort)" ||
+test_manifests="$(find "$ROOT/$TEST_TREE" -name daml.yaml -type f | sort)" ||
 	fail "failed to discover test package manifests"
 [ -n "$test_manifests" ] || fail "no test package manifests found"
 
@@ -58,7 +64,7 @@ while IFS= read -r package_path; do
 	require_file "$package_path/daml.yaml"
 done <<< "$package_paths"
 
-if grep -R -n -E --include='daml.yaml' '^[[:space:]]*exposed-modules:' "$ROOT/packages"; then
+if grep -R -n -E --include='daml.yaml' '^[[:space:]]*exposed-modules:' "$ROOT/$SOURCE_TREE"; then
 	fail "exposed-modules is not a supported public-API boundary"
 fi
 
@@ -68,7 +74,7 @@ while IFS= read -r manifest; do
 
 	case "$package_name" in
 	*-test)
-		fail "test package ${manifest#"$ROOT/"} must live under test/"
+		fail "test package ${manifest#"$ROOT/"} must live under $TEST_TREE/"
 		;;
 	esac
 
@@ -97,7 +103,7 @@ while IFS= read -r manifest; do
 	*-test)
 		;;
 	*)
-		fail "package ${manifest#"$ROOT/"} under test/ must use a -test name"
+		fail "package ${manifest#"$ROOT/"} under $TEST_TREE/ must use a -test name"
 		;;
 	esac
 
@@ -107,7 +113,7 @@ while IFS= read -r manifest; do
 	grep -Eq '(^|[[:space:]-])daml-script($|[[:space:]])' "$manifest" ||
 		fail "test package ${manifest#"$ROOT/"} must depend on daml-script"
 
-	grep -Eq '^[[:space:]]*-[[:space:]]*\.\./\.\./packages/.+\.dar$' "$manifest" ||
+	grep -Eq '^[[:space:]]*-[[:space:]]*\.\./\.\./.+\.dar$' "$manifest" ||
 		fail "test package ${manifest#"$ROOT/"} must data-depend on a production DAR"
 done <<< "$test_manifests"
 
