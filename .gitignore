@@ -14,6 +14,7 @@ Thumbs.db
 
 # Local agent and editor state
 .codex/
+.coverage
 .vscode/
 CLAUDE.local.md
 .claude/settings.local.json
