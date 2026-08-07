@@ -7,7 +7,7 @@ by [`multi-package.yaml`](multi-package.yaml), then build and validate the
 workspace:
 
 ```sh
-dpm install package
+dpm install
 dpm build --all
 scripts/check.sh
 ```
@@ -15,7 +15,7 @@ scripts/check.sh
 Lint an affected package directly with DPM:
 
 ```sh
-DAML_PACKAGE=packages/access/access-control-v1 dpm damlc lint
+DAML_PACKAGE=experiments/access/access-control-v1 dpm damlc lint
 ```
 
 Use the corresponding package path from `multi-package.yaml` for another
@@ -24,10 +24,8 @@ production or test package.
 Run an affected component's isolated test package directly with DPM:
 
 ```sh
-DAML_PACKAGE=test/access-control-v1 dpm test --all --show-coverage
+DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
 ```
-
-Use the corresponding path under `test/` for another component.
 
 `--all` includes the production DAR dependency in the coverage report.
 Production templates and choices appear under `Modules external to this
