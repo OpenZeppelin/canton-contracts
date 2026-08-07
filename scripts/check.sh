@@ -31,9 +31,11 @@ find_manifests() {
 		exclusion=(-path "$ROOT/$excluded" -prune -o)
 	fi
 
+	# The guarded expansion keeps bash 3.2 (macOS default) from treating the
+	# empty array as an unbound variable under `set -u`.
 	find "$ROOT/$tree" \
 		-type d -name .daml -prune -o \
-		"${exclusion[@]}" \
+		${exclusion[@]+"${exclusion[@]}"} \
 		-name daml.yaml -type f -print
 }
 
