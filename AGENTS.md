@@ -67,16 +67,19 @@ Run from the repository root:
 ```sh
 dpm build --all
 scripts/check.sh
-DAML_PACKAGE=experiments/access/access-control-v1 dpm damlc lint
-DAML_PACKAGE=experiments/access/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/security/pausable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/access-control-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/pausable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/pausable-v1 dpm test --all --show-coverage
+for package in $(sed -n 's/^[[:space:]]*-[[:space:]]*//p' multi-package.yaml); do
+	DAML_PACKAGE="$package" dpm damlc lint
+	case "$package" in
+	test/* | */test/*)
+		DAML_PACKAGE="$package" dpm test --all --show-coverage
+		;;
+	esac
+done
 ```
+
+`multi-package.yaml` is the only list of packages; deriving the loop from it means
+adding a package needs no change here. `dpm damlc lint` and `dpm test` have no
+workspace-wide mode, so they run once per package.
 
 `scripts/check.sh` enforces package boundaries. Component tests and production
 template/choice coverage run directly through DPM; keep `--all` so the report
