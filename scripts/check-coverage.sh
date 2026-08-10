@@ -17,6 +17,30 @@ fail() {
 	exit 1
 }
 
+# Print the relative path from directory $1 to directory $2. Both arguments
+# are normalized paths relative to the repository root, and neither contains
+# the other. Portable replacement for GNU `realpath --relative-to`, which the
+# BSD realpath on macOS does not support.
+relpath() {
+	local from="$1"
+	local to="$2"
+	local up=""
+
+	while [ "${from%%/*}" = "${to%%/*}" ] &&
+		[ "$from" != "${from#*/}" ] && [ "$to" != "${to#*/}" ]; do
+		from="${from#*/}"
+		to="${to#*/}"
+	done
+	while :; do
+		up="../$up"
+		case "$from" in
+		*/*) from="${from#*/}" ;;
+		*) break ;;
+		esac
+	done
+	printf '%s%s' "$up" "$to"
+}
+
 check_zero() {
 	local report="$1"
 	local metric="$2"
@@ -47,7 +71,7 @@ for tree_pair in "${TREES[@]}"; do
 
 		[ -f "$test_manifest" ] ||
 			fail "missing test package for $package_dir: $test_manifest"
-		dar_dir="$(realpath --relative-to="$test_package" "$package_dir")/.daml/dist/"
+		dar_dir="$(relpath "$test_package" "$package_dir")/.daml/dist/"
 		grep -Fq "$dar_dir" "$test_manifest" ||
 			fail "$test_manifest must data-depend on $package_dir"
 
