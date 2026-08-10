@@ -79,6 +79,7 @@ DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/pausable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm test --all --show-coverage
+scripts/check-localnet.sh
 ```
 
 `scripts/check.sh` enforces package boundaries. Component tests and production

@@ -1,0 +1,106 @@
+-- | LocalNet validation for the token package: token creation, transfer, and
+-- querying against a real Canton ledger over the Ledger API, per the CIP-86
+-- acceptance criteria. `scripts/check-localnet.sh` runs each script over gRPC
+-- against a static-time sandbox; the same scripts also run under `dpm test`
+-- on the in-memory ledger.
+--
+-- Every script allocates fresh parties and pins the clock to `t1`, so the
+-- scripts compose in any order on one forward-only static-time ledger.
+module OpenZeppelin.TokenCIP112V1LocalNetTest where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount)
+
+import OpenZeppelin.TokenCIP112V1.Registry
+import OpenZeppelin.TokenCIP112V1AllowanceTest
+import OpenZeppelin.TokenCIP112V1Test
+
+-- | Token creation and querying: holdings appear in owner queries, and the
+-- balance view is projection-scoped, so one owner cannot read another
+-- owner's holding.
+localnetMintAndQuery : Script ()
+localnetMintAndQuery = do
+  s@Scenario{..} <- setupPrefixedWith "mintandquery-" None None
+  aliceCid <- mint admin alice 100.0
+  _ <- mint admin bob 50.0
+  aliceAmounts <- holdingAmounts alice
+  aliceAmounts === [100.0]
+  bobAmounts <- holdingAmounts bob
+  bobAmounts === [50.0]
+  bobViewOfAlice <- queryContractId bob aliceCid
+  bobViewOfAlice === None
+
+-- | Transfer over the standard interface: one step with both sides acting,
+-- two steps with the receiver accepting a pending instruction.
+localnetTransferLifecycle : Script ()
+localnetTransferLifecycle = do
+  s@Scenario{..} <- setupPrefixedWith "transferlifecycle-" None None
+  input1 <- mint admin alice 10.0
+  oneStep <- instructTransfer s [alice, bob] (mkTransfer s alice bob 7.0 [input1])
+  _ <- completedHoldings oneStep
+  input2 <- mint admin alice 5.0
+  twoStep <- instructTransfer s [alice] (mkTransfer s alice bob 2.0 [input2])
+  instrCid <- pendingCid twoStep
+  _ <- submit (actAs bob) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [3.0, 3.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [2.0, 7.0]
+  assertNoLocks alice
+  assertNoLocks bob
+
+-- | CIP-86 allowance over the registry: approve, one-step pull into the
+-- spender's account, pending transferFrom to a third party, and budget
+-- accounting.
+localnetAllowanceLifecycle : Script ()
+localnetAllowanceLifecycle = do
+  s@Scenario{..} <- setupPrefixedWith "allowancelifecycle-" None None
+  input1 <- mint admin alice 10.0
+  allowanceCid <- approve s alice app 9.0 None
+  pull <- transferFrom s allowanceCid app alice [input1] (mkTransfer s alice app 3.0 [input1])
+  _ <- completedHoldings pull.result
+  successorCid <- case pull.allowanceCid of
+    Some cid -> pure cid
+    None -> abort "expected a successor allowance"
+  remaining <- remainingOf app successorCid
+  remaining === 6.0
+  input2 <- mint admin alice 4.0
+  toBob <- transferFrom s successorCid app alice [input2] (mkTransfer s alice bob 4.0 [input2])
+  instrCid <- pendingCid toBob.result
+  _ <- submit (actAs bob) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+  appAfter <- holdingAmounts app
+  appAfter === [3.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [4.0]
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [7.0]
+
+-- | Mint and burn through the registry conserve the visible supply and emit
+-- the standard events.
+localnetMintAndBurn : Script ()
+localnetMintAndBurn = do
+  s@Scenario{..} <- setupPrefixedWith "mintandburn-" None None
+  mintedCid <- submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Mint with
+      account = basicAccount alice
+      instrumentId = "TOK"
+      amount = 10.0
+      reason = "localnet mint"
+  aliceMinted <- holdingAmounts alice
+  aliceMinted === [10.0]
+  submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Burn with
+      holdingCid = mintedCid
+      account = basicAccount alice
+      reason = "localnet burn"
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === []

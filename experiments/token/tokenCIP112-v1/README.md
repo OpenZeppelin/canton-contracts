@@ -93,6 +93,20 @@ From the repository root:
 DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm build
 ```
 
+## LocalNet validation
+
+`dpm test` runs the test suite on an in-memory ledger. The LocalNet gate runs
+token creation, transfer, allowance, querying, and burn against a real
+static-time Canton ledger over the Ledger API. From the repository root:
+
+```sh
+scripts/check-localnet.sh
+```
+
+Logs are written under `.cache/localnet-token/`. To target a running
+static-time ledger, set `OZ_USE_EXTERNAL_LEDGER=1`, `OZ_LEDGER_HOST`, and
+`OZ_LEDGER_PORT`.
+
 ## Consume a local build
 
 ```yaml
