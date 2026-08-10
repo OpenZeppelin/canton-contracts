@@ -32,8 +32,8 @@ data D2SeizureHook = D2SeizureHook with
     windowEnd : Time
       -- ^ When the seizure lapses: sweeps must land before it, and once it
       -- passes any single stakeholder may release the mark. Mandatory, so no
-      -- seizure can exist without a definite lapse point — an optional window
-      -- combined with an absent settlement deadline used to leave the lapse
+      -- seizure can exist without a definite lapse point. An optional window
+      -- combined with an absent settlement deadline would leave the lapse
       -- check vacuous, making the freeze releasable the instant it was placed.
   deriving (Eq, Show)
 
