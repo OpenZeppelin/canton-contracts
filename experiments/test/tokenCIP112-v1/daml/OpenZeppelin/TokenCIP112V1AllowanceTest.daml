@@ -1,0 +1,195 @@
+-- | Tests for the CIP-86 allowance component: approve, transferFrom, budget
+-- accounting, and authorization boundaries.
+module OpenZeppelin.TokenCIP112V1AllowanceTest where
+
+import DA.Assert ((===))
+import DA.Optional (fromSome, isNone)
+import DA.Time (days, hours)
+import Daml.Script
+
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount)
+
+import OpenZeppelin.TokenCIP112V1.Allowance
+import OpenZeppelin.TokenCIP112V1.Holding
+import OpenZeppelin.TokenCIP112V1.Registry
+import OpenZeppelin.TokenCIP112V1Test
+
+approve
+  : Scenario -> Party -> Party -> Decimal -> Optional (ContractId TokenAllowance)
+  -> Script (ContractId TokenAllowance)
+approve Scenario{..} owner spender amount previousAllowanceCid =
+  submit (actAs owner <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ApproveAllowance with
+      account = basicAccount owner
+      spender
+      instrumentId = "TOK"
+      amount
+      previousAllowanceCid
+
+-- | Spend through the registry. The owner's funding holdings are disclosed to
+-- the spender's submission, modeling the off-ledger disclosure a CIP-86
+-- middleware obtains from the owner's wallet.
+transferFrom
+  : Scenario -> ContractId TokenAllowance -> Party -> Party -> [ContractId TokenHolding]
+  -> TransferInstructionV2.Transfer
+  -> Script TokenAllowance_SpendResult
+transferFrom Scenario{..} allowanceCid spender owner inputs transfer = do
+  inputDisclosures <- forA inputs (fmap fromSome . queryDisclosure @TokenHolding owner)
+  submit (actAs spender <> discloseMany (rulesDisclosure :: inputDisclosures)) do
+    exerciseCmd rulesCid TokenRules_TransferFrom with allowanceCid; spender; transfer
+
+remainingOf : Party -> ContractId TokenAllowance -> Script Decimal
+remainingOf reader cid = do
+  Some allowance <- queryContractId reader cid
+  pure allowance.remaining
+
+-- | The spender pulls into their own account: one step, no pending
+-- instruction, and the budget decreases by the pulled amount.
+testAllowancePullOneStep : Script ()
+testAllowancePullOneStep = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  allowanceCid <- approve s alice app 5.0 None
+  r <- transferFrom s allowanceCid app alice [input] (mkTransfer s alice app 3.0 [input])
+  _ <- completedHoldings r.result
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [7.0]
+  appAfter <- holdingAmounts app
+  appAfter === [3.0]
+  successorCid <- case r.allowanceCid of
+    Some cid -> pure cid
+    None -> abort "expected a successor allowance"
+  remaining <- remainingOf app successorCid
+  remaining === 2.0
+  assertNoLocks alice
+
+-- | A transferFrom to a third party creates a pending instruction; the
+-- receiver accepts through the standard interface.
+testAllowanceTransferToThirdParty : Script ()
+testAllowanceTransferToThirdParty = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  allowanceCid <- approve s alice app 10.0 None
+  r <- transferFrom s allowanceCid app alice [input] (mkTransfer s alice bob 4.0 [input])
+  instrCid <- pendingCid r.result
+  aliceMid <- holdingAmounts alice
+  aliceMid === [4.0, 6.0]
+  _ <- submit (actAs bob) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [6.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [4.0]
+  successorCid <- case r.allowanceCid of
+    Some cid -> pure cid
+    None -> abort "expected a successor allowance"
+  remaining <- remainingOf app successorCid
+  remaining === 6.0
+
+-- | A rejected pending transferFrom returns the funds to the owner. The
+-- budget stays spent: the owner re-approves if needed.
+testAllowanceRejectReturnsFundsNotBudget : Script ()
+testAllowanceRejectReturnsFundsNotBudget = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  allowanceCid <- approve s alice app 10.0 None
+  r <- transferFrom s allowanceCid app alice [input] (mkTransfer s alice bob 4.0 [input])
+  instrCid <- pendingCid r.result
+  _ <- submit (actAs bob) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Reject with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [4.0, 6.0]
+  successorCid <- case r.allowanceCid of
+    Some cid -> pure cid
+    None -> abort "expected a successor allowance"
+  remaining <- remainingOf app successorCid
+  remaining === 6.0
+  assertNoLocks alice
+
+-- | Spending more than the budget is refused; spending exactly the budget
+-- archives the allowance with no successor.
+testAllowanceBudgetBounds : Script ()
+testAllowanceBudgetBounds = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  allowanceCid <- approve s alice app 3.0 None
+  inputDisclosure <- fromSome <$> queryDisclosure @TokenHolding alice input
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure, inputDisclosure]) do
+    exerciseCmd rulesCid TokenRules_TransferFrom with
+      allowanceCid
+      spender = app
+      transfer = mkTransfer s alice app 4.0 [input]
+  r <- transferFrom s allowanceCid app alice [input] (mkTransfer s alice app 3.0 [input])
+  isNone r.allowanceCid === True
+  appAfter <- holdingAmounts app
+  appAfter === [3.0]
+
+-- | Only the approved spender can draw on the budget, and only through the
+-- registry: a direct `TokenAllowance_Spend` lacks the admin's authority.
+testAllowanceSpendAuthorization : Script ()
+testAllowanceSpendAuthorization = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  allowanceCid <- approve s alice app 5.0 None
+  inputDisclosure <- fromSome <$> queryDisclosure @TokenHolding alice input
+  -- bob is not the spender.
+  submitMustFail (actAs bob <> discloseMany [rulesDisclosure, inputDisclosure]) do
+    exerciseCmd rulesCid TokenRules_TransferFrom with
+      allowanceCid
+      spender = bob
+      transfer = mkTransfer s alice bob 1.0 [input]
+  -- The spender cannot bypass the registry and its live configuration.
+  submitMustFail (actAs app <> discloseMany [inputDisclosure]) do
+    exerciseCmd allowanceCid TokenAllowance_Spend with
+      transfer = mkTransfer s alice app 1.0 [input]
+      maxTTL = days 90
+      lockGrace = hours 1
+  -- The transfer must draw from the approved account and instrument.
+  bobInput <- mint admin bob 10.0
+  bobDisclosure <- fromSome <$> queryDisclosure @TokenHolding bob bobInput
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure, bobDisclosure]) do
+    exerciseCmd rulesCid TokenRules_TransferFrom with
+      allowanceCid
+      spender = app
+      transfer = mkTransfer s bob app 1.0 [bobInput]
+
+-- | Approval with a previous contract id replaces the budget instead of
+-- stacking a second one.
+testAllowanceApproveOverwrites : Script ()
+testAllowanceApproveOverwrites = do
+  s@Scenario{..} <- setup
+  firstCid <- approve s alice app 5.0 None
+  secondCid <- approve s alice app 8.0 (Some firstCid)
+  replaced <- queryContractId app firstCid
+  replaced === None
+  remaining <- remainingOf app secondCid
+  remaining === 8.0
+
+-- | The owner adjusts the budget in place and revokes it entirely; a revoked
+-- budget cannot be spent.
+testAllowanceSetAndRevoke : Script ()
+testAllowanceSetAndRevoke = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  allowanceCid <- approve s alice app 5.0 None
+  Some loweredCid <- submit (actAs alice) do
+    exerciseCmd allowanceCid TokenAllowance_SetRemaining with newRemaining = 2.0
+  remaining <- remainingOf app loweredCid
+  remaining === 2.0
+  cleared <- submit (actAs alice) do
+    exerciseCmd loweredCid TokenAllowance_SetRemaining with newRemaining = 0.0
+  isNone cleared === True
+  revokedCid <- approve s alice app 5.0 None
+  submit (actAs alice) do
+    exerciseCmd revokedCid TokenAllowance_Revoke
+  inputDisclosure <- fromSome <$> queryDisclosure @TokenHolding alice input
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure, inputDisclosure]) do
+    exerciseCmd rulesCid TokenRules_TransferFrom with
+      allowanceCid = revokedCid
+      spender = app
+      transfer = mkTransfer s alice app 1.0 [input]

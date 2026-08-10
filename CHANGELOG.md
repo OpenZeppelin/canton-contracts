@@ -18,6 +18,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   `OpenZeppelin.TokenCIP112V1`. It implements the Token Standard V2 interfaces
   and builds against the 13 vendored Token Standard V2 DARs under
   `dars/vendor/`, with provenance recorded in `dars/manifest.yaml`.
+- Added the CIP-86 allowance component: the `TokenAllowance` template with
+  ERC-20 `approve` and `transferFrom` semantics, spent through the new
+  `TokenRules_ApproveAllowance` and `TokenRules_TransferFrom` registry
+  choices.
 
 ### `openzeppelin-access-control-v1`
 

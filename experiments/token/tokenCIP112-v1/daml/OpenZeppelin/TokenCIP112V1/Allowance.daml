@@ -1,0 +1,91 @@
+-- | ERC-20 style allowance (CIP-86 `approve` / `transferFrom` semantics) for
+-- the CIP-0112 token. The owner grants a spender a spending budget on one
+-- instrument from one account. The spender draws on the budget through
+-- `TokenRules_TransferFrom`, which routes into the standard transfer
+-- execution: a pull into the spender's own account completes in one step; any
+-- other receiver gets a pending `TokenTransferInstruction` to accept.
+--
+-- The budget is consumed at spend time. A pending instruction that is later
+-- rejected or withdrawn returns the funds to the owner but does not restore
+-- the budget; the owner re-approves if needed.
+module OpenZeppelin.TokenCIP112V1.Allowance where
+
+import DA.Time (RelTime)
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.TokenCIP112V1.Transfer
+
+-- | Result of one spend: the standard transfer result (completed holdings or
+-- a pending instruction) and the successor allowance, `None` when the budget
+-- is exhausted.
+data TokenAllowance_SpendResult = TokenAllowance_SpendResult with
+    result : TransferInstructionV2.TransferInstructionResult
+    allowanceCid : Optional (ContractId TokenAllowance)
+  deriving (Eq, Show)
+
+-- | A spending budget the owner's account parties granted to `spender` for
+-- one instrument. Created through `TokenRules_ApproveAllowance`, which
+-- contributes the admin signature; the owner cannot create it alone because
+-- spending debits holdings the admin co-signs.
+--
+-- No contract key enforces one allowance per (account, spender, instrument).
+-- `TokenRules_ApproveAllowance` archives the previous allowance it is given,
+-- so wallets keep the overwrite semantics of ERC-20 `approve` by passing the
+-- current contract id.
+template TokenAllowance with
+    instrumentId : HoldingV2.InstrumentId
+    account : HoldingV2.Account
+      -- ^ The owner's account the budget draws from.
+    spender : Party
+    remaining : Decimal
+  where
+    signatory instrumentId.admin, accountParties instrumentId.admin account
+    observer spender
+    ensure remaining > 0.0 && isRegularAccount account
+
+    -- | Draw on the budget. The controllers are the admin and the spender
+    -- jointly: the spender cannot exercise this directly and must go through
+    -- `TokenRules_TransferFrom`, which validates the live registry
+    -- configuration and contributes the admin's authority. The debit itself
+    -- is authorized by this contract's owner-side signatories.
+    choice TokenAllowance_Spend : TokenAllowance_SpendResult
+      with
+        transfer : TransferInstructionV2.Transfer
+        maxTTL : RelTime
+        lockGrace : RelTime
+      controller instrumentId.admin, spender
+      do
+        requireMatchExpected ("transfer.sender", transfer.sender) account
+        requireMatchExpected ("transfer.instrumentId", transfer.instrumentId) instrumentId
+        require' ("allowance.remaining", remaining)
+          isGreaterOrEqualR ("transfer.amount", transfer.amount)
+        -- One step only when the spender alone covers the receiver's account
+        -- parties (a pull into the spender's own account). Everything else
+        -- becomes a pending instruction, because creating another party's
+        -- holding needs that party's authority.
+        let oneStep = all (== spender) (accountParties instrumentId.admin transfer.receiver)
+        result <- executeTransfer instrumentId.admin maxTTL lockGrace oneStep transfer
+        allowanceCid <-
+          if remaining > transfer.amount
+            then Some <$> create this with remaining = remaining - transfer.amount
+            else pure None
+        pure TokenAllowance_SpendResult with result; allowanceCid
+
+    -- | Replace the budget in place. A non-positive `newRemaining` revokes
+    -- instead of recreating, mirroring ERC-20 `approve 0`.
+    choice TokenAllowance_SetRemaining : Optional (ContractId TokenAllowance)
+      with
+        newRemaining : Decimal
+      controller accountParties instrumentId.admin account
+      do
+        if newRemaining <= 0.0
+          then pure None
+          else Some <$> create this with remaining = newRemaining
+
+    -- | Withdraw the budget entirely.
+    choice TokenAllowance_Revoke : ()
+      controller accountParties instrumentId.admin account
+      do pure ()
