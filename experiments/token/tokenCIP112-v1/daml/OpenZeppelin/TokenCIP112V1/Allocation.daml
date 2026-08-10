@@ -1,0 +1,467 @@
+-- | Allocation template implementing the Token Standard V2 `Allocation`
+-- interface, with the package's D2 in-flight-seizure extension as
+-- template-level choices.
+module OpenZeppelin.TokenCIP112V1.Allocation where
+
+import DA.Action (when)
+import DA.Assert (assertDeadlineExceeded, assertWithinDeadline)
+import DA.Foldable (forA_)
+import DA.List (dedupSort)
+import DA.Map qualified as Map
+import DA.Optional (fromOptional, isNone, isSome)
+import DA.TextMap qualified as TextMap
+import DA.Time (RelTime, addRelTime)
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.TokenCIP112V1.Base
+import OpenZeppelin.TokenCIP112V1.D1
+import OpenZeppelin.TokenCIP112V1.Holding
+
+-- | Per-allocation proof that the settlement factory ran its exact-cover
+-- validation for this settlement and this authorizer's leg set.
+--
+-- `Allocation_Settle` is a plain interface choice whose actor set is admin plus
+-- executors — the same parties who drive a batch — so without this proof they
+-- could settle allocations one at a time, bypassing both the cover check (and
+-- thereby minting or burning value) and the D1 attestation gate. The factory
+-- mints one of these per allocation and hands it over through the choice
+-- context; the settle body consumes it.
+--
+-- It carries only data the allocation's own stakeholders already have, so
+-- fetching it does not divulge sibling allocations.
+template BatchSettlementAuthorization with
+    admin : Party
+    settlement : AllocationV2.SettlementInfo
+    authorizer : HoldingV2.Account
+    transferLegSides : [AllocationV2.TransferLegSide]
+    complianceReference : Optional Text
+      -- ^ `Some` when the registry verified a D1 attestation for this batch;
+      -- this is the attestation's own reference, not an executor-supplied
+      -- string.
+  where
+    signatory admin
+
+-- | Admin-issued D2 sweep authority: the assignee may sweep seized locked
+-- holdings, optionally scoped to one instrument and one seizure case, and
+-- always bounded in time so a forgotten capability does not stay live.
+template BurnerCapability with
+    admin : Party
+    assignee : Party
+    instrumentScope : Optional HoldingV2.InstrumentId
+    caseScope : Optional Text
+      -- ^ When set, this capability may only sweep a seizure whose case
+      -- reference matches, so one grant cannot be reused across cases.
+    expiresAt : Time
+  where
+    signatory admin
+    observer assignee
+
+-- | A ready-to-settle allocation backed by locked holdings. Iterated
+-- settlement is unsupported: `nextIterationFunding` must be `None`, enforced
+-- structurally so unsupported allocations cannot be created.
+template TokenAllocation with
+    originalAllocationCid : Optional (ContractId AllocationV2.Allocation)
+    settlement : AllocationV2.SettlementInfo
+    allocation : AllocationV2.AllocationSpecification
+    lockedHoldingCids : [ContractId TokenHolding]
+    requestedAt : Time
+      -- ^ The wallet-supplied request time, retained so stale or replayed
+      -- allocate requests remain diagnosable after the fact.
+    createdAt : Time
+    expiresAt : Time
+    lockExpiresAt : Time
+      -- ^ When the funding lock expires. Strictly after `expiresAt`, so there
+      -- is always a window in which the admin's expiry path is guaranteed to
+      -- succeed before the authorizer can re-spend the funding.
+    d1ComplianceHook : Optional D1ComplianceHook
+    d2SeizureHook : Optional D2SeizureHook
+    maxSeizureExtension : RelTime
+      -- ^ Registry policy cap, stamped at creation: how far past the deadline a
+      -- seizure window may reach. Taking this from the choice argument would
+      -- leave the admin free to freeze funds forever.
+    requiredAttesterRegistryCid : Optional (ContractId TrustedAttesterRegistry)
+      -- ^ When set, a lawful-process sweep must present a `SeizureOrder` signed
+      -- by a party in this registry.
+  where
+    signatory allocation.admin, accountParties allocation.admin allocation.authorizer
+    observer settlement.executors
+    ensure isValidSettlementInfoV2 settlement
+      && isValidAllocationSpecificationV2 (const True) allocation
+      && isNone allocation.nextIterationFunding
+      && expiresAt < lockExpiresAt
+      -- A committed allocation with no settlement deadline can never be
+      -- withdrawn (the standard's own `ensureWithdrawIsAllowed` fails closed),
+      -- so refuse to create that shape at all.
+      && (not allocation.committed || isSome allocation.settlementDeadline)
+
+    interface instance AllocationV2.Allocation for TokenAllocation where
+      view = AllocationV2.AllocationView with
+        originalAllocationCid
+        settlement
+        allocation
+        holdingCids = map (toInterfaceContractId @HoldingV2.Holding) lockedHoldingCids
+        createdAt
+        numIterations = 0
+        expiresAt = Some expiresAt
+        availableActions = allocationAvailableActions this
+        meta = d2StatusMeta d2SeizureHook
+
+      -- The contract observers (executors) see every lifecycle exercise
+      -- regardless of which actor subset invoked it.
+      allocation_settleExtraObservers _ = observer this
+      allocation_cancelExtraObservers _ = observer this
+      allocation_withdrawExtraObservers _ = observer this
+
+      allocation_settleImpl self arg = do
+        archiveAndCheckActors self arg.actors [allocation.admin :: settlement.executors]
+        -- Re-checked here even when driven by the settlement factory: this
+        -- choice is also directly callable by admin plus executors.
+        forA_ allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
+        requireNoActiveD2Seizure d2SeizureHook
+        -- The factory's cover check and D1 gate are only enforceable if this
+        -- choice refuses to run without the factory's proof.
+        auth <- requireBatchAuthorization this arg.extraArgs.context
+        requireD1Reference d1ComplianceHook auth.complianceReference
+        validateNextIterationArgs "Allocation_Settle" False
+          arg.extraTransferLegSides arg.nextIterationFunding
+        settleAllocation this
+
+      allocation_withdrawImpl self arg = do
+        archiveAndCheckActors self arg.actors [accountParties allocation.admin allocation.authorizer]
+        requireNoActiveD2Seizure d2SeizureHook
+        ensureWithdrawIsAllowed allocation
+        holdings <- unlockAndLog this "allocation withdrawn"
+        pure AllocationV2.AllocationResult with
+          output = AllocationV2.AllocationResult_Withdrawn
+          authorizerHoldingCids = holdings
+          meta = emptyMetadata
+
+      allocation_cancelImpl self arg = do
+        requireNoActiveD2Seizure d2SeizureHook
+        -- Executors may cancel any time; the admin only once `expiresAt` has
+        -- passed (checked by the default implementation).
+        allocationV2_cancelDefaultImpl (toInterface this) self arg $ do
+          holdings <- unlockAndLog this "allocation cancelled"
+          pure (holdings, emptyMetadata)
+
+    -- D2 extension: admin freezes the allocation pending seizure. Every
+    -- seizure carries an explicit lapse point (`seizureHook.windowEnd`); it
+    -- must lie in the future — a lapsed window would be releasable in the same
+    -- instant and freeze nothing — and within the registry's maximum extension
+    -- past the deadline. A window reaching past the settlement deadline is
+    -- only sweepable via the lawful-process choice.
+    choice TokenAllocation_MarkD2Seizure : ContractId TokenAllocation
+      with seizureHook : D2SeizureHook
+      controller allocation.admin
+      do
+        require "allocation is already under D2 seizure" (isNone d2SeizureHook)
+        requireDistinctCustodian allocation.admin seizureHook
+        -- A seizure is an in-flight measure, so it cannot be opened on an
+        -- allocation already past its deadline.
+        forA_ allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
+        assertWithinDeadline "seizureHook.windowEnd" seizureHook.windowEnd
+        let capBase = fromOptional expiresAt allocation.settlementDeadline
+        require "seizure window exceeds the registry's maximum extension"
+          (seizureHook.windowEnd <= capBase `addRelTime` maxSeizureExtension)
+        create this with
+          d2SeizureHook = Some seizureHook
+          originalAllocationCid = Some (allocationChainRoot this self)
+
+    -- Admin releases a seizure that will not be swept; the normal lifecycle
+    -- resumes. Without this, an unswept mark would strand the locked funds.
+    choice TokenAllocation_UnmarkD2Seizure : ContractId TokenAllocation
+      controller allocation.admin
+      do
+        _ <- requireD2Seizure d2SeizureHook
+        create this with
+          d2SeizureHook = None
+          originalAllocationCid = Some (allocationChainRoot this self)
+
+    -- Any stakeholder may release a seizure whose window has lapsed, so an
+    -- abandoned mark cannot strand the funds pending admin action. The window
+    -- is mandatory on the hook, so the lapse point always exists.
+    choice TokenAllocation_ReleaseLapsedD2Seizure : ContractId TokenAllocation
+      with actor : Party
+        -- ^ Any single stakeholder may act; a controller list would be a
+        -- conjunction requiring all of them, which defeats the purpose.
+      controller actor
+      do
+        require "actor must be a stakeholder of the allocation"
+          (actor `elem` allocationStakeholders this)
+        hook <- requireD2Seizure d2SeizureHook
+        assertDeadlineExceeded "seizureHook.windowEnd" hook.windowEnd
+        create this with
+          d2SeizureHook = None
+          originalAllocationCid = Some (allocationChainRoot this self)
+
+    -- Sweep seized locked holdings to the preset custodian destination. The
+    -- burner must present an admin-issued capability naming them; destination
+    -- account parties co-sign because they become signatories of the created
+    -- holdings. Must land within both the settlement deadline and the seizure
+    -- window; only the lawful-process sweep may act past the deadline.
+    choice TokenAllocation_SweepD2Seizure : TextMap.TextMap [ContractId HoldingV2.Holding]
+      with
+        burner : Party
+        burnerCapCid : ContractId BurnerCapability
+      controller d2SweepControllers allocation.admin d2SeizureHook burner
+      do
+        hook <- requireD2Seizure d2SeizureHook
+        forA_ allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
+        assertWithinDeadline "seizureHook.windowEnd" hook.windowEnd
+        sweepToCustodian this hook burner burnerCapCid hook.seizureCaseRef
+
+    -- Sweep under a lawful-process order signed by a non-admin authority in the
+    -- registry's trusted set; honours the seizure window alone, so it is the
+    -- only path allowed to seize past the settlement deadline.
+    choice TokenAllocation_SweepD2WithLawfulProcess : TextMap.TextMap [ContractId HoldingV2.Holding]
+      with
+        burner : Party
+        burnerCapCid : ContractId BurnerCapability
+        seizureOrderCid : ContractId SeizureOrder
+      controller d2SweepControllers allocation.admin d2SeizureHook burner
+      do
+        hook <- requireD2Seizure d2SeizureHook
+        assertWithinDeadline "seizureHook.windowEnd" hook.windowEnd
+        -- The order is the anchor: a free-text reference chosen by the admin
+        -- proved nothing about lawful process.
+        requireSeizureOrder requiredAttesterRegistryCid seizureOrderCid
+          allocation.admin allocation.authorizer hook.custodianDestination
+        sweepToCustodian this hook burner burnerCapCid hook.seizureCaseRef
+
+    -- | Last-resort admin cleanup for an allocation whose funding was already
+    -- reclaimed elsewhere (the authorizer re-spent it as an expired-lock input,
+    -- or self-unlocked it), which makes every fund-returning path fail on the
+    -- archived holding. Only available once the funding lock has expired, by
+    -- which time the authorizer can always recover the holding themselves via
+    -- `TokenHolding_OwnerUnlock`, so this can never strand funds.
+    choice TokenAllocation_AdminGC : ()
+      controller allocation.admin
+      do assertDeadlineExceeded "allocation lockExpiresAt" lockExpiresAt
+
+
+-- View helpers
+---------------
+
+-- | Every party with a stake in the allocation: admin, the authorizer's account
+-- parties, and the executors.
+allocationStakeholders : TokenAllocation -> [Party]
+allocationStakeholders this = dedupSort $
+  this.allocation.admin
+    :: (accountParties this.allocation.admin this.allocation.authorizer <> this.settlement.executors)
+
+-- | Actions wallets may take, reported to exactly match what the choice bodies
+-- accept. The standard's default helper advertises withdraw for the account
+-- principal alone, but withdrawing re-creates the holding, whose signatories
+-- include every account party — so the joint set is what the implementation
+-- requires and therefore what must be advertised.
+allocationAvailableActions
+  : TokenAllocation -> Map.Map AllocationV2.AllocationAction [[Party]]
+allocationAvailableActions this
+  -- While a seizure is active, settle, withdraw and cancel all fail. Reporting
+  -- them would send wallets into guaranteed-failing submissions.
+  | isSome this.d2SeizureHook = Map.empty
+  | otherwise = Map.fromList $
+      [ (AllocationV2.AA_Cancel, [dedupSort this.settlement.executors])
+      , (AllocationV2.AA_Settle, [dedupSort (this.allocation.admin :: this.settlement.executors)])
+      ] <>
+      [ (AllocationV2.AA_Withdraw, [accountParties this.allocation.admin this.allocation.authorizer])
+      | not this.allocation.committed || isSome this.allocation.settlementDeadline
+      ]
+
+
+-- Settlement internals
+-----------------------
+
+-- | Read and consume the factory's per-allocation authorization, checking it
+-- covers exactly this allocation's settlement, authorizer and leg set.
+requireBatchAuthorization
+  : TokenAllocation -> ChoiceContext -> Update BatchSettlementAuthorization
+requireBatchAuthorization this context = do
+  authCid <- case TextMap.lookup batchAuthorizationContextKey context.values of
+    Some (AV_ContractId anyCid) ->
+      pure (fromAnyContractId anyCid : ContractId BatchSettlementAuthorization)
+    Some _ -> fail "batch authorization context value must be a contract id"
+    None -> fail
+      "Allocation_Settle requires the settlement factory's batch authorization; \
+      \settle through SettlementFactory_SettleBatch"
+  auth <- fetch authCid
+  archive authCid
+  require' ("authorization.admin", auth.admin) isEqualR ("allocation.admin", this.allocation.admin)
+  require' ("authorization.settlement", auth.settlement) isEqualR ("allocation.settlement", this.settlement)
+  require' ("authorization.authorizer", auth.authorizer)
+    isEqualR ("allocation.authorizer", this.allocation.authorizer)
+  require' ("authorization.transferLegSides", dedupSort auth.transferLegSides)
+    isEqualR ("allocation.transferLegSides", dedupSort this.allocation.transferLegSides)
+  pure auth
+
+-- | Net settlement of one allocation: consume the locked funds, add the
+-- authorizer's net credit per instrument, require every total to be
+-- non-negative (an under-funded sender fails closed), and pay out the
+-- positive totals as fresh unlocked holdings.
+settleAllocation : TokenAllocation -> Update AllocationV2.AllocationResult
+settleAllocation this = do
+  let admin = this.allocation.admin
+      authorizer = this.allocation.authorizer
+  lockedAmounts <- debitHoldings (fetchAndArchiveLockedHolding admin authorizer) this.lockedHoldingCids
+  let netAmounts = netAllocationCreditAmounts authorizer this.allocation.transferLegSides
+      payoutAmounts = textMapUnionWith (+) lockedAmounts netAmounts
+  payouts <- forA (TextMap.toList payoutAmounts) $ \(instrumentId, amount) -> do
+    require' ("locked funds plus net credit for " <> instrumentId, amount)
+      isGreaterOrEqualR ("zero", 0.0)
+    if amount > 0.0
+      then do
+        cid <- createTokenHolding admin authorizer instrumentId amount None
+        pure [(instrumentId, [toInterfaceContractId @HoldingV2.Holding cid])]
+      else pure []
+  let payoutCids = TextMap.fromListWithR (++) (concat payouts)
+  emitHoldingsChange admin authorizer this.settlement.executors
+    (map toInterfaceContractId this.lockedHoldingCids)
+    (concat (textMapValues payoutCids))
+    (map toEventLegSide this.allocation.transferLegSides)
+    "allocation settled"
+  pure AllocationV2.AllocationResult with
+    output = AllocationV2.AllocationResult_Settled with nextIterationAllocationCid = None
+    authorizerHoldingCids = payoutCids
+    meta = emptyMetadata
+
+-- | Release the locked holdings to the authorizer and log the change.
+unlockAndLog : TokenAllocation -> Text -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
+unlockAndLog this reason = do
+  let admin = this.allocation.admin
+  holdings <- unlockHoldings admin this.allocation.authorizer this.lockedHoldingCids
+  emitHoldingsChange admin this.allocation.authorizer this.settlement.executors
+    (map toInterfaceContractId this.lockedHoldingCids)
+    (concat (textMapValues holdings))
+    []
+    reason
+  pure holdings
+
+-- | The first allocation contract of this lifecycle, for wallet correlation
+-- across state changes.
+allocationChainRoot : TokenAllocation -> ContractId TokenAllocation -> ContractId AllocationV2.Allocation
+allocationChainRoot this self =
+  fromOptional (toInterfaceContractId @AllocationV2.Allocation self) this.originalAllocationCid
+
+toEventLegSide : AllocationV2.TransferLegSide -> TransferEventsV2.TransferLegSide
+toEventLegSide s = TransferEventsV2.TransferLegSide with
+  transferLegId = s.transferLegId
+  side = case s.side of
+    AllocationV2.SenderSide -> TransferEventsV2.SenderSide
+    AllocationV2.ReceiverSide -> TransferEventsV2.ReceiverSide
+  otherside = s.otherside
+  amount = s.amount
+  instrumentId = s.instrumentId
+  meta = s.meta
+
+
+-- D1/D2 guards
+---------------
+
+requireNoActiveD2Seizure : Optional D2SeizureHook -> Update ()
+requireNoActiveD2Seizure hook =
+  require "allocation is under an active D2 in-flight seizure" (isNone hook)
+
+requireD2Seizure : Optional D2SeizureHook -> Update D2SeizureHook
+requireD2Seizure hook = case hook of
+  None -> fail "no active D2 in-flight seizure on this allocation"
+  Some h -> pure h
+
+-- | A seizure whose custodian destination resolves to the admin itself would
+-- leave the admin as the only required authorizer of the sweep (the
+-- destination's parties are what force a second signature), turning D2 into
+-- unilateral confiscation.
+requireDistinctCustodian : Party -> D2SeizureHook -> Update ()
+requireDistinctCustodian admin hook = do
+  require "custodian destination must be a regular account"
+    (isSome hook.custodianDestination.owner)
+  require "custodian destination must not be the admin's own account"
+    (accountPrincipal admin hook.custodianDestination /= admin)
+
+-- | When the registry stamps a D1 hook requiring a per-settlement reference,
+-- the batch authorization must carry the verified attestation's reference. It
+-- is taken from the attestation rather than from executor-supplied choice
+-- metadata, which the executors could fill with anything.
+requireD1Reference : Optional D1ComplianceHook -> Optional Text -> Update ()
+requireD1Reference hook complianceReference = forA_ hook $ \h ->
+  when h.requiresPerSettlementReference $
+    case complianceReference of
+      Some ref | ref /= "" -> pure ()
+      _ -> fail "D1 compliance reference required from a verified attestation"
+
+
+-- D2 sweep internals
+---------------------
+
+-- | Sweep controllers: the burner plus the custodian destination's account
+-- parties (excluding the admin, who already signs via the allocation). The
+-- destination parties' authority covers only the creation of their holdings;
+-- seizure authority itself is the BurnerCapability. With no hook the set is the
+-- admin alone, so a caller cannot name itself into a controller position on a
+-- choice that will fail anyway.
+d2SweepControllers : Party -> Optional D2SeizureHook -> Party -> [Party]
+d2SweepControllers admin hook burner = case hook of
+  None -> [admin]
+  Some h -> burner :: filter (/= admin) (accountParties admin h.custodianDestination)
+
+fetchBurnerCapability : Party -> Party -> Text -> ContractId BurnerCapability -> Update BurnerCapability
+fetchBurnerCapability burner expectedAdmin caseRef capCid = do
+  cap <- fetch capCid
+  require' ("burnerCapability.admin", cap.admin) isEqualR ("allocation.admin", expectedAdmin)
+  require' ("burnerCapability.assignee", cap.assignee) isEqualR ("burner", burner)
+  assertWithinDeadline "burnerCapability.expiresAt" cap.expiresAt
+  forA_ cap.caseScope $ \scope ->
+    require' ("burnerCapability.caseScope", scope) isEqualR ("seizure caseRef", caseRef)
+  pure cap
+
+sweepToCustodian
+  : TokenAllocation -> D2SeizureHook -> Party -> ContractId BurnerCapability -> Text
+  -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
+sweepToCustodian this hook burner burnerCapCid caseRef = do
+  let admin = this.allocation.admin
+  cap <- fetchBurnerCapability burner admin caseRef burnerCapCid
+  requireDistinctCustodian admin hook
+  swept <- forA (zip [0 .. length this.lockedHoldingCids - 1] this.lockedHoldingCids) $ \(i, cid) -> do
+    h <- fetchAndArchiveLockedHoldingHeldBy admin this.allocation.authorizer
+      (dedupSort (admin :: this.settlement.executors)) cid
+    require "burner capability scope must authorize the holding's instrument"
+      (burnerScopeAuthorizes cap.instrumentScope h.holding.instrumentId)
+    newCid <- createTokenHolding admin hook.custodianDestination h.holding.instrumentId.id h.holding.amount None
+    -- A sweep moves value between accounts, so each event must carry matching
+    -- legs: reporting it with an empty leg list would break the standard's
+    -- requirement that an account's net leg balance equal its holdings change.
+    let legId = ozNamespace <> "d2-sweep/" <> caseRef <> "/" <> show i
+        legSide side otherside = TransferEventsV2.TransferLegSide with
+          transferLegId = legId
+          side
+          otherside
+          amount = h.holding.amount
+          instrumentId = h.holding.instrumentId.id
+          meta = emptyMetadata
+    pure
+      ( (h.holding.instrumentId.id, [toInterfaceContractId @HoldingV2.Holding newCid])
+      , ( legSide TransferEventsV2.SenderSide hook.custodianDestination
+        , legSide TransferEventsV2.ReceiverSide this.allocation.authorizer
+        )
+      , toInterfaceContractId @HoldingV2.Holding newCid
+      )
+  let custodianCids = TextMap.fromListWithR (++) (map (._1) swept)
+      senderLegs = map (\s -> s._2._1) swept
+      receiverLegs = map (\s -> s._2._2) swept
+      createdCids = map (._3) swept
+  -- Events are per-account: one for the authorizer's consumed holdings, one
+  -- for the custodian's created holdings.
+  emitHoldingsChange admin this.allocation.authorizer this.settlement.executors
+    (map toInterfaceContractId this.lockedHoldingCids) [] senderLegs "D2 in-flight seizure sweep"
+  emitHoldingsChange admin hook.custodianDestination this.settlement.executors
+    [] createdCids receiverLegs "D2 in-flight seizure sweep"
+  pure custodianCids
+
+burnerScopeAuthorizes : Optional HoldingV2.InstrumentId -> HoldingV2.InstrumentId -> Bool
+burnerScopeAuthorizes scope instrumentId = case scope of
+  None -> True
+  Some s -> s == instrumentId

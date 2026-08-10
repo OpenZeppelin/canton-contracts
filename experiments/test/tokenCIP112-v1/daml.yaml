@@ -1,0 +1,28 @@
+sdk-version: 3.4.11
+name: openzeppelin-tokenCIP112-v1-test
+source: daml
+version: 0.0.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+data-dependencies:
+  # The package under test, plus the vendored Token Standard V2 DARs its
+  # interfaces come from. Paths are relative to this daml.yaml.
+  - ../../token/tokenCIP112-v1/.daml/dist/openzeppelin-tokenCIP112-v1-0.1.0.dar
+  - ../../../dars/vendor/splice-api-token-metadata-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-holding-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-holding-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-transfer-events-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-transfer-instruction-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-transfer-instruction-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-instruction-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-instruction-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-request-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-request-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-token-standard-utils-2.0.0.dar
+build-options:
+  # Match the package under test and the vendored API DARs.
+  - --target=2.1

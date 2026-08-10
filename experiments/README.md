@@ -18,6 +18,7 @@ must satisfy.
 | [Access Control](access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | `AccessControl`, `AccessControlDefaultAdminRules` |
 | [Ownable](access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | `Ownable2Step` |
 | [Pausable](security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | `Pausable` |
+| [Token CIP-0112](token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | `ERC20` (partial) |
 
 Each package README.md states what the package provides and, more importantly, the
 authority and canonical-instance problems it does not solve. Read those warnings

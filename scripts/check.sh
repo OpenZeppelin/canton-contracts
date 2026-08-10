@@ -116,7 +116,10 @@ while IFS= read -r manifest; do
 			fail "API package ${manifest#"$ROOT/"} defines templates"
 		fi
 	else
-		if grep -R -n -E --include='*.daml' '^[[:space:]]*(interface|exception)[[:space:]]+' "$package_dir/daml"; then
+		# `interface instance` blocks implement an upstream interface and are
+		# allowed; only new interface or exception definitions are not.
+		if grep -R -n -E --include='*.daml' '^[[:space:]]*(interface|exception)[[:space:]]+' "$package_dir/daml" |
+			grep -v -E 'interface[[:space:]]+instance[[:space:]]'; then
 			fail "implementation package ${manifest#"$ROOT/"} defines interfaces or exceptions; create a frozen -api-vN package"
 		fi
 	fi

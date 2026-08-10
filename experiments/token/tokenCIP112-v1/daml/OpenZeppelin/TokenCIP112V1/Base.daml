@@ -1,0 +1,127 @@
+-- | Shared basics for the CIP-0112 settlement package: D1/D2 extension hooks,
+-- event-log host, and helpers used across modules. Interface packages are the
+-- vendored Token Standard V2 DARs (see dars/token-standard/PROVENANCE.md).
+module OpenZeppelin.TokenCIP112V1.Base where
+
+import DA.TextMap qualified as TextMap
+import DA.Time (RelTime, addRelTime, subTime)
+
+import Splice.Api.Token.MetadataV1 -- TSv2 reuses MetadataV1, and does not declare a MetadataV2. 
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.TokenStandard.Utils
+
+-- | Namespace for this package's metadata and choice-context keys.
+ozNamespace : Text
+ozNamespace = "openzeppelin.com/"
+
+-- | D1 compliance hook: when present with
+-- `requiresPerSettlementReference`, settlement must carry a compliance
+-- reference in the choice metadata under `d1ReferenceMetaKey`.
+data D1ComplianceHook = D1ComplianceHook with
+    hookRef : Text
+    requiresPerSettlementReference : Bool
+  deriving (Eq, Show)
+
+-- | D2 in-flight seizure hook: set by the admin on an allocation to freeze it
+-- until swept to the custodian destination or unmarked.
+data D2SeizureHook = D2SeizureHook with
+    seizureCaseRef : Text
+    custodianDestination : HoldingV2.Account
+    inFlightHandlingStatus : Text
+    windowEnd : Time
+      -- ^ When the seizure lapses: sweeps must land before it, and once it
+      -- passes any single stakeholder may release the mark. Mandatory, so no
+      -- seizure can exist without a definite lapse point — an optional window
+      -- combined with an absent settlement deadline used to leave the lapse
+      -- check vacuous, making the freeze releasable the instant it was placed.
+  deriving (Eq, Show)
+
+d1ReferenceMetaKey : Text
+d1ReferenceMetaKey = ozNamespace <> "d1-compliance-reference"
+
+d1AttestationContextKey : Text
+d1AttestationContextKey = ozNamespace <> "d1-attestation"
+
+-- | Choice-context key under which the settlement factory hands each
+-- per-allocation settle a proof that the batch cover check ran. Direct
+-- `Allocation_Settle` calls cannot forge it: the proof contract is created by
+-- the factory and is signed by the admin.
+batchAuthorizationContextKey : Text
+batchAuthorizationContextKey = ozNamespace <> "batch-settlement-authorization"
+
+d2StatusMetaKey : Text
+d2StatusMetaKey = ozNamespace <> "d2-status"
+
+-- | Opaque marker for an active D2 seizure. The view is visible to the
+-- seizure's subject and to every executor, so it carries no case data: the
+-- case reference, custodian destination, and handling status stay on the
+-- allocation payload, readable only by its stakeholders' admin-side tooling.
+d2HeldStatus : Text
+d2HeldStatus = "held"
+
+-- | An active D2 seizure is surfaced to wallets through view metadata: the
+-- interface view record is fixed, so namespaced metadata is the only
+-- extension channel.
+d2StatusMeta : Optional D2SeizureHook -> Metadata
+d2StatusMeta hook = case hook of
+  None -> emptyMetadata
+  Some _ -> Metadata with values = TextMap.fromList [(d2StatusMetaKey, d2HeldStatus)]
+
+-- | Event-log host. `EventLog_HoldingsChange` is an interface choice, so an
+-- emission needs a contract to exercise it on; this host is created and
+-- archived within the emitting transaction. The event data lives in the
+-- exercise node, which its observers see regardless of the host's archival.
+template TokenEventLog with
+    admin : Party
+  where
+    signatory admin
+
+    interface instance TransferEventsV2.EventLog for TokenEventLog where
+      view = TransferEventsV2.EventLogView with admin; meta = emptyMetadata
+      eventLog_holdingsChangeImpl = eventLog_holdingsChangeDefaultImpl admin
+
+-- | Run an action with a temporary event-log host. Requires `admin` authority:
+-- every caller in this package emits from a choice on a contract that has the
+-- admin as signatory.
+withTempEventLog : Party -> (ContractId TransferEventsV2.EventLog -> Update a) -> Update a
+withTempEventLog admin f = do
+  cid <- create TokenEventLog with admin
+  result <- f (toInterfaceContractId cid)
+  archive cid
+  pure result
+
+-- | Emit a holdings-change event. `logHoldingsChange` suppresses events that
+-- are empty or on special (mint/burn) accounts.
+emitHoldingsChange
+  : Party
+  -> HoldingV2.Account
+  -> [Party]
+  -> [ContractId HoldingV2.Holding]
+  -> [ContractId HoldingV2.Holding]
+  -> [TransferEventsV2.TransferLegSide]
+  -> Text
+  -> Update ()
+emitHoldingsChange admin account executors inputs outputs legSides reason =
+  withTempEventLog admin $ \eventLogCid ->
+    logHoldingsChange eventLogCid TransferEventsV2.EventLog_HoldingsChange with
+      admin
+      account
+      inputHoldingCids = inputs
+      outputHoldingCids = outputs
+      transferLegSides = legSides
+      observers = accountParties admin account <> executors
+      extraArgs = ExtraArgs with
+        context = emptyChoiceContext
+        meta = reasonToMeta reason emptyMetadata
+
+-- | Storage bound for a pending contract (allocation or transfer instruction):
+-- at most `maxTTL` from now, capped by the workflow deadline, saturating at
+-- `maxTime` instead of overflowing.
+computeStorageExpiry : RelTime -> Time -> Optional Time -> Time
+computeStorageExpiry maxTTL now deadline =
+    optional identity min deadline candidate
+  where
+    candidate
+      | maxTime `subTime` now <= maxTTL = maxTime
+      | otherwise = now `addRelTime` maxTTL
