@@ -1,8 +1,5 @@
 -- | Tests for the CIP-0112-compliant token package
 -- (experiments/token/tokenCIP112-v1), driven through the standard interfaces.
---
--- Scenario names prefixed `testFix…` are regressions pinning earlier review
--- findings; each names the finding it covers.
 module OpenZeppelin.TokenCIP112V1Test where
 
 import DA.Assert ((===), (=/=))
@@ -546,14 +543,14 @@ testTransferAdminExpiry = do
   sum aliceAfter === 10.0
 
 
--- Regressions for review findings
----------------------------------
+-- Adversarial and boundary scenarios
+------------------------------------
 
--- | HIGH-2 / adjudicated cover bypass: `Allocation_Settle` outside the batch
+-- | `Allocation_Settle` outside the batch
 -- factory is refused, so admin+executors cannot mint by settling a lone
 -- receiver-side allocation.
-testFixDirectSettleRefused : Script ()
-testFixDirectSettleRefused = do
+testDirectSettleRefused : Script ()
+testDirectSettleRefused = do
   s@Scenario{..} <- setup
   -- Bob's receiver-side-only allocation locks nothing; settling it alone would
   -- have created 10 TOK from nothing.
@@ -568,11 +565,11 @@ testFixDirectSettleRefused = do
   bobAfter <- holdingAmounts bob
   bobAfter === []
 
--- | HIGH-3: a settlement deadline beyond the registry's maxTTL is rejected
+-- | A settlement deadline beyond the registry's maxTTL is rejected
 -- outright, so `expiresAt` can never precede the deadline and the admin can
 -- never expire a live allocation.
-testFixDeadlineBoundedByMaxTTL : Script ()
-testFixDeadlineBoundedByMaxTTL = do
+testDeadlineBoundedByMaxTTL : Script ()
+testDeadlineBoundedByMaxTTL = do
   s@Scenario{..} <- setup
   aliceInput <- mint admin alice 10.0
   let farSpec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
@@ -587,10 +584,10 @@ testFixDeadlineBoundedByMaxTTL = do
         extraArgs = emptyExtraArgs
         actors = [alice]
 
--- | MED-4: a committed allocation without a settlement deadline could never be
+-- | A committed allocation without a settlement deadline could never be
 -- withdrawn, so creating one is refused.
-testFixCommittedRequiresDeadline : Script ()
-testFixCommittedRequiresDeadline = do
+testCommittedRequiresDeadline : Script ()
+testCommittedRequiresDeadline = do
   s@Scenario{..} <- setup
   aliceInput <- mint admin alice 10.0
   let badSpec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
@@ -606,11 +603,11 @@ testFixCommittedRequiresDeadline = do
         extraArgs = emptyExtraArgs
         actors = [alice]
 
--- | MED-1: the funding lock outlives the instruction's own expiry, so the
+-- | The funding lock outlives the instruction's own expiry, so the
 -- admin's expiry path always has a window in which it is guaranteed to work,
 -- and once the lock does expire the sender can self-recover.
-testFixLockGraceAndOwnerUnlock : Script ()
-testFixLockGraceAndOwnerUnlock = do
+testLockGraceAndOwnerUnlock : Script ()
+testLockGraceAndOwnerUnlock = do
   s@Scenario{..} <- setup
   aliceInput <- mint admin alice 10.0
   result <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
@@ -655,10 +652,10 @@ testFixLockGraceAndOwnerUnlock = do
   gcd <- queryContractId admin templateCid
   gcd === None
 
--- | LOW-2: a lock carrying `expiresAfter` is rejected at creation, since the
+-- | A lock carrying `expiresAfter` is rejected at creation, since the
 -- package's expiry checks only model `expiresAt`.
-testFixExpiresAfterRejected : Script ()
-testFixExpiresAfterRejected = do
+testExpiresAfterRejected : Script ()
+testExpiresAfterRejected = do
   Scenario{..} <- setup
   submitMustFail (actAs admin <> actAs alice) do
     createCmd TokenHolding with
@@ -673,10 +670,10 @@ testFixExpiresAfterRejected = do
           context = None
         meta = emptyMetadata
 
--- | LOW-1: a self-transfer completes in one step rather than creating a pending
+-- | A self-transfer completes in one step rather than creating a pending
 -- instruction the sender would have to accept from themselves.
-testFixSelfTransferOneStep : Script ()
-testFixSelfTransferOneStep = do
+testSelfTransferOneStep : Script ()
+testSelfTransferOneStep = do
   s@Scenario{..} <- setup
   aliceInput <- mint admin alice 10.0
   result <- instructTransfer s [alice] (mkTransfer s alice alice 4.0 [aliceInput])
@@ -685,9 +682,9 @@ testFixSelfTransferOneStep = do
   sort aliceAfter === [4.0, 6.0]
   assertNoLocks alice
 
--- | MED-7: an empty batch is refused rather than succeeding as a no-op.
-testFixEmptyBatchRefused : Script ()
-testFixEmptyBatchRefused = do
+-- | An empty batch is refused rather than succeeding as a no-op.
+testEmptyBatchRefused : Script ()
+testEmptyBatchRefused = do
   Scenario{..} <- setup
   submitMustFail (actAs app <> discloseMany [rulesDisclosure]) do
     exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
@@ -698,11 +695,11 @@ testFixEmptyBatchRefused = do
         actors = [app]
         extraArgs = emptyExtraArgs
 
--- | MED-5: the advertised withdraw actor set is exactly what the choice body
+-- | The advertised withdraw actor set is exactly what the choice body
 -- accepts (the authorizer's full account-party set), and every advertised
 -- action disappears while a D2 seizure is active.
-testFixAvailableActionsMatchImpl : Script ()
-testFixAvailableActionsMatchImpl = do
+testAvailableActionsMatchImpl : Script ()
+testAvailableActionsMatchImpl = do
   s@Scenario{..} <- setup
   aliceInput <- mint admin alice 10.0
   aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
@@ -726,10 +723,10 @@ testFixAvailableActionsMatchImpl = do
   Map.toList sv.availableActions === []
   TextMap.lookup d2StatusMetaKey sv.meta.values === Some d2HeldStatus
 
--- | HIGH-4: the seizure custodian cannot be the admin's own account, so a
+-- | The seizure custodian cannot be the admin's own account, so a
 -- sweep always needs a second party's authority.
-testFixSeizureCustodianMustBeDistinct : Script ()
-testFixSeizureCustodianMustBeDistinct = do
+testSeizureCustodianMustBeDistinct : Script ()
+testSeizureCustodianMustBeDistinct = do
   s@Scenario{..} <- setup
   aliceInput <- mint admin alice 10.0
   aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
@@ -743,11 +740,11 @@ testFixSeizureCustodianMustBeDistinct = do
         inFlightHandlingStatus = "held"
         windowEnd = t3
 
--- | HIGH-4: a seizure window beyond the registry's maximum extension is
+-- | A seizure window beyond the registry's maximum extension is
 -- refused, and a lapsed seizure can be released by any stakeholder so an
 -- abandoned mark cannot strand funds.
-testFixSeizureWindowBounded : Script ()
-testFixSeizureWindowBounded = do
+testSeizureWindowBounded : Script ()
+testSeizureWindowBounded = do
   s@Scenario{..} <- setup
   aliceInput <- mint admin alice 10.0
   aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
@@ -789,11 +786,11 @@ testFixSeizureWindowBounded = do
   aliceAfter <- holdingAmounts alice
   aliceAfter === [10.0]
 
--- | MED-2: a D2 sweep moves value between accounts, so it must report matched
+-- | A D2 sweep moves value between accounts, so it must report matched
 -- transfer legs; the sweep itself conserves value and needs the custodian's
 -- authority.
-testFixSweepConservesAndReportsLegs : Script ()
-testFixSweepConservesAndReportsLegs = do
+testSweepConservesAndReportsLegs : Script ()
+testSweepConservesAndReportsLegs = do
   s@Scenario{..} <- setup
   aliceInput <- mint admin alice 10.0
   aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
@@ -839,10 +836,10 @@ testFixSweepConservesAndReportsLegs = do
   custodianAfter <- holdingAmounts custodian
   custodianAfter === [10.0]
 
--- | HIGH-4: a lawful-process sweep needs a SeizureOrder signed by a non-admin
--- authority in the trusted registry; a free-text reference is no longer enough.
-testFixLawfulProcessNeedsOrder : Script ()
-testFixLawfulProcessNeedsOrder = do
+-- | A lawful-process sweep needs a SeizureOrder signed by a non-admin
+-- authority in the trusted registry; a free-text reference is not enough.
+testLawfulProcessNeedsOrder : Script ()
+testLawfulProcessNeedsOrder = do
   admin <- allocateParty "admin"
   app <- allocateParty "app"
   alice <- allocateParty "alice"
@@ -921,14 +918,14 @@ testFixLawfulProcessNeedsOrder = do
   custodianAfter <- holdingAmounts custodian
   custodianAfter === [10.0]
 
--- | D2 lapse-point regression: a seizure of an allocation with NO settlement
--- deadline still freezes. When the window was optional, a windowless mark on a
--- deadline-less allocation left the lapse check vacuous, so the seized party
--- could release it in the same instant and withdraw — the freeze was a no-op.
--- The window is now mandatory and must be in the future, so the freeze holds
--- until `windowEnd` and the anti-strand release works only after it.
-testFixNoDeadlineSeizureStillFreezes : Script ()
-testFixNoDeadlineSeizureStillFreezes = do
+-- | A seizure of an allocation with NO settlement deadline still freezes. The
+-- seizure window is mandatory and must be in the future, so the freeze holds
+-- until `windowEnd` and the anti-strand release works only after it. Without
+-- a mandatory window, a windowless mark on a deadline-less allocation would
+-- leave the lapse check vacuous: the seized party could release and withdraw
+-- in the same instant, making the freeze a no-op.
+testNoDeadlineSeizureStillFreezes : Script ()
+testNoDeadlineSeizureStillFreezes = do
   s@Scenario{..} <- setup
   aliceInput <- mint admin alice 10.0
   let spec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
@@ -1157,7 +1154,7 @@ fundBothLegs s@Scenario{..} = do
   bobAllocCid <- completedCid bobResult
   pure (aliceAllocCid, bobAllocCid)
 
--- | HIGH-1/HIGH-2: a D1-gated registry settles only with a valid attestation,
+-- | A D1-gated registry settles only with a valid attestation,
 -- and refuses one with no attestation at all.
 testD1GateHappyPathAndMissingAttestation : Script ()
 testD1GateHappyPathAndMissingAttestation = do
@@ -1186,7 +1183,7 @@ testD1GateHappyPathAndMissingAttestation = do
   bobAfter <- holdingAmounts bob
   bobAfter === [6.0]
 
--- | HIGH-1: an attestation issued over one set of legs cannot be re-pointed at
+-- | An attestation issued over one set of legs cannot be re-pointed at
 -- a different trade that merely reuses the settlement id and leg ids.
 testD1AttestationBindsLegContent : Script ()
 testD1AttestationBindsLegContent = do
@@ -1207,7 +1204,7 @@ testD1AttestationBindsLegContent = do
         actors = [app]
         extraArgs = attestationContext attCid
 
--- | HIGH-1: a claim kind the registry does not accept fails the gate, so a
+-- | A claim kind the registry does not accept fails the gate, so a
 -- "sanctions-hit" attestation is not a pass.
 testD1RejectsUnacceptedClaimKind : Script ()
 testD1RejectsUnacceptedClaimKind = do
@@ -1224,7 +1221,7 @@ testD1RejectsUnacceptedClaimKind = do
         actors = [app]
         extraArgs = attestationContext attCid
 
--- | MED-3: the attestation names the executors it was issued to, so an
+-- | The attestation names the executors it was issued to, so an
 -- observer cannot burn it by naming itself as the executor.
 testD1AttestationNotBurnableByObserver : Script ()
 testD1AttestationNotBurnableByObserver = do
@@ -1243,7 +1240,7 @@ testD1AttestationNotBurnableByObserver = do
   still <- queryContractId admin attCid
   isSome still === True
 
--- | LOW-4: attesters rotate in place, so the cid pinned on TokenRules
+-- | Attesters rotate in place, so the cid pinned on TokenRules
 -- keeps resolving.
 testD1RegistryUpdatesInPlace : Script ()
 testD1RegistryUpdatesInPlace = do
@@ -1263,8 +1260,8 @@ testD1RegistryUpdatesInPlace = do
 
 -- | Registry misconfiguration is refused: a non-positive maxTTL or lockGrace
 -- would let the admin expire everything immediately.
-testFixRulesConfigValidated : Script ()
-testFixRulesConfigValidated = do
+testRulesConfigValidated : Script ()
+testRulesConfigValidated = do
   admin <- allocateParty "admin"
   setTime t1
   let base = TokenRules with
@@ -1314,10 +1311,10 @@ testMintAndBurnEmitEvents = do
   aliceFinal <- holdingAmounts alice
   aliceFinal === []
 
--- | MED-6: when an allowlist is configured, an unlisted executor cannot pull
+-- | When an allowlist is configured, an unlisted executor cannot pull
 -- other parties into a settlement.
-testFixExecutorAllowlist : Script ()
-testFixExecutorAllowlist = do
+testExecutorAllowlist : Script ()
+testExecutorAllowlist = do
   admin <- allocateParty "admin"
   app <- allocateParty "app"
   rogue <- allocateParty "rogue"
