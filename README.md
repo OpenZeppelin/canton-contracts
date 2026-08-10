@@ -15,11 +15,18 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
+No component has been released yet. The three components below are early-stage
+candidates under [`experiments/`](experiments/). They build and are tested in CI,
+but they will be redesigned before they move into `packages/`, and that redesign
+will change module names, template and choice signatures, and package identity.
+Read [`experiments/README.md`](experiments/README.md) before depending on any of
+them.
+
 | Component | Package | Public module | Status |
 |---|---|---|---|
-| [Access Control](packages/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | Experimental; unaudited |
-| [Ownable](packages/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | Experimental; unaudited |
-| [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Experimental; unaudited |
+| [Access Control](experiments/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | Experimental; unaudited |
+| [Ownable](experiments/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | Experimental; unaudited |
+| [Pausable](experiments/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Experimental; unaudited |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching
@@ -42,21 +49,21 @@ explains DPM workspaces, DARs, and `data-dependencies`.
 ```sh
 git clone https://github.com/OpenZeppelin/canton-contracts.git
 cd canton-contracts
-dpm install package
+dpm install
 dpm build --all
 ```
 
 To build one component independently:
 
 ```sh
-cd packages/access/ownable-v1
+cd experiments/access/ownable-v1
 dpm build
 ```
 
 The resulting evaluation DAR is written to:
 
 ```text
-packages/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
 ```
 
 ## Consume a local build
@@ -69,7 +76,7 @@ dependencies:
   - daml-prim
   - daml-stdlib
 data-dependencies:
-  - ../canton-contracts/packages/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+  - ../canton-contracts/experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
 ```
 
 ```daml
@@ -79,10 +86,12 @@ import OpenZeppelin.OwnableV1
 ## Repository layout
 
 ```text
-packages/
+packages/                 Released components; empty until the first release
+test/                     Isolated component test packages
+experiments/
   access/                 Category for authorization and ownership components
   security/               Category for operational security components
-test/                     Isolated component test packages
+  test/                   Isolated component test packages
 dars/
   released/               Immutable OpenZeppelin release baselines
   vendor/                 Verified third-party DAR inputs

@@ -43,14 +43,14 @@ decline or withdrawal restores ownership to the original owner.
 From the repository root:
 
 ```sh
-DAML_PACKAGE=packages/access/ownable-v1 dpm build
+DAML_PACKAGE=experiments/access/ownable-v1 dpm build
 ```
 
 ## Consume a local build
 
 ```yaml
 data-dependencies:
-  - ../canton-contracts/packages/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+  - ../canton-contracts/experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
 ```
 
 ```daml

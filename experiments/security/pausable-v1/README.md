@@ -42,14 +42,14 @@ guard. It should not retain a stale contract ID across state transitions.
 From the repository root:
 
 ```sh
-DAML_PACKAGE=packages/security/pausable-v1 dpm build
+DAML_PACKAGE=experiments/security/pausable-v1 dpm build
 ```
 
 ## Consume a local build
 
 ```yaml
 data-dependencies:
-  - ../canton-contracts/packages/security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
+  - ../canton-contracts/experiments/security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
 ```
 
 ```daml

@@ -42,4 +42,4 @@ runs:
           exit 1
         }
 
-        dpm install package
+        dpm install

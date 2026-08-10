@@ -36,12 +36,12 @@ workspace files exist.
   depend on other implementation packages without an accepted architecture
   decision; prefer interface composition or consumer-side wiring.
 - Production packages must not depend on `daml-script`.
-- Test code lives in an isolated `-test` package under the root `test/`
-  directory and is never released or uploaded.
+- Test code lives in an isolated `-test` package under the root `test/` and 
+  `experiments/test/` directories and is never released or uploaded.
 - Do not use `exposed-modules` as an API boundary. Use documented public modules
   and `.Internal` naming for implementation details.
-- Category directories under `packages/` are navigation only and never appear
-  in package names or module namespaces.
+- Category directories under `packages/` and `experiments/` are navigation only
+  and never appear in package names or module namespaces.
 - Do not publish upstream Canton or Splice interfaces under an OpenZeppelin
   namespace. Consume exact, verified upstream DARs.
 
@@ -67,15 +67,15 @@ Run from the repository root:
 ```sh
 dpm build --all
 scripts/check.sh
-DAML_PACKAGE=packages/access/access-control-v1 dpm damlc lint
-DAML_PACKAGE=packages/access/ownable-v1 dpm damlc lint
-DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
-DAML_PACKAGE=test/access-control-v1 dpm damlc lint
-DAML_PACKAGE=test/ownable-v1 dpm damlc lint
-DAML_PACKAGE=test/pausable-v1 dpm damlc lint
-DAML_PACKAGE=test/access-control-v1 dpm test --all --show-coverage
-DAML_PACKAGE=test/ownable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=test/pausable-v1 dpm test --all --show-coverage
+DAML_PACKAGE=experiments/access/access-control-v1 dpm damlc lint
+DAML_PACKAGE=experiments/access/ownable-v1 dpm damlc lint
+DAML_PACKAGE=experiments/security/pausable-v1 dpm damlc lint
+DAML_PACKAGE=experiments/test/access-control-v1 dpm damlc lint
+DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
+DAML_PACKAGE=experiments/test/pausable-v1 dpm damlc lint
+DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
+DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
+DAML_PACKAGE=experiments/test/pausable-v1 dpm test --all --show-coverage
 ```
 
 `scripts/check.sh` enforces package boundaries. Component tests and production
