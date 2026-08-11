@@ -188,7 +188,11 @@ template TokenRules with
     -- spending budget on one instrument. The registry contributes the admin
     -- signature the allowance needs; the owner controls the choice alone, so
     -- approval needs no per-call admin action.
-    nonconsuming choice TokenRules_ApproveAllowance : ContractId TokenAllowance
+    --
+    -- An `amount` of zero revokes: the previous allowance is archived and no
+    -- successor is created, mirroring ERC-20 `approve(spender, 0)`. A
+    -- negative `amount` is a caller error and fails.
+    nonconsuming choice TokenRules_ApproveAllowance : Optional (ContractId TokenAllowance)
       with
         account : HoldingV2.Account
         spender : Party
@@ -200,7 +204,7 @@ template TokenRules with
           -- of ERC-20 `approve`; no contract key enforces uniqueness.
       controller accountParties admin account
       do
-        require "approve amount must be positive" (amount > 0.0)
+        require "approve amount must not be negative" (amount >= 0.0)
         forA_ previousAllowanceCid $ \cid -> do
           prev <- fetch cid
           requireMatchExpected ("previousAllowance.instrumentId.admin", prev.instrumentId.admin) admin
@@ -208,11 +212,13 @@ template TokenRules with
           requireMatchExpected ("previousAllowance.account", prev.account) account
           requireMatchExpected ("previousAllowance.spender", prev.spender) spender
           archive cid
-        create TokenAllowance with
-          instrumentId = HoldingV2.InstrumentId with admin; id = instrumentId
-          account
-          spender
-          remaining = amount
+        if amount == 0.0
+          then pure None
+          else Some <$> create TokenAllowance with
+            instrumentId = HoldingV2.InstrumentId with admin; id = instrumentId
+            account
+            spender
+            remaining = amount
 
     -- | CIP-86 `transferFrom`: the spender moves funds from the approved
     -- account within the budget. A pull into the spender's own account
@@ -221,6 +227,12 @@ template TokenRules with
     -- requires the admin and the spender jointly, so this registry choice is
     -- the only spend path and always applies the live `maxTTL` and
     -- `lockGrace` configuration.
+    --
+    -- The spender's submission must carry explicit disclosure of the owner's
+    -- funding holdings (`transfer.inputHoldingCids`) on every spend; the
+    -- owner's wallet or the registry admin's automation supplies it. A
+    -- partial spend returns the owner's change at a new holding contract id,
+    -- so the next spend needs a fresh disclosure.
     nonconsuming choice TokenRules_TransferFrom : TokenAllowance_SpendResult
       with
         allowanceCid : ContractId TokenAllowance

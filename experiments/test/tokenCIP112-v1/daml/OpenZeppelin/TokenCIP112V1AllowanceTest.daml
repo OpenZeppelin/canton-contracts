@@ -4,6 +4,7 @@ module OpenZeppelin.TokenCIP112V1AllowanceTest where
 
 import DA.Assert ((===))
 import DA.Optional (fromSome, isNone)
+import DA.TextMap qualified as TextMap
 import DA.Time (days, hours)
 import Daml.Script
 
@@ -13,12 +14,13 @@ import Splice.TokenStandard.Utils (basicAccount)
 import OpenZeppelin.TokenCIP112V1.Allowance
 import OpenZeppelin.TokenCIP112V1.Holding
 import OpenZeppelin.TokenCIP112V1.Registry
+import OpenZeppelin.TokenCIP112V1.Transfer
 import OpenZeppelin.TokenCIP112V1Test
 
-approve
+approveOpt
   : Scenario -> Party -> Party -> Decimal -> Optional (ContractId TokenAllowance)
-  -> Script (ContractId TokenAllowance)
-approve Scenario{..} owner spender amount previousAllowanceCid =
+  -> Script (Optional (ContractId TokenAllowance))
+approveOpt Scenario{..} owner spender amount previousAllowanceCid =
   submit (actAs owner <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_ApproveAllowance with
       account = basicAccount owner
@@ -26,6 +28,12 @@ approve Scenario{..} owner spender amount previousAllowanceCid =
       instrumentId = "TOK"
       amount
       previousAllowanceCid
+
+approve
+  : Scenario -> Party -> Party -> Decimal -> Optional (ContractId TokenAllowance)
+  -> Script (ContractId TokenAllowance)
+approve s owner spender amount previousAllowanceCid =
+  fromSome <$> approveOpt s owner spender amount previousAllowanceCid
 
 -- | Spend through the registry. The owner's funding holdings are disclosed to
 -- the spender's submission, modeling the off-ledger disclosure a CIP-86
@@ -53,6 +61,8 @@ testAllowancePullOneStep = do
   allowanceCid <- approve s alice app 5.0 None
   r <- transferFrom s allowanceCid app alice [input] (mkTransfer s alice app 3.0 [input])
   _ <- completedHoldings r.result
+  -- The spend stamps the spender into the transfer metadata for auditability.
+  TextMap.lookup spenderMetaKey r.result.meta.values === Some (partyToText app)
   aliceAfter <- holdingAmounts alice
   aliceAfter === [7.0]
   appAfter <- holdingAmounts app
@@ -73,6 +83,10 @@ testAllowanceTransferToThirdParty = do
   allowanceCid <- approve s alice app 10.0 None
   r <- transferFrom s allowanceCid app alice [input] (mkTransfer s alice bob 4.0 [input])
   instrCid <- pendingCid r.result
+  -- The pending instruction carries the spender stamp, so the receiver sees
+  -- who initiated the transfer.
+  Some instr <- queryContractId bob (fromInterfaceContractId @TokenTransferInstruction instrCid)
+  TextMap.lookup spenderMetaKey instr.transfer.meta.values === Some (partyToText app)
   aliceMid <- holdingAmounts alice
   aliceMid === [4.0, 6.0]
   _ <- submit (actAs bob) do
@@ -193,6 +207,40 @@ testAllowanceSetAndRevoke = do
       allowanceCid = revokedCid
       spender = app
       transfer = mkTransfer s alice app 1.0 [input]
+
+-- | Approval of zero with the current contract id revokes: the budget is
+-- archived, no successor is created, and the spender can no longer draw.
+-- Mirrors the canonical ERC-20 revoke path `approve(spender, 0)`.
+testAllowanceApproveZeroRevokes : Script ()
+testAllowanceApproveZeroRevokes = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  allowanceCid <- approve s alice app 5.0 None
+  revoked <- approveOpt s alice app 0.0 (Some allowanceCid)
+  isNone revoked === True
+  gone <- queryContractId app allowanceCid
+  isNone gone === True
+  inputDisclosure <- fromSome <$> queryDisclosure @TokenHolding alice input
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure, inputDisclosure]) do
+    exerciseCmd rulesCid TokenRules_TransferFrom with
+      allowanceCid
+      spender = app
+      transfer = mkTransfer s alice app 1.0 [input]
+
+-- | A negative approval and a negative `SetRemaining` are caller errors.
+testAllowanceNegativeAmountsFail : Script ()
+testAllowanceNegativeAmountsFail = do
+  s@Scenario{..} <- setup
+  allowanceCid <- approve s alice app 5.0 None
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ApproveAllowance with
+      account = basicAccount alice
+      spender = app
+      instrumentId = "TOK"
+      amount = -1.0
+      previousAllowanceCid = None
+  submitMustFail (actAs alice) do
+    exerciseCmd allowanceCid TokenAllowance_SetRemaining with newRemaining = -1.0
 
 -- | Approval without a previous contract id stacks a second live allowance
 -- instead of replacing the first, so the spender draws the sum of both budgets
