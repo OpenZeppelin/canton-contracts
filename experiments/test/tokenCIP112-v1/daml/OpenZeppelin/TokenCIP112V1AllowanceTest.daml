@@ -193,3 +193,63 @@ testAllowanceSetAndRevoke = do
       allowanceCid = revokedCid
       spender = app
       transfer = mkTransfer s alice app 1.0 [input]
+
+-- | Approval without a previous contract id stacks a second live allowance
+-- instead of replacing the first, so the spender draws the sum of both budgets
+-- rather than the latest approval. This pins current behavior, which does not
+-- match the ERC-20 `approve` setter the component claims.
+testAllowanceApproveStacksWithoutPreviousCid : Script ()
+testAllowanceApproveStacksWithoutPreviousCid = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 20.0
+
+  -- Alice approves 5.0, then approves 8.0 without naming the first budget.
+  firstCid <- approve s alice app 5.0 None
+  secondCid <- approve s alice app 8.0 None
+  Some first <- queryContractId app firstCid
+  Some second <- queryContractId app secondCid
+  first.remaining === 5.0
+  second.remaining === 8.0
+
+  -- The spender draws each budget in turn, funding the second draw from the
+  -- change of the first.
+  firstDraw <- transferFrom s firstCid app alice [input] (mkTransfer s alice app 5.0 [input])
+  _ <- completedHoldings firstDraw.result
+  let changeCid = fromInterfaceContractId @TokenHolding (head firstDraw.result.senderChangeCids)
+  secondDraw <- transferFrom s secondCid app alice [changeCid] (mkTransfer s alice app 8.0 [changeCid])
+  _ <- completedHoldings secondDraw.result
+
+  -- 13.0 moved on a latest approval of 8.0.
+  appAfter <- holdingAmounts app
+  appAfter === [5.0, 8.0]
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [7.0]
+
+-- | A spend rotates the allowance contract id, so an owner holding the id from
+-- before the spend cannot overwrite the budget: the approve aborts on the
+-- archived contract, and retrying without it stacks a second live allowance on
+-- the successor.
+testAllowanceApproveWithStaleCidAborts : Script ()
+testAllowanceApproveWithStaleCidAborts = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  originalCid <- approve s alice app 10.0 None
+
+  drawn <- transferFrom s originalCid app alice [input] (mkTransfer s alice app 3.0 [input])
+  _ <- completedHoldings drawn.result
+  stale <- queryContractId app originalCid
+  isNone stale === True
+
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ApproveAllowance with
+      account = basicAccount alice
+      spender = app
+      instrumentId = "TOK"
+      amount = 2.0
+      previousAllowanceCid = Some originalCid
+
+  retriedCid <- approve s alice app 2.0 None
+  Some successor <- queryContractId app (fromSome drawn.allowanceCid)
+  successor.remaining === 7.0
+  Some retried <- queryContractId app retriedCid
+  retried.remaining === 2.0
