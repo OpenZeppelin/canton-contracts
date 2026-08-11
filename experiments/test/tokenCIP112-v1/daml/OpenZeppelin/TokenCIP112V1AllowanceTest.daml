@@ -215,7 +215,9 @@ testAllowanceApproveStacksWithoutPreviousCid = do
   -- change of the first.
   firstDraw <- transferFrom s firstCid app alice [input] (mkTransfer s alice app 5.0 [input])
   _ <- completedHoldings firstDraw.result
-  let changeCid = fromInterfaceContractId @TokenHolding (head firstDraw.result.senderChangeCids)
+  changeCid <- case firstDraw.result.senderChangeCids of
+    [cid] -> pure (fromInterfaceContractId @TokenHolding cid)
+    _ -> abort "expected exactly one change holding"
   secondDraw <- transferFrom s secondCid app alice [changeCid] (mkTransfer s alice app 8.0 [changeCid])
   _ <- completedHoldings secondDraw.result
 
