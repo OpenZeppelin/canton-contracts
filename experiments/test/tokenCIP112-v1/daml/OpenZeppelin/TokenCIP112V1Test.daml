@@ -132,7 +132,7 @@ setupWith : Optional (ContractId TrustedAttesterRegistry) -> Optional D1Complian
 setupWith = setupPrefixedWith ""
 
 -- | As `setupWith`, with a party-hint prefix. A persistent ledger (the
--- LocalNet gate) rejects a second allocation of the same hint, so every
+-- sandbox gate) rejects a second allocation of the same hint, so every
 -- script that shares a ledger needs its own prefix; the in-memory `dpm test`
 -- ledger is fresh per script and never collides.
 setupPrefixedWith

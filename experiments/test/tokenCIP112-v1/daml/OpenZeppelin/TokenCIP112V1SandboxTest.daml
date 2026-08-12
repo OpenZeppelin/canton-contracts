@@ -1,12 +1,12 @@
--- | LocalNet validation for the token package: token creation, transfer, and
+-- | Sandbox validation for the token package: token creation, transfer, and
 -- querying against a real Canton ledger over the Ledger API, per the CIP-86
--- acceptance criteria. `scripts/check-localnet.sh` runs each script over gRPC
+-- acceptance criteria. `scripts/check-sandbox.sh` runs each script over gRPC
 -- against a static-time sandbox; the same scripts also run under `dpm test`
 -- on the in-memory ledger.
 --
 -- Every script allocates fresh parties and pins the clock to `t1`, so the
 -- scripts compose in any order on one forward-only static-time ledger.
-module OpenZeppelin.TokenCIP112V1LocalNetTest where
+module OpenZeppelin.TokenCIP112V1SandboxTest where
 
 import DA.Assert ((===))
 import Daml.Script
@@ -21,8 +21,8 @@ import OpenZeppelin.TokenCIP112V1Test
 -- | Token creation and querying: holdings appear in owner queries, and the
 -- balance view is projection-scoped, so one owner cannot read another
 -- owner's holding.
-localnetMintAndQuery : Script ()
-localnetMintAndQuery = do
+sandboxMintAndQuery : Script ()
+sandboxMintAndQuery = do
   s@Scenario{..} <- setupPrefixedWith "mintandquery-" None None
   aliceCid <- mint admin alice 100.0
   bobCid <- mint admin bob 50.0
@@ -37,8 +37,8 @@ localnetMintAndQuery = do
 
 -- | Transfer over the standard interface: one step with both sides acting,
 -- two steps with the receiver accepting a pending instruction.
-localnetTransferLifecycle : Script ()
-localnetTransferLifecycle = do
+sandboxTransferLifecycle : Script ()
+sandboxTransferLifecycle = do
   s@Scenario{..} <- setupPrefixedWith "transferlifecycle-" None None
   input1 <- mint admin alice 10.0
   oneStep <- instructTransfer s [alice, bob] (mkTransfer s alice bob 7.0 [input1])
@@ -60,8 +60,8 @@ localnetTransferLifecycle = do
 -- | CIP-86 allowance over the registry: approve, one-step pull into the
 -- spender's account, pending transferFrom to a third party, and budget
 -- accounting.
-localnetAllowanceLifecycle : Script ()
-localnetAllowanceLifecycle = do
+sandboxAllowanceLifecycle : Script ()
+sandboxAllowanceLifecycle = do
   s@Scenario{..} <- setupPrefixedWith "allowancelifecycle-" None None
   input1 <- mint admin alice 10.0
   allowanceCid <- approve s alice app 9.0 None
@@ -88,21 +88,21 @@ localnetAllowanceLifecycle = do
 
 -- | Mint and burn through the registry conserve the visible supply and emit
 -- the standard events.
-localnetMintAndBurn : Script ()
-localnetMintAndBurn = do
+sandboxMintAndBurn : Script ()
+sandboxMintAndBurn = do
   s@Scenario{..} <- setupPrefixedWith "mintandburn-" None None
   mintedCid <- submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_Mint with
       account = basicAccount alice
       instrumentId = "TOK"
       amount = 10.0
-      reason = "localnet mint"
+      reason = "sandbox mint"
   aliceMinted <- holdingAmounts alice
   aliceMinted === [10.0]
   submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_Burn with
       holdingCid = mintedCid
       account = basicAccount alice
-      reason = "localnet burn"
+      reason = "sandbox burn"
   aliceAfter <- holdingAmounts alice
   aliceAfter === []

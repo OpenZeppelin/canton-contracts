@@ -44,7 +44,7 @@ for file in \
 	SECURITY.md AGENTS.md LICENSE multi-package.yaml dars/README.md \
 	dars/manifest.yaml audits/README.md examples/README.md \
 	experiments/README.md \
-	scripts/check-coverage.sh scripts/check-lint.sh scripts/check-localnet.sh; do
+	scripts/check-coverage.sh scripts/check-lint.sh scripts/check-sandbox.sh; do
 	require_file "$file"
 done
 
