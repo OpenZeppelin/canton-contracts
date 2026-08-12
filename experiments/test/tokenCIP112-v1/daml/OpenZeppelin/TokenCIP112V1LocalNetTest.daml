@@ -25,13 +25,15 @@ localnetMintAndQuery : Script ()
 localnetMintAndQuery = do
   s@Scenario{..} <- setupPrefixedWith "mintandquery-" None None
   aliceCid <- mint admin alice 100.0
-  _ <- mint admin bob 50.0
+  bobCid <- mint admin bob 50.0
   aliceAmounts <- holdingAmounts alice
   aliceAmounts === [100.0]
   bobAmounts <- holdingAmounts bob
   bobAmounts === [50.0]
   bobViewOfAlice <- queryContractId bob aliceCid
   bobViewOfAlice === None
+  aliceViewOfBob <- queryContractId alice bobCid
+  aliceViewOfBob === None
 
 -- | Transfer over the standard interface: one step with both sides acting,
 -- two steps with the receiver accepting a pending instruction.
