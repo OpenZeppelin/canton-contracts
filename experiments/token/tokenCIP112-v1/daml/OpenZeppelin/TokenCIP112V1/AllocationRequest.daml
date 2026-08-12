@@ -1,0 +1,79 @@
+-- | App-side allocation request: a settlement app creates this contract
+-- directly to ask a single authorizer to create allocations for a settlement.
+-- Accept and reject consume the whole request, so a request speaks for exactly
+-- one authorizer account; apps create one request per authorizer, as in the
+-- splice reference trading app. The registry is not involved; accepting is a
+-- signal, and creating the actual allocations is a separate step wallets may
+-- batch into the same transaction.
+module OpenZeppelin.TokenCIP112V1.AllocationRequest where
+
+import DA.List (dedupSort)
+import DA.Map qualified as Map
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationRequestV2 qualified as AllocationRequestV2
+import Splice.TokenStandard.Utils
+
+template TokenAllocationRequest with
+    settlement : AllocationV2.SettlementInfo
+    allocations : [AllocationV2.AllocationSpecification]
+      -- ^ The authorizer's legs; several allocations when they span multiple
+      -- instrument admins, but all with the same authorizer account.
+    requestedAt : Time
+    settleAt : Optional Time
+  where
+    signatory settlement.executors
+    -- The request signals the authorizer to allocate, so their account
+    -- parties must see it.
+    observer requestAuthorizerParties allocations
+    ensure isValidSettlementInfoV2 settlement
+      && not (null allocations)
+      -- Accept/reject archive the whole request, so it can only speak for one
+      -- authorizer: a request spanning authorizers would be consumed by
+      -- whoever acts first, leaving the others unable to respond.
+      && length (dedupSort (map (.authorizer) allocations)) == 1
+      && all (isRegularAccount . (.authorizer)) allocations
+      -- Temporal coherence: a request must not ask for allocations whose
+      -- settlement deadline precedes the request itself or the expected
+      -- settlement time, which no authorizer could ever satisfy.
+      && optional True (requestedAt <=) settleAt
+      && all (optional True (\d -> requestedAt <= d && optional True (<= d) settleAt)
+              . (.settlementDeadline)) allocations
+
+    interface instance AllocationRequestV2.AllocationRequest for TokenAllocationRequest where
+      view = AllocationRequestV2.AllocationRequestView with
+        originalRequestCid = None
+        settlement
+        allocations
+        requestedAt
+        settleAt
+        availableActions = Map.fromList
+          [ (AllocationRequestV2.ARA_Accept, requestActorSets allocations)
+          , (AllocationRequestV2.ARA_Reject, requestActorSets allocations)
+          ]
+        meta = emptyMetadata
+
+      allocationRequest_acceptExtraObservers _ = observer this
+      allocationRequest_rejectExtraObservers _ = observer this
+      allocationRequest_withdrawExtraObservers _ = observer this
+
+      allocationRequest_acceptImpl self arg = do
+        archiveAndCheckActors self arg.actors (requestActorSets allocations)
+        pure AllocationRequestV2.AllocationRequest_AcceptResult with meta = emptyMetadata
+
+      allocationRequest_rejectImpl self arg = do
+        archiveAndCheckActors self arg.actors (requestActorSets allocations)
+        pure AllocationRequestV2.AllocationRequest_RejectResult with meta = emptyMetadata
+
+      allocationRequest_withdrawImpl self arg = do
+        archiveAndCheckActors self arg.actors [settlement.executors]
+        pure AllocationRequestV2.AllocationRequest_WithdrawResult with meta = emptyMetadata
+
+-- | Account parties of the request's single authorizer.
+requestAuthorizerParties : [AllocationV2.AllocationSpecification] -> [Party]
+requestAuthorizerParties = dedupSort . concatMap (regularAccountParties . (.authorizer))
+
+-- | Any single account party of the authorizer may accept or reject.
+requestActorSets : [AllocationV2.AllocationSpecification] -> [[Party]]
+requestActorSets allocations = [[p] | p <- requestAuthorizerParties allocations]

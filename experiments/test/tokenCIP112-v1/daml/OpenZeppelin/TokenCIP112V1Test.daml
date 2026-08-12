@@ -1,0 +1,1346 @@
+-- | Tests for the CIP-0112-compliant token package
+-- (experiments/token/tokenCIP112-v1), driven through the standard interfaces.
+module OpenZeppelin.TokenCIP112V1Test where
+
+import DA.Assert ((===), (=/=))
+import DA.Date (date, Month(Jan))
+import DA.Foldable (forA_)
+import DA.List (sort)
+import DA.Time (days, hours, minutes, time)
+import Daml.Script
+
+import DA.Map qualified as Map
+import DA.Optional (isNone, isSome)
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.AllocationRequestV2 qualified as AllocationRequestV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide, nonIteratedAllocation, toAnyContractId)
+
+import OpenZeppelin.TokenCIP112V1.Allocation
+import OpenZeppelin.TokenCIP112V1.AllocationRequest
+import OpenZeppelin.TokenCIP112V1.Base
+import OpenZeppelin.TokenCIP112V1.D1
+import OpenZeppelin.TokenCIP112V1.Holding
+import OpenZeppelin.TokenCIP112V1.Registry
+import OpenZeppelin.TokenCIP112V1.Transfer
+
+t0, t1, t2, t3, t4 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+t1 = time (date 2026 Jan 1) 0 10 0
+t2 = time (date 2026 Jan 1) 0 20 0
+t3 = time (date 2026 Jan 1) 0 30 0
+t4 = time (date 2026 Jan 1) 2 0 0
+
+data Scenario = Scenario with
+    admin : Party
+    app : Party
+    alice : Party
+    bob : Party
+    custodian : Party
+    attester : Party
+    rulesCid : ContractId TokenRules
+    rulesDisclosure : Disclosure
+    settlement : AllocationV2.SettlementInfo
+    legAliceToBob : AllocationV2.TransferLeg
+    legBobToAlice : AllocationV2.TransferLeg
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+mkTransferLeg : Text -> Party -> Party -> Decimal -> AllocationV2.TransferLeg
+mkTransferLeg legId sender receiver amount = AllocationV2.TransferLeg with
+  transferLegId = legId
+  sender = basicAccount sender
+  receiver = basicAccount receiver
+  amount
+  instrumentId = "TOK"
+  meta = emptyMetadata
+
+mkAllocationSpec : Party -> Party -> [AllocationV2.TransferLegSide] -> AllocationV2.AllocationSpecification
+mkAllocationSpec admin authorizer sides = AllocationV2.AllocationSpecification with
+  admin
+  authorizer = basicAccount authorizer
+  transferLegSides = sides
+  settlementDeadline = Some t2
+  nextIterationFunding = None
+  committed = False
+  meta = emptyMetadata
+
+mint : Party -> Party -> Decimal -> Script (ContractId TokenHolding)
+mint admin owner amount =
+  submit (actAs admin <> actAs owner) do
+    createCmd TokenHolding with
+      holding = HoldingV2.HoldingView with
+        account = basicAccount owner
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        amount
+        lock = None
+        meta = emptyMetadata
+
+allocate
+  : Scenario -> Party -> [AllocationV2.TransferLegSide] -> [ContractId TokenHolding]
+  -> Script AllocationInstructionV2.AllocationInstructionResult
+allocate s authorizer sides inputs = allocateSpec s authorizer (mkAllocationSpec s.admin authorizer sides) inputs
+
+allocateSpec
+  : Scenario -> Party -> AllocationV2.AllocationSpecification -> [ContractId TokenHolding]
+  -> Script AllocationInstructionV2.AllocationInstructionResult
+allocateSpec Scenario{..} authorizer spec inputs =
+  submit (actAs authorizer <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = spec
+        requestedAt = t0
+        inputHoldingCids = map (toInterfaceContractId @HoldingV2.Holding) inputs
+        extraArgs = emptyExtraArgs
+        actors = [authorizer]
+
+completedCid
+  : AllocationInstructionV2.AllocationInstructionResult
+  -> Script (ContractId AllocationV2.Allocation)
+completedCid result = case result.output of
+  AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
+  other -> abort ("expected completed allocation, got: " <> show other)
+
+-- | Settle a batch through the factory, which is the only path that mints the
+-- per-allocation authorization proof.
+settleBatch
+  : Scenario -> [AllocationV2.TransferLeg] -> [ContractId AllocationV2.Allocation] -> ExtraArgs
+  -> Script AllocationV2.SettlementFactory_SettleBatchResult
+settleBatch Scenario{..} legs allocs extraArgs =
+  submit (actAs app <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = legs
+        allocations = map nonIteratedAllocation allocs
+        actors = [app]
+        extraArgs
+
+holdingAmounts : Party -> Script [Decimal]
+holdingAmounts owner = do
+  holdings <- query @TokenHolding owner
+  pure (sort [h.holding.amount | (_, h) <- holdings, h.holding.account.owner == Some owner])
+
+setupWith : Optional (ContractId TrustedAttesterRegistry) -> Optional D1ComplianceHook -> Script Scenario
+setupWith requiredAttesterRegistryCid d1ComplianceHook = do
+  admin <- allocateParty "admin"
+  app <- allocateParty "app"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  custodian <- allocateParty "custodian"
+  attester <- allocateParty "attester"
+  setTime t1
+  rulesCid <- submit admin do
+    createCmd TokenRules with
+      admin
+      maxTTL = days 90
+      lockGrace = hours 1
+      maxSeizureExtension = days 30
+      requiredAttesterRegistryCid
+      maxAttestationValidity = days 7
+      d1ComplianceHook
+      allowedExecutors = None
+  Some rulesDisclosure <- queryDisclosure @TokenRules admin rulesCid
+  let settlement = AllocationV2.SettlementInfo with
+        executors = [app]
+        id = "settlement-1"
+        cid = None
+        meta = emptyMetadata
+  pure Scenario with
+    admin; app; alice; bob; custodian; attester; rulesCid; rulesDisclosure
+    settlement
+    legAliceToBob = mkTransferLeg "leg-1" alice bob 10.0
+    legBobToAlice = mkTransferLeg "leg-2" bob alice 4.0
+
+setup : Script Scenario
+setup = setupWith None None
+
+-- | Happy path: two-leg DvP with net funding. Alice sends 10 and receives 4,
+-- so only 6 is locked; Bob nets +6 and locks nothing. After settlement Alice
+-- holds her 4.0 change and Bob holds 6.0.
+testNetSettlementHappyPath : Script ()
+testNetSettlementHappyPath = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+
+  aliceResult <- allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  -- Net funding: 6.0 locked, 4.0 returned as change.
+  aliceHoldings <- query @TokenHolding alice
+  sort [h.holding.amount | (_, h) <- aliceHoldings] === [4.0, 6.0]
+
+  bobResult <- allocate s bob [receiverSide legAliceToBob, senderSide legBobToAlice] []
+  bobAllocCid <- completedCid bobResult
+
+  _ <- settleBatch s [legAliceToBob, legBobToAlice] [aliceAllocCid, bobAllocCid] emptyExtraArgs
+
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [4.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [6.0]
+
+-- | Conservation: a sender whose inputs do not cover the net debit fails
+-- closed at allocation time.
+testUnderfundedSenderFails : Script ()
+testUnderfundedSenderFails = do
+  s@Scenario{..} <- setup
+  smallInput <- mint admin alice 5.0
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = mkAllocationSpec admin alice [senderSide legAliceToBob]
+        requestedAt = t0
+        inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding smallInput]
+        extraArgs = emptyExtraArgs
+        actors = [alice]
+
+-- | Exact cover: a batch that presents the legs but is missing the
+-- counterparty's allocation is rejected.
+testMissingAuthorizationFails : Script ()
+testMissingAuthorizationFails = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob, legBobToAlice]
+        allocations = [nonIteratedAllocation aliceAllocCid]
+        actors = [app]
+        extraArgs = emptyExtraArgs
+
+-- | Exact cover, other direction: a batch carrying an allocation whose legs are
+-- not in the presented leg set is rejected.
+testSuperfluousAuthorizationFails : Script ()
+testSuperfluousAuthorizationFails = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  bobResult <- allocate s bob [receiverSide legAliceToBob, senderSide legBobToAlice] []
+  bobAllocCid <- completedCid bobResult
+  -- Present only leg-1 while the allocations authorize both legs.
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob]
+        allocations = [nonIteratedAllocation aliceAllocCid, nonIteratedAllocation bobAllocCid]
+        actors = [app]
+        extraArgs = emptyExtraArgs
+
+-- | Withdraw: the authorizer releases an uncommitted allocation and gets the
+-- locked funds back.
+testWithdrawReleasesFunds : Script ()
+testWithdrawReleasesFunds = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  _ <- submit (actAs alice) do
+    exerciseCmd aliceAllocCid AllocationV2.Allocation_Withdraw with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+-- | Executor cancel returns funds; admin cancel is refused while the allocation
+-- is live and accepted once its expiry has passed.
+testCancelPaths : Script ()
+testCancelPaths = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  -- Admin cannot cancel a live allocation.
+  submitMustFail (actAs admin) do
+    exerciseCmd aliceAllocCid AllocationV2.Allocation_Cancel with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+  -- Executors may cancel at any time.
+  _ <- submit (actAs app) do
+    exerciseCmd aliceAllocCid AllocationV2.Allocation_Cancel with
+      actors = [app]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+  -- Admin batch expiry after the deadline, via the rules contract.
+  input2 <- mint admin bob 5.0
+  bobResult <- allocateSpec s bob (mkAllocationSpec admin bob [senderSide (mkTransferLeg "leg-9" bob alice 5.0)]) [input2]
+  bobAllocCid <- completedCid bobResult
+  setTime t3
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireAllocations with
+      cancelArgs =
+        [ (bobAllocCid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs) ]
+      observers = []
+  bobAfter <- holdingAmounts bob
+  bobAfter === [5.0]
+
+-- | Allocation requests: one request per authorizer. Alice accepts hers
+-- batched with the allocation creation, Bob rejects his, and the app
+-- withdraws a re-issued one. A non-authorizer cannot accept.
+testAllocationRequestLifecycle : Script ()
+testAllocationRequestLifecycle = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  let aliceSides = [senderSide legAliceToBob, receiverSide legBobToAlice]
+  let bobSides = [receiverSide legAliceToBob, senderSide legBobToAlice]
+  aliceReqCid <- mkRequest s alice aliceSides
+  bobReqCid <- mkRequest s bob bobSides
+
+  -- Wallets see who can act: any single account party of the authorizer.
+  Some aliceReqView <- queryInterfaceContractId @AllocationRequestV2.AllocationRequest alice
+    (toInterfaceContractId aliceReqCid)
+  Map.lookup AllocationRequestV2.ARA_Accept aliceReqView.availableActions === Some [[alice]]
+
+  -- The app is not the authorizer, so it cannot accept on Alice's behalf.
+  submitMustFail (actAs app) do
+    exerciseCmd (toInterfaceContractId @AllocationRequestV2.AllocationRequest aliceReqCid)
+      AllocationRequestV2.AllocationRequest_Accept with
+        actors = [app]
+        extraArgs = emptyExtraArgs
+
+  -- Alice accepts and creates the requested allocation in one transaction.
+  let acceptCmd = exerciseCmd (toInterfaceContractId @AllocationRequestV2.AllocationRequest aliceReqCid)
+        AllocationRequestV2.AllocationRequest_Accept with
+          actors = [alice]
+          extraArgs = emptyExtraArgs
+  let allocateCmd = exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+        AllocationInstructionV2.AllocationFactory_Allocate with
+          settlement
+          allocation = mkAllocationSpec admin alice aliceSides
+          requestedAt = t0
+          inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding aliceInput]
+          extraArgs = emptyExtraArgs
+          actors = [alice]
+  aliceResult <- submit (actAs alice <> discloseMany [rulesDisclosure]) (acceptCmd *> allocateCmd)
+  _ <- completedCid aliceResult
+  aliceReqAfter <- queryContractId app aliceReqCid
+  aliceReqAfter === None
+
+  -- Bob rejects his request, consuming it.
+  _ <- submit (actAs bob) do
+    exerciseCmd (toInterfaceContractId @AllocationRequestV2.AllocationRequest bobReqCid)
+      AllocationRequestV2.AllocationRequest_Reject with
+        actors = [bob]
+        extraArgs = emptyExtraArgs
+  bobReqAfter <- queryContractId app bobReqCid
+  bobReqAfter === None
+
+  -- The executors jointly withdraw a request they no longer need.
+  bobReqCid2 <- mkRequest s bob bobSides
+  _ <- submit (actAs app) do
+    exerciseCmd (toInterfaceContractId @AllocationRequestV2.AllocationRequest bobReqCid2)
+      AllocationRequestV2.AllocationRequest_Withdraw with
+        actors = [app]
+        extraArgs = emptyExtraArgs
+  bobReq2After <- queryContractId app bobReqCid2
+  bobReq2After === None
+
+mkRequest : Scenario -> Party -> [AllocationV2.TransferLegSide] -> Script (ContractId TokenAllocationRequest)
+mkRequest Scenario{..} authorizer sides =
+  submit (actAs app) do
+    createCmd TokenAllocationRequest with
+      settlement
+      allocations = [mkAllocationSpec admin authorizer sides]
+      requestedAt = t0
+      settleAt = Some t1
+
+-- | A request spanning two authorizers is rejected at creation: accept/reject
+-- consume the whole request, so it can only speak for one authorizer.
+testMultiAuthorizerRequestRejected : Script ()
+testMultiAuthorizerRequestRejected = do
+  Scenario{..} <- setup
+  submitMustFail (actAs app) do
+    createCmd TokenAllocationRequest with
+      settlement
+      allocations =
+        [ mkAllocationSpec admin alice [senderSide legAliceToBob]
+        , mkAllocationSpec admin bob [senderSide legBobToAlice]
+        ]
+      requestedAt = t0
+      settleAt = Some t1
+
+
+-- Transfer instructions
+------------------------
+
+mkTransfer : Scenario -> Party -> Party -> Decimal -> [ContractId TokenHolding] -> TransferInstructionV2.Transfer
+mkTransfer Scenario{..} sender receiver amount inputs = TransferInstructionV2.Transfer with
+  sender = basicAccount sender
+  receiver = basicAccount receiver
+  amount
+  instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+  requestedAt = t0
+  executeBefore = t2
+  inputHoldingCids = map (toInterfaceContractId @HoldingV2.Holding) inputs
+  meta = emptyMetadata
+
+instructTransfer
+  : Scenario -> [Party] -> TransferInstructionV2.Transfer
+  -> Script TransferInstructionV2.TransferInstructionResult
+instructTransfer Scenario{..} actors transfer =
+  submit (actAs actors <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+      TransferInstructionV2.TransferFactory_Transfer with
+        transfer
+        actors
+        extraArgs = emptyExtraArgs
+
+pendingCid
+  : TransferInstructionV2.TransferInstructionResult
+  -> Script (ContractId TransferInstructionV2.TransferInstruction)
+pendingCid result = case result.output of
+  TransferInstructionV2.TransferInstructionResult_Pending cid -> pure cid
+  other -> abort ("expected pending transfer instruction, got: " <> show other)
+
+completedHoldings
+  : TransferInstructionV2.TransferInstructionResult
+  -> Script [ContractId HoldingV2.Holding]
+completedHoldings result = case result.output of
+  TransferInstructionV2.TransferInstructionResult_Completed cids -> pure cids
+  other -> abort ("expected completed transfer, got: " <> show other)
+
+assertNoLocks : Party -> Script ()
+assertNoLocks owner = do
+  holdings <- query @TokenHolding owner
+  all (\(_, h) -> isNone h.holding.lock) holdings === True
+
+-- | Two-step transfer: the sender instructs (locking the amount, change
+-- returned), the receiver accepts and gets the holding.
+testTransferTwoStep : Script ()
+testTransferTwoStep = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  instrCid <- pendingCid result
+  -- 3.0 change unlocked, 7.0 locked pending acceptance.
+  aliceMid <- holdingAmounts alice
+  aliceMid === [3.0, 7.0]
+
+  -- Wallets see who can act on the pending instruction, and the view points at
+  -- the live locked funding rather than the consumed inputs.
+  Some instrView <- queryInterfaceContractId @TransferInstructionV2.TransferInstruction bob instrCid
+  Map.lookup TransferInstructionV2.TIA_Accept instrView.availableActions === Some [[bob]]
+  Map.lookup TransferInstructionV2.TIA_Withdraw instrView.availableActions === Some [[alice]]
+  instrView.transfer.inputHoldingCids =/= map (toInterfaceContractId @HoldingV2.Holding) [aliceInput]
+
+  -- The admin can see the instruction but is not the receiver, so cannot accept.
+  submitMustFail (actAs admin) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+
+  _ <- submit (actAs bob) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [3.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [7.0]
+  assertNoLocks alice
+  assertNoLocks bob
+
+-- | One-step transfer: actors covering both accounts complete immediately,
+-- with no pending instruction and no lock.
+testTransferOneStep : Script ()
+testTransferOneStep = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice, bob] (mkTransfer s alice bob 7.0 [aliceInput])
+  _ <- completedHoldings result
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [3.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [7.0]
+  assertNoLocks alice
+
+-- | Reject and withdraw both return the locked funds to the sender.
+testTransferRejectAndWithdraw : Script ()
+testTransferRejectAndWithdraw = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  rejected <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  rejectedCid <- pendingCid rejected
+  _ <- submit (actAs bob) do
+    exerciseCmd rejectedCid TransferInstructionV2.TransferInstruction_Reject with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+  assertNoLocks alice
+
+  aliceHoldings <- query @TokenHolding alice
+  withdrawn <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 (map fst aliceHoldings))
+  withdrawnCid <- pendingCid withdrawn
+  _ <- submit (actAs alice) do
+    exerciseCmd withdrawnCid TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  sum aliceAfter === 10.0
+
+-- | Guards: underfunded transfers and expired execution windows fail closed.
+testTransferGuards : Script ()
+testTransferGuards = do
+  s@Scenario{..} <- setup
+  smallInput <- mint admin alice 5.0
+  -- Underfunded: inputs do not cover the transfer amount.
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+      TransferInstructionV2.TransferFactory_Transfer with
+        transfer = mkTransfer s alice bob 7.0 [smallInput]
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  -- executeBefore not in the future fails at the factory.
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+      TransferInstructionV2.TransferFactory_Transfer with
+        transfer = (mkTransfer s alice bob 5.0 [smallInput]) with executeBefore = t1
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  -- Accepting after executeBefore fails; the sender's lock has expired.
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 5.0 [smallInput])
+  instrCid <- pendingCid result
+  setTime t2
+  submitMustFail (actAs bob) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+
+-- | Admin expiry: only after the storage bound has passed, and the funds
+-- return to the sender.
+testTransferAdminExpiry : Script ()
+testTransferAdminExpiry = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  instrCid <- pendingCid result
+  let templateCid = fromInterfaceContractId @TokenTransferInstruction instrCid
+  -- Not yet expired: the admin cannot reclaim early.
+  submitMustFail (actAs admin) do
+    exerciseCmd templateCid TokenTransferInstruction_Expire
+  setTime t3
+  -- Batched expiry through the rules contract, mirroring allocation expiry.
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
+      instructionCids = [templateCid]
+      observers = []
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  sum aliceAfter === 10.0
+
+
+-- Adversarial and boundary scenarios
+------------------------------------
+
+-- | `Allocation_Settle` outside the batch
+-- factory is refused, so admin+executors cannot mint by settling a lone
+-- receiver-side allocation.
+testDirectSettleRefused : Script ()
+testDirectSettleRefused = do
+  s@Scenario{..} <- setup
+  -- Bob's receiver-side-only allocation locks nothing; settling it alone would
+  -- have created 10 TOK from nothing.
+  bobResult <- allocate s bob [receiverSide legAliceToBob] []
+  bobAllocCid <- completedCid bobResult
+  submitMustFail (actAs admin <> actAs app) do
+    exerciseCmd bobAllocCid AllocationV2.Allocation_Settle with
+      actors = [admin, app]
+      extraTransferLegSides = []
+      nextIterationFunding = None
+      extraArgs = emptyExtraArgs
+  bobAfter <- holdingAmounts bob
+  bobAfter === []
+
+-- | A settlement deadline beyond the registry's maxTTL is rejected
+-- outright, so `expiresAt` can never precede the deadline and the admin can
+-- never expire a live allocation.
+testDeadlineBoundedByMaxTTL : Script ()
+testDeadlineBoundedByMaxTTL = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  let farSpec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
+        settlementDeadline = Some (time (date 2027 Jan 1) 0 0 0)
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = farSpec
+        requestedAt = t0
+        inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding aliceInput]
+        extraArgs = emptyExtraArgs
+        actors = [alice]
+
+-- | A committed allocation without a settlement deadline could never be
+-- withdrawn, so creating one is refused.
+testCommittedRequiresDeadline : Script ()
+testCommittedRequiresDeadline = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  let badSpec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
+        committed = True
+        settlementDeadline = None
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = badSpec
+        requestedAt = t0
+        inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding aliceInput]
+        extraArgs = emptyExtraArgs
+        actors = [alice]
+
+-- | The funding lock outlives the instruction's own expiry, so the
+-- admin's expiry path always has a window in which it is guaranteed to work,
+-- and once the lock does expire the sender can self-recover.
+testLockGraceAndOwnerUnlock : Script ()
+testLockGraceAndOwnerUnlock = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  instrCid <- pendingCid result
+  let templateCid = fromInterfaceContractId @TokenTransferInstruction instrCid
+
+  -- Just past executeBefore: the lock has NOT yet expired, so the locked
+  -- holding cannot be re-spent as an input.
+  setTime t3
+  lockedHoldings <- query @TokenHolding alice
+  let lockedCids = [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock]
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+      TransferInstructionV2.TransferFactory_Transfer with
+        transfer = (mkTransfer s alice bob 7.0 lockedCids) with
+          requestedAt = t3
+          executeBefore = t4
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  -- And the owner cannot unlock early either.
+  forA_ lockedCids $ \cid ->
+    submitMustFail (actAs alice <> actAs admin) do
+      exerciseCmd cid TokenHolding_OwnerUnlock
+
+  -- After the grace window the owner can always self-recover, which is what
+  -- makes admin GC safe.
+  setTime t4
+  forA_ lockedCids $ \cid ->
+    submit (actAs alice <> actAs admin) do
+      exerciseCmd cid TokenHolding_OwnerUnlock
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  sum aliceAfter === 10.0
+
+  -- The instruction shell now references an archived holding, so the normal
+  -- fund-returning paths fail — and admin GC is the escape hatch that keeps it
+  -- from being permanently unremovable.
+  submitMustFail (actAs admin) do
+    exerciseCmd templateCid TokenTransferInstruction_Expire
+  _ <- submit (actAs admin) do
+    exerciseCmd templateCid TokenTransferInstruction_AdminGC
+  gcd <- queryContractId admin templateCid
+  gcd === None
+
+-- | A lock carrying `expiresAfter` is rejected at creation, since the
+-- package's expiry checks only model `expiresAt`.
+testExpiresAfterRejected : Script ()
+testExpiresAfterRejected = do
+  Scenario{..} <- setup
+  submitMustFail (actAs admin <> actAs alice) do
+    createCmd TokenHolding with
+      holding = HoldingV2.HoldingView with
+        account = basicAccount alice
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        amount = 5.0
+        lock = Some HoldingV2.Lock with
+          holders = [admin]
+          expiresAt = None
+          expiresAfter = Some (hours 1)
+          context = None
+        meta = emptyMetadata
+
+-- | A self-transfer completes in one step rather than creating a pending
+-- instruction the sender would have to accept from themselves.
+testSelfTransferOneStep : Script ()
+testSelfTransferOneStep = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice alice 4.0 [aliceInput])
+  _ <- completedHoldings result
+  aliceAfter <- holdingAmounts alice
+  sort aliceAfter === [4.0, 6.0]
+  assertNoLocks alice
+
+-- | An empty batch is refused rather than succeeding as a no-op.
+testEmptyBatchRefused : Script ()
+testEmptyBatchRefused = do
+  Scenario{..} <- setup
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = []
+        allocations = []
+        actors = [app]
+        extraArgs = emptyExtraArgs
+
+-- | The advertised withdraw actor set is exactly what the choice body
+-- accepts (the authorizer's full account-party set), and every advertised
+-- action disappears while a D2 seizure is active.
+testAvailableActionsMatchImpl : Script ()
+testAvailableActionsMatchImpl = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation alice aliceAllocCid
+  Map.lookup AllocationV2.AA_Withdraw v.availableActions === Some [[alice]]
+  Map.lookup AllocationV2.AA_Settle v.availableActions === Some [[admin, app]]
+  -- The seizure case reference is not exposed in the view; only an opaque
+  -- "held" marker once seized.
+  TextMap.lookup d2StatusMetaKey v.meta.values === None
+
+  let templateCid = fromInterfaceContractId @TokenAllocation aliceAllocCid
+  markedCid <- submit (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_MarkD2Seizure with
+      seizureHook = D2SeizureHook with
+        seizureCaseRef = "case-secret"
+        custodianDestination = basicAccount custodian
+        inFlightHandlingStatus = "held"
+        windowEnd = t3
+  Some sv <- queryInterfaceContractId @AllocationV2.Allocation alice (toInterfaceContractId markedCid)
+  Map.toList sv.availableActions === []
+  TextMap.lookup d2StatusMetaKey sv.meta.values === Some d2HeldStatus
+
+-- | The seizure custodian cannot be the admin's own account, so a
+-- sweep always needs a second party's authority.
+testSeizureCustodianMustBeDistinct : Script ()
+testSeizureCustodianMustBeDistinct = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  let templateCid = fromInterfaceContractId @TokenAllocation aliceAllocCid
+  submitMustFail (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_MarkD2Seizure with
+      seizureHook = D2SeizureHook with
+        seizureCaseRef = "case-1"
+        custodianDestination = basicAccount admin
+        inFlightHandlingStatus = "held"
+        windowEnd = t3
+
+-- | A seizure window beyond the registry's maximum extension is
+-- refused, and a lapsed seizure can be released by any stakeholder so an
+-- abandoned mark cannot strand funds.
+testSeizureWindowBounded : Script ()
+testSeizureWindowBounded = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  let templateCid = fromInterfaceContractId @TokenAllocation aliceAllocCid
+      hook = D2SeizureHook with
+        seizureCaseRef = "case-1"
+        custodianDestination = basicAccount custodian
+        inFlightHandlingStatus = "held"
+        windowEnd = t3
+  -- Far-future window exceeds maxSeizureExtension (30 days from t2).
+  submitMustFail (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_MarkD2Seizure with
+      seizureHook = hook with windowEnd = time (date 2027 Jan 1) 0 0 0
+  -- An already-lapsed window is refused: it would freeze nothing.
+  submitMustFail (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_MarkD2Seizure with
+      seizureHook = hook with windowEnd = t0
+  -- A window inside policy is accepted.
+  markedCid <- submit (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_MarkD2Seizure with
+      seizureHook = hook
+  -- While the window is open, the authorizer cannot release it.
+  submitMustFail (actAs alice) do
+    exerciseCmd markedCid TokenAllocation_ReleaseLapsedD2Seizure with actor = alice
+  -- A non-stakeholder cannot release it even after it lapses.
+  setTime t4
+  submitMustFail (actAs custodian) do
+    exerciseCmd markedCid TokenAllocation_ReleaseLapsedD2Seizure with actor = custodian
+  -- Once lapsed, any single stakeholder can, and the allocation becomes
+  -- withdrawable again.
+  releasedCid <- submit (actAs alice) do
+    exerciseCmd markedCid TokenAllocation_ReleaseLapsedD2Seizure with actor = alice
+  _ <- submit (actAs alice) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.Allocation releasedCid)
+      AllocationV2.Allocation_Withdraw with
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+-- | A D2 sweep moves value between accounts, so it must report matched
+-- transfer legs; the sweep itself conserves value and needs the custodian's
+-- authority.
+testSweepConservesAndReportsLegs : Script ()
+testSweepConservesAndReportsLegs = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  let templateCid = fromInterfaceContractId @TokenAllocation aliceAllocCid
+  markedCid <- submit (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_MarkD2Seizure with
+      seizureHook = D2SeizureHook with
+        seizureCaseRef = "case-1"
+        custodianDestination = basicAccount custodian
+        inFlightHandlingStatus = "held"
+        windowEnd = t3
+  capCid <- submit admin do
+    createCmd BurnerCapability with
+      admin
+      assignee = admin
+      instrumentScope = None
+      caseScope = Some "case-1"
+      expiresAt = t3
+  -- A capability scoped to a different case does not authorize this sweep.
+  wrongCaseCap <- submit admin do
+    createCmd BurnerCapability with
+      admin
+      assignee = admin
+      instrumentScope = None
+      caseScope = Some "case-other"
+      expiresAt = t3
+  submitMustFail (actAs admin <> actAs custodian) do
+    exerciseCmd markedCid TokenAllocation_SweepD2Seizure with
+      burner = admin
+      burnerCapCid = wrongCaseCap
+  -- The custodian's authority is required: admin alone cannot sweep.
+  submitMustFail (actAs admin) do
+    exerciseCmd markedCid TokenAllocation_SweepD2Seizure with
+      burner = admin
+      burnerCapCid = capCid
+  _ <- submit (actAs admin <> actAs custodian) do
+    exerciseCmd markedCid TokenAllocation_SweepD2Seizure with
+      burner = admin
+      burnerCapCid = capCid
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === []
+  custodianAfter <- holdingAmounts custodian
+  custodianAfter === [10.0]
+
+-- | A lawful-process sweep needs a SeizureOrder signed by a non-admin
+-- authority in the trusted registry; a free-text reference is not enough.
+testLawfulProcessNeedsOrder : Script ()
+testLawfulProcessNeedsOrder = do
+  admin <- allocateParty "admin"
+  app <- allocateParty "app"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  custodian <- allocateParty "custodian"
+  attester <- allocateParty "attester"
+  setTime t1
+  registryCid <- submit admin do
+    createCmd TrustedAttesterRegistry with
+      admin
+      attesters = [attester]
+      acceptedClaimKinds = ["kyc-ok"]
+  rulesCid <- submit admin do
+    createCmd TokenRules with
+      admin
+      maxTTL = days 90
+      lockGrace = hours 1
+      maxSeizureExtension = days 30
+      requiredAttesterRegistryCid = Some registryCid
+      maxAttestationValidity = days 7
+      d1ComplianceHook = None
+      allowedExecutors = None
+  Some rulesDisclosure <- queryDisclosure @TokenRules admin rulesCid
+  let settlement = AllocationV2.SettlementInfo with
+        executors = [app]; id = "settlement-1"; cid = None; meta = emptyMetadata
+      leg = mkTransferLeg "leg-1" alice bob 10.0
+      s = Scenario with
+        admin; app; alice; bob; custodian; attester; rulesCid; rulesDisclosure
+        settlement
+        legAliceToBob = leg
+        legBobToAlice = mkTransferLeg "leg-2" bob alice 4.0
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide leg] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  let templateCid = fromInterfaceContractId @TokenAllocation aliceAllocCid
+      hook = D2SeizureHook with
+        seizureCaseRef = "case-1"
+        custodianDestination = basicAccount custodian
+        inFlightHandlingStatus = "held"
+        windowEnd = t3
+  markedCid <- submit (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_MarkD2Seizure with
+      seizureHook = hook
+  capCid <- submit admin do
+    createCmd BurnerCapability with
+      admin; assignee = admin; instrumentScope = None
+      caseScope = None; expiresAt = t3
+  -- An order signed by the admin itself is not in the trusted attester set.
+  badOrderCid <- submit admin do
+    createCmd SeizureOrder with
+      authority = admin
+      admin
+      caseRef = "case-1"
+      subjectAccount = basicAccount alice
+      custodianDestination = basicAccount custodian
+      expiresAt = t3
+  submitMustFail (actAs admin <> actAs custodian) do
+    exerciseCmd markedCid TokenAllocation_SweepD2WithLawfulProcess with
+      burner = admin
+      burnerCapCid = capCid
+      seizureOrderCid = badOrderCid
+  -- A properly signed order authorizes the sweep.
+  orderCid <- submit attester do
+    createCmd SeizureOrder with
+      authority = attester
+      admin
+      caseRef = "case-1"
+      subjectAccount = basicAccount alice
+      custodianDestination = basicAccount custodian
+      expiresAt = t3
+  _ <- submit (actAs admin <> actAs custodian <> discloseMany [rulesDisclosure]) do
+    exerciseCmd markedCid TokenAllocation_SweepD2WithLawfulProcess with
+      burner = admin
+      burnerCapCid = capCid
+      seizureOrderCid = orderCid
+  custodianAfter <- holdingAmounts custodian
+  custodianAfter === [10.0]
+
+-- | A seizure of an allocation with NO settlement deadline still freezes. The
+-- seizure window is mandatory and must be in the future, so the freeze holds
+-- until `windowEnd` and the anti-strand release works only after it. Without
+-- a mandatory window, a windowless mark on a deadline-less allocation would
+-- leave the lapse check vacuous: the seized party could release and withdraw
+-- in the same instant, making the freeze a no-op.
+testNoDeadlineSeizureStillFreezes : Script ()
+testNoDeadlineSeizureStillFreezes = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  let spec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
+        settlementDeadline = None
+  aliceResult <- allocateSpec s alice spec [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  let templateCid = fromInterfaceContractId @TokenAllocation aliceAllocCid
+      hook = D2SeizureHook with
+        seizureCaseRef = "case-no-deadline"
+        custodianDestination = basicAccount custodian
+        inFlightHandlingStatus = "held"
+        windowEnd = t3
+  -- An already-lapsed window cannot open the seizure.
+  submitMustFail (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_MarkD2Seizure with
+      seizureHook = hook with windowEnd = t0
+  markedCid <- submit (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_MarkD2Seizure with seizureHook = hook
+  -- While the window is open, the seized party can neither release the mark
+  -- nor withdraw around it.
+  submitMustFail (actAs alice) do
+    exerciseCmd markedCid TokenAllocation_ReleaseLapsedD2Seizure with actor = alice
+  submitMustFail (actAs alice) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.Allocation markedCid)
+      AllocationV2.Allocation_Withdraw with
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  -- Once the window lapses, the anti-strand release opens up again.
+  setTime t4
+  releasedCid <- submit (actAs alice) do
+    exerciseCmd markedCid TokenAllocation_ReleaseLapsedD2Seizure with actor = alice
+  _ <- submit (actAs alice) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.Allocation releasedCid)
+      AllocationV2.Allocation_Withdraw with
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+-- | The admin can stand down an active seizure it will not sweep, restoring
+-- the normal lifecycle immediately — no waiting for the window to lapse.
+testD2UnmarkRestoresLifecycle : Script ()
+testD2UnmarkRestoresLifecycle = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  let templateCid = fromInterfaceContractId @TokenAllocation aliceAllocCid
+  markedCid <- submit (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_MarkD2Seizure with
+      seizureHook = D2SeizureHook with
+        seizureCaseRef = "case-1"
+        custodianDestination = basicAccount custodian
+        inFlightHandlingStatus = "held"
+        windowEnd = t3
+  -- Only the admin can unmark; the seized party must wait for the lapse.
+  submitMustFail (actAs alice) do
+    exerciseCmd markedCid TokenAllocation_UnmarkD2Seizure
+  unmarkedCid <- submit (actAs admin) do
+    exerciseCmd markedCid TokenAllocation_UnmarkD2Seizure
+  _ <- submit (actAs alice) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.Allocation unmarkedCid)
+      AllocationV2.Allocation_Withdraw with
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+-- | The allocation-side admin GC mirrors the transfer-side one: unavailable
+-- while the funding lock is live, and once the lock has expired the shell can
+-- be removed while the authorizer self-recovers the funding.
+testAllocationAdminGC : Script ()
+testAllocationAdminGC = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  let templateCid = fromInterfaceContractId @TokenAllocation aliceAllocCid
+  submitMustFail (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_AdminGC
+  -- t4 is past lockExpiresAt (settlementDeadline t2 + lockGrace 1h).
+  setTime t4
+  _ <- submit (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_AdminGC
+  gcd <- queryContractId admin templateCid
+  gcd === None
+  lockedHoldings <- query @TokenHolding alice
+  forA_ [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock] $ \cid ->
+    submit (actAs alice <> actAs admin) do
+      exerciseCmd cid TokenHolding_OwnerUnlock
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+-- | Every standalone housekeeping contract is archivable by its signatory, so
+-- stale configuration and spent authorities do not accumulate on the ledger.
+testHousekeepingArchives : Script ()
+testHousekeepingArchives = do
+  admin <- allocateParty "admin"
+  attester <- allocateParty "attester"
+  alice <- allocateParty "alice"
+  custodian <- allocateParty "custodian"
+  setTime t1
+  rulesCid <- submit admin do
+    createCmd TokenRules with
+      admin
+      maxTTL = days 90
+      lockGrace = hours 1
+      maxSeizureExtension = days 30
+      requiredAttesterRegistryCid = None
+      maxAttestationValidity = days 7
+      d1ComplianceHook = None
+      allowedExecutors = None
+  registryCid <- submit admin do
+    createCmd TrustedAttesterRegistry with
+      admin
+      attesters = [attester]
+      acceptedClaimKinds = ["kyc-ok"]
+  capCid <- submit admin do
+    createCmd BurnerCapability with
+      admin
+      assignee = admin
+      instrumentScope = None
+      caseScope = None
+      expiresAt = t3
+  attestationCid <- submit attester do
+    createCmd ComplianceAttestation with
+      attester
+      attestationObservers = []
+      settlementId = "settlement-1"
+      authorizedExecutors = [admin]
+      claimKind = "kyc-ok"
+      complianceReference = "ref-1"
+      issuedAt = t1
+      expiresAt = t3
+      boundTransferLegs = [mkTransferLeg "leg-1" alice custodian 1.0]
+  orderCid <- submit attester do
+    createCmd SeizureOrder with
+      authority = attester
+      admin
+      caseRef = "case-1"
+      subjectAccount = basicAccount alice
+      custodianDestination = basicAccount custodian
+      expiresAt = t3
+  submit admin do archiveCmd rulesCid
+  submit admin do archiveCmd registryCid
+  submit admin do archiveCmd capCid
+  submit attester do archiveCmd attestationCid
+  submit attester do archiveCmd orderCid
+
+
+-- D1 compliance gate
+---------------------
+
+data D1Scenario = D1Scenario with
+    s : Scenario
+    registryCid : ContractId TrustedAttesterRegistry
+    registryDisclosure : Disclosure
+
+setupD1 : Script D1Scenario
+setupD1 = do
+  admin <- allocateParty "admin"
+  app <- allocateParty "app"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  custodian <- allocateParty "custodian"
+  attester <- allocateParty "attester"
+  setTime t1
+  registryCid <- submit admin do
+    createCmd TrustedAttesterRegistry with
+      admin
+      attesters = [attester]
+      acceptedClaimKinds = ["kyc-ok"]
+  Some registryDisclosure <- queryDisclosure @TrustedAttesterRegistry admin registryCid
+  rulesCid <- submit admin do
+    createCmd TokenRules with
+      admin
+      maxTTL = days 90
+      lockGrace = hours 1
+      maxSeizureExtension = days 30
+      requiredAttesterRegistryCid = Some registryCid
+      maxAttestationValidity = days 7
+      d1ComplianceHook = Some D1ComplianceHook with
+        hookRef = "node-compliance-v1"
+        requiresPerSettlementReference = True
+      allowedExecutors = None
+  Some rulesDisclosure <- queryDisclosure @TokenRules admin rulesCid
+  let settlement = AllocationV2.SettlementInfo with
+        executors = [app]; id = "settlement-1"; cid = None; meta = emptyMetadata
+  pure D1Scenario with
+    registryCid
+    registryDisclosure
+    s = Scenario with
+      admin; app; alice; bob; custodian; attester; rulesCid; rulesDisclosure
+      settlement
+      legAliceToBob = mkTransferLeg "leg-1" alice bob 10.0
+      legBobToAlice = mkTransferLeg "leg-2" bob alice 4.0
+
+mkAttestation
+  : D1Scenario -> Text -> [AllocationV2.TransferLeg] -> [Party] -> Text
+  -> Script (ContractId ComplianceAttestation)
+mkAttestation D1Scenario{s} settlementId legs authorizedExecutors claimKind =
+  submit s.attester do
+    createCmd ComplianceAttestation with
+      attester = s.attester
+      attestationObservers = [s.admin]
+      settlementId
+      authorizedExecutors
+      claimKind
+      complianceReference = "ref-" <> settlementId
+      issuedAt = t0
+      expiresAt = t3
+      boundTransferLegs = legs
+
+attestationContext : ContractId ComplianceAttestation -> ExtraArgs
+attestationContext attCid = ExtraArgs with
+  context = ChoiceContext with
+    values = TextMap.fromList [(d1AttestationContextKey, AV_ContractId (toAnyContractId attCid))]
+  meta = emptyMetadata
+
+fundBothLegs : Scenario -> Script (ContractId AllocationV2.Allocation, ContractId AllocationV2.Allocation)
+fundBothLegs s@Scenario{..} = do
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  bobResult <- allocate s bob [receiverSide legAliceToBob, senderSide legBobToAlice] []
+  bobAllocCid <- completedCid bobResult
+  pure (aliceAllocCid, bobAllocCid)
+
+-- | A D1-gated registry settles only with a valid attestation,
+-- and refuses one with no attestation at all.
+testD1GateHappyPathAndMissingAttestation : Script ()
+testD1GateHappyPathAndMissingAttestation = do
+  d1@D1Scenario{s, registryDisclosure} <- setupD1
+  let Scenario{..} = s
+  (aliceAllocCid, bobAllocCid) <- fundBothLegs s
+  -- No attestation in the context: refused.
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob, legBobToAlice]
+        allocations = map nonIteratedAllocation [aliceAllocCid, bobAllocCid]
+        actors = [app]
+        extraArgs = emptyExtraArgs
+  -- With a content-matching attestation, settlement proceeds.
+  attCid <- mkAttestation d1 "settlement-1" [legAliceToBob, legBobToAlice] [app] "kyc-ok"
+  _ <- submit (actAs app <> discloseMany [rulesDisclosure, registryDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob, legBobToAlice]
+        allocations = map nonIteratedAllocation [aliceAllocCid, bobAllocCid]
+        actors = [app]
+        extraArgs = attestationContext attCid
+  bobAfter <- holdingAmounts bob
+  bobAfter === [6.0]
+
+-- | An attestation issued over one set of legs cannot be re-pointed at
+-- a different trade that merely reuses the settlement id and leg ids.
+testD1AttestationBindsLegContent : Script ()
+testD1AttestationBindsLegContent = do
+  d1@D1Scenario{s, registryDisclosure} <- setupD1
+  let Scenario{..} = s
+  -- Attester signs off on a benign 1.0 trade over the same leg ids.
+  let benignLeg1 = mkTransferLeg "leg-1" alice bob 1.0
+      benignLeg2 = mkTransferLeg "leg-2" bob alice 1.0
+  attCid <- mkAttestation d1 "settlement-1" [benignLeg1, benignLeg2] [app] "kyc-ok"
+  (aliceAllocCid, bobAllocCid) <- fundBothLegs s
+  -- The real batch moves 10.0/4.0 under the same ids: rejected on content.
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure, registryDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob, legBobToAlice]
+        allocations = map nonIteratedAllocation [aliceAllocCid, bobAllocCid]
+        actors = [app]
+        extraArgs = attestationContext attCid
+
+-- | A claim kind the registry does not accept fails the gate, so a
+-- "sanctions-hit" attestation is not a pass.
+testD1RejectsUnacceptedClaimKind : Script ()
+testD1RejectsUnacceptedClaimKind = do
+  d1@D1Scenario{s, registryDisclosure} <- setupD1
+  let Scenario{..} = s
+  attCid <- mkAttestation d1 "settlement-1" [legAliceToBob, legBobToAlice] [app] "sanctions-hit"
+  (aliceAllocCid, bobAllocCid) <- fundBothLegs s
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure, registryDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob, legBobToAlice]
+        allocations = map nonIteratedAllocation [aliceAllocCid, bobAllocCid]
+        actors = [app]
+        extraArgs = attestationContext attCid
+
+-- | The attestation names the executors it was issued to, so an
+-- observer cannot burn it by naming itself as the executor.
+testD1AttestationNotBurnableByObserver : Script ()
+testD1AttestationNotBurnableByObserver = do
+  d1@D1Scenario{s, registryCid, registryDisclosure} <- setupD1
+  let Scenario{..} = s
+  attCid <- mkAttestation d1 "settlement-1" [legAliceToBob, legBobToAlice] [app] "kyc-ok"
+  -- The admin is an attestation observer but not an authorized executor.
+  submitMustFail (actAs admin <> discloseMany [registryDisclosure]) do
+    exerciseCmd attCid ComplianceAttestation_Verify with
+      settlement = settlement with executors = [admin]
+      transferLegs = [legAliceToBob, legBobToAlice]
+      registryCid
+      factoryAdmin = admin
+      maxValidity = days 7
+  -- The attestation is still there for the legitimate executor.
+  still <- queryContractId admin attCid
+  isSome still === True
+
+-- | Attesters rotate in place, so the cid pinned on TokenRules
+-- keeps resolving.
+testD1RegistryUpdatesInPlace : Script ()
+testD1RegistryUpdatesInPlace = do
+  D1Scenario{s, registryCid} <- setupD1
+  let Scenario{..} = s
+  newAttester <- allocateParty "attester2"
+  updatedCid <- submit admin do
+    exerciseCmd registryCid TrustedAttesterRegistry_Update with
+      newAttesters = [newAttester]
+      newAcceptedClaimKinds = ["kyc-ok", "enhanced-dd"]
+  -- A fresh contract id is returned, and an empty attester set is refused.
+  updatedCid =/= registryCid
+  submitMustFail admin do
+    exerciseCmd updatedCid TrustedAttesterRegistry_Update with
+      newAttesters = []
+      newAcceptedClaimKinds = ["kyc-ok"]
+
+-- | Registry misconfiguration is refused: a non-positive maxTTL or lockGrace
+-- would let the admin expire everything immediately.
+testRulesConfigValidated : Script ()
+testRulesConfigValidated = do
+  admin <- allocateParty "admin"
+  setTime t1
+  let base = TokenRules with
+        admin
+        maxTTL = days 90
+        lockGrace = hours 1
+        maxSeizureExtension = days 30
+        requiredAttesterRegistryCid = None
+        maxAttestationValidity = days 7
+        d1ComplianceHook = None
+        allowedExecutors = None
+  submitMustFail admin do createCmd base with maxTTL = minutes 0
+  submitMustFail admin do createCmd base with lockGrace = minutes 0
+  submitMustFail admin do createCmd base with allowedExecutors = Some []
+
+-- | Capability gap: issuance now has an evented path, so supply changes are
+-- visible to standard history parsers instead of appearing as bare creates.
+testMintAndBurnEmitEvents : Script ()
+testMintAndBurnEmitEvents = do
+  Scenario{..} <- setup
+  holdingCid <- submit (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Mint with
+      account = basicAccount alice
+      instrumentId = "TOK"
+      amount = 25.0
+      reason = "initial issuance"
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [25.0]
+  -- Minting a non-positive amount is refused.
+  submitMustFail (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Mint with
+      account = basicAccount alice
+      instrumentId = "TOK"
+      amount = 0.0
+      reason = "bad"
+  -- Burning requires the account's authority and clears the holding.
+  submitMustFail (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Burn with
+      holdingCid
+      account = basicAccount alice
+      reason = "redeem"
+  _ <- submit (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Burn with
+      holdingCid
+      account = basicAccount alice
+      reason = "redeem"
+  aliceFinal <- holdingAmounts alice
+  aliceFinal === []
+
+-- | When an allowlist is configured, an unlisted executor cannot pull
+-- other parties into a settlement.
+testExecutorAllowlist : Script ()
+testExecutorAllowlist = do
+  admin <- allocateParty "admin"
+  app <- allocateParty "app"
+  rogue <- allocateParty "rogue"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  setTime t1
+  rulesCid <- submit admin do
+    createCmd TokenRules with
+      admin
+      maxTTL = days 90
+      lockGrace = hours 1
+      maxSeizureExtension = days 30
+      requiredAttesterRegistryCid = None
+      maxAttestationValidity = days 7
+      d1ComplianceHook = None
+      allowedExecutors = Some [app]
+  Some rulesDisclosure <- queryDisclosure @TokenRules admin rulesCid
+  aliceInput <- mint admin alice 10.0
+  let rogueSettlement = AllocationV2.SettlementInfo with
+        executors = [rogue]; id = "s-rogue"; cid = None; meta = emptyMetadata
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement = rogueSettlement
+        allocation = mkAllocationSpec admin alice [senderSide (mkTransferLeg "leg-1" alice bob 10.0)]
+        requestedAt = t0
+        inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding aliceInput]
+        extraArgs = emptyExtraArgs
+        actors = [alice]

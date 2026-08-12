@@ -70,12 +70,15 @@ scripts/check.sh
 DAML_PACKAGE=experiments/access/access-control-v1 dpm damlc lint
 DAML_PACKAGE=experiments/access/ownable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/security/pausable-v1 dpm damlc lint
+DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/pausable-v1 dpm damlc lint
+DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/pausable-v1 dpm test --all --show-coverage
+DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm test --all --show-coverage
 ```
 
 `scripts/check.sh` enforces package boundaries. Component tests and production

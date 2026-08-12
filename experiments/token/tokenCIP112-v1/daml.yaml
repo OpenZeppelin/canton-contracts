@@ -1,0 +1,34 @@
+sdk-version: 3.4.11
+name: openzeppelin-tokenCIP112-v1
+source: daml
+version: 0.1.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  # Vendored Token Standard V2 (CIP-0112) DARs; see dars/manifest.yaml.
+  # The V2 interfaces are NOT part of any Daml SDK: they are plain Daml packages
+  # from the splice repo, compiled with dpm-sdk 3.5.1. They are consumed here
+  # cross-SDK from the repo's 3.4.11 baseline, which works because both sides
+  # target Daml-LF 2.1.
+  # Paths are relative to this daml.yaml (repo convention): builds have no
+  # repo-root anchor, and env-var interpolation would require per-machine setup.
+  - ../../../dars/vendor/splice-api-token-metadata-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-holding-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-holding-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-transfer-events-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-transfer-instruction-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-transfer-instruction-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-instruction-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-instruction-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-request-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-request-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-token-standard-utils-2.0.0.dar
+build-options:
+  # Pin the emitted Daml-LF to 2.1: it matches the vendored API DARs, the
+  # upstream splice packages (which target 2.1 even on newer SDKs), and the
+  # Canton 3.4.11 runtime baseline. Contract keys exist in no stable LF
+  # (2.1/2.2 reject them; only the experimental 2.dev compiles them).
+  - --target=2.1

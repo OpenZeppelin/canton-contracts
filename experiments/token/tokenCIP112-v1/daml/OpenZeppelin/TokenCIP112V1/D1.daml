@@ -1,0 +1,168 @@
+-- | D1 typed node-compliance attestation: a trusted node signs an attestation
+-- covering one settlement and exactly its transfer legs; batch settlement
+-- verifies and consumes it. Also hosts the D2 seizure order, the non-admin
+-- authority artifact the lawful-process sweep must present.
+--
+-- The attestation binds the legs' full economic content (accounts, amounts,
+-- instruments), not just their ids: the executors choose the ids, so an
+-- id-only binding would let them re-point an attestation at a different trade.
+module OpenZeppelin.TokenCIP112V1.D1 where
+
+import DA.Foldable (forA_)
+import DA.List (dedupSort)
+import DA.Time (RelTime, addRelTime)
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.TokenStandard.Utils
+
+-- | On-ledger trust anchor: the parties the admin accepts as compliance
+-- attesters, and the claim kinds that count as a pass. Attesters are updated
+-- in place so the cid pinned on the rules contract stays valid.
+template TrustedAttesterRegistry with
+    admin : Party
+    attesters : [Party]
+    acceptedClaimKinds : [Text]
+      -- ^ A verified attestation must carry one of these; otherwise a
+      -- "sanctions-hit" attestation would pass the gate as readily as an
+      -- approval.
+  where
+    signatory admin
+    observer attesters
+    ensure not (null attesters)
+      && attesters == dedupSort attesters
+      && not (null acceptedClaimKinds)
+      && "" `notElem` acceptedClaimKinds
+
+    -- | Rotate the trusted set without changing the contract id, so the
+    -- `requiredAttesterRegistryCid` pinned on `TokenRules` keeps
+    -- resolving. Archive-and-recreate would dangle that pin and force
+    -- re-creating the rules contract and re-distributing its disclosure.
+    choice TrustedAttesterRegistry_Update : ContractId TrustedAttesterRegistry
+      with
+        newAttesters : [Party]
+        newAcceptedClaimKinds : [Text]
+      controller admin
+      do create this with
+           attesters = dedupSort newAttesters
+           acceptedClaimKinds = newAcceptedClaimKinds
+
+-- | A signed compliance attestation. Its existence proves the attester signed
+-- it; verification is a consuming choice, so one attestation authorizes
+-- exactly one settlement of exactly one leg set.
+template ComplianceAttestation with
+    attester : Party
+    attestationObservers : [Party]
+    settlementId : Text
+    authorizedExecutors : [Party]
+      -- ^ The executors this attestation is issued to. Also the verify
+      -- controller: deriving the controller from a choice argument would let
+      -- any observer name itself and burn the attestation.
+    claimKind : Text
+    complianceReference : Text
+      -- ^ The reference the per-allocation settle must carry, so the
+      -- registry-wide attestation and the per-allocation metadata are the
+      -- same fact rather than two unrelated strings.
+    issuedAt : Time
+    expiresAt : Time
+    boundTransferLegs : [AllocationV2.TransferLeg]
+      -- ^ The exact legs authorized: senders, receivers, amounts and
+      -- instruments, not merely leg ids.
+  where
+    signatory attester
+    observer dedupSort (attestationObservers <> authorizedExecutors)
+    ensure issuedAt < expiresAt
+      && not (null boundTransferLegs)
+      && not (null authorizedExecutors)
+      && claimKind /= ""
+      && complianceReference /= ""
+
+    -- Controlled by the pre-authorized executors (signed off by the attester);
+    -- the settlement factory supplies that authority after checking its own
+    -- actors.
+    choice ComplianceAttestation_Verify : Text
+      with
+        settlement : AllocationV2.SettlementInfo
+        transferLegs : [AllocationV2.TransferLeg]
+        registryCid : ContractId TrustedAttesterRegistry
+        factoryAdmin : Party
+        maxValidity : RelTime
+      controller authorizedExecutors
+      do
+        registry <- fetch registryCid
+        -- A caller-supplied registry whose admin is not the settling factory's
+        -- admin is rejected: trust is rooted in the factory admin's registry.
+        require' ("registry.admin", registry.admin) isEqualR ("factoryAdmin", factoryAdmin)
+        require "attestation signer must be in the trusted-attester registry"
+          (attester `elem` registry.attesters)
+        require "attestation claim kind must be accepted by the registry"
+          (claimKind `elem` registry.acceptedClaimKinds)
+        require' ("attestation.settlementId", settlementId) isEqualR ("settlement.id", settlement.id)
+        -- Pin the executors, so an attestation issued to one app cannot be
+        -- spent by another.
+        require' ("attestation.authorizedExecutors", dedupSort authorizedExecutors)
+          isEqualR ("settlement.executors", dedupSort settlement.executors)
+        -- Exact content binding: same legs, same order-independent set, with
+        -- amounts, accounts and instruments all covered by TransferLeg's Eq.
+        require' ("attestation.boundTransferLegs", dedupSort boundTransferLegs)
+          isEqualR ("settlement transfer legs", dedupSort transferLegs)
+        -- Attester-chosen windows are bounded by registry policy so a single
+        -- attestation cannot be indefinitely re-usable in principle.
+        require "attestation validity window exceeds the registry maximum"
+          (expiresAt <= issuedAt `addRelTime` maxValidity)
+        now <- getTime
+        require "attestation is not yet valid" (now >= issuedAt)
+        require "attestation has expired" (now <= expiresAt)
+        pure complianceReference
+
+-- | Non-admin authority for a D2 lawful-process sweep. The admin cannot sign
+-- this: without it, `lawfulProcessRef` was an arbitrary admin-chosen string
+-- anchored to nothing.
+template SeizureOrder with
+    authority : Party
+    admin : Party
+    caseRef : Text
+    subjectAccount : HoldingV2.Account
+    custodianDestination : HoldingV2.Account
+    expiresAt : Time
+  where
+    signatory authority
+    observer admin
+    ensure caseRef /= ""
+
+    -- | Consumed by the sweep, so one order authorizes one seizure.
+    choice SeizureOrder_Verify : Text
+      with
+        registryCid : ContractId TrustedAttesterRegistry
+        expectedAdmin : Party
+        expectedSubject : HoldingV2.Account
+        expectedCustodian : HoldingV2.Account
+      controller admin
+      do
+        registry <- fetch registryCid
+        require' ("registry.admin", registry.admin) isEqualR ("expectedAdmin", expectedAdmin)
+        require "seizure authority must be in the trusted registry"
+          (authority `elem` registry.attesters)
+        require' ("order.admin", admin) isEqualR ("expectedAdmin", expectedAdmin)
+        require' ("order.subjectAccount", subjectAccount) isEqualR ("allocation authorizer", expectedSubject)
+        require' ("order.custodianDestination", custodianDestination)
+          isEqualR ("hook.custodianDestination", expectedCustodian)
+        now <- getTime
+        require "seizure order has expired" (now <= expiresAt)
+        pure caseRef
+
+-- | Verify a seizure order when the registry requires one; `None` means the
+-- registry is not configured for attested seizure.
+requireSeizureOrder
+  : Optional (ContractId TrustedAttesterRegistry)
+  -> ContractId SeizureOrder
+  -> Party -> HoldingV2.Account -> HoldingV2.Account
+  -> Update ()
+requireSeizureOrder registryCidOpt orderCid admin subject custodian =
+  forA_ registryCidOpt $ \registryCid -> do
+    _ <- exercise orderCid SeizureOrder_Verify with
+      registryCid
+      expectedAdmin = admin
+      expectedSubject = subject
+      expectedCustodian = custodian
+    pure ()

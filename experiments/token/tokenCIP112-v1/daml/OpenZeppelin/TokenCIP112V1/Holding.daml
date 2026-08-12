@@ -1,0 +1,128 @@
+-- | Holding template for the CIP-0112 settlement package.
+module OpenZeppelin.TokenCIP112V1.Holding where
+
+import DA.Assert (assertDeadlineExceeded)
+import DA.Foldable (forA_)
+import DA.List (dedupSort)
+import DA.Optional (isNone, isSome)
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.TokenStandard.Utils
+
+-- | A holding is maintained jointly by the instrument admin and the account
+-- parties. Lock holders observe the contract so they can settle or release the
+-- locked funds. Regular accounts only: special (ownerless) accounts never hold.
+template TokenHolding with
+    holding : HoldingV2.HoldingView
+  where
+    signatory holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+    observer lockHolders holding.lock
+    ensure holding.amount > 0.0
+      && isSome holding.account.owner
+      -- `expiresAfter` would make the effective lock expiry the earlier of the
+      -- two bounds (HoldingV2.Lock), which this package's expiry checks do not
+      -- model. Reject it at creation rather than mis-handle it later.
+      && optional True (isNone . (.expiresAfter)) holding.lock
+
+    -- | Reclaim a holding whose lock has expired, without routing it through a
+    -- transfer or allocation. Without this, a locked holding whose referencing
+    -- workflow contract was garbage-collected would be unrecoverable, since
+    -- nothing else can clear a lock.
+    choice TokenHolding_OwnerUnlock : ContractId TokenHolding
+      controller accountParties holding.instrumentId.admin holding.account
+      do
+        lock <- case holding.lock of
+          None -> fail "holding is not locked"
+          Some l -> pure l
+        case lock.expiresAt of
+          None -> fail "holding is locked indefinitely and cannot be unlocked by its owner"
+          Some expiresAt -> assertDeadlineExceeded "lock expiresAt" expiresAt
+        create this with holding = holding with lock = None
+
+    interface instance HoldingV2.Holding for TokenHolding where
+      view = holding
+
+lockHolders : Optional HoldingV2.Lock -> [Party]
+lockHolders lock = case lock of
+  None -> []
+  Some l -> l.holders
+
+createTokenHolding
+  : Party -> HoldingV2.Account -> Text -> Decimal -> Optional HoldingV2.Lock
+  -> Update (ContractId TokenHolding)
+createTokenHolding admin account instrumentId amount lock =
+  create TokenHolding with
+    holding = HoldingV2.HoldingView with
+      account
+      instrumentId = HoldingV2.InstrumentId with admin; id = instrumentId
+      amount
+      lock
+      meta = emptyMetadata
+
+-- | Consume a locked input holding after validating its identity.
+fetchAndArchiveLockedHolding
+  : Party -> HoldingV2.Account -> ContractId TokenHolding -> Update TokenHolding
+fetchAndArchiveLockedHolding admin expectedAccount cid = do
+  h <- fetch cid
+  require' ("inputHolding.instrumentId.admin", h.holding.instrumentId.admin) isEqualR ("admin", admin)
+  require' ("inputHolding.account", h.holding.account) isEqualR ("expectedAccount", expectedAccount)
+  require "input holding must be locked" (isSome h.holding.lock)
+  archive cid
+  pure h
+
+-- | As `fetchAndArchiveLockedHolding`, but also pins the lock's holder set, so
+-- a holding locked for some other workflow cannot be consumed here. Used where
+-- the caller knows exactly which holders its own lock carries.
+fetchAndArchiveLockedHoldingHeldBy
+  : Party -> HoldingV2.Account -> [Party] -> ContractId TokenHolding -> Update TokenHolding
+fetchAndArchiveLockedHoldingHeldBy admin expectedAccount expectedHolders cid = do
+  h <- fetch cid
+  require' ("inputHolding.instrumentId.admin", h.holding.instrumentId.admin) isEqualR ("admin", admin)
+  require' ("inputHolding.account", h.holding.account) isEqualR ("expectedAccount", expectedAccount)
+  case h.holding.lock of
+    None -> fail "input holding must be locked"
+    Some lock -> require' ("inputHolding.lock.holders", dedupSort lock.holders)
+      isEqualR ("expectedHolders", dedupSort expectedHolders)
+  archive cid
+  pure h
+
+-- | Consume an unlocked input holding after validating its identity. A holding
+-- whose lock has expired is accepted, giving a combined unlock-and-use;
+-- unexpired or indefinite locks are rejected.
+fetchAndArchiveUnlockedHolding
+  : Party -> HoldingV2.Account -> ContractId TokenHolding -> Update TokenHolding
+fetchAndArchiveUnlockedHolding admin expectedAccount cid = do
+  h <- fetch cid
+  require' ("inputHolding.instrumentId.admin", h.holding.instrumentId.admin) isEqualR ("admin", admin)
+  require' ("inputHolding.account", h.holding.account) isEqualR ("expectedAccount", expectedAccount)
+  forA_ h.holding.lock $ \lock -> case lock.expiresAt of
+    None -> fail "input holding is locked indefinitely and cannot fund an allocation"
+    Some expiresAt -> assertDeadlineExceeded "input holding lock expiresAt" expiresAt
+  archive cid
+  pure h
+
+-- | Consume input holdings and tally the value they carried per instrument id.
+debitHoldings
+  : (ContractId TokenHolding -> Update TokenHolding)
+  -> [ContractId TokenHolding]
+  -> Update (TextMap.TextMap Decimal)
+debitHoldings fetchAndArchive cids = do
+  amounts <- forA cids $ \cid -> do
+    h <- fetchAndArchive cid
+    pure (h.holding.instrumentId.id, h.holding.amount)
+  pure (TextMap.fromListWithR (+) amounts)
+
+-- | Release locked holdings back to their account, returning the new unlocked
+-- holdings keyed by instrument id (the result-map shape of the standard's
+-- allocation choices).
+unlockHoldings
+  : Party -> HoldingV2.Account -> [ContractId TokenHolding]
+  -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
+unlockHoldings admin expectedAccount cids = do
+  unlocked <- forA cids $ \cid -> do
+    h <- fetchAndArchiveLockedHolding admin expectedAccount cid
+    newCid <- create h with holding = h.holding with lock = None
+    pure (h.holding.instrumentId.id, [toInterfaceContractId @HoldingV2.Holding newCid])
+  pure (TextMap.fromListWithR (++) unlocked)

@@ -1,0 +1,249 @@
+-- | Transfer instruction template implementing the Token Standard V2
+-- `TransferInstruction` interface: a transfer offer funded by holdings locked
+-- at instruction time, completed in one step when the factory actors already
+-- cover both accounts. Accept, reject, and withdraw are all terminal, so no
+-- state-update chain exists and `originalInstructionCid` is always `None`.
+module OpenZeppelin.TokenCIP112V1.Transfer where
+
+import DA.Assert (assertDeadlineExceeded, assertWithinDeadline)
+import DA.List (dedupSort)
+import DA.Map qualified as Map
+import DA.Optional (fromOptional)
+import DA.TextMap qualified as TextMap
+import DA.Time (RelTime, addRelTime, subTime)
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.TokenCIP112V1.Base
+import OpenZeppelin.TokenCIP112V1.Holding
+
+template TokenTransferInstruction with
+    transfer : TransferInstructionV2.Transfer
+      -- ^ The transfer as instructed, with `inputHoldingCids` rewritten to the
+      -- live locked funding so wallets reading the standard view can find the
+      -- holding actually backing the offer. The originally supplied inputs are
+      -- already archived and are recorded in `originalInputHoldingCids`.
+    originalInputHoldingCids : [ContractId HoldingV2.Holding]
+    lockedHoldingCids : [ContractId TokenHolding]
+    expiresAt : Time
+    lockExpiresAt : Time
+      -- ^ When the funding lock expires. Strictly after `expiresAt`, so the
+      -- admin's expiry path always has a window in which it is guaranteed to
+      -- succeed before the sender can re-spend the funding.
+  where
+    signatory transfer.instrumentId.admin, senderParties transfer
+    observer receiverParties transfer
+    ensure isValidTransferV2 transfer
+      && isRegularAccount transfer.sender
+      && isRegularAccount transfer.receiver
+      && not (null lockedHoldingCids)
+      && expiresAt < lockExpiresAt
+
+    interface instance TransferInstructionV2.TransferInstruction for TokenTransferInstruction where
+      view = TransferInstructionV2.TransferInstructionView with
+        originalInstructionCid = None
+        transfer
+        expiresAt = Some expiresAt
+        -- Joint actor sets: paying out needs all receiver account parties
+        -- (they sign the created holding); returning funds needs all sender
+        -- account parties.
+        availableActions = Map.fromList
+          [ (TransferInstructionV2.TIA_Accept, [receiverParties transfer])
+          , (TransferInstructionV2.TIA_Reject, [receiverParties transfer])
+          , (TransferInstructionV2.TIA_Withdraw, [senderParties transfer])
+          ]
+        meta = transfer.meta
+
+      transferInstruction_acceptExtraObservers _ = observer this
+      transferInstruction_rejectExtraObservers _ = observer this
+      transferInstruction_withdrawExtraObservers _ = observer this
+
+      transferInstruction_acceptImpl self arg = do
+        archiveAndCheckActors self arg.actors [receiverParties transfer]
+        assertWithinDeadline "transfer.executeBefore" transfer.executeBefore
+        let admin = transfer.instrumentId.admin
+        lockedAmounts <- debitHoldings (fetchAndArchiveLockedHolding admin transfer.sender) lockedHoldingCids
+        require' ("locked funding for " <> transfer.instrumentId.id,
+            fromOptional 0.0 (TextMap.lookup transfer.instrumentId.id lockedAmounts))
+          isGreaterOrEqualR ("transfer.amount", transfer.amount)
+        -- Return every unit of locked funding that is not the transferred
+        -- amount, including any balance in a different instrument. Silently
+        -- archiving it would be a burn.
+        senderChangeCids <- returnLockedSurplus transfer lockedAmounts
+        receiverHoldingCids <- payReceiver transfer
+          (map (toInterfaceContractId @HoldingV2.Holding) lockedHoldingCids) senderChangeCids
+        pure TransferInstructionV2.TransferInstructionResult with
+          output = TransferInstructionV2.TransferInstructionResult_Completed with receiverHoldingCids
+          senderChangeCids
+          meta = transfer.meta
+
+      transferInstruction_rejectImpl self arg = do
+        archiveAndCheckActors self arg.actors [receiverParties transfer]
+        returnFundsToSender this "transfer rejected"
+
+      transferInstruction_withdrawImpl self arg = do
+        archiveAndCheckActors self arg.actors [senderParties transfer]
+        returnFundsToSender this "transfer withdrawn"
+
+    -- Admin expiry of a stale instruction, mirroring allocation expiry: the
+    -- storage bound has passed and the locked funds return to the sender. Runs
+    -- in the window between `expiresAt` and `lockExpiresAt`, where the funding
+    -- is guaranteed to still be locked.
+    choice TokenTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
+      controller transfer.instrumentId.admin
+      do
+        assertDeadlineExceeded "expiresAt" expiresAt
+        returnFundsToSender this "transfer instruction expired"
+
+    -- | Last-resort admin cleanup for an instruction whose funding was already
+    -- reclaimed (re-spent as an expired-lock input, or self-unlocked), which
+    -- makes every fund-returning path fail on the archived holding. Only
+    -- available once the lock has expired, by which point the sender can always
+    -- recover the holding via `TokenHolding_OwnerUnlock`, so it cannot strand
+    -- funds.
+    choice TokenTransferInstruction_AdminGC : ()
+      controller transfer.instrumentId.admin
+      do assertDeadlineExceeded "lockExpiresAt" lockExpiresAt
+
+-- | Factory implementation shared by `TokenRules`: validate, debit the
+-- sender's inputs, and either complete in one step (the actors already cover
+-- the receiver's account) or lock the transfer amount and create a pending
+-- instruction. Change from the inputs is returned unlocked either way.
+transferImpl
+  : Party -> RelTime -> RelTime
+  -> TransferInstructionV2.TransferFactory_Transfer
+  -> Update TransferInstructionV2.TransferInstructionResult
+transferImpl admin maxTTL lockGrace arg = do
+  let transfer = arg.transfer
+      senders = dedupSort (senderParties transfer)
+      receivers = dedupSort (receiverParties transfer)
+      bothSides = dedupSort (senderParties transfer <> receiverParties transfer)
+      actors = dedupSort arg.actors
+  -- The sender's account parties jointly initiate (they co-sign the debit);
+  -- including the receiver's account parties completes the transfer in one step.
+  checkActors arg.actors [senders, bothSides]
+  requireMatchExpected ("transfer.instrumentId.admin", transfer.instrumentId.admin) admin
+  require "transfer must be well formed" (isValidTransferV2 transfer)
+  require "transfer accounts must be regular accounts"
+    (isRegularAccount transfer.sender && isRegularAccount transfer.receiver)
+  assertDeadlineExceeded "transfer.requestedAt" transfer.requestedAt
+  assertWithinDeadline "transfer.executeBefore" transfer.executeBefore
+  -- Bound how long a pending instruction may occupy storage, as the standard
+  -- invites registries to do, instead of silently truncating the lock's life
+  -- below the agreed execution window.
+  now <- getTime
+  require "transfer execution window exceeds the registry's maximum TTL"
+    (transfer.executeBefore <= now `addRelTime` maxTTL)
+  require "transfer requestedAt is older than the registry's maximum TTL"
+    (now `subTime` transfer.requestedAt <= maxTTL)
+
+  inputAmounts <- debitHoldings (fetchAndArchiveUnlockedHolding admin transfer.sender)
+    (map fromInterfaceContractId transfer.inputHoldingCids)
+  funded <- case TextMap.toList inputAmounts of
+    [(instrumentId, amount)] | instrumentId == transfer.instrumentId.id -> pure amount
+    [] -> fail "transfer requires input holdings to fund it"
+    _ -> fail "input holdings must all match the transfer's instrument"
+  require' ("funding for " <> transfer.instrumentId.id, funded)
+    isGreaterOrEqualR ("transfer.amount", transfer.amount)
+  senderChangeCids <-
+    if funded > transfer.amount
+      then do
+        cid <- createTokenHolding admin transfer.sender transfer.instrumentId.id (funded - transfer.amount) None
+        pure [toInterfaceContractId @HoldingV2.Holding cid]
+      else pure []
+
+  -- Single-step whenever the actors already cover the receiver's account —
+  -- including a self-transfer, where the receiver's parties are the sender's.
+  if all (`elem` actors) receivers
+    then do
+      receiverHoldingCids <- payReceiver transfer transfer.inputHoldingCids senderChangeCids
+      pure TransferInstructionV2.TransferInstructionResult with
+        output = TransferInstructionV2.TransferInstructionResult_Completed with receiverHoldingCids
+        senderChangeCids
+        meta = transfer.meta
+    else do
+      -- The receiver's account parties are lock holders so they can read the
+      -- locked funding when accepting or rejecting (mirrors executors on
+      -- allocation locks). The lock outlives the instruction's own expiry, so
+      -- the admin's expiry path always runs before the funding is re-spendable.
+      let instructionExpiresAt = transfer.executeBefore
+          lockExpiresAt = instructionExpiresAt `addRelTime` lockGrace
+          lock = HoldingV2.Lock with
+            holders = dedupSort (admin :: receiverParties transfer)
+            expiresAt = Some lockExpiresAt
+            expiresAfter = None
+            context = Some ("pending transfer to " <> show transfer.receiver.owner)
+      lockedCid <- createTokenHolding admin transfer.sender transfer.instrumentId.id transfer.amount (Some lock)
+      instructionCid <- create TokenTransferInstruction with
+        transfer = transfer with
+          inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding lockedCid]
+        originalInputHoldingCids = transfer.inputHoldingCids
+        lockedHoldingCids = [lockedCid]
+        expiresAt = instructionExpiresAt
+        lockExpiresAt
+      emitHoldingsChange admin transfer.sender []
+        transfer.inputHoldingCids
+        (toInterfaceContractId lockedCid :: senderChangeCids)
+        []
+        "lock holdings for transfer"
+      pure TransferInstructionV2.TransferInstructionResult with
+        output = TransferInstructionV2.TransferInstructionResult_Pending with
+          transferInstructionCid = toInterfaceContractId instructionCid
+        senderChangeCids
+        meta = transfer.meta
+
+-- | Pay out any locked funding beyond the transferred amount, per instrument,
+-- so accepting can never destroy value.
+returnLockedSurplus
+  : TransferInstructionV2.Transfer -> TextMap.TextMap Decimal
+  -> Update [ContractId HoldingV2.Holding]
+returnLockedSurplus transfer lockedAmounts = do
+  let admin = transfer.instrumentId.admin
+  changes <- forA (TextMap.toList lockedAmounts) $ \(instrumentId, amount) -> do
+    let surplus =
+          if instrumentId == transfer.instrumentId.id then amount - transfer.amount else amount
+    if surplus > 0.0
+      then do
+        cid <- createTokenHolding admin transfer.sender instrumentId surplus None
+        pure [toInterfaceContractId @HoldingV2.Holding cid]
+      else pure []
+  pure (concat changes)
+
+-- | Create the receiver's holding and log the transfer event. `inputCids` are
+-- the holdings consumed to fund it (original inputs in the one-step path, the
+-- locked funding on accept).
+payReceiver
+  : TransferInstructionV2.Transfer -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
+  -> Update [ContractId HoldingV2.Holding]
+payReceiver transfer inputCids senderChangeCids = do
+  let admin = transfer.instrumentId.admin
+  receiverCid <- createTokenHolding admin transfer.receiver transfer.instrumentId.id transfer.amount None
+  let receiverHoldingCids = [toInterfaceContractId @HoldingV2.Holding receiverCid]
+  withTempEventLog admin $ \eventLogCid ->
+    logTransfer eventLogCid (transfer with inputHoldingCids = inputCids)
+      senderChangeCids receiverHoldingCids
+  pure receiverHoldingCids
+
+-- | Release the locked funding to the sender and log the change.
+returnFundsToSender : TokenTransferInstruction -> Text -> Update TransferInstructionV2.TransferInstructionResult
+returnFundsToSender this reason = do
+  let admin = this.transfer.instrumentId.admin
+  holdings <- unlockHoldings admin this.transfer.sender this.lockedHoldingCids
+  let senderChangeCids = concat (textMapValues holdings)
+  emitHoldingsChange admin this.transfer.sender []
+    (map toInterfaceContractId this.lockedHoldingCids)
+    senderChangeCids
+    []
+    reason
+  pure TransferInstructionV2.TransferInstructionResult with
+    output = TransferInstructionV2.TransferInstructionResult_Failed
+    senderChangeCids
+    meta = this.transfer.meta
+
+senderParties : TransferInstructionV2.Transfer -> [Party]
+senderParties transfer = accountParties transfer.instrumentId.admin transfer.sender
+
+receiverParties : TransferInstructionV2.Transfer -> [Party]
+receiverParties transfer = accountParties transfer.instrumentId.admin transfer.receiver

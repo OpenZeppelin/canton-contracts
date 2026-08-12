@@ -1,0 +1,336 @@
+-- | The registry rules contract: transfer factory, allocation factory,
+-- settlement factory, and event log on a single long-lived admin contract,
+-- plus admin expiry of stale allocations.
+module OpenZeppelin.TokenCIP112V1.Registry where
+
+import DA.Assert (assertDeadlineExceeded, assertWithinDeadline)
+import DA.Foldable (forA_)
+import DA.List (dedupSort)
+import DA.Optional (isNone, isSome)
+import DA.TextMap qualified as TextMap
+import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime)
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.TokenCIP112V1.Base
+import OpenZeppelin.TokenCIP112V1.Holding
+import OpenZeppelin.TokenCIP112V1.Allocation
+import OpenZeppelin.TokenCIP112V1.D1
+import OpenZeppelin.TokenCIP112V1.Transfer
+
+template TokenRules with
+    admin : Party
+    maxTTL : RelTime
+      -- ^ Upper bound on how long an allocation or transfer instruction may
+      -- occupy storage. Workflow deadlines beyond this are rejected outright
+      -- rather than truncated, so a contract's `expiresAt` always equals its
+      -- workflow deadline and the admin can never expire a live allocation.
+    lockGrace : RelTime
+      -- ^ How long a funding lock outlives its workflow contract's `expiresAt`.
+      -- This is the window in which the admin's expiry path is guaranteed to
+      -- succeed: without it, the authorizer could re-spend the funding the
+      -- instant the deadline passed and leave an unremovable shell behind.
+    maxSeizureExtension : RelTime
+      -- ^ How far past the settlement deadline a D2 seizure window may reach.
+    requiredAttesterRegistryCid : Optional (ContractId TrustedAttesterRegistry)
+      -- ^ When set, every batch settlement must present a valid D1 compliance
+      -- attestation, rooted in this registry, via the choice context, and a D2
+      -- lawful-process sweep must present a `SeizureOrder` signed by a party in
+      -- the same registry.
+    maxAttestationValidity : RelTime
+      -- ^ Cap on an attestation's own validity window, so an attester cannot
+      -- issue an effectively permanent pass.
+    d1ComplianceHook : Optional D1ComplianceHook
+      -- ^ Registry-wide D1 hook stamped onto every allocation created through
+      -- the factory.
+    allowedExecutors : Optional [Party]
+      -- ^ When set, only these parties may appear in `settlement.executors`.
+      -- Leaving it `None` keeps the registry open, which also lets anyone make
+      -- an arbitrary party an allocation observer and lock holder by naming
+      -- them executor — set it in deployments where that matters.
+  where
+    signatory admin
+    ensure maxTTL > noTime
+      && lockGrace > noTime
+      && maxSeizureExtension >= noTime
+      && maxAttestationValidity > noTime
+      && optional True (\ps -> not (null ps) && ps == dedupSort ps) allowedExecutors
+
+    interface instance TransferEventsV2.EventLog for TokenRules where
+      view = TransferEventsV2.EventLogView with admin; meta = emptyMetadata
+      eventLog_holdingsChangeImpl = eventLog_holdingsChangeDefaultImpl admin
+
+    interface instance AllocationV2.SettlementFactory for TokenRules where
+      view = AllocationV2.SettlementFactoryView with admin; meta = emptyMetadata
+
+      settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
+
+      -- No extra observers: batch participants must not learn about the other
+      -- allocations being settled.
+      settlementFactory_settleBatchExtraObservers _ = []
+
+      settlementFactory_settleBatchImpl self arg = do
+        checkActors arg.actors [arg.settlement.executors]
+        require "a settlement batch must cover at least one transfer leg"
+          (not (null arg.transferLegs))
+        requireAllowedExecutors this arg.settlement.executors
+        complianceReference <- requireD1Attestation this arg
+        -- Each per-allocation settle is handed a freshly minted, admin-signed
+        -- proof that this batch's cover check ran and, when D1 is configured,
+        -- that an attestation was verified. `Allocation_Settle` refuses to run
+        -- without it, which is what makes the cover check and the D1 gate
+        -- unavoidable rather than merely conventional.
+        --
+        -- The batch context (attestation plumbing) is redacted from what the
+        -- authorizers witness; the proof carries only their own leg set.
+        let authorizeAllocation allocView _settleArg = do
+              authCid <- create BatchSettlementAuthorization with
+                admin
+                settlement = arg.settlement
+                authorizer = allocView.allocation.authorizer
+                transferLegSides = allocView.allocation.transferLegSides
+                complianceReference
+              pure ExtraArgs with
+                context = ChoiceContext with
+                  values = TextMap.fromList
+                    [(batchAuthorizationContextKey, AV_ContractId (toAnyContractId authCid))]
+                meta = arg.extraArgs.meta
+        settlementFactoryV2_settleBatchDefaultImpl authorizeAllocation admin self arg
+
+    interface instance AllocationInstructionV2.AllocationFactory for TokenRules where
+      view = AllocationInstructionV2.AllocationFactoryView with admin; meta = emptyMetadata
+
+      allocationFactory_publicFetchImpl = publicFetchDefaultImpl this
+      allocationFactory_allocateExtraObservers = allocationFactoryV2_privateAsset_allocateExtraObserversDefaultImpl
+      allocationFactory_allocateImpl _self arg = allocateImpl this arg
+
+    interface instance TransferInstructionV2.TransferFactory for TokenRules where
+      view = TransferInstructionV2.TransferFactoryView with admin; meta = emptyMetadata
+
+      transferFactory_publicFetchImpl = publicFetchDefaultImpl this
+      transferFactory_transferExtraObservers = transferFactoryV2_privateAsset_transferExtraObserversDefaultImpl
+      transferFactory_transferImpl _self arg = transferImpl admin maxTTL lockGrace arg
+
+    -- Batched admin expiry of stale allocations through the standard cancel
+    -- choice. Actors, admin, and expiry are re-verified per allocation here,
+    -- independently of the cancel implementation, so this entry point cannot
+    -- be turned into cancellation of live allocations.
+    nonconsuming choice TokenRules_ExpireAllocations : ()
+      with
+        cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
+        observers : [Party]
+          -- ^ Additional parties to witness the expiries, so off-ledger
+          -- automation can track them.
+      observer observers
+      controller admin
+      do
+        forA_ cancelArgs $ \(allocCid, cancelArg) -> do
+          requireMatchExpected ("cancelArg.actors", cancelArg.actors) [admin]
+          alloc <- fetch allocCid
+          let v = view alloc
+          requireMatchExpected ("allocation.admin", v.allocation.admin) admin
+          case v.expiresAt of
+            None -> fail "cannot expire an allocation without an expiry time"
+            Some t -> assertDeadlineExceeded "allocation.expiresAt" t
+          _ <- exercise allocCid cancelArg
+          pure ()
+
+    -- | Issue holdings into an account, emitting the standard mint event so
+    -- supply changes are visible to token-standard history parsers. Without an
+    -- evented path, holdings could only appear via a raw `create TokenHolding`,
+    -- which explains no balance change to any wallet.
+    nonconsuming choice TokenRules_Mint : ContractId TokenHolding
+      with
+        account : HoldingV2.Account
+        instrumentId : Text
+        amount : Decimal
+        reason : Text
+      controller admin :: accountParties admin account
+      do
+        require "mint amount must be positive" (amount > 0.0)
+        require "mint target must be a regular account" (isSome account.owner)
+        holdingCid <- createTokenHolding admin account instrumentId amount None
+        withTempEventLog admin $ \eventLogCid ->
+          logMint eventLogCid account amount
+            (HoldingV2.InstrumentId with admin; id = instrumentId)
+            (reasonToMeta reason emptyMetadata)
+            [toInterfaceContractId @HoldingV2.Holding holdingCid]
+        pure holdingCid
+
+    -- | Burn a holding, emitting the standard burn event. The account is a
+    -- choice argument because the controller set has to be known before the
+    -- holding can be fetched; it is then checked against the holding itself.
+    nonconsuming choice TokenRules_Burn : ()
+      with
+        holdingCid : ContractId TokenHolding
+        account : HoldingV2.Account
+        reason : Text
+      controller admin :: accountParties admin account
+      do
+        h <- fetch holdingCid
+        requireMatchExpected ("holding.instrumentId.admin", h.holding.instrumentId.admin) admin
+        requireMatchExpected ("holding.account", h.holding.account) account
+        require "cannot burn a locked holding" (isNone h.holding.lock)
+        archive holdingCid
+        withTempEventLog admin $ \eventLogCid ->
+          logBurn eventLogCid h.holding.account h.holding.amount h.holding.instrumentId
+            (reasonToMeta reason emptyMetadata)
+            [toInterfaceContractId @HoldingV2.Holding holdingCid]
+
+    -- Batched admin expiry of stale transfer instructions, the transfer-side
+    -- counterpart of TokenRules_ExpireAllocations.
+    nonconsuming choice TokenRules_ExpireTransferInstructions : ()
+      with
+        instructionCids : [ContractId TokenTransferInstruction]
+        observers : [Party]
+      observer observers
+      controller admin
+      do
+        forA_ instructionCids $ \cid -> do
+          instr <- fetch cid
+          requireMatchExpected ("transfer.instrumentId.admin", instr.transfer.instrumentId.admin) admin
+          _ <- exercise cid TokenTransferInstruction_Expire
+          pure ()
+
+noTime : RelTime
+noTime = convertMicrosecondsToRelTime 0
+
+-- | Reject settlements whose executors are outside the configured allowlist.
+requireAllowedExecutors : TokenRules -> [Party] -> Update ()
+requireAllowedExecutors rules executors = forA_ rules.allowedExecutors $ \allowed ->
+  require "settlement executors must all be on the registry's allowlist"
+    (all (`elem` allowed) executors)
+
+
+-- Allocation creation
+----------------------
+
+-- | Synchronous allocation creation: validate, lock net funding, return the
+-- completed allocation and any change. No pending instruction state exists in
+-- this registry because allocation needs no approval beyond the authorizer's
+-- account parties.
+allocateImpl
+  : TokenRules
+  -> AllocationInstructionV2.AllocationFactory_Allocate
+  -> Update AllocationInstructionV2.AllocationInstructionResult
+allocateImpl rules arg = do
+  let admin = rules.admin
+      allocation = arg.allocation
+      authorizer = allocation.authorizer
+  checkActors arg.actors [accountParties admin authorizer]
+  requireMatchExpected ("allocation.admin", allocation.admin) admin
+  requireAllowedExecutors rules arg.settlement.executors
+  require "iterated settlement is not supported by this registry"
+    (isNone allocation.nextIterationFunding)
+  require "allocation must authorize at least one transfer-leg side"
+    (not (null allocation.transferLegSides))
+  -- A committed allocation with no deadline could never be withdrawn, so refuse
+  -- it here as well as structurally on the template.
+  require "a committed allocation requires a settlement deadline"
+    (not allocation.committed || isSome allocation.settlementDeadline)
+  assertDeadlineExceeded "requestedAt" arg.requestedAt
+  forA_ allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
+
+  now <- getTime
+  -- Bound the workflow rather than truncating the storage expiry below the
+  -- agreed deadline: a truncated expiry would let the admin cancel a live —
+  -- possibly committed — allocation before its deadline.
+  forA_ allocation.settlementDeadline $ \deadline ->
+    require "settlement deadline exceeds the registry's maximum TTL"
+      (deadline <= now `addRelTime` rules.maxTTL)
+  require "requestedAt is older than the registry's maximum TTL"
+    (now `subTime` arg.requestedAt <= rules.maxTTL)
+
+  -- Net funding: only the negative part of the authorizer's net credit needs
+  -- to be locked; a receiver-only allocation locks nothing.
+  let expiresAt = computeStorageExpiry rules.maxTTL now allocation.settlementDeadline
+      lockExpiresAt = expiresAt `addRelTime` rules.lockGrace
+      netAmounts = netAllocationCreditAmounts authorizer allocation.transferLegSides
+      requiredAmounts = fmap (\net -> max 0.0 (negate net)) netAmounts
+      -- The lock always has a finite expiry, and it outlives the allocation's
+      -- own expiry so the admin's expiry path has a guaranteed window.
+      lock = HoldingV2.Lock with
+        holders = dedupSort (admin :: arg.settlement.executors)
+        expiresAt = Some lockExpiresAt
+        expiresAfter = None
+        context = Some ("allocation for settlement " <> arg.settlement.id)
+
+  inputAmounts <- debitHoldings (fetchAndArchiveUnlockedHolding admin authorizer)
+    (map fromInterfaceContractId arg.inputHoldingCids)
+
+  lockedAndChange <- forA (TextMap.toList (textMapMergeWithDefault (0.0, 0.0) inputAmounts requiredAmounts)) $
+    \(instrumentId, (inputAmount, requiredAmount)) -> do
+      require' ("funding for " <> instrumentId, inputAmount)
+        isGreaterOrEqualR ("required lock amount", requiredAmount)
+      lockedCids <-
+        if requiredAmount > 0.0
+          then (:: []) <$> createTokenHolding admin authorizer instrumentId requiredAmount (Some lock)
+          else pure []
+      changeCids <-
+        if inputAmount - requiredAmount > 0.0
+          then do
+            cid <- createTokenHolding admin authorizer instrumentId (inputAmount - requiredAmount) None
+            pure [(instrumentId, [toInterfaceContractId @HoldingV2.Holding cid])]
+          else pure []
+      pure (lockedCids, changeCids)
+
+  let lockedHoldingCids = concatMap fst lockedAndChange
+      authorizerChangeCids = TextMap.fromListWithR (++) (concatMap snd lockedAndChange)
+
+  allocationCid <- create TokenAllocation with
+    originalAllocationCid = None
+    settlement = arg.settlement
+    allocation
+    lockedHoldingCids
+    requestedAt = arg.requestedAt
+    createdAt = now
+    expiresAt
+    lockExpiresAt
+    d1ComplianceHook = rules.d1ComplianceHook
+    d2SeizureHook = None
+    maxSeizureExtension = rules.maxSeizureExtension
+    requiredAttesterRegistryCid = rules.requiredAttesterRegistryCid
+
+  emitHoldingsChange admin authorizer arg.settlement.executors
+    arg.inputHoldingCids
+    (map toInterfaceContractId lockedHoldingCids <> concat (textMapValues authorizerChangeCids))
+    []
+    "lock holdings for allocation"
+
+  pure AllocationInstructionV2.AllocationInstructionResult with
+    output = AllocationInstructionV2.AllocationInstructionResult_Completed with
+      allocationCid = toInterfaceContractId allocationCid
+    authorizerChangeCids
+    meta = emptyMetadata
+
+
+-- D1 gate
+----------
+
+-- | When the registry requires attestation, read the attestation contract id
+-- from the choice context and verify it (a consuming exercise: one attestation
+-- authorizes one settlement of exactly this leg set, rooted in the registry
+-- pinned on this contract). Returns the attestation's own compliance
+-- reference, which is then carried to each allocation's settle.
+requireD1Attestation
+  : TokenRules -> AllocationV2.SettlementFactory_SettleBatch -> Update (Optional Text)
+requireD1Attestation rules arg = case rules.requiredAttesterRegistryCid of
+  None -> pure None
+  Some registryCid -> do
+    attCid <- case TextMap.lookup d1AttestationContextKey arg.extraArgs.context.values of
+      Some (AV_ContractId anyCid) -> pure (fromAnyContractId anyCid : ContractId ComplianceAttestation)
+      Some _ -> fail "D1 attestation context value must be a contract id"
+      None -> fail "this factory requires a D1 compliance attestation in the choice context"
+    reference <- exercise attCid ComplianceAttestation_Verify with
+      settlement = arg.settlement
+      transferLegs = arg.transferLegs
+      registryCid
+      factoryAdmin = rules.admin
+      maxValidity = rules.maxAttestationValidity
+    pure (Some reference)
