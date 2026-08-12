@@ -18,6 +18,7 @@ import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils
 
+import OpenZeppelin.TokenCIP112V1.Allowance
 import OpenZeppelin.TokenCIP112V1.Base
 import OpenZeppelin.TokenCIP112V1.Holding
 import OpenZeppelin.TokenCIP112V1.Allocation
@@ -182,6 +183,67 @@ template TokenRules with
           logBurn eventLogCid h.holding.account h.holding.amount h.holding.instrumentId
             (reasonToMeta reason emptyMetadata)
             [toInterfaceContractId @HoldingV2.Holding holdingCid]
+
+    -- | CIP-86 `approve`: the owner's account parties grant `spender` a
+    -- spending budget on one instrument. The registry contributes the admin
+    -- signature the allowance needs; the owner controls the choice alone, so
+    -- approval needs no per-call admin action.
+    --
+    -- An `amount` of zero revokes: the previous allowance is archived and no
+    -- successor is created, mirroring ERC-20 `approve(spender, 0)`. A
+    -- negative `amount` is a caller error and fails.
+    nonconsuming choice TokenRules_ApproveAllowance : Optional (ContractId TokenAllowance)
+      with
+        account : HoldingV2.Account
+        spender : Party
+        instrumentId : Text
+        amount : Decimal
+        previousAllowanceCid : Optional (ContractId TokenAllowance)
+          -- ^ The budget this approval replaces, for the same account,
+          -- spender, and instrument. Passing it keeps the overwrite semantics
+          -- of ERC-20 `approve`; no contract key enforces uniqueness.
+      controller accountParties admin account
+      do
+        require "approve amount must not be negative" (amount >= 0.0)
+        forA_ previousAllowanceCid $ \cid -> do
+          prev <- fetch cid
+          requireMatchExpected ("previousAllowance.instrumentId.admin", prev.instrumentId.admin) admin
+          requireMatchExpected ("previousAllowance.instrumentId.id", prev.instrumentId.id) instrumentId
+          requireMatchExpected ("previousAllowance.account", prev.account) account
+          requireMatchExpected ("previousAllowance.spender", prev.spender) spender
+          archive cid
+        if amount == 0.0
+          then pure None
+          else Some <$> create TokenAllowance with
+            instrumentId = HoldingV2.InstrumentId with admin; id = instrumentId
+            account
+            spender
+            remaining = amount
+
+    -- | CIP-86 `transferFrom`: the spender moves funds from the approved
+    -- account within the budget. A pull into the spender's own account
+    -- completes in one step; any other receiver gets a pending instruction to
+    -- accept through the standard interface. The allowance's `Spend` choice
+    -- requires the admin and the spender jointly, so this registry choice is
+    -- the only spend path and always applies the live `maxTTL` and
+    -- `lockGrace` configuration.
+    --
+    -- The spender's submission must carry explicit disclosure of the owner's
+    -- funding holdings (`transfer.inputHoldingCids`) on every spend; the
+    -- owner's wallet or the registry admin's automation supplies it. A
+    -- partial spend returns the owner's change at a new holding contract id,
+    -- so the next spend needs a fresh disclosure.
+    nonconsuming choice TokenRules_TransferFrom : TokenAllowance_SpendResult
+      with
+        allowanceCid : ContractId TokenAllowance
+        spender : Party
+        transfer : TransferInstructionV2.Transfer
+      controller spender
+      do
+        allowance <- fetch allowanceCid
+        requireMatchExpected ("allowance.instrumentId.admin", allowance.instrumentId.admin) admin
+        requireMatchExpected ("allowance.spender", allowance.spender) spender
+        exercise allowanceCid TokenAllowance_Spend with transfer; maxTTL; lockGrace
 
     -- Batched admin expiry of stale transfer instructions, the transfer-side
     -- counterpart of TokenRules_ExpireAllocations.

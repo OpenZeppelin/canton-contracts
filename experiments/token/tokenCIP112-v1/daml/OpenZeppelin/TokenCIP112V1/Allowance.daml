@@ -1,0 +1,137 @@
+-- | ERC-20 style allowance (CIP-86 `approve` / `transferFrom` semantics) for
+-- the CIP-0112 token. The owner grants a spender a spending budget on one
+-- instrument from one account. The spender draws on the budget through
+-- `TokenRules_TransferFrom`, which routes into the standard transfer
+-- execution: a pull into the spender's own account completes in one step; any
+-- other receiver gets a pending `TokenTransferInstruction` to accept.
+--
+-- The budget is consumed at spend time. A pending instruction that is later
+-- rejected or withdrawn returns the funds to the owner but does not restore
+-- the budget; the owner re-approves if needed.
+module OpenZeppelin.TokenCIP112V1.Allowance where
+
+import DA.TextMap qualified as TextMap
+import DA.Time (RelTime)
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.TokenCIP112V1.Base
+import OpenZeppelin.TokenCIP112V1.Transfer
+
+-- | Metadata key under which a spend stamps the spender party. The transfer
+-- record has no spender field, so without the stamp neither the emitted
+-- `EventLog_HoldingsChange` nor a pending `TokenTransferInstruction` would
+-- name who drew on the budget.
+spenderMetaKey : Text
+spenderMetaKey = ozNamespace <> "spender"
+
+-- | Result of one spend: the standard transfer result (completed holdings or
+-- a pending instruction) and the successor allowance, `None` when the budget
+-- is exhausted.
+data TokenAllowance_SpendResult = TokenAllowance_SpendResult with
+    result : TransferInstructionV2.TransferInstructionResult
+    allowanceCid : Optional (ContractId TokenAllowance)
+  deriving (Eq, Show)
+
+-- | A spending budget the owner's account parties granted to `spender` for
+-- one instrument. Created through `TokenRules_ApproveAllowance`, which
+-- contributes the admin signature; the owner cannot create it alone because
+-- spending debits holdings the admin co-signs.
+--
+-- Signatories are the instrument admin and the owner's account parties.
+-- The spender is an observer and therefore reads the whole payload,
+-- including `account.provider` and `account.id`.
+--
+-- No contract key enforces one allowance per (account, spender, instrument).
+-- `TokenRules_ApproveAllowance` archives the previous allowance it is given,
+-- so wallets keep the overwrite semantics of ERC-20 `approve` by passing the
+-- current contract id. Approvals that omit the current id stack a second
+-- live budget instead of replacing the first.
+--
+-- Disclosure: a spend debits the owner's holdings, so the spender's
+-- submission needs explicit disclosure of the funding holdings on every
+-- spend; the owner's wallet (or the registry admin's automation) supplies
+-- it. A partial spend returns change at a new holding contract id, so the
+-- disclosure cannot be reused across spends.
+--
+-- Privacy: the spender picks the receiver. In the pending path the
+-- receiver's account parties become lock holders on the funding, so they
+-- observe the owner's locked holding before they accept.
+--
+-- Archival: `Spend` consumes the allowance and recreates the unspent
+-- balance at a new contract id; `SetRemaining` does the same; `Revoke` and
+-- a zero re-approval archive without a successor. Failure modes: an
+-- over-budget spend, a spend on the wrong account or instrument, a negative
+-- `SetRemaining`, and an approval on a special (mint/burn) account all
+-- abort the submission.
+--
+-- Upgrade: the template carries no version marker; migration replaces live
+-- allowances through owner-side revoke and re-approve on the new package.
+template TokenAllowance with
+    instrumentId : HoldingV2.InstrumentId
+    account : HoldingV2.Account
+      -- ^ The owner's account the budget draws from.
+    spender : Party
+    remaining : Decimal
+  where
+    signatory instrumentId.admin, accountParties instrumentId.admin account
+    observer spender
+    ensure remaining > 0.0 && isRegularAccount account
+
+    -- | Draw on the budget. The controllers are the admin and the spender
+    -- jointly: the spender cannot exercise this directly and must go through
+    -- `TokenRules_TransferFrom`, which validates the live registry
+    -- configuration and contributes the admin's authority. The debit itself
+    -- is authorized by this contract's owner-side signatories.
+    choice TokenAllowance_Spend : TokenAllowance_SpendResult
+      with
+        transfer : TransferInstructionV2.Transfer
+        maxTTL : RelTime
+        lockGrace : RelTime
+      controller instrumentId.admin, spender
+      do
+        requireMatchExpected ("transfer.sender", transfer.sender) account
+        requireMatchExpected ("transfer.instrumentId", transfer.instrumentId) instrumentId
+        require' ("allowance.remaining", remaining)
+          isGreaterOrEqualR ("transfer.amount", transfer.amount)
+        -- One step only when the spender alone covers the receiver's account
+        -- parties (a pull into the spender's own account). Everything else
+        -- becomes a pending instruction, because creating another party's
+        -- holding needs that party's authority.
+        let oneStep = all (== spender) (accountParties instrumentId.admin transfer.receiver)
+        -- Stamp the spender into the transfer metadata so the emitted events
+        -- and any pending instruction name who drew on the budget.
+        let stampedTransfer = transfer with
+              meta = Metadata with
+                values = TextMap.insert spenderMetaKey (partyToText spender) transfer.meta.values
+        result <- executeTransfer instrumentId.admin maxTTL lockGrace oneStep stampedTransfer
+        allowanceCid <-
+          if remaining > transfer.amount
+            then Some <$> create this with remaining = remaining - transfer.amount
+            else pure None
+        pure TokenAllowance_SpendResult with result; allowanceCid
+
+    -- | Replace the budget: archive this allowance and recreate it at a new
+    -- contract id with the new balance, so wallets must track the returned
+    -- id. The owner's account parties control the choice; the admin cannot
+    -- exercise it. A `newRemaining` of zero revokes instead of recreating,
+    -- mirroring ERC-20 `approve 0`; a negative value is a caller error and
+    -- fails.
+    choice TokenAllowance_SetRemaining : Optional (ContractId TokenAllowance)
+      with
+        newRemaining : Decimal
+      controller accountParties instrumentId.admin account
+      do
+        require "new remaining must not be negative" (newRemaining >= 0.0)
+        if newRemaining == 0.0
+          then pure None
+          else Some <$> create this with remaining = newRemaining
+
+    -- | Withdraw the budget entirely. The owner's account parties control
+    -- the choice; the admin cannot revoke.
+    choice TokenAllowance_Revoke : ()
+      controller accountParties instrumentId.admin account
+      do pure ()

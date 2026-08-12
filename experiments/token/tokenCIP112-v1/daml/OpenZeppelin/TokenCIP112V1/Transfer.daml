@@ -107,23 +107,33 @@ template TokenTransferInstruction with
       controller transfer.instrumentId.admin
       do assertDeadlineExceeded "lockExpiresAt" lockExpiresAt
 
--- | Factory implementation shared by `TokenRules`: validate, debit the
--- sender's inputs, and either complete in one step (the actors already cover
--- the receiver's account) or lock the transfer amount and create a pending
--- instruction. Change from the inputs is returned unlocked either way.
+-- | Factory implementation shared by `TokenRules`: check the actors, then
+-- execute. The sender's account parties jointly initiate (they co-sign the
+-- debit); including the receiver's account parties completes the transfer in
+-- one step.
 transferImpl
   : Party -> RelTime -> RelTime
   -> TransferInstructionV2.TransferFactory_Transfer
   -> Update TransferInstructionV2.TransferInstructionResult
 transferImpl admin maxTTL lockGrace arg = do
-  let transfer = arg.transfer
-      senders = dedupSort (senderParties transfer)
-      receivers = dedupSort (receiverParties transfer)
-      bothSides = dedupSort (senderParties transfer <> receiverParties transfer)
+  let receivers = dedupSort (receiverParties arg.transfer)
+      senders = dedupSort (senderParties arg.transfer)
+      bothSides = dedupSort (senderParties arg.transfer <> receiverParties arg.transfer)
       actors = dedupSort arg.actors
-  -- The sender's account parties jointly initiate (they co-sign the debit);
-  -- including the receiver's account parties completes the transfer in one step.
   checkActors arg.actors [senders, bothSides]
+  executeTransfer admin maxTTL lockGrace (all (`elem` actors) receivers) arg.transfer
+
+-- | Validate, debit the sender's inputs, and either complete in one step
+-- (`oneStep`) or lock the transfer amount and create a pending instruction.
+-- Change from the inputs is returned unlocked either way. The caller is
+-- responsible for authorization: the debit needs the sender's and the admin's
+-- authority, and the one-step path also creates the receiver's holding, which
+-- needs receiver-side authority.
+executeTransfer
+  : Party -> RelTime -> RelTime -> Bool
+  -> TransferInstructionV2.Transfer
+  -> Update TransferInstructionV2.TransferInstructionResult
+executeTransfer admin maxTTL lockGrace oneStep transfer = do
   requireMatchExpected ("transfer.instrumentId.admin", transfer.instrumentId.admin) admin
   require "transfer must be well formed" (isValidTransferV2 transfer)
   require "transfer accounts must be regular accounts"
@@ -154,9 +164,9 @@ transferImpl admin maxTTL lockGrace arg = do
         pure [toInterfaceContractId @HoldingV2.Holding cid]
       else pure []
 
-  -- Single-step whenever the actors already cover the receiver's account —
-  -- including a self-transfer, where the receiver's parties are the sender's.
-  if all (`elem` actors) receivers
+  -- Single-step whenever the caller has receiver-side authority, including a
+  -- self-transfer, where the receiver's parties are the sender's.
+  if oneStep
     then do
       receiverHoldingCids <- payReceiver transfer transfer.inputHoldingCids senderChangeCids
       pure TransferInstructionV2.TransferInstructionResult with

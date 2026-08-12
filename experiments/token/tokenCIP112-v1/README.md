@@ -30,6 +30,8 @@ hooks (node attestation and lawful-process seizure).
   settlement.
 - `TokenAllocationRequest` (`AllocationRequest`): the app-side request that a
   wallet turns into an allocation.
+- `TokenAllowance` (`Allowance`): a CIP-86 spending budget with ERC-20
+  `approve` and `transferFrom` semantics, spent through the registry.
 - `TokenRules` (`Registry`): the registry rules contract implementing the TSv2
   transfer, allocation, and settlement factories.
 - `TokenEventLog` (`Base`): the holdings-change event-log host.
@@ -47,8 +49,41 @@ it ships as a single implementation package.
   identity, funding, and expiry before they move value.
 - The admin configures D1 attestation and D2 seizure through registry hooks;
   a seizure sweep requires a non-admin `SeizureOrder` authority.
+- The owner approves an allowance through the registry; the spender draws on
+  it through the registry, which applies the live configuration. A pull into
+  the spender's own account completes in one step; any other receiver accepts
+  a pending instruction. Each spend stamps the spender party into the
+  transfer metadata under `openzeppelin.com/spender`, so the emitted events
+  and any pending instruction name who drew on the budget.
+- Every spend needs explicit disclosure of the owner's funding holdings to
+  the spender's submission. The owner's wallet or the registry admin's
+  automation supplies it per spend: a partial spend returns the owner's
+  change at a new holding contract id, so a disclosure cannot be reused.
+- The owner revokes an allowance through any of three paths, all controlled
+  by the owner's account parties alone: `TokenAllowance_Revoke` archives the
+  budget; `TokenAllowance_SetRemaining` with zero archives it (a positive
+  value recreates it at a new contract id); `TokenRules_ApproveAllowance`
+  with an amount of zero and the current contract id archives it, mirroring
+  ERC-20 `approve(spender, 0)`. The admin cannot revoke. A spend consumes
+  the allowance and recreates the unspent balance at a new contract id;
+  wallets track the returned id across spends and adjustments.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
+
+## Standards conformance
+
+The package implements Token Standard V2 (CIP-0112) and builds the
+[CIP-0086](https://github.com/global-synchronizer-foundation/cips/blob/main/cip-0086/cip-0086.md)
+allowance semantics on it. CIP-86 cites CIP-56 as the name of the Canton token
+standard, not as a version pin, and no CIP-86 mechanism depends on a
+V1-specific interface shape.
+
+The V2 interface hierarchy is parallel to V1: the two share only
+`splice-api-token-metadata-v1`, so V1 tooling cannot see this token. When a
+deployment target requires V1 visibility, add the V1 interface instances to
+the same templates: the V1 DARs are vendored under
+[`dars/vendor/`](../../../dars/vendor/), and the vendored utils ship
+`...V1...DefaultImplUsingV2` helpers for exactly this pattern.
 
 ## Build
 
