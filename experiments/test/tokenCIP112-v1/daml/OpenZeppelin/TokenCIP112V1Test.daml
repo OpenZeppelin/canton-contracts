@@ -129,13 +129,22 @@ holdingAmounts owner = do
   pure (sort [h.holding.amount | (_, h) <- holdings, h.holding.account.owner == Some owner])
 
 setupWith : Optional (ContractId TrustedAttesterRegistry) -> Optional D1ComplianceHook -> Script Scenario
-setupWith requiredAttesterRegistryCid d1ComplianceHook = do
-  admin <- allocateParty "admin"
-  app <- allocateParty "app"
-  alice <- allocateParty "alice"
-  bob <- allocateParty "bob"
-  custodian <- allocateParty "custodian"
-  attester <- allocateParty "attester"
+setupWith = setupPrefixedWith ""
+
+-- | As `setupWith`, with a party-hint prefix. A persistent ledger (the
+-- sandbox gate) rejects a second allocation of the same hint, so every
+-- script that shares a ledger needs its own prefix; the in-memory `dpm test`
+-- ledger is fresh per script and never collides.
+setupPrefixedWith
+  : Text -> Optional (ContractId TrustedAttesterRegistry) -> Optional D1ComplianceHook
+  -> Script Scenario
+setupPrefixedWith prefix requiredAttesterRegistryCid d1ComplianceHook = do
+  admin <- allocateParty (prefix <> "admin")
+  app <- allocateParty (prefix <> "app")
+  alice <- allocateParty (prefix <> "alice")
+  bob <- allocateParty (prefix <> "bob")
+  custodian <- allocateParty (prefix <> "custodian")
+  attester <- allocateParty (prefix <> "attester")
   setTime t1
   rulesCid <- submit admin do
     createCmd TokenRules with

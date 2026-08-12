@@ -93,6 +93,30 @@ From the repository root:
 DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm build
 ```
 
+## Sandbox validation
+
+`dpm test` runs the test suite on an in-memory ledger. The sandbox gate runs
+token creation, transfer, allowance, querying, and burn against a real
+static-time Canton sandbox over the Ledger API. From the repository root:
+
+```sh
+scripts/check-sandbox.sh
+```
+
+The script requires:
+
+- `dpm` on the `PATH`
+- Java 21 or newer
+- `lsof`
+- A free Ledger API port (`6865` by default; override with `OZ_LEDGER_PORT`)
+
+Logs are written under `.cache/sandbox-token/`. To target a running ledger
+instead of the script-managed sandbox, set `OZ_USE_EXTERNAL_LEDGER=1`,
+`OZ_LEDGER_HOST`, and `OZ_LEDGER_PORT`. The external ledger must run in
+static-time mode with its clock at or before 2026-01-01T00:10Z: the scripts
+pin the clock with `setTime`, and a static-time ledger only moves its clock
+forward.
+
 ## Consume a local build
 
 ```yaml
