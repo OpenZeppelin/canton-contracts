@@ -1,0 +1,6 @@
+module OpenZeppelin.Pausable where
+
+data PausableView = PausableView with
+    pauser : Party
+    paused : Bool
+  deriving (Eq, Show)

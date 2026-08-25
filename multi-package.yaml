@@ -11,4 +11,5 @@ packages:
   - experiments/test/ownable-v1
   - experiments/test/pausable-v1
   - experiments/test/tokenCIP112-v1
+  - packages/security/pausable
   - test/placeholder
