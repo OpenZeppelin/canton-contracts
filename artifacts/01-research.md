@@ -641,7 +641,34 @@ concurrent in-flight operations.
 
 ## Dev Notes
 
-_(empty - add context, concerns, or direction after review)_
+Decisions were taken on 2026-08-31 and are recorded against each question below.
+Three of them depart from the Recommendation. The Recommendation is left as
+written, because it records what the research concluded rather than what was
+later chosen.
+
+- **The view carries `paused` only.** The Recommendation asks for `reason` and
+  `until` in the view as well. A consumer that must serve CIP-0112's `pauseInfo`
+  carries those as its own template fields beside `paused`, so the whole
+  metadata response still comes from one on-ledger contract while the frozen
+  interface stays a single boolean. Interfaces cannot be extended, and CIP-0112
+  may extend `PauseInfo`.
+- **The guards do not evaluate ledger time.** Publishing `until` is reporting;
+  enforcing it is a separate feature that raises who may extend a pause and
+  whether expiry needs its own transaction. Neither belongs in the primitive. A
+  consumer that wants an expiring pause writes it.
+- **The separate-contract shape is not shipped.** The Recommendation offers it as
+  a documented-with-caveats secondary option. Anyone who needs one switch shared
+  across several templates can build it on `Pausable`: a single-field template
+  implementing the interface, fetched and guarded by the protected operations,
+  with their own check that the switch presented is the expected one.
+
+One element of the design has no counterpart in the research. The pause
+authority is split out of the core interface into `PausableAdmin requires
+Pausable`, so a template whose authority is a role, a party set, or a timelock
+implements the core alone and writes its own pause choice. A Daml controller
+expression is pure and cannot fetch a credential, so those models need the
+caller and the credential as choice arguments, which an inherited choice cannot
+provide.
 
 ## Open Questions
 
@@ -649,25 +676,66 @@ _(empty - add context, concerns, or direction after review)_
    only, which is honest and narrow, or both shapes with the free-floating one
    carrying caveats? This decision determines the package's entire surface and
    should be made before design starts.
+
+   **Decided: authority-in-path only.** The component serves the case where the
+   pause authority already signs a contract that the protected operations are
+   exercised on. The free-floating shape is not shipped.
+
 2. **Is `openzeppelin-tokenCIP112-v1` the first consumer, and is the goal that
    its registry derives the CIP-0112 `paused` flag from ledger state?** If yes,
    the view type is driven by that endpoint and the design has a concrete
    acceptance test. If no, the CIP-0112 alignment argument weakens considerably.
+
+   **Decided: no field mirroring.** The view does not carry CIP-0112's fields. A
+   registry holds `reason` and `until` as its own template fields beside
+   `paused` and serves the endpoint from all three, so the response is still
+   derived from ledger state without freezing those fields into an interface
+   that cannot later change.
+
 3. **Does a frozen `-api-v1` interface package earn its cost here?**
    ARCHITECTURE.md requires one for any interface, and the dependency-freeze
    consequence is real. The alternative is a template-only package with guard
    functions and no interface, which loses the cross-registry uniform view that
    is the main network-level argument for building this at all.
+
+   **Decided: yes.** Ship `openzeppelin-pausable-api-v1`, public module
+   `OpenZeppelin.PausableV1`, no implementation package because there are no
+   templates. Without the interface there is no component, only a few
+   `assertMsg` wrappers. The freeze is a pin rather than a dead end, and the
+   frozen surface is one boolean plus one party.
+
 4. **What is the intended answer on pause authority composition?** Ownable,
    AccessControl, a timelock, or authority-agnostic in the Solidity manner where
    `_pause` is internal and the consumer wires it. The repository's dependency
    policy pushes toward authority-agnostic; the audit literature pushes toward
    shipping a safe default.
+
+   **Decided: authority-agnostic core, with an optional single-party add-on.**
+   `Pausable` reports the flag and grants no authority. `PausableAdmin requires
+   Pausable` owns `PausableAdmin_Pause` and `PausableAdmin_Unpause` for
+   consumers whose pauser really is one party, and the compiler rejects an
+   implementation that omits the core. Any other authority model implements
+   `Pausable` alone. Naming a placeholder `pauser` is called out in the package
+   README as a live second path to the switch.
+
 5. **Is a bounded pause (`until`) in scope for v1?** It answers the dominant
    audit criticism and CIP-0112 already has the field, but it puts ledger-time
    evaluation inside the guard and raises questions about who may extend a pause
    and whether an expired pause needs an explicit unpause transaction.
+
+   **Decided: out of scope for v1.** CIP-0112 alignment needs the reporting half
+   only, which a consumer supplies from its own fields. Keeping ledger-time
+   evaluation out of the guard leaves both follow-on questions unasked.
+
 6. **What is the required behaviour for in-flight workflows at the moment of a
    flip?** Sui accepts an epoch delay; Canton will reject concurrent readers.
    Confirm that origination-only pause semantics, where committed work proceeds
    and new work is refused, is the intended and documented guarantee.
+
+   **Decided: origination-only, as proposed.** A gated choice refuses to start
+   while paused, committed work is unaffected, and a flip rejects the concurrent
+   operations that were reading the contract. Stated in the package README and
+   the module header. Where a consumer applies the guard, including whether a
+   multi-step workflow gates its completion steps as well as its entry point, is
+   the consumer's decision and belongs with that workflow rather than with this
+   primitive. `Pausable.sol` documents nothing on the subject either.
