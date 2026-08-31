@@ -1,8 +1,9 @@
--- | A consumer fixture: the whole integration a template author writes.
+-- | Consumer fixtures: the two integrations a template author can write.
 module OpenZeppelin.PausableV1TestSupport where
 
 import OpenZeppelin.PausableV1
 
+-- | The single-party case. Implements both interfaces and inherits the switch.
 template Vault
   with
     admin : Party
@@ -14,7 +15,10 @@ template Vault
     observer holder
 
     interface instance Pausable for Vault where
-      view = PausableView with pauser = admin; paused
+      view = PausableView with paused
+
+    interface instance PausableAdmin for Vault where
+      view = PausableAdminView with pauser = admin
       setPausedImpl newPaused =
         toInterfaceContractId <$> create this with paused = newPaused
 
@@ -33,3 +37,45 @@ template Vault
       do
         whenPaused this
         create this with balance = 0
+
+-- | A credential standing in for an AccessControl `RoleGrant`. Authorization
+-- that depends on a contract, which a controller expression cannot read.
+template PauseCredential
+  with
+    admin : Party
+    account : Party
+  where
+    signatory admin
+    observer account
+
+-- | The credential case. Implements `Pausable` only, because its pause
+-- authority is "whoever holds a credential", which no single `Party` expresses.
+template RoleVault
+  with
+    admin : Party
+    holder : Party
+    paused : Bool
+  where
+    signatory admin
+    observer holder
+
+    interface instance Pausable for RoleVault where
+      view = PausableView with paused
+
+    choice RoleVault_Pause : ContractId RoleVault
+      with
+        caller : Party
+        credCid : ContractId PauseCredential
+      controller caller
+      do
+        cred <- fetch credCid
+        assertMsg "RoleVault: wrong credential issuer" (cred.admin == admin)
+        assertMsg "RoleVault: credential is not the caller's" (cred.account == caller)
+        whenNotPaused this
+        create this with paused = True
+
+    choice RoleVault_Transfer : ContractId RoleVault
+      controller holder
+      do
+        whenNotPaused this
+        create this
