@@ -1,5 +1,5 @@
 sdk-version: 3.4.11
-name: openzeppelin-pausable
+name: openzeppelin-pausable-api-v1
 source: daml
 version: 0.1.0
 dependencies:

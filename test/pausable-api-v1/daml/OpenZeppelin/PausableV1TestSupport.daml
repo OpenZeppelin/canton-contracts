@@ -1,0 +1,35 @@
+-- | A consumer fixture: the whole integration a template author writes.
+module OpenZeppelin.PausableV1TestSupport where
+
+import OpenZeppelin.PausableV1
+
+template Vault
+  with
+    admin : Party
+    holder : Party
+    paused : Bool
+    balance : Int
+  where
+    signatory admin
+    observer holder
+
+    interface instance Pausable for Vault where
+      view = PausableView with pauser = admin; paused
+      setPausedImpl newPaused =
+        toInterfaceContractId <$> create this with paused = newPaused
+
+    -- Gated in normal operation.
+    choice Vault_Withdraw : ContractId Vault
+      with amount : Int
+      controller holder
+      do
+        whenNotPaused this
+        assertMsg "Vault: insufficient balance" (amount <= balance)
+        create this with balance = balance - amount
+
+    -- The mirror image: a recovery path that runs only during an incident.
+    choice Vault_EmergencyDrain : ContractId Vault
+      controller admin
+      do
+        whenPaused this
+        create this with balance = 0

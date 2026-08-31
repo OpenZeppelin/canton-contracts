@@ -1,0 +1,115 @@
+-- | Tests for OpenZeppelin.Pausable.
+module OpenZeppelin.PausableV1Test where
+
+import DA.Assert ((===))
+import DA.Text (isInfixOf)
+import Daml.Script
+
+import OpenZeppelin.PausableV1
+import OpenZeppelin.PausableV1TestSupport
+
+data Fixture = Fixture with
+  admin : Party
+  holder : Party
+  vault : ContractId Vault
+
+setup : Script Fixture
+setup = do
+  admin <- allocateParty "admin"
+  holder <- allocateParty "holder"
+  vault <- submit admin do
+    createCmd Vault with admin, holder, paused = False, balance = 100
+  pure Fixture with ..
+
+pauseOf : ContractId Vault -> ContractId Pausable
+pauseOf = toInterfaceContractId
+
+-- | Pause, then unpause. The view tracks the flag and other fields survive.
+test_pauseUnpauseRoundTrip : Script ()
+test_pauseUnpauseRoundTrip = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd (pauseOf vault) Pausable_Pause
+  submit holder do exerciseCmd paused Pausable_Paused with actor = holder
+    >>= \p -> p === True
+  unpaused <- submit admin do exerciseCmd paused Pausable_Unpause
+  p <- submit holder do exerciseCmd unpaused Pausable_Paused with actor = holder
+  p === False
+  Some v <- queryContractId admin (fromInterfaceContractId @Vault unpaused)
+  v.balance === 100
+
+-- | Pausing while paused fails, matching `_pause`'s `whenNotPaused`.
+test_pauseWhenPausedFails : Script ()
+test_pauseWhenPausedFails = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd (pauseOf vault) Pausable_Pause
+  submitMustFail admin do exerciseCmd paused Pausable_Pause
+
+-- | Unpausing while unpaused fails, matching `_unpause`'s `whenPaused`.
+test_unpauseWhenUnpausedFails : Script ()
+test_unpauseWhenUnpausedFails = script do
+  Fixture{..} <- setup
+  submitMustFail admin do exerciseCmd (pauseOf vault) Pausable_Unpause
+
+-- | Only the pauser may flip the switch.
+test_onlyPauserMayPause : Script ()
+test_onlyPauserMayPause = script do
+  Fixture{..} <- setup
+  submitMustFail holder do exerciseCmd (pauseOf vault) Pausable_Pause
+
+-- | whenNotPaused lets a gated choice run, then blocks it.
+test_whenNotPausedGuardsOperation : Script ()
+test_whenNotPausedGuardsOperation = script do
+  Fixture{..} <- setup
+  vault' <- submit holder do exerciseCmd vault Vault_Withdraw with amount = 10
+  paused <- submit admin do exerciseCmd (pauseOf vault') Pausable_Pause
+  submitMustFail holder do
+    exerciseCmd (fromInterfaceContractId @Vault paused) Vault_Withdraw with amount = 10
+
+-- | whenPaused is the mirror: the recovery path runs only during an incident.
+test_whenPausedGuardsRecovery : Script ()
+test_whenPausedGuardsRecovery = script do
+  Fixture{..} <- setup
+  submitMustFail admin do exerciseCmd vault Vault_EmergencyDrain
+  paused <- submit admin do exerciseCmd (pauseOf vault) Pausable_Pause
+  drained <- submit admin do
+    exerciseCmd (fromInterfaceContractId @Vault paused) Vault_EmergencyDrain
+  Some v <- queryContractId admin drained
+  v.balance === 0
+
+-- | The getter is readable by a non-pauser who can see the contract.
+test_getterReadableByObserver : Script ()
+test_getterReadableByObserver = script do
+  Fixture{..} <- setup
+  p <- submit holder do exerciseCmd (pauseOf vault) Pausable_Paused with actor = holder
+  p === False
+
+-- | The pure form agrees with the choice.
+test_isPausedMatchesView : Script ()
+test_isPausedMatchesView = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd (pauseOf vault) Pausable_Pause
+  Some v <- queryContractId admin (fromInterfaceContractId @Vault paused)
+  isPaused v === True
+
+-- | The two failures are distinct, as `EnforcedPause` and `ExpectedPause` are.
+test_pauseErrorsAreDistinct : Script ()
+test_pauseErrorsAreDistinct = script do
+  Fixture{..} <- setup
+  Left e1 <- trySubmit admin do exerciseCmd (pauseOf vault) Pausable_Unpause
+  assertMsg "expected ExpectedPause" (isFailureWith eExpectedPause e1)
+  paused <- submit admin do exerciseCmd (pauseOf vault) Pausable_Pause
+  Left e2 <- trySubmit admin do exerciseCmd paused Pausable_Pause
+  assertMsg "expected EnforcedPause" (isFailureWith eEnforcedPause e2)
+
+-- The guard's message travels in the submission's FailureStatus.
+isFailureWith : Text -> SubmitError -> Bool
+isFailureWith msg e = msg `isInfixOf` show e
+
+-- | The protected contract is destroyed only by its signatory.
+test_archiveIsSignatoryOnly : Script ()
+test_archiveIsSignatoryOnly = script do
+  Fixture{..} <- setup
+  submitMustFail holder do archiveCmd vault
+  submit admin do archiveCmd vault
+  res <- queryContractId admin vault
+  res === None
