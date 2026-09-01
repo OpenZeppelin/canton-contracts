@@ -1,4 +1,5 @@
--- | Consumer fixtures: the two authority models a template author can wire.
+-- | Consumer fixtures: the authority models a template author can wire, the
+-- sibling-field case, and implementations that break the `setPaused` law.
 module OpenZeppelin.PausableV1TestSupport where
 
 import OpenZeppelin.PausableV1
@@ -17,17 +18,16 @@ template Vault
 
     interface instance Pausable for Vault where
       view = PausableView with paused
-      setPausedImpl newPaused =
-        toInterfaceContractId <$> create this with paused = newPaused
+      setPaused b = toInterface (this with paused = b)
 
     -- The `external pause() onlyOwner` analogue: the consumer supplies the
     -- authority, the library supplies the flip and the guard.
-    choice Vault_Pause : ContractId Pausable
+    choice Vault_Pause : ContractId Vault
       controller admin
       do
         pause this
 
-    choice Vault_Unpause : ContractId Pausable
+    choice Vault_Unpause : ContractId Vault
       controller admin
       do
         unpause this
@@ -47,6 +47,25 @@ template Vault
       do
         whenPaused this
         create this with balance = 0
+
+-- | The obligation the library cannot enforce: a flip choice must be
+-- consuming. This one is not, so it leaves the unpaused contract live beside
+-- its paused copy.
+template LeakyVault
+  with
+    admin : Party
+    paused : Bool
+  where
+    signatory admin
+
+    interface instance Pausable for LeakyVault where
+      view = PausableView with paused
+      setPaused b = toInterface (this with paused = b)
+
+    nonconsuming choice LeakyVault_Pause : ContractId LeakyVault
+      controller admin
+      do
+        pause this
 
 -- | A credential standing in for an AccessControl `RoleGrant`. Authorization
 -- that depends on a contract, which a controller expression cannot read.
@@ -72,10 +91,9 @@ template RoleVault
 
     interface instance Pausable for RoleVault where
       view = PausableView with paused
-      setPausedImpl newPaused =
-        toInterfaceContractId <$> create this with paused = newPaused
+      setPaused b = toInterface (this with paused = b)
 
-    choice RoleVault_Pause : ContractId Pausable
+    choice RoleVault_Pause : ContractId RoleVault
       with
         caller : Party
         credCid : ContractId PauseCredential
@@ -92,19 +110,106 @@ template RoleVault
         whenNotPaused this
         create this
 
--- | An unrelated template that tries to flip another contract's flag through
--- the interface. It compiles, because `setPausedImpl` is a public method, and
--- it fails at runtime, because the successor `create` has no authority here.
+-- | The sibling-field case: a registry that records why a pause is in force in
+-- the same transaction as the flip, and clears it on the way out. `paused`
+-- stays the only field in the frozen view.
+template Registry
+  with
+    admin : Party
+    paused : Bool
+    pauseReason : Optional Text
+  where
+    signatory admin
+
+    interface instance Pausable for Registry where
+      view = PausableView with paused
+      setPaused b = toInterface (this with paused = b)
+
+    choice Registry_Pause : ContractId Registry
+      with
+        reason : Optional Text
+      controller admin
+      do
+        pauseWith (\v -> v with pauseReason = reason) this
+
+    choice Registry_Unpause : ContractId Registry
+      controller admin
+      do
+        unpauseWith (\v -> v with pauseReason = None) this
+
+    -- A lambda that undoes the flag the library set. Caught, not silently
+    -- accepted.
+    choice Registry_PauseButClobberTheFlag : ContractId Registry
+      controller admin
+      do
+        pauseWith (\v -> v with paused = False) this
+
+-- | An unrelated template holding a `ContractId Pausable`. `setPaused` is
+-- public, so it can call it - but the method is pure and there is no way to
+-- create from an interface value, so it cannot flip anything. `pause` itself
+-- does not type check here: it needs `HasCreate t` on a concrete template.
 template Rogue
   with
     caller : Party
   where
     signatory caller
 
-    nonconsuming choice Rogue_Pause : ContractId Pausable
+    nonconsuming choice Rogue_TryPause : Bool
       with
         target : ContractId Pausable
       controller caller
       do
         p <- fetch target
-        pause p
+        -- Yields a value with the flag set, and changes nothing on the ledger.
+        pure (view (setPaused p True)).paused
+
+-- Implementations that break the `setPaused` law
+-------------------------------------------------------
+
+-- | Ignores the argument, so the flag never changes. The commonest way to wire
+-- the interface wrongly, and the reason `eFlagNotApplied` exists.
+template BrokenIgnoresFlag
+  with
+    admin : Party
+    paused : Bool
+  where
+    signatory admin
+
+    interface instance Pausable for BrokenIgnoresFlag where
+      view = PausableView with paused
+      setPaused _ = toInterface this
+
+    choice BrokenIgnoresFlag_Pause : ContractId BrokenIgnoresFlag
+      controller admin
+      do
+        pause this
+
+-- | A second implementer, so `Pausable` has more than one inhabitant.
+template Decoy
+  with
+    admin : Party
+    paused : Bool
+  where
+    signatory admin
+
+    interface instance Pausable for Decoy where
+      view = PausableView with paused
+      setPaused b = toInterface (this with paused = b)
+
+-- | Returns someone else's template. The type checks, because `setPaused`
+-- returns `Pausable` and any implementer satisfies that.
+template BrokenWrongTemplate
+  with
+    admin : Party
+    paused : Bool
+  where
+    signatory admin
+
+    interface instance Pausable for BrokenWrongTemplate where
+      view = PausableView with paused
+      setPaused b = toInterface (Decoy with admin = this.admin, paused = b)
+
+    choice BrokenWrongTemplate_Pause : ContractId BrokenWrongTemplate
+      controller admin
+      do
+        pause this
