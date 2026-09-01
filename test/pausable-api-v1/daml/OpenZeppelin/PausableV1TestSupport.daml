@@ -1,9 +1,10 @@
--- | Consumer fixtures: the two integrations a template author can write.
+-- | Consumer fixtures: the two authority models a template author can wire.
 module OpenZeppelin.PausableV1TestSupport where
 
 import OpenZeppelin.PausableV1
 
--- | The single-party case. Implements both interfaces and inherits the switch.
+-- | The single-party case. The pause authority is one party, so the consumer's
+-- choice names it as the controller and calls `pause` with nothing else.
 template Vault
   with
     admin : Party
@@ -16,11 +17,20 @@ template Vault
 
     interface instance Pausable for Vault where
       view = PausableView with paused
-
-    interface instance PausableAdmin for Vault where
-      view = PausableAdminView with pauser = admin
       setPausedImpl newPaused =
         toInterfaceContractId <$> create this with paused = newPaused
+
+    -- The `external pause() onlyOwner` analogue: the consumer supplies the
+    -- authority, the library supplies the flip and the guard.
+    choice Vault_Pause : ContractId Pausable
+      controller admin
+      do
+        pause this
+
+    choice Vault_Unpause : ContractId Pausable
+      controller admin
+      do
+        unpause this
 
     -- Gated in normal operation.
     choice Vault_Withdraw : ContractId Vault
@@ -48,8 +58,9 @@ template PauseCredential
     signatory admin
     observer account
 
--- | The credential case. Implements `Pausable` only, because its pause
--- authority is "whoever holds a credential", which no single `Party` expresses.
+-- | The credential case. Its pause authority is "whoever holds a credential",
+-- which no single `Party` expresses, so the choice takes the caller and the
+-- credential as arguments and checks them before calling `pause`.
 template RoleVault
   with
     admin : Party
@@ -61,8 +72,10 @@ template RoleVault
 
     interface instance Pausable for RoleVault where
       view = PausableView with paused
+      setPausedImpl newPaused =
+        toInterfaceContractId <$> create this with paused = newPaused
 
-    choice RoleVault_Pause : ContractId RoleVault
+    choice RoleVault_Pause : ContractId Pausable
       with
         caller : Party
         credCid : ContractId PauseCredential
@@ -71,11 +84,27 @@ template RoleVault
         cred <- fetch credCid
         assertMsg "RoleVault: wrong credential issuer" (cred.admin == admin)
         assertMsg "RoleVault: credential is not the caller's" (cred.account == caller)
-        whenNotPaused this
-        create this with paused = True
+        pause this
 
     choice RoleVault_Transfer : ContractId RoleVault
       controller holder
       do
         whenNotPaused this
         create this
+
+-- | An unrelated template that tries to flip another contract's flag through
+-- the interface. It compiles, because `setPausedImpl` is a public method, and
+-- it fails at runtime, because the successor `create` has no authority here.
+template Rogue
+  with
+    caller : Party
+  where
+    signatory caller
+
+    nonconsuming choice Rogue_Pause : ContractId Pausable
+      with
+        target : ContractId Pausable
+      controller caller
+      do
+        p <- fetch target
+        pause p

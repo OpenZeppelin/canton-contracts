@@ -21,17 +21,17 @@ setup = do
     createCmd Vault with admin, holder, paused = False, balance = 100
   pure Fixture with ..
 
-adminOf : ContractId Vault -> ContractId PausableAdmin
-adminOf = toInterfaceContractId
-
 readOf : ContractId Vault -> ContractId Pausable
 readOf = toInterfaceContractId
+
+vaultOf : ContractId Pausable -> ContractId Vault
+vaultOf = fromInterfaceContractId
 
 -- The guard's message travels in the submission's FailureStatus.
 isFailureWith : Text -> SubmitError -> Bool
 isFailureWith msg e = msg `isInfixOf` show e
 
--- Pausable: the read side
+-- The read side
 -------------------------------------------------------
 
 -- | The getter is readable by a non-pauser who can see the contract.
@@ -41,79 +41,90 @@ test_getterReadableByObserver = script do
   p <- submit holder do exerciseCmd (readOf vault) Pausable_Paused with actor = holder
   p === False
 
--- | The pure form agrees with the choice.
+-- | The pure form agrees with the view.
 test_isPausedMatchesView : Script ()
 test_isPausedMatchesView = script do
   Fixture{..} <- setup
-  paused <- submit admin do exerciseCmd (adminOf vault) PausableAdmin_Pause
-  Some v <- queryContractId admin (fromInterfaceContractId @Vault paused)
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  Some v <- queryContractId admin (vaultOf paused)
   isPaused v === True
+
+-- The guards
+-------------------------------------------------------
 
 -- | whenNotPaused lets a gated choice run, then blocks it.
 test_whenNotPausedGuardsOperation : Script ()
 test_whenNotPausedGuardsOperation = script do
   Fixture{..} <- setup
   vault' <- submit holder do exerciseCmd vault Vault_Withdraw with amount = 10
-  paused <- submit admin do exerciseCmd (adminOf vault') PausableAdmin_Pause
+  paused <- submit admin do exerciseCmd vault' Vault_Pause
   submitMustFail holder do
-    exerciseCmd (fromInterfaceContractId @Vault paused) Vault_Withdraw with amount = 10
+    exerciseCmd (vaultOf paused) Vault_Withdraw with amount = 10
 
 -- | whenPaused is the mirror: the recovery path runs only during an incident.
 test_whenPausedGuardsRecovery : Script ()
 test_whenPausedGuardsRecovery = script do
   Fixture{..} <- setup
   submitMustFail admin do exerciseCmd vault Vault_EmergencyDrain
-  paused <- submit admin do exerciseCmd (adminOf vault) PausableAdmin_Pause
-  drained <- submit admin do
-    exerciseCmd (fromInterfaceContractId @Vault paused) Vault_EmergencyDrain
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  drained <- submit admin do exerciseCmd (vaultOf paused) Vault_EmergencyDrain
   Some v <- queryContractId admin drained
   v.balance === 0
 
--- PausableAdmin: the write side
+-- pause and unpause, called from the consumer's own choice
 -------------------------------------------------------
 
--- | Pause, then unpause. The view tracks the flag and other fields survive.
+-- | Pause, then unpause. The view tracks the flag, and `setPausedImpl` leaves
+-- every other field of the template untouched.
 test_pauseUnpauseRoundTrip : Script ()
 test_pauseUnpauseRoundTrip = script do
   Fixture{..} <- setup
-  paused <- submit admin do exerciseCmd (adminOf vault) PausableAdmin_Pause
-  p <- submit holder do
-    exerciseCmd (toInterfaceContractId @Pausable paused) Pausable_Paused with actor = holder
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  p <- submit holder do exerciseCmd paused Pausable_Paused with actor = holder
   p === True
-  unpaused <- submit admin do exerciseCmd paused PausableAdmin_Unpause
-  p' <- submit holder do
-    exerciseCmd (toInterfaceContractId @Pausable unpaused) Pausable_Paused with actor = holder
+  unpaused <- submit admin do exerciseCmd (vaultOf paused) Vault_Unpause
+  p' <- submit holder do exerciseCmd unpaused Pausable_Paused with actor = holder
   p' === False
-  Some v <- queryContractId admin (fromInterfaceContractId @Vault unpaused)
+  Some v <- queryContractId admin (vaultOf unpaused)
   v.balance === 100
+
+-- | A consuming pause choice archives its contract, so the flip leaves exactly
+-- one contract behind and the stale id is gone.
+test_flipArchivesThePredecessor : Script ()
+test_flipArchivesThePredecessor = script do
+  Fixture{..} <- setup
+  _ <- submit admin do exerciseCmd vault Vault_Pause
+  stale <- queryContractId admin vault
+  stale === None
 
 -- | Pausing while paused fails, matching `_pause`'s `whenNotPaused`.
 test_pauseWhenPausedFails : Script ()
 test_pauseWhenPausedFails = script do
   Fixture{..} <- setup
-  paused <- submit admin do exerciseCmd (adminOf vault) PausableAdmin_Pause
-  submitMustFail admin do exerciseCmd paused PausableAdmin_Pause
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  submitMustFail admin do exerciseCmd (vaultOf paused) Vault_Pause
 
 -- | Unpausing while unpaused fails, matching `_unpause`'s `whenPaused`.
 test_unpauseWhenUnpausedFails : Script ()
 test_unpauseWhenUnpausedFails = script do
   Fixture{..} <- setup
-  submitMustFail admin do exerciseCmd (adminOf vault) PausableAdmin_Unpause
+  submitMustFail admin do exerciseCmd vault Vault_Unpause
 
--- | Only the pauser may flip the switch.
-test_onlyPauserMayPause : Script ()
-test_onlyPauserMayPause = script do
+-- | The interface names no pause authority, so the consumer's controller is the
+-- only gate. A party that is not it cannot flip the flag.
+test_onlyTheConsumersControllerMayPause : Script ()
+test_onlyTheConsumersControllerMayPause = script do
   Fixture{..} <- setup
-  submitMustFail holder do exerciseCmd (adminOf vault) PausableAdmin_Pause
+  submitMustFail holder do exerciseCmd vault Vault_Pause
 
 -- | The two failures are distinct, as `EnforcedPause` and `ExpectedPause` are.
 test_pauseErrorsAreDistinct : Script ()
 test_pauseErrorsAreDistinct = script do
   Fixture{..} <- setup
-  Left e1 <- trySubmit admin do exerciseCmd (adminOf vault) PausableAdmin_Unpause
+  Left e1 <- trySubmit admin do exerciseCmd vault Vault_Unpause
   assertMsg "expected ExpectedPause" (isFailureWith eExpectedPause e1)
-  paused <- submit admin do exerciseCmd (adminOf vault) PausableAdmin_Pause
-  Left e2 <- trySubmit admin do exerciseCmd paused PausableAdmin_Pause
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  Left e2 <- trySubmit admin do exerciseCmd (vaultOf paused) Vault_Pause
   assertMsg "expected EnforcedPause" (isFailureWith eEnforcedPause e2)
 
 -- | The protected contract is destroyed only by its signatory.
@@ -125,14 +136,25 @@ test_archiveIsSignatoryOnly = script do
   res <- queryContractId admin vault
   res === None
 
--- Pausable alone, with the consumer's own authority
+-- | `setPausedImpl` is a public interface method, but it creates the successor
+-- contract, so it needs the implementing template's signatory authority.
+-- `holder` sees the `Vault` and can read its flag, yet cannot flip it through
+-- the interface: the create has no `admin` authority behind it.
+test_interfaceMethodCarriesNoAuthority : Script ()
+test_interfaceMethodCarriesNoAuthority = script do
+  Fixture{..} <- setup
+  rogue <- submit holder do createCmd Rogue with caller = holder
+  submitMustFail holder do
+    exerciseCmd rogue Rogue_Pause with target = readOf vault
+
+-- The credential case: the consumer's own authority
 -------------------------------------------------------
 
--- | A template whose pause authority is credential-based implements `Pausable`
--- only. It still gets the guards and the uniform read, and it authorizes the
--- flip with a fetch that no controller expression could perform.
-test_pausableOnlyWithCustomAuthority : Script ()
-test_pausableOnlyWithCustomAuthority = script do
+-- | A template whose pause authority is credential-based gets the guards, the
+-- flip, and the uniform read, and it authorizes the flip with a fetch that no
+-- controller expression could perform.
+test_customAuthorityGatesTheFlip : Script ()
+test_customAuthorityGatesTheFlip = script do
   admin <- allocateParty "admin"
   rogueAdmin <- allocateParty "rogueAdmin"
   holder <- allocateParty "holder"
@@ -153,13 +175,13 @@ test_pausableOnlyWithCustomAuthority = script do
     exerciseCmd rv1 RoleVault_Pause with caller = stranger, credCid = rogueCred
 
   -- the real credential holder can pause
-  rv2 <- submitWithDisclosures guardian [d] do
+  paused <- submitWithDisclosures guardian [d] do
     exerciseCmd rv1 RoleVault_Pause with caller = guardian, credCid = cred
 
   -- and the shared guard now blocks the operation
-  submitMustFail holder do exerciseCmd rv2 RoleVault_Transfer
+  submitMustFail holder do
+    exerciseCmd (fromInterfaceContractId @RoleVault paused) RoleVault_Transfer
 
-  -- the uniform read reports it, with no PausableAdmin instance in sight
-  p <- submit holder do
-    exerciseCmd (toInterfaceContractId @Pausable rv2) Pausable_Paused with actor = holder
+  -- the uniform read reports it
+  p <- submit holder do exerciseCmd paused Pausable_Paused with actor = holder
   p === True

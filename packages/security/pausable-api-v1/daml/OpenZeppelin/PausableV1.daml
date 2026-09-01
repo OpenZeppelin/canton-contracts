@@ -3,7 +3,7 @@
 -- The Daml translation of `Pausable.sol`. In Solidity, `Pausable` is inherited:
 -- the flag is a field of the contract that it protects, and gated functions
 -- carry the `whenNotPaused` modifier. The Daml analogue of that inheritance is
--- an interface instance, so this package defines the interfaces and the guards,
+-- an interface instance, so this package defines the interface and the guards,
 -- and the implementing template holds the flag.
 --
 -- Keeping the flag on the protected template is what makes the guard sound. The
@@ -11,34 +11,31 @@
 -- caller passes in; it is a field of the very contract the caller is exercising.
 -- No extra fetch, no extra disclosure, and no extra authority delegation.
 --
--- # Two interfaces
+-- # One interface, no authorization
 --
--- `Pausable` reports the flag and carries no authority at all. Every pausable
--- template implements it, so tooling, wallets, and auditors read one shape.
+-- Every operation in Solidity's `Pausable` is `internal` or a view: the
+-- component ships no access control, and the deriving contract wires `_pause`
+-- to `Ownable`, to `AccessControl`, or to whatever else it uses. This module
+-- keeps that boundary. `Pausable` carries the flag, the getter, the guards, and
+-- `pause`/`unpause`, and it names no authority at all. The consumer writes the
+-- choice that decides who may flip the switch.
 --
--- `PausableAdmin` adds the switch itself, controlled by a single `pauser`
--- party. It `requires Pausable`, so it can only be implemented on a template
--- that already implements the core, and the compiler enforces that.
+-- The boundary is forced, not chosen. A Daml controller expression is pure, so
+-- it cannot fetch a role grant to decide who may act, and a single `Party`
+-- field cannot express a role, an M-of-N approval, or a timelock. Authorization
+-- of that kind lives in a choice body, which means the choice must take the
+-- caller and its credential as arguments - and only the consumer can write it:
 --
--- The split exists because `_pause` in Solidity is `internal`: the component
--- ships no authorization and the deriving contract wires it to `Ownable` or
--- `AccessControl`. A single `Party` cannot express a role grant, an M-of-N
--- approval, or a timelock, and a controller expression is pure, so it cannot
--- fetch a role grant to decide who may act. A consumer with any of those
--- models implements `Pausable` alone and writes its own pause choice, taking
--- the caller and its credential as choice arguments:
---
--- > choice TokenRules_Pause : ContractId TokenRules
+-- > choice TokenRules_Pause : ContractId Pausable
 -- >   with caller : Party; grantCid : ContractId RoleGrant
 -- >   controller caller
 -- >   do
 -- >     grant <- fetch grantCid
 -- >     requireRole caller "PAUSER_ROLE" admin grant
--- >     whenNotPaused this
--- >     create this with paused = True
+-- >     pause this
 --
--- A consumer whose pause authority really is one party implements both and gets
--- the switch for free.
+-- A consumer whose pause authority really is one party writes the same choice
+-- with that party as the controller and no credential argument.
 --
 -- # Solidity correspondence
 --
@@ -48,16 +45,16 @@
 -- | `paused()`            | `Pausable_Paused`, `isPaused`, or the view     |
 -- | `whenNotPaused`       | `whenNotPaused`                                |
 -- | `whenPaused`          | `whenPaused`                                   |
--- | `_pause()`            | `PausableAdmin_Pause`, or the consumer's choice|
--- | `_unpause()`          | `PausableAdmin_Unpause`, or the consumer's     |
+-- | `_pause()`            | `pause`                                        |
+-- | `_unpause()`          | `unpause`                                      |
 -- | `EnforcedPause()`     | `eEnforcedPause`                               |
 -- | `ExpectedPause()`     | `eExpectedPause`                               |
 -- | `Paused`/`Unpaused`   | the exercise node in the transaction tree      |
 --
 -- Solidity emits `Paused(account)` and `Unpaused(account)` because storage
--- writes are otherwise invisible. Daml needs no such event: exercising
--- `PausableAdmin_Pause` is itself a node in the transaction tree, recorded with
--- its actor and timestamp and delivered to every stakeholder.
+-- writes are otherwise invisible. Daml needs no such event: the consumer's
+-- pause choice is itself a node in the transaction tree, recorded with its
+-- actor and timestamp and delivered to every stakeholder.
 --
 -- # Scope
 --
@@ -76,8 +73,8 @@
 --
 -- # Interfaces are frozen
 --
--- Daml interfaces are not SCU-upgradeable, so this package defines interfaces
--- and no templates. Implementations live in consuming packages.
+-- Daml interfaces are not SCU-upgradeable, so this package defines one
+-- interface and no templates. Implementations live in consuming packages.
 module OpenZeppelin.PausableV1 where
 
 -- | Whether an implementing contract is currently paused.
@@ -86,27 +83,52 @@ data PausableView = PausableView with
       -- ^ Whether the contract is currently paused.
   deriving (Eq, Show)
 
--- | The read side of the switch. Implement this on any template that has a
--- pause flag, whatever authority flips it.
+-- | The switch. Implement this on any template that has a pause flag, whatever
+-- authority flips it.
+--
+-- The interface itself grants no authority and defines no gated choice. It
+-- gives the implementer a uniform read for tooling, the two guards, and
+-- `pause`/`unpause` - the analogues of Solidity's `internal _pause()` and
+-- `_unpause()`, callable only from a choice the implementer writes.
 --
 -- Signatories and observers: this interface adds none. It inherits whatever the
 --   implementing template defines, which is why it costs no privacy surface.
 -- Controllers: `Pausable_Paused` is controlled by its own `actor`, so any party
---   that can see the contract may read the flag.
+--   that can see the contract may read the flag. No other choice is defined
+--   here, so the interface constrains no other controller.
 -- Choices: `Pausable_Paused` only. Nothing here changes state.
 -- Disclosure and privacy expectations: the flag is visible to exactly the
 --   parties who can already see the implementing contract. Keep sensitive
 --   detail about why a pause is in force out of the implementing template's
 --   observable fields.
--- Authorization assumptions: none. This interface grants no authority and
---   confers no ability to pause.
--- Archival behavior: none. The one choice is nonconsuming.
--- Failure modes: none of its own. The guards below fail with `eEnforcedPause`
---   or `eExpectedPause`.
+-- Authorization assumptions: none. The interface confers no ability to pause.
+--   `setPausedImpl` creates the successor contract, so it needs the
+--   implementing template's signatory authority, which a choice on an
+--   unrelated contract does not carry. Authorization of the flip is entirely
+--   the consumer's choice to define.
+-- Archival behavior: `Pausable_Paused` is nonconsuming. `setPausedImpl` only
+--   creates the successor; the old contract is archived because the consumer's
+--   pause choice is consuming. See the warning on `pause`.
+-- Failure modes: none of its own. The guards fail with `eEnforcedPause` or
+--   `eExpectedPause`.
 -- Upgrade and migration assumptions: frozen for the life of the package.
 --   `PausableView` gains no fields.
 interface Pausable where
   viewtype PausableView
+
+  -- | Re-create the implementing contract with a new value of the flag.
+  --
+  -- The one obligation an implementer takes on. Only the template knows its own
+  -- fields, so only the template can re-create itself; the interface body has
+  -- no access to them. The implementation must preserve every other field, so
+  -- that pausing changes the flag and nothing else:
+  --
+  -- > setPausedImpl newPaused =
+  -- >   toInterfaceContractId <$> create this with paused = newPaused
+  --
+  -- Call `pause` or `unpause` rather than this method: they add the guard that
+  -- makes a double pause fail.
+  setPausedImpl : Bool -> Update (ContractId Pausable)
 
   -- | Read the flag. The `paused()` getter.
   --
@@ -123,8 +145,8 @@ interface Pausable where
 
 -- | Fail unless the contract is unpaused. The `whenNotPaused` modifier.
 --
--- Accepts an implementing template, a `Pausable`, or a `PausableAdmin`, so the
--- same guard serves a consumer's choice and this module's own choices.
+-- Accepts an implementing template or a `Pausable`, so the same guard serves a
+-- consumer's gated choice and its pause choice.
 --
 -- > choice Vault_Withdraw : ContractId Vault
 -- >   with amount : Int
@@ -145,59 +167,31 @@ whenPaused x = assertMsg eExpectedPause (isPaused x)
 isPaused : (HasToInterface t Pausable) => t -> Bool
 isPaused x = (view (toInterface @Pausable x)).paused
 
--- | The pause authority, for the single-party case.
-data PausableAdminView = PausableAdminView with
-    pauser : Party
-      -- ^ The one party that may pause and unpause.
-  deriving (Eq, Show)
-
--- | The write side of the switch, for a template whose pause authority is one
--- party. Optional: implement it to inherit `PausableAdmin_Pause` and
--- `PausableAdmin_Unpause` instead of writing them.
+-- | Pause the contract. The `_pause()` analogue: it carries no authorization,
+-- so call it from a choice whose controller and body express your own pause
+-- authority. Fails with `eEnforcedPause` if the contract is already paused.
 --
--- A consumer whose authority is a role, a party set, or a timelock implements
--- `Pausable` alone and writes its own pause choice. Do not implement this
--- interface with a placeholder `pauser`: the choices below really work for that
--- party, so a misleading value is a live second path to the switch.
+-- CAUTION: the calling choice must be consuming. `pause` creates the successor
+-- contract but archives nothing, because only the consuming choice archives the
+-- contract it runs on. A `nonconsuming` pause choice leaves the unpaused
+-- contract live beside its paused copy.
 --
--- Signatories and observers: inherited from the implementing template.
--- Controllers: `pauser` controls both choices.
--- Choices: `PausableAdmin_Pause` and `PausableAdmin_Unpause`.
--- Disclosure and privacy expectations: `pauser` is published in the view, so
---   every party who can see the contract learns who holds the switch.
--- Authorization assumptions: only `pauser` may flip the flag. The implementing
---   template's own signatories authorize the successor contract.
--- Archival behavior: both choices are consuming. They archive the current
---   contract and create its successor through `setPausedImpl`.
--- Failure modes: pausing while paused fails with `eEnforcedPause`; unpausing
---   while unpaused fails with `eExpectedPause`. This matches Solidity, where
---   `_pause` carries `whenNotPaused` and `_unpause` carries `whenPaused`.
--- Upgrade and migration assumptions: frozen for the life of the package.
-interface PausableAdmin requires Pausable where
-  viewtype PausableAdminView
+-- > choice Vault_Pause : ContractId Pausable
+-- >   controller admin
+-- >   do
+-- >     pause this
+pause : (HasToInterface t Pausable) => t -> Update (ContractId Pausable)
+pause x = do
+  whenNotPaused x
+  setPausedImpl (toInterface @Pausable x) True
 
-  -- | Re-create the implementing contract with a new value of the flag.
-  --
-  -- The one obligation an implementer takes on. It must preserve every other
-  -- field, so that pausing changes the flag and nothing else:
-  --
-  -- > setPausedImpl newPaused =
-  -- >   toInterfaceContractId <$> create this with paused = newPaused
-  setPausedImpl : Bool -> Update (ContractId PausableAdmin)
-
-  -- | Pause the contract. Fails if it is already paused.
-  choice PausableAdmin_Pause : ContractId PausableAdmin
-    controller (view this).pauser
-    do
-      whenNotPaused this
-      setPausedImpl this True
-
-  -- | Unpause the contract. Fails if it is not paused.
-  choice PausableAdmin_Unpause : ContractId PausableAdmin
-    controller (view this).pauser
-    do
-      whenPaused this
-      setPausedImpl this False
+-- | Unpause the contract. The `_unpause()` analogue, with the same caution
+-- about the calling choice being consuming. Fails with `eExpectedPause` if the
+-- contract is not paused.
+unpause : (HasToInterface t Pausable) => t -> Update (ContractId Pausable)
+unpause x = do
+  whenPaused x
+  setPausedImpl (toInterface @Pausable x) False
 
 -- Error messages. The Solidity custom errors, as text.
 

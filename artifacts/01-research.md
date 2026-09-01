@@ -662,13 +662,26 @@ later chosen.
   implementing the interface, fetched and guarded by the protected operations,
   with their own check that the switch presented is the expected one.
 
-One element of the design has no counterpart in the research. The pause
-authority is split out of the core interface into `PausableAdmin requires
-Pausable`, so a template whose authority is a role, a party set, or a timelock
-implements the core alone and writes its own pause choice. A Daml controller
-expression is pure and cannot fetch a credential, so those models need the
-caller and the credential as choice arguments, which an inherited choice cannot
-provide.
+One element of the design has no counterpart in the research. The component
+ships no pause authority at all, matching `_pause`'s `internal` visibility in
+Solidity. A Daml controller expression is pure and cannot fetch a credential, so
+a role, a party set, or a timelock needs the caller and the credential as choice
+arguments, which no inherited choice can provide. The consumer therefore writes
+the pause choice in every case, and the interface supplies the flag, the getter,
+the guards, and `pause`/`unpause`.
+
+**Revised on 2026-09-01.** The design first split the single-party case into
+`PausableAdmin requires Pausable`, which inherited `PausableAdmin_Pause` and
+`PausableAdmin_Unpause` for a `pauser : Party` in its view. That second
+interface was dropped in favour of one interface. Writing the consumer's own
+choice costs the single-party case four lines, and a `pauser` field in a frozen
+view is a standing invitation to name a placeholder party, which publishes a
+false claim about who holds the switch and opens a live second path to it. One
+interface also removes the question of which of the two a template should
+implement. `setPausedImpl` moved onto `Pausable` as a result, so every
+implementer supplies it; the cost is one method, and the benefit is that
+`pause`/`unpause` carry the guard for every authority model rather than only the
+single-party one.
 
 ## Open Questions
 
@@ -710,13 +723,14 @@ provide.
    policy pushes toward authority-agnostic; the audit literature pushes toward
    shipping a safe default.
 
-   **Decided: authority-agnostic core, with an optional single-party add-on.**
-   `Pausable` reports the flag and grants no authority. `PausableAdmin requires
-   Pausable` owns `PausableAdmin_Pause` and `PausableAdmin_Unpause` for
-   consumers whose pauser really is one party, and the compiler rejects an
-   implementation that omits the core. Any other authority model implements
-   `Pausable` alone. Naming a placeholder `pauser` is called out in the package
-   README as a live second path to the switch.
+   **Decided: authority-agnostic, with no add-on** (revised 2026-09-01).
+   `Pausable` carries the flag, the getter, the guards, and `pause`/`unpause`,
+   and names no authority. Every consumer writes the choice that decides who may
+   flip the switch, single-party consumers included. The optional
+   `PausableAdmin` add-on that an earlier revision shipped for a single `pauser`
+   party was dropped: it saved four lines, and it froze a `pauser` field into a
+   view where a placeholder value would publish a false claim about who holds
+   the switch.
 
 5. **Is a bounded pause (`until`) in scope for v1?** It answers the dominant
    audit criticism and CIP-0112 already has the field, but it puts ledger-time
