@@ -619,11 +619,10 @@ concurrent in-flight operations.
 ## Out of Scope
 
 - **Existing implementations in this repository.** Excluded at the dev's
-  instruction. `experiments/security/pausable-v1` and
-  `packages/security/pausable` were not treated as a baseline, and the report is
-  written greenfield. Note that several findings here bear on that code, in
-  particular the flexible-controller read choice and the pauser-as-informee
-  cost.
+  instruction. The prototypes that stood under `experiments/` and `packages/`
+  when this report was written were not treated as a baseline, and the report is
+  written greenfield. Both were removed on 2026-09-01, superseded by
+  `packages/security/pausable-api-v1`.
 - **Hyperledger Fabric and Quorum.** Stubbed by agreement. Their pause depends
   on globally readable state within a channel or privacy group, which is the
   property Canton lacks.

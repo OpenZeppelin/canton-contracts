@@ -15,7 +15,7 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-No component has been released yet. The three components below are early-stage
+No component has been released yet. The two components below are early-stage
 candidates under [`experiments/`](experiments/). They build and are tested in CI,
 but they will be redesigned before they move into `packages/`, and that redesign
 will change module names, template and choice signatures, and package identity.
@@ -26,7 +26,6 @@ them.
 |---|---|---|---|
 | [Access Control](experiments/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | Experimental; unaudited |
 | [Ownable](experiments/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | Experimental; unaudited |
-| [Pausable](experiments/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Experimental; unaudited |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching
@@ -90,7 +89,6 @@ packages/                 Released components; empty until the first release
 test/                     Isolated component test packages
 experiments/
   access/                 Category for authorization and ownership components
-  security/               Category for operational security components
   test/                   Isolated component test packages
 dars/
   released/               Immutable OpenZeppelin release baselines
