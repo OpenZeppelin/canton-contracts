@@ -265,11 +265,11 @@ test_customAuthorityGatesTheFlip = script do
   Some d <- queryDisclosure @RoleVault admin rv1
 
   -- a credential from the wrong issuer does not authorize the pause
-  submitWithDisclosuresMustFail stranger [d] do
+  submitMustFail (actAs stranger <> disclose d) do
     exerciseCmd rv1 RoleVault_Pause with caller = stranger, credCid = rogueCred
 
   -- the real credential holder can pause
-  paused <- submitWithDisclosures guardian [d] do
+  paused <- submit (actAs guardian <> disclose d) do
     exerciseCmd rv1 RoleVault_Pause with caller = guardian, credCid = cred
 
   -- and the shared guard now blocks the operation
