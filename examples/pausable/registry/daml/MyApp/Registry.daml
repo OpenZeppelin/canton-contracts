@@ -1,0 +1,58 @@
+-- | Adoption of `OpenZeppelin.PausableV1` with sibling fields set in the same
+-- transaction as the flip.
+--
+-- A registry that serves CIP-0112 metadata records why a pause is in force and
+-- when it is expected to end. Those fields belong to the registry, not to the
+-- frozen interface: `pauseWith` sets the flag and passes the value to the
+-- lambda, which touches only the sibling fields.
+--
+-- The metadata endpoint therefore serves `paused` and `pauseInfo{reason,
+-- until}` from one on-ledger contract. If CIP-0112 extends `PauseInfo`, this
+-- template adds a field under Smart Contract Upgrade and the interface does not
+-- move.
+module MyApp.Registry where
+
+import OpenZeppelin.PausableV1
+
+template Registry
+  with
+    admin : Party
+    paused : Bool
+    pauseReason : Optional Text
+      -- ^ CIP-0112 `pauseInfo.reason`.
+    pauseUntil : Optional Time
+      -- ^ CIP-0112 `pauseInfo.until`. Published for reporting; nothing in this
+      --   example enforces it. An expiring pause is the consumer's own choice
+      --   to write.
+  where
+    signatory admin
+
+    interface instance Pausable for Registry where
+      view = PausableView with paused
+      setPaused b = toInterface (this with paused = b)
+
+    -- The flag and the reason change together, in one transaction, through the
+    -- library rather than around it.
+    choice Registry_Pause : ContractId Registry
+      with
+        reason : Optional Text
+        until : Optional Time
+      controller admin
+      do
+        pauseWith (\r -> r with pauseReason = reason, pauseUntil = until) this
+
+    -- Unpausing clears what the pause recorded.
+    choice Registry_Unpause : ContractId Registry
+      controller admin
+      do
+        unpauseWith (\r -> r with pauseReason = None, pauseUntil = None) this
+
+    -- A gated operation, guarded the same way as in any other adopter.
+    choice Registry_Register : ContractId Registry
+      with
+        entry : Text
+      controller admin
+      do
+        whenNotPaused this
+        assertMsg "Registry: entry must not be empty" (entry /= "")
+        create this

@@ -75,10 +75,14 @@ DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/pausable-api-v1 dpm damlc lint
 DAML_PACKAGE=test/pausable-api-v1 dpm damlc lint
+DAML_PACKAGE=examples/pausable/vault dpm damlc lint
+DAML_PACKAGE=examples/pausable/registry dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm test --all --show-coverage
 DAML_PACKAGE=test/pausable-api-v1 dpm test --all --show-coverage
+DAML_PACKAGE=examples/pausable/vault dpm test
+DAML_PACKAGE=examples/pausable/registry dpm test
 scripts/check-sandbox.sh
 ```
 
@@ -114,6 +118,7 @@ caveats.
 packages and their public APIs. Exclude repository organization, CI, tests,
 tooling, and documentation-only changes.
 
-The CI-only `scripts/check-lint.sh` and `scripts/check-coverage.sh` discover and
-validate workspace packages. Public and contributor documentation shows native
-DPM commands instead of presenting those helpers as the development interface.
+The CI-only `scripts/check-lint.sh`, `scripts/check-coverage.sh`, and
+`scripts/check-examples.sh` discover and validate workspace packages. Public
+and contributor documentation shows native DPM commands instead of presenting
+those helpers as the development interface.

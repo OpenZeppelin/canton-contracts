@@ -12,3 +12,5 @@ packages:
   - packages/security/pausable-api-v1
   - test/pausable-api-v1
   - test/placeholder
+  - examples/pausable/vault
+  - examples/pausable/registry

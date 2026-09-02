@@ -1,0 +1,69 @@
+-- | Minimal adoption of `OpenZeppelin.PausableV1`.
+--
+-- A vault holding a balance for one owner, with an emergency stop that the
+-- admin controls. Adopting `Pausable` costs one template field, a three-line
+-- `interface instance`, one `whenNotPaused` call per gated choice, and the two
+-- choices that name the pause authority.
+--
+-- Which choices are gated is a decision per choice, which is why the escape
+-- hatch and the paused-only recovery path both come at no extra cost.
+module MyApp.Vault where
+
+import OpenZeppelin.PausableV1
+
+template Vault
+  with
+    admin : Party
+    owner : Party
+    balance : Decimal
+    paused : Bool
+  where
+    signatory admin, owner
+
+    -- The whole adoption cost. `paused` is a field of the contract that the
+    -- gated choices already exercise, so no separate switch contract exists for
+    -- a caller to substitute or omit.
+    interface instance Pausable for Vault where
+      view = PausableView with paused
+      setPaused b = toInterface (this with paused = b)
+
+    -- A gated operation. The guard is one line, and it reads the contract being
+    -- exercised rather than a contract id the caller supplies.
+    choice Vault_Withdraw : ContractId Vault
+      with
+        amount : Decimal
+      controller owner
+      do
+        whenNotPaused this
+        assertMsg "Vault: amount exceeds balance" (amount <= balance)
+        create this with balance = balance - amount
+
+    -- An escape hatch: redemption to the admin stays legal while paused, so a
+    -- pause does not trap the owner's funds.
+    choice Vault_RedeemToAdmin : ContractId Vault
+      controller owner
+      do
+        create this with balance = 0.0
+
+    -- The mirror image: a recovery path that runs only during an incident.
+    choice Vault_EmergencyDrain : ContractId Vault
+      controller admin
+      do
+        whenPaused this
+        create this with balance = 0.0
+
+    -- The pause authority. The library supplies the guard and the flip; this
+    -- choice supplies the answer to "who may flip the switch".
+    --
+    -- CAUTION: a flip choice must be consuming. `pause` creates the successor
+    -- contract but archives nothing, so a `nonconsuming` choice here would
+    -- leave the unpaused contract live beside its paused copy, with no error.
+    choice Vault_Pause : ContractId Vault
+      controller admin
+      do
+        pause this
+
+    choice Vault_Unpause : ContractId Vault
+      controller admin
+      do
+        unpause this

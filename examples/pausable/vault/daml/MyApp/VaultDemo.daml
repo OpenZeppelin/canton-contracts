@@ -1,0 +1,52 @@
+-- | The lifecycle of `MyApp.Vault.Vault`, as a runnable script.
+module MyApp.VaultDemo where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import OpenZeppelin.PausableV1
+import MyApp.Vault
+
+-- | Normal operation, an emergency stop, and the return to normal operation.
+demo : Script ()
+demo = script do
+  admin <- allocateParty "admin"
+  owner <- allocateParty "owner"
+
+  vault <- submit (actAs [admin, owner]) do
+    createCmd Vault with admin, owner, balance = 100.0, paused = False
+
+  -- Unpaused, the gated choice runs.
+  vault <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
+
+  -- The admin stops the vault.
+  vault <- submit admin do exerciseCmd vault Vault_Pause
+
+  -- Off-ledger tooling reads the flag through the interface view, whatever
+  -- template implements it.
+  Some v <- queryInterfaceContractId owner (toInterfaceContractId @Pausable vault)
+  v === PausableView with paused = True
+
+  -- The gated choice now refuses to start.
+  submitMustFail owner do exerciseCmd vault Vault_Withdraw with amount = 10.0
+
+  -- The escape hatch carries no guard, so it stays open.
+  vault <- submit owner do exerciseCmd vault Vault_RedeemToAdmin
+
+  -- Pausing twice fails with eEnforcedPause.
+  submitMustFail admin do exerciseCmd vault Vault_Pause
+
+  -- The recovery path runs only while paused.
+  vault <- submit admin do exerciseCmd vault Vault_EmergencyDrain
+
+  -- Back to normal operation.
+  vault <- submit admin do exerciseCmd vault Vault_Unpause
+  isPausedNow <- queryContractId admin vault
+  fmap isPaused isPausedNow === Some False
+
+  -- Unpausing twice fails with eExpectedPause, and the paused-only path is
+  -- closed again.
+  submitMustFail admin do exerciseCmd vault Vault_Unpause
+  submitMustFail admin do exerciseCmd vault Vault_EmergencyDrain
+
+  pure ()
