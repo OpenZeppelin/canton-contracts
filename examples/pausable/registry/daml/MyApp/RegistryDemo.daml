@@ -5,7 +5,7 @@ import DA.Assert ((===))
 import DA.Time (addRelTime, hours)
 import Daml.Script
 
-import OpenZeppelin.PausableV1
+import qualified OpenZeppelin.PausableV1 as Pausable
 import MyApp.Registry
 
 -- | A pause that records its reason, and an unpause that clears it.
@@ -37,8 +37,8 @@ demo = script do
   r.pauseUntil === Some until
 
   -- The frozen view still carries the flag alone.
-  Some v <- queryInterfaceContractId admin (toInterfaceContractId @Pausable registry)
-  v === PausableView with paused = True
+  Some v <- queryInterfaceContractId admin (toInterfaceContractId @Pausable.Pausable registry)
+  v === Pausable.PausableView with paused = True
 
   submitMustFail admin do
     exerciseCmd registry Registry_Register with entry = "second"

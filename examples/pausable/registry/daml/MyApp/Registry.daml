@@ -12,7 +12,7 @@
 -- move.
 module MyApp.Registry where
 
-import OpenZeppelin.PausableV1
+import qualified OpenZeppelin.PausableV1 as Pausable
 
 template Registry
   with
@@ -27,8 +27,8 @@ template Registry
   where
     signatory admin
 
-    interface instance Pausable for Registry where
-      view = PausableView with paused
+    interface instance Pausable.Pausable for Registry where
+      view = Pausable.PausableView with paused
       setPaused b = toInterface (this with paused = b)
 
     -- The flag and the reason change together, in one transaction, through the
@@ -39,13 +39,13 @@ template Registry
         until : Optional Time
       controller admin
       do
-        pauseWith (\r -> r with pauseReason = reason, pauseUntil = until) this
+        Pausable.pauseWith (\r -> r with pauseReason = reason, pauseUntil = until) this
 
     -- Unpausing clears what the pause recorded.
     choice Registry_Unpause : ContractId Registry
       controller admin
       do
-        unpauseWith (\r -> r with pauseReason = None, pauseUntil = None) this
+        Pausable.unpauseWith (\r -> r with pauseReason = None, pauseUntil = None) this
 
     -- A gated operation, guarded the same way as in any other adopter.
     choice Registry_Register : ContractId Registry
@@ -53,6 +53,6 @@ template Registry
         entry : Text
       controller admin
       do
-        whenNotPaused this
+        Pausable.whenNotPaused this
         assertMsg "Registry: entry must not be empty" (entry /= "")
         create this

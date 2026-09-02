@@ -9,7 +9,7 @@
 -- hatch and the paused-only recovery path both come at no extra cost.
 module MyApp.Vault where
 
-import OpenZeppelin.PausableV1
+import qualified OpenZeppelin.PausableV1 as Pausable
 
 template Vault
   with
@@ -23,8 +23,8 @@ template Vault
     -- The whole adoption cost. `paused` is a field of the contract that the
     -- gated choices already exercise, so no separate switch contract exists for
     -- a caller to substitute or omit.
-    interface instance Pausable for Vault where
-      view = PausableView with paused
+    interface instance Pausable.Pausable for Vault where
+      view = Pausable.PausableView with paused
       setPaused b = toInterface (this with paused = b)
 
     -- A gated operation. The guard is one line, and it reads the contract being
@@ -34,7 +34,7 @@ template Vault
         amount : Decimal
       controller owner
       do
-        whenNotPaused this
+        Pausable.whenNotPaused this
         assertMsg "Vault: amount exceeds balance" (amount <= balance)
         create this with balance = balance - amount
 
@@ -49,7 +49,7 @@ template Vault
     choice Vault_EmergencyDrain : ContractId Vault
       controller admin
       do
-        whenPaused this
+        Pausable.whenPaused this
         create this with balance = 0.0
 
     -- The pause authority. The library supplies the guard and the flip; this
@@ -61,9 +61,9 @@ template Vault
     choice Vault_Pause : ContractId Vault
       controller admin
       do
-        pause this
+        Pausable.pause this
 
     choice Vault_Unpause : ContractId Vault
       controller admin
       do
-        unpause this
+        Pausable.unpause this

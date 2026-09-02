@@ -11,7 +11,7 @@ for one owner, with an emergency stop that the admin controls.
 
 ## What it shows
 
-- The three lines of `interface instance Pausable for Vault` that adopt the
+- The three lines of `interface instance Pausable.Pausable for Vault` that adopt the
   switch: the view, and `setPaused`.
 - `whenNotPaused this` in a gated choice. The guard reads the contract that the
   choice exercises, so no caller supplies the pause state.
