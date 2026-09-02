@@ -579,19 +579,19 @@ template payload at flip time.
 6. **`setPaused : Bool -> Pausable`, pure, over a type class.** Three shapes
    were built and compiled. (A) the caller's lambda sets the flag and the
    library asserts it did; (B) a `class HasPausedField t where setPaused : Bool
-   -> t -> t`, leaving the interface method-free; (D) a pure interface method
+   -> t -> t`, leaving the interface method-free; (C) a pure interface method
    returning the interface value, with `fromInterface` converting back. A spike
    proved typeclass definitions and instances survive a `data-dependencies`
-   boundary on SDK 3.4.11 / LF 2.1, so B carried no toolchain risk. D was chosen
+   boundary on SDK 3.4.11 / LF 2.1, so B carried no toolchain risk. C was chosen
    on two grounds: one abstraction mechanism instead of two, everything the
    consumer writes inside a single `interface instance` block; and it matches
    the shape Daml Finance already established with `Lockable.acquire` /
-   `releaseImpl`. The costs accepted are that B's compile-time proof becomes D's
+   `releaseImpl`. The costs accepted are that B's compile-time proof becomes C's
    trust in an implementer law, and that a view-only adopter must supply a
    write path it never calls.
 
 7. **`fromSomeNote`, not `case` / `abort` and not bare `fromSome`.** The
-   `Optional` is inherent to D - an interface cannot name `t`, so
+   `Optional` is inherent to C - an interface cannot name `t`, so
    `setPaused` must return `Pausable`, and any implementing template
    satisfies that type. This was confirmed against the compiler: a template
    whose `setPaused` returns a different implementer's value compiles
