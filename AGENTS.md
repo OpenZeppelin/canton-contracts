@@ -77,11 +77,13 @@ DAML_PACKAGE=experiments/test/allocation-request-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/pausable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm damlc lint
+DAML_PACKAGE=examples/tokenCIP112/trading dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/allocation-request-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/pausable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm test --all --show-coverage
+DAML_PACKAGE=examples/tokenCIP112/trading dpm test
 scripts/check-sandbox.sh
 ```
 

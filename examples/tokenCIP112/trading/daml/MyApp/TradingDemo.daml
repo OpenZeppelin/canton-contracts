@@ -1,0 +1,281 @@
+-- | Integration demo for `openzeppelin-tokenCIP112-v1` and
+-- `openzeppelin-allocation-request-v1`, driven through the Token Standard V2
+-- interfaces the way a wallet or settlement app drives any compliant registry.
+--
+-- Three scripts: `demoCreateToken` launches a token from the DAR — the
+-- intended consumption model; `demoDvpSettlement` runs an OTC
+-- delivery-versus-payment trade; `demoIteratedSettlement` runs the
+-- exchange-deposit flow of CIP-0112 iterated settlement. Each includes its
+-- failing paths.
+module MyApp.TradingDemo where
+
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.List (sort)
+import DA.TextMap qualified as TextMap
+import DA.Time (days, hours, time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.AllocationRequestV2 qualified as AllocationRequestV2
+import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide, nonIteratedAllocation)
+
+import OpenZeppelin.AllocationRequestV1
+import OpenZeppelin.TokenCIP112V1.Holding
+import OpenZeppelin.TokenCIP112V1.Registry
+
+t0, t1, t2 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+t1 = time (date 2026 Jan 1) 0 10 0
+t2 = time (date 2026 Jan 1) 0 20 0
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+data App = App with
+    admin : Party
+    exchange : Party
+    alice : Party
+    bob : Party
+    rulesCid : ContractId TokenRules
+    rulesDisclosure : Disclosure
+    settlement : AllocationV2.SettlementInfo
+
+-- | Launching a token IS the setup: the issuer consumes the DAR and creates
+-- one `TokenRules` contract — the registry wallets discover and receive as an
+-- explicit disclosure. New instruments under it are just fresh instrument ids;
+-- no further deployment.
+setup : Script App
+setup = do
+  admin <- allocateParty "admin"
+  exchange <- allocateParty "exchange"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  setTime t1
+  rulesCid <- submit admin do
+    createCmd TokenRules with
+      admin
+      maxTTL = days 90
+      lockGrace = hours 1
+  Some rulesDisclosure <- queryDisclosure @TokenRules admin rulesCid
+  pure App with
+    admin; exchange; alice; bob; rulesCid; rulesDisclosure
+    settlement = AllocationV2.SettlementInfo with
+      executors = [exchange]
+      id = "trade-1"
+      cid = None
+      meta = emptyMetadata
+
+-- | Issue holdings through the registry's evented mint path, so the supply
+-- change is visible to token-standard history parsers.
+mint : App -> Party -> Text -> Decimal -> Script (ContractId TokenHolding)
+mint App{..} owner instrumentId amount =
+  submit (actAs [admin, owner] <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Mint with
+      account = basicAccount owner
+      instrumentId
+      amount
+      reason = "demo mint"
+
+mkLeg : Text -> Party -> Party -> Text -> Decimal -> AllocationV2.TransferLeg
+mkLeg legId sender receiver instrumentId amount = AllocationV2.TransferLeg with
+  transferLegId = legId
+  sender = basicAccount sender
+  receiver = basicAccount receiver
+  amount
+  instrumentId
+  meta = emptyMetadata
+
+mkSpec
+  : App -> Party -> [AllocationV2.TransferLegSide] -> Optional (TextMap.TextMap Decimal)
+  -> AllocationV2.AllocationSpecification
+mkSpec App{..} authorizer sides reserve = AllocationV2.AllocationSpecification with
+  admin
+  authorizer = basicAccount authorizer
+  transferLegSides = sides
+  settlementDeadline = Some t2
+  nextIterationFunding = reserve
+  committed = False
+  meta = emptyMetadata
+
+reserveTok : Decimal -> Optional (TextMap.TextMap Decimal)
+reserveTok amount = Some (TextMap.fromList [("TOK", amount)])
+
+finalized
+  : ContractId AllocationV2.Allocation -> [AllocationV2.TransferLegSide]
+  -> Optional (TextMap.TextMap Decimal) -> AllocationV2.FinalizedAllocation
+finalized allocationCid extraTransferLegSides nextIterationFunding =
+  AllocationV2.FinalizedAllocation with allocationCid; extraTransferLegSides; nextIterationFunding
+
+completedCid
+  : AllocationInstructionV2.AllocationInstructionResult
+  -> Script (ContractId AllocationV2.Allocation)
+completedCid result = case result.output of
+  AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
+  other -> abort ("expected completed allocation, got: " <> show other)
+
+allocateCmd
+  : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId TokenHolding]
+  -> Commands AllocationInstructionV2.AllocationInstructionResult
+allocateCmd App{..} trader spec inputs =
+  exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+    AllocationInstructionV2.AllocationFactory_Allocate with
+      settlement
+      allocation = spec
+      requestedAt = t0
+      inputHoldingCids = map (toInterfaceContractId @HoldingV2.Holding) inputs
+      extraArgs = emptyExtraArgs
+      actors = [trader]
+
+-- | The trader funds an allocation directly through the standard factory.
+allocate
+  : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId TokenHolding]
+  -> Script (ContractId AllocationV2.Allocation)
+allocate app trader spec inputs = do
+  result <- submit (actAs trader <> discloseMany [app.rulesDisclosure])
+    (allocateCmd app trader spec inputs)
+  completedCid result
+
+-- | The exchange requests an allocation; the trader's wallet accepts the
+-- request and funds the allocation in a single transaction — the batching the
+-- request package is designed for.
+requestAcceptAndAllocate
+  : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId TokenHolding]
+  -> Script (ContractId AllocationV2.Allocation)
+requestAcceptAndAllocate app@App{..} trader spec inputs = do
+  reqCid <- submit (actAs exchange) do
+    createCmd TokenAllocationRequest with
+      settlement
+      allocations = [spec]
+      requestedAt = t0
+      settleAt = Some t1
+  let acceptCmd = exerciseCmd (toInterfaceContractId @AllocationRequestV2.AllocationRequest reqCid)
+        AllocationRequestV2.AllocationRequest_Accept with
+          actors = [trader]
+          extraArgs = emptyExtraArgs
+  result <- submit (actAs trader <> discloseMany [rulesDisclosure])
+    (acceptCmd *> allocateCmd app trader spec inputs)
+  completedCid result
+
+settleBatchCmd
+  : App -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation]
+  -> Commands AllocationV2.SettlementFactory_SettleBatchResult
+settleBatchCmd App{..} legs finalizedAllocs =
+  exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+    AllocationV2.SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = legs
+      allocations = finalizedAllocs
+      actors = [exchange]
+      extraArgs = emptyExtraArgs
+
+settleBatch
+  : App -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation]
+  -> Script AllocationV2.SettlementFactory_SettleBatchResult
+settleBatch app legs finalizedAllocs =
+  submit (actAs app.exchange <> discloseMany [app.rulesDisclosure])
+    (settleBatchCmd app legs finalizedAllocs)
+
+settledNext : AllocationV2.AllocationResult -> Script (Optional (ContractId AllocationV2.Allocation))
+settledNext result = case result.output of
+  AllocationV2.AllocationResult_Settled cid -> pure cid
+  other -> abort ("expected settled allocation, got: " <> show other)
+
+-- | Holding amounts (locked or not) per instrument, sorted for assertions.
+balanceOf : Party -> Text -> Script [Decimal]
+balanceOf owner instrumentId = do
+  holdings <- query @TokenHolding owner
+  pure (sort [ h.holding.amount | (_, h) <- holdings
+             , h.holding.account.owner == Some owner
+             , h.holding.instrumentId.id == instrumentId ])
+
+-- | The intended consumption model: consume the DAR, create one `TokenRules`
+-- contract, and the token is live. A second instrument is just another id
+-- minted under the same registry.
+demoCreateToken : Script ()
+demoCreateToken = do
+  app@App{..} <- setup
+  _ <- mint app alice "TOK" 100.0
+  balanceOf alice "TOK" >>= (=== [100.0])
+  _ <- mint app bob "USDX" 50.0
+  balanceOf bob "USDX" >>= (=== [50.0])
+
+-- | OTC delivery-versus-payment: alice sells 10 TOK to bob for 40 USDX, both
+-- instruments under one registry, settled atomically by the exchange.
+demoDvpSettlement : Script ()
+demoDvpSettlement = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice "TOK" 15.0
+  bobUsd <- mint app bob "USDX" 50.0
+
+  let legTok = mkLeg "leg-tok" alice bob "TOK" 10.0
+      legUsd = mkLeg "leg-usd" bob alice "USDX" 40.0
+      aliceSpec = mkSpec app alice [senderSide legTok, receiverSide legUsd] None
+      bobSpec = mkSpec app bob [receiverSide legTok, senderSide legUsd] None
+
+  -- One request per trader; each accepts and funds in one transaction. Only
+  -- net debits are locked: alice's 5 TOK change returns immediately.
+  aliceAllocCid <- requestAcceptAndAllocate app alice aliceSpec [aliceTok]
+  bobAllocCid <- requestAcceptAndAllocate app bob bobSpec [bobUsd]
+
+  -- FAILING: without the factory's admin-signed proof even the settle
+  -- choice's own default controllers cannot settle an allocation directly,
+  -- so the exact-cover check cannot be bypassed.
+  submitMustFail (actAs [admin, exchange]) do
+    exerciseCmd aliceAllocCid AllocationV2.Allocation_Settle with
+      actors = [admin, exchange]
+      extraTransferLegSides = []
+      nextIterationFunding = None
+      extraArgs = emptyExtraArgs
+
+  -- FAILING: a batch whose legs are not exactly covered by the presented
+  -- allocations is refused (bob's authorization is missing here).
+  submitMustFail (actAs exchange <> discloseMany [rulesDisclosure])
+    (settleBatchCmd app [legTok, legUsd] [nonIteratedAllocation aliceAllocCid])
+
+  -- HAPPY: the full batch settles both legs atomically.
+  _ <- settleBatch app [legTok, legUsd]
+    (map nonIteratedAllocation [aliceAllocCid, bobAllocCid])
+  balanceOf alice "TOK" >>= (=== [5.0])
+  balanceOf alice "USDX" >>= (=== [40.0])
+  balanceOf bob "TOK" >>= (=== [10.0])
+  balanceOf bob "USDX" >>= (=== [10.0])
+
+-- | Exchange-deposit flow on iterated settlement: deposits reserve funding
+-- with no legs, the exchange specifies fills per iteration up to the reserve,
+-- proceeds roll into successor deposits, and a settle with no reservation
+-- releases everything unlocked.
+demoIteratedSettlement : Script ()
+demoIteratedSettlement = do
+  app@App{..} <- setup
+  aliceInput <- mint app alice "TOK" 100.0
+  aliceDep <- allocate app alice (mkSpec app alice [] (reserveTok 100.0)) [aliceInput]
+  -- Bob reserves nothing and only receives fills.
+  bobDep <- allocate app bob (mkSpec app bob [] (Some TextMap.empty)) []
+
+  -- FAILING: the exchange cannot reserve more than the settlement proceeds
+  -- (100 locked minus the 30 fill leaves 70, less than the requested 80).
+  let fill1 = mkLeg "fill-1" alice bob "TOK" 30.0
+  submitMustFail (actAs exchange <> discloseMany [rulesDisclosure])
+    (settleBatchCmd app [fill1]
+      [ finalized aliceDep [senderSide fill1] (reserveTok 80.0)
+      , finalized bobDep [receiverSide fill1] None ])
+
+  -- HAPPY: first fill; both sides roll into successor deposits.
+  r1 <- settleBatch app [fill1]
+    [ finalized aliceDep [senderSide fill1] (reserveTok 70.0)
+    , finalized bobDep [receiverSide fill1] (reserveTok 30.0) ]
+  [Some aliceDep2, Some bobDep2] <- mapA settledNext r1.allocationSettleResults
+
+  -- HAPPY: the second fill ends both chains; every balance is released
+  -- unlocked.
+  let fill2 = mkLeg "fill-2" bob alice "TOK" 5.0
+  r2 <- settleBatch app [fill2]
+    [ finalized aliceDep2 [receiverSide fill2] None
+    , finalized bobDep2 [senderSide fill2] None ]
+  [None, None] <- mapA settledNext r2.allocationSettleResults
+  balanceOf alice "TOK" >>= (=== [75.0])
+  balanceOf bob "TOK" >>= (=== [25.0])

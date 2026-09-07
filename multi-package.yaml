@@ -14,3 +14,4 @@ packages:
   - experiments/test/pausable-v1
   - experiments/test/tokenCIP112-v1
   - test/placeholder
+  - examples/tokenCIP112/trading

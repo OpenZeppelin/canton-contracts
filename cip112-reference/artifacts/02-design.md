@@ -21,8 +21,10 @@ endpoint server, and has a fully compliant token without writing Daml. The core 
 V2-native implementation with V1 compatibility via the upstream
 `splice-token-standard-utils` shims, a single internal settle seam through which every
 holding create/archive flows, and a single fixed account authorization policy
-(owner-OR-provider). Customization beyond the deploy-time knobs is fork-and-adapt,
-kept compliant by a vendored-source conformance suite.
+(owner-OR-provider). Consumption is import-the-DAR: every issuer-facing knob is a
+deploy-time parameter, and customization beyond those knobs is out of scope — new
+semantics ship as future versions of this package, not as consumer edits. A
+vendored-source conformance suite verifies the implementation against the standard.
 
 ## Toolchain
 
@@ -62,15 +64,19 @@ templates are ours — upstream ships none intended for production.
 
 ## Consumption Model
 
-**Primary: deploy-as-is.** Every issuer-facing knob is a field, not a code edit:
-`admin : Party`, `instrumentId : Text`, `maxInstructionTtl : RelTime` (all on
-`Registry`, immutable after creation), plus static off-ledger metadata (name, symbol,
-decimals, `supportedApis`). One uploaded DAR can serve many issuers (Registry is
-parameterized, one contract per instrument).
+**The model: import the DAR, parameterize at deploy time.** Consumers take the
+compiled DAR as-is and create tokens with their own parameters. Every issuer-facing
+knob is a field, not a code edit: `admin : Party`, `instrumentId : Text`,
+`maxInstructionTtl : RelTime` (all on `Registry`, immutable after creation), plus
+static off-ledger metadata (name, symbol, decimals, `supportedApis`). One uploaded
+DAR can serve many issuers and many instruments (Registry is parameterized, one
+contract per instrument).
 
-**Secondary: fork-and-adapt.** Daml has no template inheritance or override —
-changing semantics (KYC gates, fees, different account policies, pause) means editing
-the source. The conformance suite is the contract that keeps forks compliant.
+**No source-modification path.** Daml has no template inheritance or override, and
+this project does not support editing the source: semantics changes (KYC gates, fees,
+different account policies, pause) arrive as future versions of this package, not as
+consumer forks. The design consequence is that the deploy-time parameter set and the
+fixed policies must be right for the target issuer population out of the box.
 
 **Composition** (third parties importing the package to orchestrate our templates
 from their own workflow contracts) works by construction and needs no design support.
@@ -101,9 +107,10 @@ Production package: openzeppelin-token-cip112-v2  (namespace OpenZeppelin.Token.
 
 Data-dependencies: the pinned upstream DARs listed under Toolchain.
 
-Test/conformance package (never released, vendored-source layout consumers copy):
-- Conformance.Adapter      — RegistryApi-style typeclass: the seam a fork implements
-                             (allocate admin, create their factory, serve choice contexts)
+Test/conformance package (never released; internal quality gate):
+- Conformance.Adapter      — RegistryApi-style typeclass seam decoupling the suite from
+                             our templates (allocate admin, create the factory, serve
+                             choice contexts)
 - Conformance.Behaves      — behavesLikeCIP0112* suites (transfer, allocation, settlement,
                              account lifecycle, V1 compatibility)
 - Conformance.Regressions  — V2_VALIDATION bug history + CertiK's six classes as named tests
@@ -515,7 +522,7 @@ nothing assumes co-hosting.
 | Constructor args | Deploy-time fields + static off-ledger metadata |
 | `_mint` + your access control | `Registry_Mint`, controller = your admin party |
 | Wallet/DEX integration via the ERC-20 ABI | Via CIP-0112 interfaces + your off-ledger endpoints — integrators never see this package |
-| Custom behavior → override hooks | Custom behavior → fork the source; conformance suite keeps the fork compliant |
+| Custom behavior → override hooks | No override hooks: issuers pick deploy-time parameters only; new semantics ship as future package versions |
 
 Operating a CIP-0112 token additionally means running the off-ledger endpoint server
 (standard-inherent; a last-step deliverable of this project — the Daml side is shaped
@@ -648,11 +655,13 @@ private-asset default).
 
 ## Design Decisions Log
 
-1. **Deploy-as-is primary, fork-and-adapt secondary.** Daml has no template
-   inheritance — import-and-override does not exist. Every issuer knob is a field
-   (`admin`, `instrumentId`, `maxInstructionTtl`); semantics changes are forks kept
-   compliant by the conformance suite. Standing tenet adopted mid-design: **where two
-   compliant options exist, ship the leaner one.**
+1. **Import-the-DAR is the sole consumption model.** Consumers import the compiled
+   DAR and create tokens with their own parameters; Daml has no template
+   inheritance — import-and-override does not exist — and source edits are not a
+   supported path. Every issuer knob is a field (`admin`, `instrumentId`,
+   `maxInstructionTtl`); semantics changes ship as future versions of this package.
+   Standing tenet adopted mid-design: **where two compliant options exist, ship the
+   leaner one.**
 2. **V1 compatibility via V1-on-V2 shims** (TestTokenV2 direction) — dev-confirmed;
    the forward-looking direction, and the utils package provides the shims.
 3. **SDK 3.5.1 / LF 2.3 with contract keys.** Corrected mid-design: Canton 3.5
@@ -665,8 +674,9 @@ private-asset default).
    would be voluntary — direct `create` would bypass it.) Why routing matters:
    (a) reserved-id protection — without it anyone could claim `cip-112/mint` and
    poison event attribution (CertiK #4); (b) duplicate suppression — non-unique keys
-   can't dedup, the opening choice + admin's index can; (c) a single policy hook for
-   forks (KYC, blocklist); (d) off-ledger index consistency. Routing adds admin's
+   can't dedup, the opening choice + admin's index can; (c) a single chokepoint where
+   a future package version can add opening policies (KYC, blocklist); (d) off-ledger
+   index consistency. Routing adds admin's
    process AND signature to creation, but admin cannot forge accounts (owner/provider
    must sign via the flow).
    **Dedup layering (resolved 2026-09-01):** hard on-ledger uniqueness is impossible
@@ -676,8 +686,9 @@ private-asset default).
    collide with themselves (self-inflicted, third parties can't create it);
    `lookupNByKey` catches all honest/sequential duplicates; and the admin's backend
    index is authoritative — it refuses to resolve duplicated ids off-ledger, making
-   them operationally inert. Hard-uniqueness path for forks that need it: an
-   admin-issued one-shot `OpenAccountTicket` (backend as sequencing point).
+   them operationally inert. Documented hard-uniqueness path, should a future package
+   version need it: an admin-issued one-shot `OpenAccountTicket` (backend as
+   sequencing point).
 5. **Single fixed account policy: owner-OR-provider** (dev decision). Either account
    party alone initiates and accepts. Provider-less accounts degrade to owner-only =
    V1 `basicAccount` semantics exactly. No generic policy machinery (TestTokenV2's
@@ -698,9 +709,10 @@ private-asset default).
    pattern; `CallSource` archival discipline on both.
 9. **Pause dropped entirely** (dev decision, simplicity) — and `RegistryConfig` with
    it: pause was its only content, so the seam needs no config fetch at all. Choice
-   contexts become near-empty; off-ledger `paused` reports `false`. Known
-   reintroduction path for forks: a seam-checked, admin-signed config contract
-   fetched by key (positive fetch = validated + fresh; never existence-as-state).
+   contexts become near-empty; off-ledger `paused` reports `false`. Documented
+   reintroduction path for a future package version: a seam-checked, admin-signed
+   config contract fetched by key (positive fetch = validated + fresh; never
+   existence-as-state).
 10. **Mint/burn ride the standard transfer flow** against virtual
     `cip-112/mint`/`cip-112/burn` accounts (TestTokenV2 pattern): one seam path for
     all value movement, uniform events, receiver consent to mint for free. Mint is
@@ -717,16 +729,23 @@ private-asset default).
     single-registry model and required for thin off-ledger serving. Stated property.
 14. **Conformance suite: vendored source with a typeclass adapter seam** (dev choice
     of option a) — the upstream `RegistryApi` pattern; compiled-DAR distribution is
-    blocked upstream (splice TODO #594). Our own Stage 5 tests are the suite's first
-    consumer.
+    blocked upstream (splice TODO #594). Under the import-the-DAR consumption model
+    the suite is an internal quality gate that verifies this implementation against
+    the standard — our own Stage 5 tests are its first and primary consumer. The
+    adapter seam is kept because it decouples the suite from our templates and leaves
+    it shareable should the upstream distribution blocker ever lift.
 
 ## Out of Scope
 
 - **Pause / on-ledger pause enforcement** — dropped for simplicity (dev decision);
   off-ledger `paused` reports `false`. Reintroduction path documented in Decision #9.
+- **Fork-and-adapt customization** — consumers import the compiled DAR and
+  parameterize at deploy time; editing the source is not a supported consumption
+  path and this project does not maintain compliance guarantees for modified copies.
 - **The entire extension catalogue** (cap, freeze/blocklist, role-gated mint roles,
   allowance/CIP-0086) — no extensions in this design; allowance explicitly rejected
-  by dev. Forks add these by editing the seam they own.
+  by dev. If ever offered, extensions arrive as future versions of this package
+  built on the seam — not as consumer edits.
 - **Generic account-policy machinery and joint-approval policies** — one fixed
   OR-policy only (Decision #5).
 - **On-ledger uniqueness of account ids** — impossible with non-unique LF 2.3 keys;
