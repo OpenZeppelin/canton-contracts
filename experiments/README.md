@@ -16,6 +16,7 @@ must satisfy.
 | Component | Package | Public module | Solidity analogue |
 |---|---|---|---|
 | [Access Control](access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | `AccessControl`, `AccessControlDefaultAdminRules` |
+| [Allocation Request](token/allocation-request-v1/) | `openzeppelin-allocation-request-v1` | `OpenZeppelin.AllocationRequestV1` | none |
 | [Ownable](access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | `Ownable2Step` |
 | [Pausable](security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | `Pausable` |
 | [Token CIP-0112](token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | `ERC20` (partial) |

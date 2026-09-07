@@ -1,0 +1,168 @@
+-- | Tests for the allocation-request package
+-- (experiments/token/allocation-request-v1), driven through the standard
+-- `AllocationRequestV2.AllocationRequest` interface.
+module OpenZeppelin.AllocationRequestV1Test where
+
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.Map qualified as Map
+import DA.Time (time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationRequestV2 qualified as AllocationRequestV2
+import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide)
+
+import OpenZeppelin.AllocationRequestV1
+
+t0, t1, t2 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+t1 = time (date 2026 Jan 1) 0 10 0
+t2 = time (date 2026 Jan 1) 0 20 0
+
+data Scenario = Scenario with
+    admin : Party
+    app : Party
+    alice : Party
+    bob : Party
+    settlement : AllocationV2.SettlementInfo
+    legAliceToBob : AllocationV2.TransferLeg
+    legBobToAlice : AllocationV2.TransferLeg
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+mkTransferLeg : Text -> Party -> Party -> Decimal -> AllocationV2.TransferLeg
+mkTransferLeg legId sender receiver amount = AllocationV2.TransferLeg with
+  transferLegId = legId
+  sender = basicAccount sender
+  receiver = basicAccount receiver
+  amount
+  instrumentId = "TOK"
+  meta = emptyMetadata
+
+mkAllocationSpec : Party -> Party -> [AllocationV2.TransferLegSide] -> AllocationV2.AllocationSpecification
+mkAllocationSpec admin authorizer sides = AllocationV2.AllocationSpecification with
+  admin
+  authorizer = basicAccount authorizer
+  transferLegSides = sides
+  settlementDeadline = Some t2
+  nextIterationFunding = None
+  committed = False
+  meta = emptyMetadata
+
+setup : Script Scenario
+setup = do
+  admin <- allocateParty "admin"
+  app <- allocateParty "app"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  let settlement = AllocationV2.SettlementInfo with
+        executors = [app]
+        id = "settlement-1"
+        cid = None
+        meta = emptyMetadata
+  pure Scenario with
+    admin; app; alice; bob; settlement
+    legAliceToBob = mkTransferLeg "leg-1" alice bob 10.0
+    legBobToAlice = mkTransferLeg "leg-2" bob alice 4.0
+
+mkRequest : Scenario -> Party -> [AllocationV2.TransferLegSide] -> Script (ContractId TokenAllocationRequest)
+mkRequest Scenario{..} authorizer sides =
+  submit (actAs app) do
+    createCmd TokenAllocationRequest with
+      settlement
+      allocations = [mkAllocationSpec admin authorizer sides]
+      requestedAt = t0
+      settleAt = Some t1
+
+-- | Allocation requests: one request per authorizer. Alice accepts hers, Bob
+-- rejects his, and the app withdraws a re-issued one. A non-authorizer cannot
+-- accept.
+testAllocationRequestLifecycle : Script ()
+testAllocationRequestLifecycle = do
+  s@Scenario{..} <- setup
+  let aliceSides = [senderSide legAliceToBob, receiverSide legBobToAlice]
+  let bobSides = [receiverSide legAliceToBob, senderSide legBobToAlice]
+  aliceReqCid <- mkRequest s alice aliceSides
+  bobReqCid <- mkRequest s bob bobSides
+
+  -- Wallets see who can act: any single account party of the authorizer.
+  Some aliceReqView <- queryInterfaceContractId @AllocationRequestV2.AllocationRequest alice
+    (toInterfaceContractId aliceReqCid)
+  Map.lookup AllocationRequestV2.ARA_Accept aliceReqView.availableActions === Some [[alice]]
+
+  -- The app is not the authorizer, so it cannot accept on Alice's behalf.
+  submitMustFail (actAs app) do
+    exerciseCmd (toInterfaceContractId @AllocationRequestV2.AllocationRequest aliceReqCid)
+      AllocationRequestV2.AllocationRequest_Accept with
+        actors = [app]
+        extraArgs = emptyExtraArgs
+
+  -- Alice accepts, consuming the request. Accepting is a signal; creating the
+  -- requested allocations is a separate registry step wallets may batch into
+  -- the accepting transaction.
+  _ <- submit (actAs alice) do
+    exerciseCmd (toInterfaceContractId @AllocationRequestV2.AllocationRequest aliceReqCid)
+      AllocationRequestV2.AllocationRequest_Accept with
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  aliceReqAfter <- queryContractId app aliceReqCid
+  aliceReqAfter === None
+
+  -- Bob rejects his request, consuming it.
+  _ <- submit (actAs bob) do
+    exerciseCmd (toInterfaceContractId @AllocationRequestV2.AllocationRequest bobReqCid)
+      AllocationRequestV2.AllocationRequest_Reject with
+        actors = [bob]
+        extraArgs = emptyExtraArgs
+  bobReqAfter <- queryContractId app bobReqCid
+  bobReqAfter === None
+
+  -- The executors jointly withdraw a request they no longer need.
+  bobReqCid2 <- mkRequest s bob bobSides
+  _ <- submit (actAs app) do
+    exerciseCmd (toInterfaceContractId @AllocationRequestV2.AllocationRequest bobReqCid2)
+      AllocationRequestV2.AllocationRequest_Withdraw with
+        actors = [app]
+        extraArgs = emptyExtraArgs
+  bobReq2After <- queryContractId app bobReqCid2
+  bobReq2After === None
+
+-- | A request spanning two authorizers is rejected at creation: accept/reject
+-- consume the whole request, so it can only speak for one authorizer.
+testMultiAuthorizerRequestRejected : Script ()
+testMultiAuthorizerRequestRejected = do
+  Scenario{..} <- setup
+  submitMustFail (actAs app) do
+    createCmd TokenAllocationRequest with
+      settlement
+      allocations =
+        [ mkAllocationSpec admin alice [senderSide legAliceToBob]
+        , mkAllocationSpec admin bob [senderSide legBobToAlice]
+        ]
+      requestedAt = t0
+      settleAt = Some t1
+
+-- | Temporal coherence is enforced at creation: an allocation settlement
+-- deadline before the request time or the expected settlement time can never
+-- be satisfied and is rejected.
+testIncoherentDeadlinesRejected : Script ()
+testIncoherentDeadlinesRejected = do
+  s@Scenario{..} <- setup
+  let spec = mkAllocationSpec admin alice [senderSide legAliceToBob]
+  -- Deadline before requestedAt.
+  submitMustFail (actAs app) do
+    createCmd TokenAllocationRequest with
+      settlement
+      allocations = [spec with settlementDeadline = Some t0]
+      requestedAt = t1
+      settleAt = None
+  -- settleAt after the allocation deadline.
+  submitMustFail (actAs app) do
+    createCmd TokenAllocationRequest with
+      settlement
+      allocations = [spec with settlementDeadline = Some t1]
+      requestedAt = t0
+      settleAt = Some t2

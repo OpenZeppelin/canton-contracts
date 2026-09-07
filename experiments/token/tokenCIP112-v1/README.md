@@ -2,8 +2,7 @@
 
 A CIP-0112-compliant token implementation built against the Token Standard V2
 (TSv2) interfaces. It provides holdings, transfer instructions, allocations,
-allocation requests, registry rules, event logging, and the D1/D2 compliance
-hooks (node attestation and lawful-process seizure).
+registry rules, and event logging.
 
 | Field | Value |
 |---|---|
@@ -27,16 +26,10 @@ hooks (node attestation and lawful-process seizure).
   lifecycle, including accept, reject, withdraw, and expiry paths.
 - `TokenAllocation` and `BatchSettlementAuthorization` (`Allocation`): ready-to-
   settle allocations backed by locked holdings, with exact-cover batch
-  settlement.
-- `TokenAllocationRequest` (`AllocationRequest`): the app-side request that a
-  wallet turns into an allocation.
-- `TokenAllowance` (`Allowance`): a CIP-86 spending budget with ERC-20
-  `approve` and `transferFrom` semantics, spent through the registry.
+  settlement and CIP-0112 iterated settlement.
 - `TokenRules` (`Registry`): the registry rules contract implementing the TSv2
   transfer, allocation, and settlement factories.
 - `TokenEventLog` (`Base`): the holdings-change event-log host.
-- `TrustedAttesterRegistry`, `ComplianceAttestation`, and `SeizureOrder` (`D1`):
-  D1 node-compliance attestation and the D2 lawful-process seizure authority.
 
 Each public module implements the matching upstream `Splice.Api.Token.*V2`
 interfaces. The package defines no Daml interfaces or exceptions of its own, so
@@ -47,36 +40,21 @@ it ships as a single implementation package.
 - The instrument admin and the account parties jointly maintain holdings.
 - Wallets act through the TSv2 interface choices; the choice bodies validate
   identity, funding, and expiry before they move value.
-- The admin configures D1 attestation and D2 seizure through registry hooks;
-  a seizure sweep requires a non-admin `SeizureOrder` authority.
-- The owner approves an allowance through the registry; the spender draws on
-  it through the registry, which applies the live configuration. A pull into
-  the spender's own account completes in one step; any other receiver accepts
-  a pending instruction. Each spend stamps the spender party into the
-  transfer metadata under `openzeppelin.com/spender`, so the emitted events
-  and any pending instruction name who drew on the budget.
-- Every spend needs explicit disclosure of the owner's funding holdings to
-  the spender's submission. The owner's wallet or the registry admin's
-  automation supplies it per spend: a partial spend returns the owner's
-  change at a new holding contract id, so a disclosure cannot be reused.
-- The owner revokes an allowance through any of three paths, all controlled
-  by the owner's account parties alone: `TokenAllowance_Revoke` archives the
-  budget; `TokenAllowance_SetRemaining` with zero archives it (a positive
-  value recreates it at a new contract id); `TokenRules_ApproveAllowance`
-  with an amount of zero and the current contract id archives it, mirroring
-  ERC-20 `approve(spender, 0)`. The admin cannot revoke. A spend consumes
-  the allowance and recreates the unspent balance at a new contract id;
-  wallets track the returned id across spends and adjustments.
+- An allocation created with `nextIterationFunding` set enables iterated
+  settlement: the executors supply extra transfer legs per settlement
+  iteration, bounded by the locked reserve plus incoming credits, and may
+  reserve funding for a successor allocation created in the same transaction.
+  A settle with no reservation ends the chain and releases all proceeds
+  unlocked. Successors carry the original settlement deadline and commitment,
+  clear the leg set, and bump the storage expiry using the registry
+  configuration snapshotted at allocation time. The authorizer withdraws a
+  successor like any other allocation.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 
 ## Standards conformance
 
-The package implements Token Standard V2 (CIP-0112) and builds the
-[CIP-0086](https://github.com/global-synchronizer-foundation/cips/blob/main/cip-0086/cip-0086.md)
-allowance semantics on it. CIP-86 cites CIP-56 as the name of the Canton token
-standard, not as a version pin, and no CIP-86 mechanism depends on a
-V1-specific interface shape.
+The package implements Token Standard V2 (CIP-0112).
 
 The V2 interface hierarchy is parallel to V1: the two share only
 `splice-api-token-metadata-v1`, so V1 tooling cannot see this token. When a
@@ -96,8 +74,8 @@ DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm build
 ## Sandbox validation
 
 `dpm test` runs the test suite on an in-memory ledger. The sandbox gate runs
-token creation, transfer, allowance, querying, and burn against a real
-static-time Canton sandbox over the Ledger API. From the repository root:
+token creation, transfer, querying, and burn against a real static-time
+Canton sandbox over the Ledger API. From the repository root:
 
 ```sh
 scripts/check-sandbox.sh
