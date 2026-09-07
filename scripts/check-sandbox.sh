@@ -127,7 +127,6 @@ fi
 SCRIPTS=(
 	sandboxMintAndQuery
 	sandboxTransferLifecycle
-	sandboxAllowanceLifecycle
 	sandboxMintAndBurn
 )
 
