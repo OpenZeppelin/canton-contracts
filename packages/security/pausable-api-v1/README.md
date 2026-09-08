@@ -247,11 +247,15 @@ ledger, so the record shows when the pause held, not which attempts it blocked.
 
 ## Compatibility
 
-The public surface is frozen. Daml interfaces are not upgradeable through Smart
-Contract Upgrade, so this package never changes `Pausable`, `PausableView`, or
-the exported functions after its first release. A breaking change ships as a
-sibling `openzeppelin-pausable-api-v2` package with module
-`OpenZeppelin.PausableV2`, and the two coexist.
+The whole package is frozen at its first upload. Daml interfaces are not
+upgradeable through Smart Contract Upgrade, and a participant rejects a second
+version of a package name whose first version defines an interface, so no
+`openzeppelin-pausable-api-v1` above the uploaded version can ever be uploaded.
+The guards, the flips, and the failure statuses ship in the same DAR and run
+from the same package ID, so they are frozen with the interface. Any change,
+including a bug fix in `markPaused`, ships as a sibling
+`openzeppelin-pausable-api-v2` package with module `OpenZeppelin.PausableV2`,
+and the two coexist.
 
 For a consumer this means:
 
@@ -261,13 +265,15 @@ For a consumer this means:
 - Your own template stays upgradeable. The interface instance is declared on
   your template, so you add fields, such as CIP-0112 `pauseInfo`, through Smart
   Contract Upgrade of your package while this package does not move.
-- A patch release of this package, if one ever ships, changes documentation or
-  metadata only. It does not change any type or function, and it is a new
-  package ID that consumers adopt by rebuilding.
+- There is no patch release. Adopting a fix means importing the sibling
+  package, rebuilding, and swapping the `interface instance` through a Smart
+  Contract Upgrade of your own package.
 
-`0.1.0` is a pre-release. Until a tagged release records the DAR in
-`dars/released/`, the package ID may change between commits, and no audit has
-been performed. See [`RELEASING.md`](../../../RELEASING.md).
+`0.1.0` is a pre-release and is not for upload to a shared ledger. Until a
+tagged release records the DAR in `dars/released/`, the package ID may change
+between commits, and no audit has been performed. The version in that first
+release is the version this package keeps for life. See
+[`RELEASING.md`](../../../RELEASING.md).
 
 ## Build
 

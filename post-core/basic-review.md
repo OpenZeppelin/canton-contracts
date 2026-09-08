@@ -197,7 +197,11 @@ two of the documents that guide that decision say the opposite.
   the same commit.
 - Decide MED-1 and MED-3 before that upload.
 
-**Status:** Open
+**Status:** Addressed. The design and README now state that the whole package,
+helpers included, is frozen at first upload and that no patch release exists.
+Design Open Question 4 is resolved: `0.1.0` is a pre-release that is never
+uploaded, and the first tagged release picks the permanent version. The
+`daml.yaml` version bump itself is left to that release.
 
 #### MED-3: Failures are `assertMsg` text; off-ledger clients cannot match a stable error id
 

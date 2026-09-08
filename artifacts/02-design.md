@@ -35,7 +35,7 @@ mixin. The state lives on the consumer's template; this package contributes the
 interface, the view, the guards, and the flips.
 
 ```text
-openzeppelin-pausable-api-v1     one package, one DAR, frozen at 1.0
+openzeppelin-pausable-api-v1     one package, one DAR, frozen at its first upload
 ```
 
 There is no sibling implementation package. `ARCHITECTURE.md` pairs
@@ -55,10 +55,15 @@ What the split freezes, and why it matters:
   part of the package that becomes a ledger artifact and the only part that pins
   a consumer to this exact package version, so it is kept as small as the design
   allows.
-- **Everything else is compile-time only.** The guards, the flips, and the error
-  constants never appear on the ledger and never affect a consumer's SCU
-  surface. Being wrong about them costs a recompile; being wrong about the
-  interface costs a migration.
+- **Everything else is frozen with it.** The guards, the flips, and the failure
+  statuses ship in the same DAR and execute from the same package id, and a
+  participant rejects a second version of a package name whose first version
+  defines an interface. So a bug in `markPaused` after upload costs the same as
+  a change to the interface: a sibling `-api-v2` package, a new DAR upload, a
+  consumer import change, and a consumer SCU release that swaps the interface
+  instance. Nothing in this package has a cheaper fix path, which is why every
+  exported function is kept minimal and tested against deliberately broken
+  implementers before the first upload.
 
 ## Module Structure
 
@@ -97,7 +102,7 @@ module OpenZeppelin.PausableV1 where
 
 import DA.Optional (fromSomeNote)
 
--- | The pause state of an implementing contract. Frozen at 1.0.
+-- | The pause state of an implementing contract. Frozen at first upload.
 data PausableView = PausableView
   with
     paused : Bool
@@ -787,7 +792,10 @@ under `spike/` and `final/`. They are not part of the repository.
    only executable statement of it. It stays in the test suite and is also
    documented on `markPaused` and in the README.
 
-4. **Package version and release identity.** `0.1.0` and unstable, or a version
-   that signals the frozen surface is final? The interface cannot change after
-   the first release that consumers build against, so the point at which the
-   package claims stability matters more here than for a template package.
+4. **Resolved: package version and release identity.** The version in the
+   first uploaded DAR is the version the package keeps for life, because no
+   later version of the same name can be uploaded. `0.1.0` therefore stays a
+   pre-release that is never uploaded to a shared ledger, and the first tagged
+   release, after audit, ships the DAR under a version that states the surface
+   is final. `RELEASING.md` records that step when it is written; MED-1 and
+   MED-3 of the basic review were decided before it.
