@@ -15,11 +15,19 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-No component has been released yet. The two components below are early-stage
-candidates under [`experiments/`](experiments/). They build and are tested in CI,
-but they will be redesigned before they move into `packages/`, and that redesign
-will change module names, template and choice signatures, and package identity.
-Read [`experiments/README.md`](experiments/README.md) before depending on any of
+No component has been released yet. One component has completed its design
+review and lives under [`packages/`](packages/); its interface is frozen and it
+builds and is tested in CI, but it has no release and no audit.
+
+| Component | Package | Public module | Status |
+|---|---|---|---|
+| [Pausable](packages/security/pausable-api-v1/) | `openzeppelin-pausable-api-v1` | `OpenZeppelin.PausableV1` | Pre-release; unaudited |
+
+Two further components are early-stage candidates under
+[`experiments/`](experiments/). They will be redesigned before they move into
+`packages/`, and that redesign will change module names, template and choice
+signatures, and package identity. Read
+[`experiments/README.md`](experiments/README.md) before depending on any of
 them.
 
 | Component | Package | Public module | Status |
@@ -55,14 +63,14 @@ dpm build --all
 To build one component independently:
 
 ```sh
-cd experiments/access/ownable-v1
+cd packages/security/pausable-api-v1
 dpm build
 ```
 
-The resulting evaluation DAR is written to:
+The resulting DAR is written to:
 
 ```text
-experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+packages/security/pausable-api-v1/.daml/dist/openzeppelin-pausable-api-v1-0.1.0.dar
 ```
 
 ## Consume a local build
@@ -75,20 +83,25 @@ dependencies:
   - daml-prim
   - daml-stdlib
 data-dependencies:
-  - ../canton-contracts/experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/pausable-api-v1/.daml/dist/openzeppelin-pausable-api-v1-0.1.0.dar
 ```
 
 ```daml
-import OpenZeppelin.OwnableV1
+import OpenZeppelin.PausableV1
 ```
+
+Each package README shows the consumer code for that component, and
+[`examples/`](examples/) holds runnable consumer projects.
 
 ## Repository layout
 
 ```text
-packages/                 Released components; empty until the first release
+packages/
+  security/               Category for emergency-stop and safety components
 test/                     Isolated component test packages
 experiments/
   access/                 Category for authorization and ownership components
+  token/                  Category for token standard components
   test/                   Isolated component test packages
 dars/
   released/               Immutable OpenZeppelin release baselines
