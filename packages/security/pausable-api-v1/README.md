@@ -188,8 +188,8 @@ choice TokenRules_Pause : ContractId TokenRules
   it go stale. Callers re-read the contract after a pause or an unpause.
 - `setPaused` is a public interface method, but it is pure: it yields a value
   and changes nothing. Creating the successor needs the implementing template's
-  signatory authority, which only a choice on that template carries, so a
-  choice on an unrelated contract cannot flip another template's flag.
+  signatory authority. A party without that authority cannot flip the flag,
+  whatever contract its choice runs on.
 
 ## Reading the flag off-ledger
 

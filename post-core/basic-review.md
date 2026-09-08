@@ -312,7 +312,8 @@ template's signatory authority. A party without that authority cannot flip the
 flag, whatever contract its choice runs on." The security property is
 unchanged; the explanation becomes accurate.
 
-**Status:** Open
+**Status:** Addressed. The README bullet and the module's authorization note
+now name signatory authority as the defence.
 
 #### INFO-2: Test gaps
 

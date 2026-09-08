@@ -133,10 +133,10 @@ data PausableView = PausableView with
 --   detail about why a pause is in force out of the implementing template's
 --   observable fields.
 -- Authorization assumptions: none. The interface confers no ability to pause.
---   The flip creates the successor contract, so it needs the implementing
---   template's signatory authority, which a choice on an unrelated contract
---   does not carry. Authorization of the flip is entirely the consumer's choice
---   to define.
+--   The flip archives the contract and creates the successor, so it needs the
+--   implementing template's signatory authority. A party without that
+--   authority cannot flip the flag, whatever contract its choice runs on.
+--   Authorization of the flip is entirely the consumer's choice to define.
 -- Archival behavior: `setPaused` is pure, and `markPaused` and `markUnpaused`
 --   touch the ledger only to fail. `pause` and `unpause` archive the contract
 --   whose id they are given and create the successor, so the consumer's flip
