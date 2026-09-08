@@ -16,6 +16,7 @@ template Vault
   where
     signatory admin
     observer holder
+    ensure balance >= 0
 
     interface instance Pausable for Vault where
       view = PausableView with paused
@@ -39,6 +40,7 @@ template Vault
       controller holder
       do
         whenNotPaused this
+        assertMsg "Vault: amount must be positive" (amount > 0)
         assertMsg "Vault: insufficient balance" (amount <= balance)
         create this with balance = balance - amount
 

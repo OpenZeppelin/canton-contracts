@@ -288,7 +288,10 @@ template Vault
 Apply the same two lines to the `Int` fixture in the test package, and give
 `Payout` an `ensure amount > 0.0`.
 
-**Status:** Open
+**Status:** Addressed. Both vaults carry `ensure balance >= 0` and refuse a
+non-positive withdrawal, and the demo shows the refusal. `Payout` carries
+`ensure amount >= 0.0` rather than `> 0.0`, because the demo's emergency drain
+legitimately pays out a zero balance after the owner has redeemed.
 
 ### Informational
 

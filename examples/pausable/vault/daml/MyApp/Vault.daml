@@ -21,6 +21,7 @@ template Payout
   where
     signatory payer
     observer recipient
+    ensure amount >= 0.0
 
 template Vault
   with
@@ -30,6 +31,7 @@ template Vault
     paused : Bool
   where
     signatory admin, owner
+    ensure balance >= 0.0
 
     -- The whole adoption cost. `paused` is a field of the contract that the
     -- gated choices already exercise, so no separate switch contract exists for
@@ -46,6 +48,7 @@ template Vault
       controller owner
       do
         Pausable.whenNotPaused this
+        assertMsg "Vault: amount must be positive" (amount > 0.0)
         assertMsg "Vault: amount exceeds balance" (amount <= balance)
         create this with balance = balance - amount
 

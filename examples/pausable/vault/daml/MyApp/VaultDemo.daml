@@ -16,8 +16,10 @@ demo = script do
   vault <- submit (actAs [admin, owner]) do
     createCmd Vault with admin, owner, balance = 100.0, paused = False
 
-  -- Unpaused, the gated choice runs.
+  -- Unpaused, the gated choice runs. A non-positive amount is refused by the
+  -- vault's own checks, which have nothing to do with pausing.
   vault <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
+  submitMustFail owner do exerciseCmd vault Vault_Withdraw with amount = -10.0
 
   -- The admin stops the vault.
   vault <- submit admin do exerciseCmd vault Vault_Pause
