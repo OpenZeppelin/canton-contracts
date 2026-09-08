@@ -18,9 +18,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   defines the `Pausable` interface with the `PausableView` view type and the
   `setPaused` method, the guards `whenNotPaused` and `whenPaused`, the pure
   read `isPaused`, the guarded flips `pause` and `unpause`, their create-free
-  halves `markPaused` and `markUnpaused`, and the failure constants
+  halves `markPaused` and `markUnpaused`, and the `FailureStatus` values
   `eEnforcedPause`, `eExpectedPause`, `eFlagNotApplied`, and
-  `eImplementerTypeMismatch`. The package defines no templates and names no
+  `eImplementerTypeMismatch`, raised with `failWithStatus` under stable
+  `openzeppelin.com/pausable-*` error ids. The package defines no templates and names no
   pause authority; the consumer's template holds the flag and writes the flip
   choice.
 

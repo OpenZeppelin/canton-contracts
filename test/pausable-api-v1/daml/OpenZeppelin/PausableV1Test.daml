@@ -2,7 +2,7 @@
 module OpenZeppelin.PausableV1Test where
 
 import DA.Assert ((===))
-import DA.Text (isInfixOf)
+import DA.Fail (FailureStatus)
 import Daml.Script
 
 import OpenZeppelin.PausableV1
@@ -24,9 +24,11 @@ setup = do
 readOf : ContractId Vault -> ContractId Pausable
 readOf = toInterfaceContractId
 
--- The guard's message travels in the submission's FailureStatus.
-isFailureWith : Text -> SubmitError -> Bool
-isFailureWith msg e = msg `isInfixOf` show e
+-- A guard failure reaches the submitter as the library's `FailureStatus`,
+-- whole: id, category, message, and metadata.
+isFailureWith : FailureStatus -> SubmitError -> Bool
+isFailureWith status (FailureStatusError actual) = actual == status
+isFailureWith _ _ = False
 
 -- The read side
 -------------------------------------------------------

@@ -192,11 +192,10 @@ unpause : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
 markUnpaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
              => t -> Update t
 
-eEnforcedPause          : Text  -- "Pausable: the contract is paused"
-eExpectedPause          : Text  -- "Pausable: the contract is not paused"
-eFlagNotApplied         : Text  -- "Pausable: the flip did not change the paused flag"
-eImplementerTypeMismatch : Text -- "Pausable: setPaused did not return the
-                                --  implementing template"
+eEnforcedPause          : FailureStatus  -- openzeppelin.com/pausable-enforced-pause
+eExpectedPause          : FailureStatus  -- openzeppelin.com/pausable-expected-pause
+eFlagNotApplied         : FailureStatus  -- openzeppelin.com/pausable-flag-not-applied
+eImplementerTypeMismatch : FailureStatus -- openzeppelin.com/pausable-implementer-type-mismatch
 ```
 
 Implementations:
@@ -204,8 +203,8 @@ Implementations:
 ```daml
 isPaused x = (view (toInterface @Pausable x)).paused
 
-whenNotPaused x = assertMsg eEnforcedPause (not (isPaused x))
-whenPaused    x = assertMsg eExpectedPause (isPaused x)
+whenNotPaused x = unless (not (isPaused x)) (failWithStatus eEnforcedPause)
+whenPaused    x = unless (isPaused x) (failWithStatus eExpectedPause)
 
 pause   x = markPaused   x >>= create
 unpause x = markUnpaused x >>= create
@@ -214,14 +213,14 @@ markPaused x = do
   whenNotPaused x
   let y = fromSomeNote eImplementerTypeMismatch
         (fromInterface (setPaused (toInterface @Pausable x) True))
-  assertMsg eFlagNotApplied (isPaused y)
+  unless (isPaused y) (failWithStatus eFlagNotApplied)
   pure y
 
 markUnpaused x = do
   whenPaused x
   let y = fromSomeNote eImplementerTypeMismatch
         (fromInterface (setPaused (toInterface @Pausable x) False))
-  assertMsg eFlagNotApplied (not (isPaused y))
+  unless (not (isPaused y)) (failWithStatus eFlagNotApplied)
   pure y
 ```
 
@@ -480,19 +479,24 @@ No `ensure` clauses - the package defines no templates.
 
 | Condition | Mechanism | Constant |
 |---|---|---|
-| gated operation attempted while paused | `assertMsg` in `whenNotPaused` | `eEnforcedPause` |
-| paused-only operation attempted while unpaused | `assertMsg` in `whenPaused` | `eExpectedPause` |
+| gated operation attempted while paused | `failWithStatus` in `whenNotPaused` | `eEnforcedPause` |
+| paused-only operation attempted while unpaused | `failWithStatus` in `whenPaused` | `eExpectedPause` |
 | `pause` when already paused | `whenNotPaused` inside `markPaused` | `eEnforcedPause` |
 | `unpause` when not paused | `whenPaused` inside `markUnpaused` | `eExpectedPause` |
-| implementer ignored the flag argument | `assertMsg` in `markPaused` / `markUnpaused` | `eFlagNotApplied` |
-| implementer returned another template | `fromSomeNote` in `markPaused` / `markUnpaused` | `eImplementerTypeMismatch` |
+| implementer ignored the flag argument | `failWithStatus` in `markPaused` / `markUnpaused` | `eFlagNotApplied` |
+| implementer returned another template | `failWithStatus` in `markPaused` / `markUnpaused` | `eImplementerTypeMismatch` |
 | caller's record update after `markPaused` clears the flag again | none - the caller owns the create | none |
 | pause authority not authorized | ledger authorization - not expressible as a check | none |
 
-`assertMsg` throughout rather than `failWithStatus`: the constants are exported
-so consumers assert on them in their own tests, and this matches the existing
-convention in `AccessControlV1` and `OwnableV1`. No user-defined exceptions -
-Daml 3 deprecates them - so no `try` / `catch` and no rollback nodes.
+`failWithStatus` throughout rather than `assertMsg`: each constant is a
+`FailureStatus` with a stable `errorId` under `openzeppelin.com/pausable-`, so
+a wallet or registry client matches the id in the `DAML_FAILURE` error instead
+of substring-matching a message, and Daml Script tests compare the whole value
+through `FailureStatusError`. The guards use `InvalidGivenCurrentSystemStateOther`
+because the ledger state decides the outcome; the two implementer-law failures
+use `InvalidIndependentOfSystemState` because no ledger state can make them
+pass. No user-defined exceptions - Daml 3 deprecates them - so no `try` /
+`catch` and no rollback nodes.
 
 **Three things nothing checks.** These are the design's known limitations and
 they belong in the package README as well as in the Invariants stage.

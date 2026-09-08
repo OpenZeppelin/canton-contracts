@@ -28,8 +28,10 @@ choice:
   template value instead of creating it, so that your choice can set sibling
   fields on it and create once.
 - `eEnforcedPause`, `eExpectedPause`, `eFlagNotApplied`, and
-  `eImplementerTypeMismatch`: the failure messages, exported so that your tests
-  assert on a constant rather than on a string.
+  `eImplementerTypeMismatch`: the failure statuses. Each is a `FailureStatus`
+  with a stable `errorId` under `openzeppelin.com/pausable-`, so an off-ledger
+  client matches the id in the `DAML_FAILURE` error, and your tests compare the
+  whole value.
 
 The package defines no templates, so it carries no ledger state of its own. The
 flag lives on the implementing template, which is what binds the switch to the
@@ -119,17 +121,23 @@ Do not call `pause` and then archive and recreate its result to change other
 fields: that is two archives and two creates in one transaction, and
 `markPaused` exists to avoid it.
 
-**4. Assert on the constants in your tests.** A gated choice that runs while
-paused fails with `eEnforcedPause`; a paused-only choice that runs while
+**4. Assert on the failure statuses in your tests.** A gated choice that runs
+while paused fails with `eEnforcedPause`; a paused-only choice that runs while
 unpaused, and `unpause` on an unpaused contract, fail with `eExpectedPause`.
 `eFlagNotApplied` and `eImplementerTypeMismatch` fire only when an interface
 instance breaks the `setPaused` rule, so a test that pauses once catches a
-mis-wired implementation before it ships.
+mis-wired implementation before it ships. Every failure is raised with
+`failWithStatus`, so Daml Script hands it back as a `FailureStatusError`:
 
 ```daml
-Left err <- trySubmit owner do exerciseCmd vault Vault_Withdraw with amount = 1.0
--- err carries eEnforcedPause
+Left (FailureStatusError status) <-
+  trySubmit owner do exerciseCmd vault Vault_Withdraw with amount = 1.0
+status === eEnforcedPause
 ```
+
+A Ledger API or JSON API client sees the same failure as a `DAML_FAILURE` error
+whose `errorId` is `openzeppelin.com/pausable-enforced-pause`. Match on that id,
+not on the message text.
 
 ## Authority and lifecycle
 

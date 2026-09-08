@@ -102,7 +102,9 @@
 -- interface and no templates. Implementations live in consuming packages.
 module OpenZeppelin.PausableV1 where
 
-import DA.Optional (fromSomeNote)
+import DA.Action (unless)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import qualified DA.TextMap as TextMap
 
 -- | Whether an implementing contract is currently paused.
 data PausableView = PausableView with
@@ -181,12 +183,12 @@ interface Pausable where
 -- >     whenNotPaused this
 -- >     create this with balance = balance - amount
 whenNotPaused : (HasToInterface t Pausable) => t -> Update ()
-whenNotPaused x = assertMsg eEnforcedPause (not (isPaused x))
+whenNotPaused x = unless (not (isPaused x)) (failWithStatus eEnforcedPause)
 
 -- | Fail unless the contract is paused. The `whenPaused` modifier.
 -- Use it on recovery choices that may run only during an incident.
 whenPaused : (HasToInterface t Pausable) => t -> Update ()
-whenPaused x = assertMsg eExpectedPause (isPaused x)
+whenPaused x = unless (isPaused x) (failWithStatus eExpectedPause)
 
 -- | `paused()` as a pure function, for a choice that branches on the flag
 -- rather than refusing to run.
@@ -236,9 +238,8 @@ markPaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
            => t -> Update t
 markPaused x = do
   whenNotPaused x
-  let y = fromSomeNote eImplementerTypeMismatch
-        (fromInterface (setPaused (toInterface @Pausable x) True))
-  assertMsg eFlagNotApplied (isPaused y)
+  y <- flipTo True x
+  unless (isPaused y) (failWithStatus eFlagNotApplied)
   pure y
 
 -- | Unpause the contract. The `_unpause()` analogue, with the same caution
@@ -262,31 +263,57 @@ markUnpaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
              => t -> Update t
 markUnpaused x = do
   whenPaused x
-  let y = fromSomeNote eImplementerTypeMismatch
-        (fromInterface (setPaused (toInterface @Pausable x) False))
-  assertMsg eFlagNotApplied (not (isPaused y))
+  y <- flipTo False x
+  unless (not (isPaused y)) (failWithStatus eFlagNotApplied)
   pure y
 
--- Error messages. The Solidity custom errors, as text, plus the two that report
--- an implementation breaking the `setPaused` law.
+-- Call `setPaused` and convert the result back to the implementing template.
+flipTo : (HasToInterface t Pausable, HasFromInterface t Pausable)
+       => Bool -> t -> Update t
+flipTo b x = case fromInterface (setPaused (toInterface @Pausable x) b) of
+  Some y -> pure y
+  None -> failWithStatus eImplementerTypeMismatch
+
+-- Failure statuses. The Solidity custom errors, plus the two that report an
+-- implementation breaking the `setPaused` law. Each is a `FailureStatus`
+-- raised with `failWithStatus`, so a rejected submission reaches the Ledger
+-- API as `DAML_FAILURE` with the `errorId` below, and a client matches on the
+-- id rather than on the message text. In Daml Script, `trySubmit` returns it
+-- as `FailureStatusError`, and `tryFailureStatus` returns it directly.
 
 -- | Raised when an operation requires the contract to be unpaused.
-eEnforcedPause : Text
-eEnforcedPause = "Pausable: the contract is paused"
+-- `errorId`: `openzeppelin.com/pausable-enforced-pause`.
+eEnforcedPause : FailureStatus
+eEnforcedPause = pausableFailure "enforced-pause" InvalidGivenCurrentSystemStateOther
+  "Pausable: the contract is paused"
 
 -- | Raised when an operation requires the contract to be paused.
-eExpectedPause : Text
-eExpectedPause = "Pausable: the contract is not paused"
+-- `errorId`: `openzeppelin.com/pausable-expected-pause`.
+eExpectedPause : FailureStatus
+eExpectedPause = pausableFailure "expected-pause" InvalidGivenCurrentSystemStateOther
+  "Pausable: the contract is not paused"
 
 -- | Raised when a flip did not leave the flag in the state it asked for,
 -- because `setPaused` ignored its argument or set a field the view does not
 -- read. It exists so that a mis-wired implementation
 -- fails loudly instead of yielding a pause that silently does not pause, which
 -- is the fail-open direction. It cannot fire against a correct implementation.
-eFlagNotApplied : Text
-eFlagNotApplied = "Pausable: the flip did not change the paused flag"
+-- `errorId`: `openzeppelin.com/pausable-flag-not-applied`.
+eFlagNotApplied : FailureStatus
+eFlagNotApplied = pausableFailure "flag-not-applied" InvalidIndependentOfSystemState
+  "Pausable: the flip did not change the paused flag"
 
 -- | Raised when `setPaused` returned an implementing template other than
 -- its own.
-eImplementerTypeMismatch : Text
-eImplementerTypeMismatch = "Pausable: setPaused did not return the implementing template"
+-- `errorId`: `openzeppelin.com/pausable-implementer-type-mismatch`.
+eImplementerTypeMismatch : FailureStatus
+eImplementerTypeMismatch = pausableFailure "implementer-type-mismatch"
+  InvalidIndependentOfSystemState
+  "Pausable: setPaused did not return the implementing template"
+
+pausableFailure : Text -> FailureCategory -> Text -> FailureStatus
+pausableFailure name category message = FailureStatus with
+  errorId = "openzeppelin.com/pausable-" <> name
+  category
+  message
+  meta = TextMap.empty
