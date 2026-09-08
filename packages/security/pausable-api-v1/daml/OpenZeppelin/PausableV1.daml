@@ -50,8 +50,8 @@
 -- | `paused()`            | `isPaused`, or the interface view              |
 -- | `whenNotPaused`       | `whenNotPaused`                                |
 -- | `whenPaused`          | `whenPaused`                                   |
--- | `_pause()`            | `pause`, `pauseWith`                           |
--- | `_unpause()`          | `unpause`, `unpauseWith`                       |
+-- | `_pause()`            | `pause`, `markPaused`                          |
+-- | `_unpause()`          | `unpause`, `markUnpaused`                      |
 -- | `EnforcedPause()`     | `eEnforcedPause`                               |
 -- | `ExpectedPause()`     | `eExpectedPause`                               |
 -- | `Paused`/`Unpaused`   | the exercise node in the transaction tree      |
@@ -77,8 +77,8 @@
 --
 -- CIP-0112's `pauseInfo` fields are deliberately absent. A registry that must
 -- serve `reason` and `until` on its metadata endpoint carries them as its own
--- template fields beside `paused` and sets them through `pauseWith`, so the
--- whole response still comes from one on-ledger contract without freezing those
+-- template fields beside `paused` and sets them on the value that `markPaused`
+-- returns, so the whole response still comes from one on-ledger contract without freezing those
 -- fields into this interface.
 --
 -- # Limits this module cannot enforce
@@ -89,7 +89,7 @@
 -- 1. No Daml construct forces a gated choice to call `whenNotPaused`. A
 --    forgotten guard fails silently in the permitting direction.
 -- 2. A choice that flips the switch must be consuming. See the warning on
---    `pauseWith`.
+--    `pause`.
 -- 3. `setPaused` must preserve every field other than the flag. The flag
 --    itself is verified; the rest cannot be.
 --
@@ -130,10 +130,10 @@ data PausableView = PausableView with
 --   template's signatory authority, which a choice on an unrelated contract
 --   does not carry. Authorization of the flip is entirely the consumer's choice
 --   to define.
--- Archival behavior: `setPaused` is pure and archives nothing; `pauseWith`
---   and `unpauseWith` only create the successor. The old contract is archived
---   because the consumer's flip choice is consuming. See the warning on
---   `pauseWith`.
+-- Archival behavior: `setPaused` is pure, `markPaused` and `markUnpaused`
+--   touch the ledger only to fail, and `pause` and `unpause` only create the
+--   successor. The old contract is archived because the consumer's flip choice
+--   is consuming. See the warning on `pause`.
 -- Failure modes: none of its own. The guards fail with `eEnforcedPause` or
 --   `eExpectedPause`; the flips additionally fail with `eFlagNotApplied` or
 --   `eImplementerTypeMismatch` when an implementation breaks the law below.
@@ -195,12 +195,19 @@ isPaused x = (view (toInterface @Pausable x)).paused
 -- >   controller admin
 -- >   do
 -- >     pause this
+--
+-- CAUTION: the calling choice must be consuming. This creates the successor
+-- contract but archives nothing, because only the consuming choice archives the
+-- contract it runs on. A `nonconsuming` flip choice leaves the unpaused
+-- contract live beside its paused copy, with no error.
 pause : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
      => t -> Update (ContractId t)
-pause = pauseWith identity
+pause x = markPaused x >>= create
 
--- | Pause the contract and update other fields in the same transaction. The
--- flag is set by this function; `f` touches only the remaining fields.
+-- | Guard, then return the template value with the flag set, without creating
+-- it. Use this when the successor must carry other field changes as well: set
+-- them with a record update and create the result yourself, in the same
+-- transaction and with no intermediate contract.
 --
 -- A registry that must serve CIP-0112's `pauseInfo` records the reason as it
 -- pauses:
@@ -209,48 +216,50 @@ pause = pauseWith identity
 -- >   with reason : Optional Text
 -- >   controller admin
 -- >   do
--- >     pauseWith (\v -> v with pauseReason = reason) this
+-- >     r <- markPaused this
+-- >     create r with pauseReason = reason
 --
--- CAUTION: the calling choice must be consuming. This creates the successor
--- contract but archives nothing, because only the consuming choice archives the
--- contract it runs on. A `nonconsuming` flip choice leaves the unpaused
--- contract live beside its paused copy, with no error.
+-- The same caution as `pause`: the calling choice must be consuming. The flag
+-- is verified on the returned value; a record update that clears it again is
+-- the caller's own error, and nothing checks it.
 --
 -- Fails with `eEnforcedPause` if already paused, `eFlagNotApplied` if the
--- implementation or `f` did not leave the flag set, or
--- `eImplementerTypeMismatch` if `setPaused` returned another template.
-pauseWith : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
-         => (t -> t) -> t -> Update (ContractId t)
-pauseWith f x = do
+-- implementation did not set the flag, or `eImplementerTypeMismatch` if
+-- `setPaused` returned another template.
+markPaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
+           => t -> Update t
+markPaused x = do
   whenNotPaused x
-  let flipped = fromSomeNote eImplementerTypeMismatch
+  let y = fromSomeNote eImplementerTypeMismatch
         (fromInterface (setPaused (toInterface @Pausable x) True))
-      y = f flipped
   assertMsg eFlagNotApplied (isPaused y)
-  create y
+  pure y
 
 -- | Unpause the contract. The `_unpause()` analogue, with the same caution
 -- about the calling choice being consuming. Fails with `eExpectedPause` if the
 -- contract is not paused.
 unpause : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
-       => t -> Update (ContractId t)
-unpause = unpauseWith identity
+        => t -> Update (ContractId t)
+unpause x = markUnpaused x >>= create
 
--- | Unpause the contract and update other fields in the same transaction, for
--- example clearing the fields that recorded why the pause was in force.
+-- | Guard, then return the template value with the flag cleared, without
+-- creating it. The counterpart of `markPaused`, for example to clear the
+-- fields that recorded why the pause was in force:
+--
+-- > r <- markUnpaused this
+-- > create r with pauseReason = None
 --
 -- Fails with `eExpectedPause` if not paused, `eFlagNotApplied` if the
--- implementation or `f` did not leave the flag clear, or
--- `eImplementerTypeMismatch` if `setPaused` returned another template.
-unpauseWith : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
-           => (t -> t) -> t -> Update (ContractId t)
-unpauseWith f x = do
+-- implementation did not clear the flag, or `eImplementerTypeMismatch` if
+-- `setPaused` returned another template.
+markUnpaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
+             => t -> Update t
+markUnpaused x = do
   whenPaused x
-  let flipped = fromSomeNote eImplementerTypeMismatch
+  let y = fromSomeNote eImplementerTypeMismatch
         (fromInterface (setPaused (toInterface @Pausable x) False))
-      y = f flipped
   assertMsg eFlagNotApplied (not (isPaused y))
-  create y
+  pure y
 
 -- Error messages. The Solidity custom errors, as text, plus the two that report
 -- an implementation breaking the `setPaused` law.
@@ -264,8 +273,8 @@ eExpectedPause : Text
 eExpectedPause = "Pausable: the contract is not paused"
 
 -- | Raised when a flip did not leave the flag in the state it asked for,
--- because `setPaused` ignored its argument, set a field the view does not read,
--- or the update function undid it. It exists so that a mis-wired implementation
+-- because `setPaused` ignored its argument or set a field the view does not
+-- read. It exists so that a mis-wired implementation
 -- fails loudly instead of yielding a pause that silently does not pause, which
 -- is the fail-open direction. It cannot fire against a correct implementation.
 eFlagNotApplied : Text

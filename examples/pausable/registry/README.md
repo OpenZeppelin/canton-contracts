@@ -12,9 +12,9 @@ flip.
 
 ## What it shows
 
-- `pauseWith` and `unpauseWith`. The library sets the flag and hands the value
-  to the lambda, which touches only the sibling fields. The registry sets
-  `pauseReason` and `pauseUntil` through the library rather than around it.
+- `markPaused` and `markUnpaused`. The library guards, sets the flag, and
+  returns the value; the choice sets `pauseReason` and `pauseUntil` on it and
+  creates once, through the library rather than around it.
 - `pauseInfo.reason` and `pauseInfo.until` as fields of the registry rather than
   of the frozen interface. `PausableView` carries `paused` alone, so the
   interface does not move when CIP-0112 extends `PauseInfo`; the registry adds a

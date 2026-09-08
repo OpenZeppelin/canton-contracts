@@ -130,19 +130,14 @@ template Registry
         reason : Optional Text
       controller admin
       do
-        pauseWith (\v -> v with pauseReason = reason) this
+        r <- markPaused this
+        create r with pauseReason = reason
 
     choice Registry_Unpause : ContractId Registry
       controller admin
       do
-        unpauseWith (\v -> v with pauseReason = None) this
-
-    -- A lambda that undoes the flag the library set. Caught, not silently
-    -- accepted.
-    choice Registry_PauseButClobberTheFlag : ContractId Registry
-      controller admin
-      do
-        pauseWith (\v -> v with paused = False) this
+        r <- markUnpaused this
+        create r with pauseReason = None
 
 -- | An unrelated template holding a `ContractId Pausable`. `setPaused` is
 -- public, so it can call it - but the method is pure and there is no way to

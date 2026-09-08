@@ -24,8 +24,9 @@ choice:
   flag rather than refusing to run.
 - `pause` and `unpause`: the `_pause()` and `_unpause()` analogues. Each checks
   the guard and creates the successor contract with the new flag.
-- `pauseWith` and `unpauseWith`: the same flips, taking a pure function that
-  updates the sibling fields in the same transaction.
+- `markPaused` and `markUnpaused`: the same guard and flip, returning the
+  template value instead of creating it, so that your choice can set sibling
+  fields on it and create once.
 - `eEnforcedPause`, `eExpectedPause`, `eFlagNotApplied`, and
   `eImplementerTypeMismatch`: the failure messages, exported so that your tests
   assert on a constant rather than on a string.
@@ -131,5 +132,5 @@ Two runnable consumer projects, each building against this DAR through
   adoption, the guards, an escape hatch that stays open while paused, and a
   recovery path that runs only while paused.
 - [`examples/pausable/registry`](../../../examples/pausable/registry):
-  `pauseWith` and `unpauseWith` recording CIP-0112 `pauseInfo` fields in the
+  `markPaused` and `markUnpaused` recording CIP-0112 `pauseInfo` fields in the
   same transaction as the flip.

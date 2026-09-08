@@ -166,11 +166,12 @@ test_pureMethodCannotFlipAnything = script do
 -- Sibling fields, set in the same transaction as the flip
 -------------------------------------------------------
 
--- | `pauseWith` sets the flag and the consumer's own fields together, so a
--- registry can serve CIP-0112's `pauseInfo` from one on-ledger contract
--- without those fields being frozen into the view.
-test_pauseWithSetsSiblingFields : Script ()
-test_pauseWithSetsSiblingFields = script do
+-- | `markPaused` returns the flipped value without creating it, so the
+-- consumer sets its own fields on it and creates once. A registry serves
+-- CIP-0112's `pauseInfo` from one on-ledger contract without those fields
+-- being frozen into the view.
+test_markPausedSetsSiblingFields : Script ()
+test_markPausedSetsSiblingFields = script do
   admin <- allocateParty "admin"
   reg <- submit admin do
     createCmd Registry with admin, paused = False, pauseReason = None
@@ -180,9 +181,9 @@ test_pauseWithSetsSiblingFields = script do
   isPaused r === True
   r.pauseReason === Some "sanctions review"
 
--- | `unpauseWith` clears them on the way out.
-test_unpauseWithClearsSiblingFields : Script ()
-test_unpauseWithClearsSiblingFields = script do
+-- | `markUnpaused` clears them on the way out.
+test_markUnpausedClearsSiblingFields : Script ()
+test_markUnpausedClearsSiblingFields = script do
   admin <- allocateParty "admin"
   reg <- submit admin do
     createCmd Registry with admin, paused = False, pauseReason = None
@@ -195,16 +196,6 @@ test_unpauseWithClearsSiblingFields = script do
 
 -- The flag-applied check
 -------------------------------------------------------
-
--- | A lambda that undoes the flag the library set is refused, not silently
--- accepted as a pause that does not pause.
-test_lambdaClobberingTheFlagFails : Script ()
-test_lambdaClobberingTheFlagFails = script do
-  admin <- allocateParty "admin"
-  reg <- submit admin do
-    createCmd Registry with admin, paused = False, pauseReason = None
-  Left e <- trySubmit admin do exerciseCmd reg Registry_PauseButClobberTheFlag
-  assertMsg "expected FlagNotApplied" (isFailureWith eFlagNotApplied e)
 
 -- | An implementation that ignores `setPaused`'s argument is refused. This
 -- is the fail-open wiring mistake the check exists to catch.
@@ -230,7 +221,7 @@ test_implementerReturningAnotherTemplateFails = script do
 
 -- | A nonconsuming flip choice leaves the unpaused contract live beside its
 -- paused copy, with no error. Nothing in Daml catches this, which is why the
--- consuming requirement is documented on `pauseWith` and stated in the README.
+-- consuming requirement is documented on `pause` and stated in the README.
 test_nonconsumingFlipLeavesTwoContracts : Script ()
 test_nonconsumingFlipLeavesTwoContracts = script do
   admin <- allocateParty "admin"

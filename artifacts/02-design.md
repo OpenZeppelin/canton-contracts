@@ -143,8 +143,8 @@ claim about who holds the switch and opens a second live path to it.
 | `modifier whenPaused()` | `whenPaused` |
 | `error EnforcedPause()` | `eEnforcedPause` |
 | `error ExpectedPause()` | `eExpectedPause` |
-| `function _pause() internal` | `pause`, `pauseWith` |
-| `function _unpause() internal` | `unpause`, `unpauseWith` |
+| `function _pause() internal` | `pause`, `markPaused` |
+| `function _unpause() internal` | `unpause`, `markUnpaused` |
 | `event Paused` / `Unpaused` | none - the archive-and-create pair is already a transaction-tree node carrying the actor and the timestamp, delivered to every stakeholder |
 | constructor leaving `_paused = false` | none - the consumer's template sets the initial field value |
 
@@ -178,18 +178,19 @@ whenPaused : (HasToInterface t Pausable) => t -> Update ()
 pause : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
      => t -> Update (ContractId t)
 
--- | Pause and update sibling fields in the same transaction. The lambda
---   touches the other fields; the flag is set by the library.
-pauseWith : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
-         => (t -> t) -> t -> Update (ContractId t)
+-- | The guard and the flip without the create: returns the template value
+--   with the flag set, so the caller can set sibling fields on it with a
+--   record update and create once. Same failures as `pause`.
+markPaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
+           => t -> Update t
 
 -- | Guarded flip to unpaused. Fails with eExpectedPause if not paused,
 --   eFlagNotApplied if the flag did not change.
 unpause : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
        => t -> Update (ContractId t)
 
-unpauseWith : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
-           => (t -> t) -> t -> Update (ContractId t)
+markUnpaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
+             => t -> Update t
 
 eEnforcedPause          : Text  -- "Pausable: the contract is paused"
 eExpectedPause          : Text  -- "Pausable: the contract is not paused"
@@ -206,24 +207,22 @@ isPaused x = (view (toInterface @Pausable x)).paused
 whenNotPaused x = assertMsg eEnforcedPause (not (isPaused x))
 whenPaused    x = assertMsg eExpectedPause (isPaused x)
 
-pause   = pauseWith   identity
-unpause = unpauseWith identity
+pause   x = markPaused   x >>= create
+unpause x = markUnpaused x >>= create
 
-pauseWith f x = do
+markPaused x = do
   whenNotPaused x
-  let flipped = fromSomeNote eImplementerTypeMismatch
+  let y = fromSomeNote eImplementerTypeMismatch
         (fromInterface (setPaused (toInterface @Pausable x) True))
-      y = f flipped
   assertMsg eFlagNotApplied (isPaused y)
-  create y
+  pure y
 
-unpauseWith f x = do
+markUnpaused x = do
   whenPaused x
-  let flipped = fromSomeNote eImplementerTypeMismatch
+  let y = fromSomeNote eImplementerTypeMismatch
         (fromInterface (setPaused (toInterface @Pausable x) False))
-      y = f flipped
   assertMsg eFlagNotApplied (not (isPaused y))
-  create y
+  pure y
 ```
 
 Every guard takes the contract value being exercised, never a `ContractId` the
@@ -398,8 +397,8 @@ paused-only choice both come for free.
 ### Second example: sibling fields set in the same transaction
 
 A registry serving CIP-0112 `pauseInfo` records the reason in the same
-transaction as the flip. The lambda touches only the sibling fields; the library
-sets the flag.
+transaction as the flip. `markPaused` guards and sets the flag; the choice sets
+the sibling fields on the returned value and creates once.
 
 ```daml
 template Registry
@@ -420,11 +419,15 @@ template Registry
         reason : Optional Text
         until  : Optional Time
       controller admin
-      do pauseWith (\v -> v with pauseReason = reason, pauseUntil = until) this
+      do
+        r <- markPaused this
+        create r with pauseReason = reason, pauseUntil = until
 
     choice Registry_Unpause : ContractId Registry
       controller admin
-      do unpauseWith (\v -> v with pauseReason = None, pauseUntil = None) this
+      do
+        r <- markUnpaused this
+        create r with pauseReason = None, pauseUntil = None
 ```
 
 The metadata endpoint serves `paused` and `pauseInfo{reason, until}` from one
@@ -446,8 +449,8 @@ change with no event template and no `LEDGER_EFFECTS` subscription.
 
 ### Effects alongside a flip
 
-The lambda is pure at `t -> t`. A consumer needing an effect uses their own
-choice body, which sequences normally:
+`markPaused` runs in `Update`, so a consumer needing an effect sequences it in
+their own choice body:
 
 ```daml
 choice Vault_Pause : ContractId Vault
@@ -473,10 +476,11 @@ No `ensure` clauses - the package defines no templates.
 |---|---|---|
 | gated operation attempted while paused | `assertMsg` in `whenNotPaused` | `eEnforcedPause` |
 | paused-only operation attempted while unpaused | `assertMsg` in `whenPaused` | `eExpectedPause` |
-| `pause` when already paused | `whenNotPaused` inside `pauseWith` | `eEnforcedPause` |
-| `unpause` when not paused | `whenPaused` inside `unpauseWith` | `eExpectedPause` |
-| implementer ignored the flag argument, or the lambda clobbered it | `assertMsg` in `pauseWith` / `unpauseWith` | `eFlagNotApplied` |
-| implementer returned another template | `fromSomeNote` in `pauseWith` / `unpauseWith` | `eImplementerTypeMismatch` |
+| `pause` when already paused | `whenNotPaused` inside `markPaused` | `eEnforcedPause` |
+| `unpause` when not paused | `whenPaused` inside `markUnpaused` | `eExpectedPause` |
+| implementer ignored the flag argument | `assertMsg` in `markPaused` / `markUnpaused` | `eFlagNotApplied` |
+| implementer returned another template | `fromSomeNote` in `markPaused` / `markUnpaused` | `eImplementerTypeMismatch` |
+| caller's record update after `markPaused` clears the flag again | none - the caller owns the create | none |
 | pause authority not authorized | ledger authorization - not expressible as a check | none |
 
 `assertMsg` throughout rather than `failWithStatus`: the constants are exported
@@ -492,7 +496,7 @@ they belong in the package README as well as in the Invariants stage.
    permitting direction. Documentation and tests carry this guarantee, not the
    type system. Solidity has the same limitation and at least makes the missing
    modifier visible in the signature; Daml offers no equivalent marker.
-2. **The consumer's flip choice must be consuming.** `pauseWith` creates the
+2. **The consumer's flip choice must be consuming.** `pause` creates the
    successor and cannot archive the predecessor, because an interface method
    sees `this` but not `self`. A nonconsuming flip leaves two active contracts
    with different flags and no error. This is the Daml Finance `acquireImpl`
@@ -621,18 +625,27 @@ template payload at flip time.
    constraint states in the signature what the authorization model already
    required.
 
-9. **`pauseWith` / `unpauseWith` for sibling fields.** Without them, a registry
-   setting `reason` in the same transaction has to bypass the guarded flip
-   entirely and hand-write `whenNotPaused` plus its own `create`. With them the
-   case we care most about goes through the library rather than around it. The
-   lambda is pure at `t -> t`; effects belong in the consumer's choice body.
+9. **`markPaused` / `markUnpaused` for sibling fields.** A registry setting
+   `reason` in the same transaction needs the flipped value before the create.
+   Without a helper it either bypasses the guarded flip and hand-writes
+   `whenNotPaused` plus its own `create`, or calls `pause` and then archives
+   and recreates the successor, a transient contract that costs a second
+   create node and a second exercise node per flip. A `pauseWith (t -> t)`
+   helper that takes a lambda and creates the result was built first and
+   replaced: the consumer had to package a record update as a lambda, and the
+   library's `eFlagNotApplied` check gained only the case where that lambda
+   undid the flag. Splitting the flip from the create instead gives the
+   consumer ordinary `create r with ...` syntax and a helper with one job. The
+   accepted cost is that a record update clearing the flag is unchecked,
+   because the caller owns the create; the check on `markPaused`'s own result
+   still catches a broken `setPaused`. Dev-friendliness, meaning the plainest
+   consumer code, decided it.
 
 10. **`eFlagNotApplied` assert.** Because the library sets the flag by calling
     the implementer's method, an implementer that ignores the argument
     (`setPaused _ = toInterface this`) compiles and yields a pause that
     silently does not pause - research's top risk, a control that only looks
-    like a control. The lambda can clobber the flag the same way. One pure
-    assert after both steps closes both holes.
+    like a control. One pure assert on the downcast value closes the hole.
 
 11. **One `eFlagNotApplied` rather than `ePauseNotApplied` /
     `eUnpauseNotApplied`.** The flip direction is evident from the choice the
@@ -661,7 +674,7 @@ template payload at flip time.
     unlike `acquire` this method is not the caller-facing path, but it sat
     beside an exported function also called `setPaused` and the pair was
     confusing. The exported `setPaused` was removed and its two-line downcast
-    inlined into `pauseWith` and `unpauseWith`, which drops the surface from
+    inlined into `markPaused` and `markUnpaused`, which drops the surface from
     fifteen exports to fourteen and leaves one name meaning one thing.
 
 16. **Verified against the compiler during design.** The module and both worked
@@ -743,10 +756,8 @@ under `spike/` and `final/`. They are not part of the repository.
    `test/pausable-api-v1` carries `BrokenIgnoresFlag`, which ignores
    `setPaused`'s argument, and `BrokenWrongTemplate`, which returns a `Decoy`
    instead of itself. Both compile, and both fail at runtime with
-   `eFlagNotApplied` and `eImplementerTypeMismatch` respectively. `Registry`
-   additionally carries a choice whose lambda clobbers the flag, covering the
-   third route to `eFlagNotApplied`. The Tests stage inherits these fixtures
-   rather than deciding whether to build them.
+   `eFlagNotApplied` and `eImplementerTypeMismatch` respectively. The Tests
+   stage inherits these fixtures rather than deciding whether to build them.
 
 3. **Resolved: the nonconsuming-flip bug is asserted executably.** `LeakyVault`
    has a `nonconsuming` pause choice, and
@@ -755,7 +766,7 @@ under `spike/` and `final/`. They are not part of the repository.
    asserts a defect in consumer code rather than a property of this package,
    which is the point - the obligation is unenforceable, so the test is the
    only executable statement of it. It stays in the test suite and is also
-   documented on `pauseWith` and in the README.
+   documented on `pause` and in the README.
 
 4. **Package version and release identity.** `0.1.0` and unstable, or a version
    that signals the frozen surface is final? The interface cannot change after

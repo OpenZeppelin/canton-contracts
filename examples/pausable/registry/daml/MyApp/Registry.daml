@@ -3,8 +3,8 @@
 --
 -- A registry that serves CIP-0112 metadata records why a pause is in force and
 -- when it is expected to end. Those fields belong to the registry, not to the
--- frozen interface: `pauseWith` sets the flag and passes the value to the
--- lambda, which touches only the sibling fields.
+-- frozen interface: `markPaused` guards, sets the flag, and returns the value,
+-- and the choice sets the sibling fields on it before the create.
 --
 -- The metadata endpoint therefore serves `paused` and `pauseInfo{reason,
 -- until}` from one on-ledger contract. If CIP-0112 extends `PauseInfo`, this
@@ -39,13 +39,15 @@ template Registry
         until : Optional Time
       controller admin
       do
-        Pausable.pauseWith (\r -> r with pauseReason = reason, pauseUntil = until) this
+        r <- Pausable.markPaused this
+        create r with pauseReason = reason, pauseUntil = until
 
     -- Unpausing clears what the pause recorded.
     choice Registry_Unpause : ContractId Registry
       controller admin
       do
-        Pausable.unpauseWith (\r -> r with pauseReason = None, pauseUntil = None) this
+        r <- Pausable.markUnpaused this
+        create r with pauseReason = None, pauseUntil = None
 
     -- A gated operation, guarded the same way as in any other adopter.
     choice Registry_Register : ContractId Registry
