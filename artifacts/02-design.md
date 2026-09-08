@@ -292,7 +292,7 @@ holds the Pauser role". The caller and the credential arrive as choice arguments
 and the body verifies them, which is the capability-contract pattern:
 
 ```daml
-choice MyToken_Pause : ContractId MyToken
+nonconsuming choice MyToken_Pause : ContractId MyToken
   with
     caller   : Party
     grantCid : ContractId RoleGrant
@@ -300,7 +300,7 @@ choice MyToken_Pause : ContractId MyToken
   do
     grant <- fetch grantCid
     requireRole caller "PAUSER_ROLE" admin grant
-    pause this
+    pause self this
 ```
 
 `controller caller` makes the ledger require `caller`'s authority to submit, and
@@ -466,11 +466,11 @@ change with no event template and no `LEDGER_EFFECTS` subscription.
 their own choice body:
 
 ```daml
-choice Vault_Pause : ContractId Vault
+nonconsuming choice Vault_Pause : ContractId Vault
   controller admin
   do
     create PauseAudit with admin, reason
-    pause this
+    pause self this
 ```
 
 ### Atomic unpause-operate-pause needs one choice body

@@ -26,13 +26,13 @@
 -- of that kind lives in a choice body, which means the choice must take the
 -- caller and its credential as arguments - and only the consumer can write it:
 --
--- > choice TokenRules_Pause : ContractId TokenRules
+-- > nonconsuming choice TokenRules_Pause : ContractId TokenRules
 -- >   with caller : Party; grantCid : ContractId RoleGrant
 -- >   controller caller
 -- >   do
 -- >     grant <- fetch grantCid
 -- >     requireRole caller "PAUSER_ROLE" admin grant
--- >     pause this
+-- >     pause self this
 --
 -- A consumer whose pause authority really is one party writes the same choice
 -- with that party as the controller and no credential argument. The pause

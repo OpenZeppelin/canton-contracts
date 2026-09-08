@@ -170,13 +170,13 @@ fetch a credential to decide who may act; a role, an M-of-N approval, or a
 timelock therefore takes the caller and the credential as choice arguments:
 
 ```daml
-choice TokenRules_Pause : ContractId TokenRules
+nonconsuming choice TokenRules_Pause : ContractId TokenRules
   with caller : Party; grantCid : ContractId RoleGrant
   controller caller
   do
     grant <- fetch grantCid
     requireRole caller "PAUSER_ROLE" admin grant
-    pause this
+    pause self this
 ```
 
 - Your `pause` and `unpause` choices are **nonconsuming**, because the flip
