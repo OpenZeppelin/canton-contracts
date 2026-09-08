@@ -384,7 +384,8 @@ and says nothing about the stakeholder fields.
 Usage step 3: the record update must not change fields that determine
 signatories or observers.
 
-**Status:** Open
+**Status:** Addressed. The `markPaused` comment, README usage step 3, and the
+README caveats list now state it.
 
 ## Security Checklist Results
 

@@ -110,8 +110,10 @@ cannot leave two contracts behind.
 When the successor must also carry other field changes, use `markPaused this`
 or `markUnpaused this` instead. They run the same guard and the same checks but
 return the template value rather than creating it, so you set the sibling fields
-with a record update and create once. Leave `paused` alone in that update. These
-two archive nothing, so your choice must archive the contract it runs on: call
+with a record update and create once. Leave `paused` alone in that update, and
+leave alone every field that determines the signatories or the observers: a
+changed signatory field fails the create, and a dropped observer silently
+narrows who sees the paused contract. These two archive nothing, so your choice must archive the contract it runs on: call
 `archive self` beside them, as below, or make the choice consuming.
 
 ```daml
@@ -239,7 +241,9 @@ ledger, so the record shows when the pause held, not which attempts it blocked.
 - After `markPaused` or `markUnpaused`, the record update in your own `create`
   must leave `paused` alone. The library checks the value it returns, not the
   value you create, so `create r with paused = False` after `markPaused` is a
-  pause that does not pause, with no error.
+  pause that does not pause, with no error. The same update must not change a
+  field that determines the signatories or the observers; dropping an observer
+  succeeds and silently narrows who sees the paused contract.
 - CIP-0112's `pauseInfo` fields are deliberately absent. A registry that must
   serve `reason` and `until` on its metadata endpoint carries them as its own
   template fields beside `paused`, so the whole response still comes from one

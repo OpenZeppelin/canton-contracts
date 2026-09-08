@@ -241,7 +241,10 @@ pause self x = do
 -- `archive self` as above or by being consuming; otherwise the unpaused
 -- contract stays live beside its paused copy, with no error. The flag is
 -- verified on the returned value; a record update that clears it again is the
--- caller's own error, and nothing checks it.
+-- caller's own error, and nothing checks it. The update must also leave alone
+-- every field that determines the signatories or the observers: a changed
+-- signatory field makes the create fail for lack of authority, and a dropped
+-- observer silently narrows who sees the paused contract.
 --
 -- Fails with `eEnforcedPause` if already paused, `eFlagNotApplied` if the
 -- implementation did not set the flag, or `eImplementerTypeMismatch` if
