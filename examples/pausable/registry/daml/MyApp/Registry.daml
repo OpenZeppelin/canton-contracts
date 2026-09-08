@@ -24,6 +24,8 @@ template Registry
       -- ^ CIP-0112 `pauseInfo.until`. Published for reporting; nothing in this
       --   example enforces it. An expiring pause is the consumer's own choice
       --   to write.
+    entries : [Text]
+      -- ^ What the registry holds; the state that a pause stops changing.
   where
     signatory admin
 
@@ -60,4 +62,4 @@ template Registry
       do
         Pausable.whenNotPaused this
         assertMsg "Registry: entry must not be empty" (entry /= "")
-        create this
+        create this with entries = entry :: entries

@@ -21,6 +21,7 @@ demo = script do
       paused = False
       pauseReason = None
       pauseUntil = None
+      entries = []
 
   registry <- submit admin do
     exerciseCmd registry Registry_Register with entry = "first"
@@ -40,8 +41,10 @@ demo = script do
   Some v <- queryInterfaceContractId admin (toInterfaceContractId @Pausable.Pausable registry)
   v === Pausable.PausableView with paused = True
 
+  -- The refused registration changes nothing.
   submitMustFail admin do
     exerciseCmd registry Registry_Register with entry = "second"
+  r.entries === ["first"]
 
   -- Unpausing clears what the pause recorded.
   registry <- submit admin do exerciseCmd registry Registry_Unpause
@@ -50,7 +53,10 @@ demo = script do
   r.pauseReason === None
   r.pauseUntil === None
 
+  -- And the registration lands.
   registry <- submit admin do
     exerciseCmd registry Registry_Register with entry = "second"
+  Some r <- queryContractId admin registry
+  r.entries === ["second", "first"]
 
   pure ()

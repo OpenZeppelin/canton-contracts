@@ -353,7 +353,8 @@ interface-only package.
 entry :: entries`, so the refused registration is visibly a refused state
 change and the unpaused one visibly lands.
 
-**Status:** Open
+**Status:** Addressed. `Registry` holds `entries`, and the demo asserts the
+list before and after the refused registration.
 
 #### INFO-4: `test/placeholder` has served its purpose
 
