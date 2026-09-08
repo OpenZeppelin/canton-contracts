@@ -83,7 +83,7 @@
 --
 -- # Limits this module cannot enforce
 --
--- Three properties are the implementer's responsibility, and none of them is
+-- Four properties are the implementer's responsibility, and none of them is
 -- checked by the compiler:
 --
 -- 1. No Daml construct forces a gated choice to call `whenNotPaused`. A
@@ -92,6 +92,9 @@
 --    `pause`.
 -- 3. `setPaused` must preserve every field other than the flag. The flag
 --    itself is verified; the rest cannot be.
+-- 4. A record update applied to the value that `markPaused` or `markUnpaused`
+--    returns must leave the flag alone. The check runs on the returned value,
+--    and the caller owns the `create` that follows it.
 --
 -- # Interfaces are frozen
 --

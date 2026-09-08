@@ -99,6 +99,10 @@ choice TokenRules_Pause : ContractId TokenRules
   checked, and a flip that fails to apply it fails with `eFlagNotApplied`, but
   nothing checks the other fields, so a wrong implementation silently rewrites
   contract state on every pause.
+- After `markPaused` or `markUnpaused`, the record update in your own `create`
+  must leave `paused` alone. The library checks the value it returns, not the
+  value you create, so `create r with paused = False` after `markPaused` is a
+  pause that does not pause, with no error.
 - CIP-0112's `pauseInfo` fields are deliberately absent. A registry that must
   serve `reason` and `until` on its metadata endpoint carries them as its own
   template fields beside `paused`, so the whole response still comes from one
