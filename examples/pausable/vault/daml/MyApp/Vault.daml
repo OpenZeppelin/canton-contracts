@@ -11,6 +11,17 @@ module MyApp.Vault where
 
 import qualified OpenZeppelin.PausableV1 as Pausable
 
+-- | What the vault pays out. The owner receives it on redemption, and the admin
+-- receives it on an emergency drain.
+template Payout
+  with
+    payer : Party
+    recipient : Party
+    amount : Decimal
+  where
+    signatory payer
+    observer recipient
+
 template Vault
   with
     admin : Party
@@ -38,19 +49,24 @@ template Vault
         assertMsg "Vault: amount exceeds balance" (amount <= balance)
         create this with balance = balance - amount
 
-    -- An escape hatch: redemption to the admin stays legal while paused, so a
-    -- pause does not trap the owner's funds.
-    choice Vault_RedeemToAdmin : ContractId Vault
+    -- An escape hatch: the owner can always redeem the whole balance, paused or
+    -- not, so a pause does not trap the owner's funds. No guard, by decision.
+    choice Vault_Redeem : (ContractId Vault, ContractId Payout)
       controller owner
       do
-        create this with balance = 0.0
+        payout <- create Payout with payer = admin, recipient = owner, amount = balance
+        vault <- create this with balance = 0.0
+        pure (vault, payout)
 
-    -- The mirror image: a recovery path that runs only during an incident.
-    choice Vault_EmergencyDrain : ContractId Vault
+    -- The mirror image: a recovery path that runs only during an incident. The
+    -- admin moves the balance out of the vault to itself.
+    choice Vault_EmergencyDrain : (ContractId Vault, ContractId Payout)
       controller admin
       do
         Pausable.whenPaused this
-        create this with balance = 0.0
+        payout <- create Payout with payer = admin, recipient = admin, amount = balance
+        vault <- create this with balance = 0.0
+        pure (vault, payout)
 
     -- The pause authority. The library supplies the guard and the flip; this
     -- choice supplies the answer to "who may flip the switch".

@@ -30,14 +30,18 @@ demo = script do
   -- The gated choice now refuses to start.
   submitMustFail owner do exerciseCmd vault Vault_Withdraw with amount = 10.0
 
-  -- The escape hatch carries no guard, so it stays open.
-  vault <- submit owner do exerciseCmd vault Vault_RedeemToAdmin
+  -- The escape hatch carries no guard, so it stays open: the owner takes the
+  -- remaining balance out while the vault is paused.
+  (vault, payout) <- submit owner do exerciseCmd vault Vault_Redeem
+  Some p <- queryContractId owner payout
+  p.amount === 60.0
+  p.recipient === owner
 
   -- Pausing twice fails with eEnforcedPause.
   submitMustFail admin do exerciseCmd vault Vault_Pause
 
   -- The recovery path runs only while paused.
-  vault <- submit admin do exerciseCmd vault Vault_EmergencyDrain
+  (vault, _) <- submit admin do exerciseCmd vault Vault_EmergencyDrain
 
   -- Back to normal operation.
   vault <- submit admin do exerciseCmd vault Vault_Unpause

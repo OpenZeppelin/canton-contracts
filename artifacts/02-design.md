@@ -366,18 +366,24 @@ template Vault
         assertMsg "Vault: amount exceeds balance" (amount <= balance)
         create this with balance = balance - amount
 
-    -- Escape hatch: redemption to the admin stays legal while paused, so a
-    -- pause does not trap the holder. XRPL's individual-freeze precedent.
-    choice Vault_RedeemToAdmin : ContractId Vault
+    -- Escape hatch: the owner can always redeem the whole balance, paused or
+    -- not, so a pause does not trap the holder. XRPL's individual-freeze
+    -- precedent. The payout itself is a `Payout` contract in the example.
+    choice Vault_Redeem : (ContractId Vault, ContractId Payout)
       controller owner
-      do create this with balance = 0.0
+      do
+        payout <- create Payout with payer = admin, recipient = owner, amount = balance
+        vault <- create this with balance = 0.0
+        pure (vault, payout)
 
-    -- Legal only while paused.
-    choice Vault_EmergencyDrain : ContractId Vault
+    -- Legal only while paused: the admin moves the balance to itself.
+    choice Vault_EmergencyDrain : (ContractId Vault, ContractId Payout)
       controller admin
       do
         whenPaused this
-        create this with balance = 0.0
+        payout <- create Payout with payer = admin, recipient = admin, amount = balance
+        vault <- create this with balance = 0.0
+        pure (vault, payout)
 
     -- The pause authority. Must be consuming.
     choice Vault_Pause : ContractId Vault

@@ -7,6 +7,7 @@ for one owner, with an emergency stop that the admin controls.
 |---|---|
 | Package | `pausable-vault-example` |
 | Modules | `MyApp.Vault`, `MyApp.VaultDemo` |
+| Templates | `Vault`, `Payout` |
 | Consumes | `openzeppelin-pausable-api-v1` `0.1.0` |
 
 ## What it shows
@@ -16,9 +17,10 @@ for one owner, with an emergency stop that the admin controls.
 - `whenNotPaused this` in a gated choice. The guard reads the contract that the
   choice exercises, so no caller supplies the pause state.
 - `whenPaused this` on `Vault_EmergencyDrain`, a recovery path that runs only
-  during an incident.
-- `Vault_RedeemToAdmin`, an escape hatch that carries no guard, so a pause does
-  not trap the owner's funds. Gating is a decision per choice.
+  during an incident and moves the balance to the admin as a `Payout`.
+- `Vault_Redeem`, an escape hatch that carries no guard, so a pause does not
+  trap the owner's funds: the owner takes the whole balance as a `Payout` at
+  any time. Gating is a decision per choice.
 - `Vault_Pause` and `Vault_Unpause`, the choices that name the pause authority.
   The library ships none, exactly as `_pause()` is `internal` in Solidity.
 - An off-ledger read of `PausableView` through the interface, which works
