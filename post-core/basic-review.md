@@ -336,7 +336,11 @@ now name signatory authority as the defence.
   this in `CONTRIBUTING.md` or the test package so nobody reads the badge as
   coverage of `PausableV1`.
 
-**Status:** Open
+**Status:** Addressed. Added `test_viewHiddenFromStranger`, the two
+`*FailsOnUnpause` tests against the broken implementers, and the
+someone-else's-credential branch in `test_customAuthorityGatesTheFlip`.
+`CONTRIBUTING.md` states that the coverage report is vacuous for an
+interface-only package.
 
 #### INFO-3: The registry example's gated operation stores nothing
 

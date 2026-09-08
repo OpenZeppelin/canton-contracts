@@ -210,6 +210,11 @@ template BrokenIgnoresFlag
       do
         pause self this
 
+    nonconsuming choice BrokenIgnoresFlag_Unpause : ContractId BrokenIgnoresFlag
+      controller admin
+      do
+        unpause self this
+
 -- | A second implementer, so `Pausable` has more than one inhabitant.
 template Decoy
   with
@@ -239,3 +244,8 @@ template BrokenWrongTemplate
       controller admin
       do
         pause self this
+
+    nonconsuming choice BrokenWrongTemplate_Unpause : ContractId BrokenWrongTemplate
+      controller admin
+      do
+        unpause self this

@@ -41,6 +41,15 @@ test_viewReadableByObserver = script do
   Some v <- queryInterfaceContractId holder (readOf vault)
   v === PausableView with paused = False
 
+-- | The flag is exactly as visible as the implementing contract: a party that
+-- is not a stakeholder of the vault reads nothing through the interface. INV-8.
+test_viewHiddenFromStranger : Script ()
+test_viewHiddenFromStranger = script do
+  Fixture{..} <- setup
+  stranger <- allocateParty "stranger"
+  hidden <- queryInterfaceContractId stranger (readOf vault)
+  hidden === None
+
 -- | The pure form agrees with the view.
 test_isPausedMatchesView : Script ()
 test_isPausedMatchesView = script do
@@ -208,6 +217,14 @@ test_implementerIgnoringTheFlagFails = script do
   Left e <- trySubmit admin do exerciseCmd b BrokenIgnoresFlag_Pause
   assertMsg "expected FlagNotApplied" (isFailureWith eFlagNotApplied e)
 
+-- | The same implementer is refused in the unpause direction. INV-5.
+test_implementerIgnoringTheFlagFailsOnUnpause : Script ()
+test_implementerIgnoringTheFlagFailsOnUnpause = script do
+  admin <- allocateParty "admin"
+  b <- submit admin do createCmd BrokenIgnoresFlag with admin, paused = True
+  Left e <- trySubmit admin do exerciseCmd b BrokenIgnoresFlag_Unpause
+  assertMsg "expected FlagNotApplied" (isFailureWith eFlagNotApplied e)
+
 -- | An implementation that returns a different implementer type checks, and is
 -- refused at runtime.
 test_implementerReturningAnotherTemplateFails : Script ()
@@ -215,6 +232,15 @@ test_implementerReturningAnotherTemplateFails = script do
   admin <- allocateParty "admin"
   b <- submit admin do createCmd BrokenWrongTemplate with admin, paused = False
   Left e <- trySubmit admin do exerciseCmd b BrokenWrongTemplate_Pause
+  assertMsg "expected ImplementerTypeMismatch"
+    (isFailureWith eImplementerTypeMismatch e)
+
+-- | The same implementer is refused in the unpause direction. INV-6.
+test_implementerReturningAnotherTemplateFailsOnUnpause : Script ()
+test_implementerReturningAnotherTemplateFailsOnUnpause = script do
+  admin <- allocateParty "admin"
+  b <- submit admin do createCmd BrokenWrongTemplate with admin, paused = True
+  Left e <- trySubmit admin do exerciseCmd b BrokenWrongTemplate_Unpause
   assertMsg "expected ImplementerTypeMismatch"
     (isFailureWith eImplementerTypeMismatch e)
 
@@ -274,6 +300,11 @@ test_customAuthorityGatesTheFlip = script do
   -- a credential from the wrong issuer does not authorize the pause
   submitMustFail (actAs stranger <> disclose d) do
     exerciseCmd rv1 RoleVault_Pause with caller = stranger, credCid = rogueCred
+
+  -- nor does someone else's credential from the right issuer
+  Some credDisclosure <- queryDisclosure @PauseCredential admin cred
+  submitMustFail (actAs stranger <> disclose d <> disclose credDisclosure) do
+    exerciseCmd rv1 RoleVault_Pause with caller = stranger, credCid = cred
 
   -- the real credential holder can pause
   paused <- submit (actAs guardian <> disclose d) do
