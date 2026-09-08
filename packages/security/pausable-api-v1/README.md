@@ -8,7 +8,7 @@ on OpenZeppelin's `Pausable.sol`.
 | Package | `openzeppelin-pausable-api-v1` |
 | Public module | `OpenZeppelin.PausableV1` |
 | Version | `0.1.0` |
-| Status | Experimental; unaudited |
+| Status | Pre-release; unaudited |
 | Solidity analogue | `Pausable` |
 
 ## What it provides
@@ -103,6 +103,30 @@ choice TokenRules_Pause : ContractId TokenRules
   serve `reason` and `until` on its metadata endpoint carries them as its own
   template fields beside `paused`, so the whole response still comes from one
   on-ledger contract without freezing those fields into a frozen interface.
+
+## Compatibility
+
+The public surface is frozen. Daml interfaces are not upgradeable through Smart
+Contract Upgrade, so this package never changes `Pausable`, `PausableView`, or
+the exported functions after its first release. A breaking change ships as a
+sibling `openzeppelin-pausable-api-v2` package with module
+`OpenZeppelin.PausableV2`, and the two coexist.
+
+For a consumer this means:
+
+- Pin the exact DAR. Your `interface instance` binds your template to one
+  package ID, and every participant that runs your gated choices must have
+  vetted that package ID.
+- Your own template stays upgradeable. The interface instance is declared on
+  your template, so you add fields, such as CIP-0112 `pauseInfo`, through Smart
+  Contract Upgrade of your package while this package does not move.
+- A patch release of this package, if one ever ships, changes documentation or
+  metadata only. It does not change any type or function, and it is a new
+  package ID that consumers adopt by rebuilding.
+
+`0.1.0` is a pre-release. Until a tagged release records the DAR in
+`dars/released/`, the package ID may change between commits, and no audit has
+been performed. See [`RELEASING.md`](../../../RELEASING.md).
 
 ## Build
 
