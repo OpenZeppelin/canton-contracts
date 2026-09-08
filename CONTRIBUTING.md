@@ -34,6 +34,22 @@ reports template and choice coverage rather than source-line or branch coverage.
 CI validates every production package and requires each production template to
 be created and each production choice to be exercised.
 
+## API documentation
+
+Every public module carries doc comments that `damlc docs` renders. Generate the
+reference for a package from the repository root, for example:
+
+```sh
+DAML_PACKAGE=packages/security/pausable-api-v1 dpm damlc docs \
+  --output build/docs/pausable-api-v1 --format md --doc-ext md \
+  packages/security/pausable-api-v1/daml/OpenZeppelin/PausableV1.daml
+```
+
+Run it after changing a doc comment and read the output. The tool rejects a
+leading `-- |` comment on an interface method; document a method with a
+trailing `-- ^` comment under its signature instead. A parse error there
+produces no output for the whole module.
+
 ## Choosing the right repository
 
 This repository accepts reusable Daml library components. Research prototypes,
