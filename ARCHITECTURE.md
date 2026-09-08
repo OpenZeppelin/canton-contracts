@@ -44,8 +44,24 @@ API packages may depend only on other API packages. A template-only component
 ships one implementation package; empty API packages add ceremony without an
 upgrade or interoperability benefit.
 
-The current three components define templates and functions but no Daml
-interfaces, so each presently has one production package.
+The three components under `experiments/` define templates and functions but no
+Daml interfaces, so each has one production package.
+
+### Interface-only components
+
+Some components have no implementation package of their own. Pausable is the
+model: the pause flag is a field of the consumer's template, because a guard
+that reads the contract being exercised is sound and a guard that fetches a
+separate switch contract is not, since a caller can substitute or omit a
+contract it supplies. Nothing therefore remains for an `openzeppelin-pausable-v1`
+package to hold. The component is the frozen `-api-v1` package alone, and the
+implementing templates live in consuming packages.
+
+An interface-only component is still one package and one DAR, and it still
+follows the `-api-vN` freeze rule: no templates, no SCU, and a breaking change
+ships as a sibling `-v2` package. The consumer's implementing template upgrades
+through SCU independently, because the interface instance is declared on the
+template and the API package does not move.
 
 ## Dependency policy
 
