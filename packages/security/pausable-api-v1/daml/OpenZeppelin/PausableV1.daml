@@ -162,8 +162,11 @@ interface Pausable where
   -- one fails at runtime with `eImplementerTypeMismatch`. Ignoring the argument
   -- fails with `eFlagNotApplied`.
   --
-  -- Call `pause` or `unpause` rather than this method: they add the guard that
-  -- makes a double pause fail, and they create the successor contract.
+  -- Do not call this method from a choice body. `pause` and `unpause` add the
+  -- guard that makes a double flip fail, verify the flag, and create the
+  -- successor contract; `markPaused` and `markUnpaused` do the same without
+  -- the create, for a choice that sets other fields before creating. Calling
+  -- `setPaused` directly skips every one of those checks.
   setPaused : Bool -> Pausable
 
 -- | Fail unless the contract is unpaused. The `whenNotPaused` modifier.
