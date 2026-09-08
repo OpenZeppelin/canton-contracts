@@ -146,28 +146,28 @@ data PausableView = PausableView with
 interface Pausable where
   viewtype PausableView
 
-  -- | Return this contract's own template value with the flag set.
-  --
-  -- The one obligation an implementer takes on. Only the template knows its own
-  -- fields, so only the template can rebuild itself; the interface body has no
-  -- access to them. The implementation must return *its own* template and must
-  -- preserve every other field, so that pausing changes the flag and nothing
-  -- else:
-  --
-  -- > setPaused b = toInterface (this with paused = b)
-  --
-  -- The return type is `Pausable` rather than the implementing template because
-  -- an interface declaration has no type variable for its implementer. Any
-  -- implementing template therefore satisfies the type, and returning the wrong
-  -- one fails at runtime with `eImplementerTypeMismatch`. Ignoring the argument
-  -- fails with `eFlagNotApplied`.
-  --
-  -- Do not call this method from a choice body. `pause` and `unpause` add the
-  -- guard that makes a double flip fail, verify the flag, and create the
-  -- successor contract; `markPaused` and `markUnpaused` do the same without
-  -- the create, for a choice that sets other fields before creating. Calling
-  -- `setPaused` directly skips every one of those checks.
   setPaused : Bool -> Pausable
+    -- ^ Return this contract's own template value with the flag set.
+    --
+    --   The one obligation an implementer takes on. Only the template knows its own
+    --   fields, so only the template can rebuild itself; the interface body has no
+    --   access to them. The implementation must return *its own* template and must
+    --   preserve every other field, so that pausing changes the flag and nothing
+    --   else:
+    --
+    --   > setPaused b = toInterface (this with paused = b)
+    --
+    --   The return type is `Pausable` rather than the implementing template because
+    --   an interface declaration has no type variable for its implementer. Any
+    --   implementing template therefore satisfies the type, and returning the wrong
+    --   one fails at runtime with `eImplementerTypeMismatch`. Ignoring the argument
+    --   fails with `eFlagNotApplied`.
+    --
+    --   Do not call this method from a choice body. `pause` and `unpause` add the
+    --   guard that makes a double flip fail, verify the flag, and create the
+    --   successor contract; `markPaused` and `markUnpaused` do the same without
+    --   the create, for a choice that sets other fields before creating. Calling
+    --   `setPaused` directly skips every one of those checks.
 
 -- | Fail unless the contract is unpaused. The `whenNotPaused` modifier.
 --
