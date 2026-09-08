@@ -11,6 +11,5 @@ packages:
   - experiments/test/tokenCIP112-v1
   - packages/security/pausable-api-v1
   - test/pausable-api-v1
-  - test/placeholder
   - examples/pausable/vault
   - examples/pausable/registry

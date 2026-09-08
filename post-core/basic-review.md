@@ -365,7 +365,8 @@ list before and after the refused registration.
 data-dependency on `openzeppelin-ownable-v1` is unused. Not touched by this
 branch; noted for the dev.
 
-**Status:** Open
+**Status:** Addressed. `test/placeholder` is deleted and removed from
+`multi-package.yaml`.
 
 #### INFO-5: The record update after `markPaused` can change stakeholder fields
 
