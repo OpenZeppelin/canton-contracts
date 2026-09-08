@@ -9,6 +9,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## Unreleased
 
+### `openzeppelin-pausable-api-v1`
+
+#### Added
+
+- Added the frozen interface package `openzeppelin-pausable-api-v1` with public
+  module `OpenZeppelin.PausableV1`, the Daml analogue of `Pausable.sol`. It
+  defines the `Pausable` interface with the `PausableView` view type and the
+  `setPaused` method, the guards `whenNotPaused` and `whenPaused`, the pure
+  read `isPaused`, the guarded flips `pause` and `unpause`, their create-free
+  halves `markPaused` and `markUnpaused`, and the failure constants
+  `eEnforcedPause`, `eExpectedPause`, `eFlagNotApplied`, and
+  `eImplementerTypeMismatch`. The package defines no templates and names no
+  pause authority; the consumer's template holds the flag and writes the flip
+  choice.
+
 ### `openzeppelin-tokenCIP112-v1`
 
 #### Added
