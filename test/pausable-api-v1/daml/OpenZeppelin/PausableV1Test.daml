@@ -101,8 +101,8 @@ test_pauseUnpauseRoundTrip = script do
   isPaused v2 === False
   v2.balance === 100
 
--- | A consuming pause choice archives its contract, so the flip leaves exactly
--- one contract behind and the stale id is gone.
+-- | `pause` archives the contract at `self`, so the flip leaves exactly one
+-- contract behind and the stale id is gone. INV-11.
 test_flipArchivesThePredecessor : Script ()
 test_flipArchivesThePredecessor = script do
   Fixture{..} <- setup
@@ -218,19 +218,33 @@ test_implementerReturningAnotherTemplateFails = script do
   assertMsg "expected ImplementerTypeMismatch"
     (isFailureWith eImplementerTypeMismatch e)
 
--- The obligation the library cannot enforce
+-- The choice kind of the flip
 -------------------------------------------------------
 
--- | A nonconsuming flip choice leaves the unpaused contract live beside its
--- paused copy, with no error. Nothing in Daml catches this, which is why the
--- consuming requirement is documented on `pause` and stated in the README.
-test_nonconsumingFlipLeavesTwoContracts : Script ()
-test_nonconsumingFlipLeavesTwoContracts = script do
+-- | A consuming flip choice fails: the choice has already archived the
+-- contract when `pause` archives `self`. The mistake fails closed, and the
+-- contract stays unpaused and active. INV-11.
+test_consumingFlipChoiceFails : Script ()
+test_consumingFlipChoiceFails = script do
   admin <- allocateParty "admin"
-  lv <- submit admin do createCmd LeakyVault with admin, paused = False
-  lv' <- submit admin do exerciseCmd lv LeakyVault_Pause
-  Some original <- queryContractId admin lv
-  Some successor <- queryContractId admin lv'
+  cv <- submit admin do createCmd ConsumingFlipVault with admin, paused = False
+  submitMustFail admin do exerciseCmd cv ConsumingFlipVault_Pause
+  Some v <- queryContractId admin cv
+  isPaused v === False
+
+-- | The obligation the library cannot enforce: a nonconsuming choice that
+-- calls `markPaused` and never archives leaves the unpaused contract live
+-- beside its paused copy, with no error. This is why `markPaused` documents
+-- the `archive self` requirement. INV-11.
+test_markPausedWithoutArchiveLeavesTwoContracts : Script ()
+test_markPausedWithoutArchiveLeavesTwoContracts = script do
+  admin <- allocateParty "admin"
+  lr <- submit admin do
+    createCmd LeakyRegistry with admin, paused = False, pauseReason = None
+  lr' <- submit admin do
+    exerciseCmd lr LeakyRegistry_Pause with reason = Some "incident"
+  Some original <- queryContractId admin lr
+  Some successor <- queryContractId admin lr'
   isPaused original === False
   isPaused successor === True
 

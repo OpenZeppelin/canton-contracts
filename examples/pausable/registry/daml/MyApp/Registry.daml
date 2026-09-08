@@ -32,21 +32,24 @@ template Registry
       setPaused b = toInterface (this with paused = b)
 
     -- The flag and the reason change together, in one transaction, through the
-    -- library rather than around it.
-    choice Registry_Pause : ContractId Registry
+    -- library rather than around it. `markPaused` archives nothing, because
+    -- this choice owns the create, so the choice archives `self` itself.
+    nonconsuming choice Registry_Pause : ContractId Registry
       with
         reason : Optional Text
         until : Optional Time
       controller admin
       do
         r <- Pausable.markPaused this
+        archive self
         create r with pauseReason = reason, pauseUntil = until
 
     -- Unpausing clears what the pause recorded.
-    choice Registry_Unpause : ContractId Registry
+    nonconsuming choice Registry_Unpause : ContractId Registry
       controller admin
       do
         r <- Pausable.markUnpaused this
+        archive self
         create r with pauseReason = None, pauseUntil = None
 
     -- A gated operation, guarded the same way as in any other adopter.

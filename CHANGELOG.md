@@ -17,8 +17,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   module `OpenZeppelin.PausableV1`, the Daml analogue of `Pausable.sol`. It
   defines the `Pausable` interface with the `PausableView` view type and the
   `setPaused` method, the guards `whenNotPaused` and `whenPaused`, the pure
-  read `isPaused`, the guarded flips `pause` and `unpause`, their create-free
-  halves `markPaused` and `markUnpaused`, and the `FailureStatus` values
+  read `isPaused`, the guarded flips `pause` and `unpause`, which archive the
+  contract at `self` and create the successor from a nonconsuming choice, their
+  archive-free halves `markPaused` and `markUnpaused`, and the `FailureStatus` values
   `eEnforcedPause`, `eExpectedPause`, `eFlagNotApplied`, and
   `eImplementerTypeMismatch`, raised with `failWithStatus` under stable
   `openzeppelin.com/pausable-*` error ids. The package defines no templates and names no

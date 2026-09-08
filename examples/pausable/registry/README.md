@@ -13,8 +13,9 @@ flip.
 ## What it shows
 
 - `markPaused` and `markUnpaused`. The library guards, sets the flag, and
-  returns the value; the choice sets `pauseReason` and `pauseUntil` on it and
-  creates once, through the library rather than around it.
+  returns the value; the choice archives `self`, sets `pauseReason` and
+  `pauseUntil` on the value, and creates once, through the library rather than
+  around it.
 - `pauseInfo.reason` and `pauseInfo.until` as fields of the registry rather than
   of the frozen interface. `PausableView` carries `paused` alone, so the
   interface does not move when CIP-0112 extends `PauseInfo`; the registry adds a
@@ -29,7 +30,9 @@ the recorded fields.
 ## Authority model
 
 `admin` is the sole signatory of `Registry` and the pause authority. The flip
-choices are consuming, which is the obligation the library cannot enforce.
+choices call `archive self` beside `markPaused` and `markUnpaused`, which is the
+obligation the library cannot enforce: those two functions return a value and
+archive nothing.
 
 ## Reporting, not enforcement
 

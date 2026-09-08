@@ -71,15 +71,15 @@ template Vault
     -- The pause authority. The library supplies the guard and the flip; this
     -- choice supplies the answer to "who may flip the switch".
     --
-    -- CAUTION: a flip choice must be consuming. `pause` creates the successor
-    -- contract but archives nothing, so a `nonconsuming` choice here would
-    -- leave the unpaused contract live beside its paused copy, with no error.
-    choice Vault_Pause : ContractId Vault
+    -- The choice is nonconsuming because `pause` archives `self` itself. A
+    -- consuming choice here would fail on the first pause, since the contract
+    -- would already be archived when `pause` archives it again.
+    nonconsuming choice Vault_Pause : ContractId Vault
       controller admin
       do
-        Pausable.pause this
+        Pausable.pause self this
 
-    choice Vault_Unpause : ContractId Vault
+    nonconsuming choice Vault_Unpause : ContractId Vault
       controller admin
       do
-        Pausable.unpause this
+        Pausable.unpause self this

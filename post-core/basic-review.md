@@ -144,7 +144,11 @@ If the dev prefers to keep the current shape as the primary, at least ship the
 MED-2. This is a design decision, so the dev chooses; the review's position is
 that a fail-closed default is worth the extra argument.
 
-**Status:** Open
+**Status:** Addressed. `pause` and `unpause` now take `self`, archive it, and
+create the successor, so the flip choice is nonconsuming and a consuming caller
+fails on the first use. `markPaused` and `markUnpaused` keep their value shape
+and document the `archive self` requirement; the README, both examples, and the
+tests show it.
 
 #### MED-2: The whole package is single-version, helpers included; the design and README understate this
 

@@ -5,7 +5,8 @@ module OpenZeppelin.PausableV1TestSupport where
 import OpenZeppelin.PausableV1
 
 -- | The single-party case. The pause authority is one party, so the consumer's
--- choice names it as the controller and calls `pause` with nothing else.
+-- choice names it as the controller and calls `pause` with nothing else. The
+-- flip choices are nonconsuming because `pause` archives `self` itself.
 template Vault
   with
     admin : Party
@@ -22,15 +23,15 @@ template Vault
 
     -- The `external pause() onlyOwner` analogue: the consumer supplies the
     -- authority, the library supplies the flip and the guard.
-    choice Vault_Pause : ContractId Vault
+    nonconsuming choice Vault_Pause : ContractId Vault
       controller admin
       do
-        pause this
+        pause self this
 
-    choice Vault_Unpause : ContractId Vault
+    nonconsuming choice Vault_Unpause : ContractId Vault
       controller admin
       do
-        unpause this
+        unpause self this
 
     -- Gated in normal operation.
     choice Vault_Withdraw : ContractId Vault
@@ -48,24 +49,48 @@ template Vault
         whenPaused this
         create this with balance = 0
 
--- | The obligation the library cannot enforce: a flip choice must be
--- consuming. This one is not, so it leaves the unpaused contract live beside
--- its paused copy.
-template LeakyVault
+-- | The wrong choice kind for `pause`: a consuming flip choice. The choice
+-- archives the contract before the body runs, so `pause` fails when it archives
+-- `self` again. The mistake fails closed instead of leaving two contracts.
+template ConsumingFlipVault
   with
     admin : Party
     paused : Bool
   where
     signatory admin
 
-    interface instance Pausable for LeakyVault where
+    interface instance Pausable for ConsumingFlipVault where
       view = PausableView with paused
       setPaused b = toInterface (this with paused = b)
 
-    nonconsuming choice LeakyVault_Pause : ContractId LeakyVault
+    choice ConsumingFlipVault_Pause : ContractId ConsumingFlipVault
       controller admin
       do
-        pause this
+        pause self this
+
+-- | The obligation the library cannot enforce: a choice that calls
+-- `markPaused` must archive the contract it runs on. This one is nonconsuming
+-- and never archives, so it leaves the unpaused contract live beside its
+-- paused copy.
+template LeakyRegistry
+  with
+    admin : Party
+    paused : Bool
+    pauseReason : Optional Text
+  where
+    signatory admin
+
+    interface instance Pausable for LeakyRegistry where
+      view = PausableView with paused
+      setPaused b = toInterface (this with paused = b)
+
+    nonconsuming choice LeakyRegistry_Pause : ContractId LeakyRegistry
+      with
+        reason : Optional Text
+      controller admin
+      do
+        r <- markPaused this
+        create r with pauseReason = reason
 
 -- | A credential standing in for an AccessControl `RoleGrant`. Authorization
 -- that depends on a contract, which a controller expression cannot read.
@@ -93,7 +118,7 @@ template RoleVault
       view = PausableView with paused
       setPaused b = toInterface (this with paused = b)
 
-    choice RoleVault_Pause : ContractId RoleVault
+    nonconsuming choice RoleVault_Pause : ContractId RoleVault
       with
         caller : Party
         credCid : ContractId PauseCredential
@@ -102,7 +127,7 @@ template RoleVault
         cred <- fetch credCid
         assertMsg "RoleVault: wrong credential issuer" (cred.admin == admin)
         assertMsg "RoleVault: credential is not the caller's" (cred.account == caller)
-        pause this
+        pause self this
 
     choice RoleVault_Transfer : ContractId RoleVault
       controller holder
@@ -112,7 +137,8 @@ template RoleVault
 
 -- | The sibling-field case: a registry that records why a pause is in force in
 -- the same transaction as the flip, and clears it on the way out. `paused`
--- stays the only field in the frozen view.
+-- stays the only field in the frozen view. `markPaused` archives nothing, so
+-- the nonconsuming choice archives `self` beside it.
 template Registry
   with
     admin : Party
@@ -125,24 +151,27 @@ template Registry
       view = PausableView with paused
       setPaused b = toInterface (this with paused = b)
 
-    choice Registry_Pause : ContractId Registry
+    nonconsuming choice Registry_Pause : ContractId Registry
       with
         reason : Optional Text
       controller admin
       do
         r <- markPaused this
+        archive self
         create r with pauseReason = reason
 
-    choice Registry_Unpause : ContractId Registry
+    nonconsuming choice Registry_Unpause : ContractId Registry
       controller admin
       do
         r <- markUnpaused this
+        archive self
         create r with pauseReason = None
 
 -- | An unrelated template holding a `ContractId Pausable`. `setPaused` is
 -- public, so it can call it - but the method is pure and there is no way to
 -- create from an interface value, so it cannot flip anything. `pause` itself
--- does not type check here: it needs `HasCreate t` on a concrete template.
+-- does not type check here: it needs `HasCreate t` and `HasArchive t` on a
+-- concrete template.
 template Rogue
   with
     caller : Party
@@ -174,10 +203,10 @@ template BrokenIgnoresFlag
       view = PausableView with paused
       setPaused _ = toInterface this
 
-    choice BrokenIgnoresFlag_Pause : ContractId BrokenIgnoresFlag
+    nonconsuming choice BrokenIgnoresFlag_Pause : ContractId BrokenIgnoresFlag
       controller admin
       do
-        pause this
+        pause self this
 
 -- | A second implementer, so `Pausable` has more than one inhabitant.
 template Decoy
@@ -204,7 +233,7 @@ template BrokenWrongTemplate
       view = PausableView with paused
       setPaused b = toInterface (Decoy with admin = this.admin, paused = b)
 
-    choice BrokenWrongTemplate_Pause : ContractId BrokenWrongTemplate
+    nonconsuming choice BrokenWrongTemplate_Pause : ContractId BrokenWrongTemplate
       controller admin
       do
-        pause this
+        pause self this

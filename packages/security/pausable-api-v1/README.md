@@ -23,7 +23,8 @@ choice:
 - `isPaused`: `paused()` as a pure function, for a choice that branches on the
   flag rather than refusing to run.
 - `pause` and `unpause`: the `_pause()` and `_unpause()` analogues. Each checks
-  the guard and creates the successor contract with the new flag.
+  the guard, archives the contract at `self`, and creates the successor with
+  the new flag.
 - `markPaused` and `markUnpaused`: the same guard and flip, returning the
   template value instead of creating it, so that your choice can set sibling
   fields on it and create once.
@@ -88,25 +89,30 @@ omission.
 incident, such as an emergency drain. `isPaused this` returns the flag as a
 `Bool` for a choice that branches rather than refuses; it never fails.
 
-**3. Write the flip choices.** Call `pause this` or `unpause this` from a
-**consuming** choice whose controller and body express your pause authority.
-Each one checks the guard, verifies that `setPaused` set the flag, and creates
-the successor contract. The choice returns the new contract ID.
+**3. Write the flip choices.** Call `pause self this` or `unpause self this`
+from a **nonconsuming** choice whose controller and body express your pause
+authority. Each one checks the guard, verifies that `setPaused` set the flag,
+archives the contract at `self`, and creates the successor. The choice returns
+the new contract ID. A consuming flip choice fails on its first use, because
+the contract is already archived when `pause` archives it again; the mistake
+cannot leave two contracts behind.
 
 ```daml
-    choice Vault_Pause : ContractId Vault
+    nonconsuming choice Vault_Pause : ContractId Vault
       controller admin
-      do pause this
+      do pause self this
 
-    choice Vault_Unpause : ContractId Vault
+    nonconsuming choice Vault_Unpause : ContractId Vault
       controller admin
-      do unpause this
+      do unpause self this
 ```
 
 When the successor must also carry other field changes, use `markPaused this`
 or `markUnpaused this` instead. They run the same guard and the same checks but
 return the template value rather than creating it, so you set the sibling fields
-with a record update and create once. Leave `paused` alone in that update.
+with a record update and create once. Leave `paused` alone in that update. These
+two archive nothing, so your choice must archive the contract it runs on: call
+`archive self` beside them, as below, or make the choice consuming.
 
 ```daml
     choice Registry_Pause : ContractId Registry
@@ -150,10 +156,10 @@ interface instance Pausable for Vault where
   view = PausableView with paused
   setPaused b = toInterface (this with paused = b)
 
-choice Vault_Pause : ContractId Vault
+nonconsuming choice Vault_Pause : ContractId Vault
   controller admin
   do
-    pause this
+    pause self this
 ```
 
 Any authority model fits, because the check runs in the choice body rather than
@@ -171,10 +177,11 @@ choice TokenRules_Pause : ContractId TokenRules
     pause this
 ```
 
-- Your pause choice must be **consuming**. `pause` creates the successor
-  contract but archives nothing, because only the consuming choice archives the
-  contract it runs on. A `nonconsuming` pause choice leaves the unpaused
-  contract live beside its paused copy.
+- Your `pause` and `unpause` choices are **nonconsuming**, because the flip
+  archives `self`. A choice that uses `markPaused` or `markUnpaused` instead
+  must archive the contract itself, with `archive self` or by being consuming;
+  otherwise the unpaused contract stays live beside its paused copy, with no
+  error.
 - Pausing while paused fails with `eEnforcedPause`, and unpausing while unpaused
   fails with `eExpectedPause`, matching `_pause` and `_unpause` in Solidity.
 - A flip archives the contract, so outstanding contract IDs and disclosures for

@@ -171,12 +171,14 @@ whenNotPaused : (HasToInterface t Pausable) => t -> Update ()
 --   Fails with eExpectedPause.
 whenPaused : (HasToInterface t Pausable) => t -> Update ()
 
--- | Guarded flip to paused. Call from a CONSUMING choice whose controller is
---   the consumer's pause authority. Fails with eEnforcedPause if already
---   paused, eFlagNotApplied if the flag did not change, and
---   eImplementerTypeMismatch if setPaused returned another template.
-pause : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
-     => t -> Update (ContractId t)
+-- | Guarded flip to paused. Archives `self` and creates the successor, so
+--   call it from a NONCONSUMING choice whose controller is the consumer's
+--   pause authority; a consuming caller fails on the second archive. Fails
+--   with eEnforcedPause if already paused, eFlagNotApplied if the flag did
+--   not change, and eImplementerTypeMismatch if setPaused returned another
+--   template.
+pause : (HasToInterface t Pausable, HasFromInterface t Pausable, HasArchive t, HasCreate t)
+     => ContractId t -> t -> Update (ContractId t)
 
 -- | The guard and the flip without the create: returns the template value
 --   with the flag set, so the caller can set sibling fields on it with a
@@ -184,10 +186,11 @@ pause : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
 markPaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
            => t -> Update t
 
--- | Guarded flip to unpaused. Fails with eExpectedPause if not paused,
---   eFlagNotApplied if the flag did not change.
-unpause : (HasToInterface t Pausable, HasFromInterface t Pausable, HasCreate t)
-       => t -> Update (ContractId t)
+-- | Guarded flip to unpaused, with the same archive-and-create shape as
+--   `pause`. Fails with eExpectedPause if not paused, eFlagNotApplied if the
+--   flag did not change.
+unpause : (HasToInterface t Pausable, HasFromInterface t Pausable, HasArchive t, HasCreate t)
+        => ContractId t -> t -> Update (ContractId t)
 
 markUnpaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
              => t -> Update t
@@ -319,7 +322,7 @@ may unpause, at no cost. Irrevocable surrender of the switch - XRPL's
 "No Freeze" - is the consumer archiving their authority contract with no
 successor; this package has no authority contract to stand in the way.
 
-**Contention.** A flip is a consuming exercise on the implementing contract, so
+**Contention.** A flip archives the implementing contract, so
 it conflicts with every concurrent exercise and fetch of that contract and
 rejects them. Committed work is unaffected and a gated choice refuses to start
 while paused - origination-only semantics, as committed in research. Where a
@@ -384,14 +387,14 @@ template Vault
         vault <- create this with balance = 0.0
         pure (vault, payout)
 
-    -- The pause authority. Must be consuming.
-    choice Vault_Pause : ContractId Vault
+    -- The pause authority. Nonconsuming: `pause` archives `self` itself.
+    nonconsuming choice Vault_Pause : ContractId Vault
       controller admin
-      do pause this
+      do pause self this
 
-    choice Vault_Unpause : ContractId Vault
+    nonconsuming choice Vault_Unpause : ContractId Vault
       controller admin
-      do unpause this
+      do unpause self this
 ```
 
 Adoption cost: one template field, a three-line `interface instance`, one
@@ -506,11 +509,14 @@ they belong in the package README as well as in the Invariants stage.
    permitting direction. Documentation and tests carry this guarantee, not the
    type system. Solidity has the same limitation and at least makes the missing
    modifier visible in the signature; Daml offers no equivalent marker.
-2. **The consumer's flip choice must be consuming.** `pause` creates the
-   successor and cannot archive the predecessor, because an interface method
-   sees `this` but not `self`. A nonconsuming flip leaves two active contracts
-   with different flags and no error. This is the Daml Finance `acquireImpl`
-   pattern and carries the same obligation.
+2. **A `markPaused` caller must archive the predecessor.** `pause` and
+   `unpause` are top-level functions, not interface methods, so they take
+   `self` and archive it: a nonconsuming caller gets the archive, and a
+   consuming caller fails on the second archive. Either mistake fails closed.
+   `markPaused` and `markUnpaused` return a value and archive nothing, because
+   the caller owns the create; a nonconsuming caller that forgets
+   `archive self` leaves two active contracts with different flags and no
+   error. Documentation and tests carry this obligation.
 3. **Field preservation in `setPaused`.** The flag is verified by
    `eFlagNotApplied`; that every other field survived is not, and cannot be.
 
@@ -740,7 +746,8 @@ Both packages now conform. `dpm build --all` succeeds, `scripts/check.sh`
 reports OK, both packages lint with no hints, and all 21 scripts in
 `test/pausable-api-v1` pass. The test fixtures cover the full surface, including
 the three routes to `eFlagNotApplied`, the `eImplementerTypeMismatch` path, the
-unenforceable consuming-choice obligation, and the sibling-field flips.
+consuming flip caller that fails closed, the unenforceable `archive self`
+obligation of `markPaused`, and the sibling-field flips.
 
 Two things the coverage report flags that are expected: `Decoy` is never created
 on the ledger because it is only constructed inside `BrokenWrongTemplate`'s
@@ -758,7 +765,7 @@ under `spike/` and `final/`. They are not part of the repository.
 ## Open Questions
 
 1. **The three unchecked properties need INV entries and negative tests.** The
-   guard being optional, the consuming-choice obligation, and field preservation
+   guard being optional, the `archive self` obligation of `markPaused`, and field preservation
    in `setPaused`. The first two are the ones that can silently produce a
    pause that does not hold.
 
@@ -769,14 +776,16 @@ under `spike/` and `final/`. They are not part of the repository.
    `eFlagNotApplied` and `eImplementerTypeMismatch` respectively. The Tests
    stage inherits these fixtures rather than deciding whether to build them.
 
-3. **Resolved: the nonconsuming-flip bug is asserted executably.** `LeakyVault`
-   has a `nonconsuming` pause choice, and
-   `test_nonconsumingFlipLeavesTwoContracts` shows the original and the
-   successor both active, one unpaused and one paused, with no error. It
+3. **Resolved: the missing-archive bug is asserted executably.** `LeakyRegistry`
+   has a `nonconsuming` pause choice that calls `markPaused` without
+   `archive self`, and `test_markPausedWithoutArchiveLeavesTwoContracts` shows
+   the original and the successor both active, one unpaused and one paused,
+   with no error. `ConsumingFlipVault` and `test_consumingFlipChoiceFails`
+   show the other direction failing closed for `pause`. It
    asserts a defect in consumer code rather than a property of this package,
    which is the point - the obligation is unenforceable, so the test is the
    only executable statement of it. It stays in the test suite and is also
-   documented on `pause` and in the README.
+   documented on `markPaused` and in the README.
 
 4. **Package version and release identity.** `0.1.0` and unstable, or a version
    that signals the frozen surface is final? The interface cannot change after
