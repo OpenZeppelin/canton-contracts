@@ -40,6 +40,97 @@ expression and the view names no party. Reading the flag needs no choice
 either: `isPaused` answers on-ledger with no extra node, and an off-ledger
 reader queries the interface view.
 
+## Usage
+
+Adopting the switch is four steps. Each one names the function it uses and the
+rule that goes with it.
+
+**1. Hold the flag and implement the interface.** Add a `paused : Bool` field to
+the template you protect, and give it an interface instance. `setPaused` must
+return your own template with the flag set and nothing else changed:
+
+```daml
+template Vault
+  with
+    admin : Party
+    owner : Party
+    balance : Decimal
+    paused : Bool
+  where
+    signatory admin, owner
+
+    interface instance Pausable for Vault where
+      view = PausableView with paused
+      setPaused b = toInterface (this with paused = b)
+```
+
+Never call `setPaused` yourself. It is the hook the library calls; it runs no
+guard and creates nothing.
+
+**2. Guard the choices that a pause must stop.** Call `whenNotPaused this` as
+the first statement of every gated choice body. It takes the contract value the
+choice runs on, never a contract ID, so no caller can hand in a different
+switch. A choice without the call is not gated; the library cannot detect the
+omission.
+
+```daml
+    choice Vault_Withdraw : ContractId Vault
+      with amount : Decimal
+      controller owner
+      do
+        whenNotPaused this
+        create this with balance = balance - amount
+```
+
+`whenPaused this` is the mirror guard for a choice that may run only during an
+incident, such as an emergency drain. `isPaused this` returns the flag as a
+`Bool` for a choice that branches rather than refuses; it never fails.
+
+**3. Write the flip choices.** Call `pause this` or `unpause this` from a
+**consuming** choice whose controller and body express your pause authority.
+Each one checks the guard, verifies that `setPaused` set the flag, and creates
+the successor contract. The choice returns the new contract ID.
+
+```daml
+    choice Vault_Pause : ContractId Vault
+      controller admin
+      do pause this
+
+    choice Vault_Unpause : ContractId Vault
+      controller admin
+      do unpause this
+```
+
+When the successor must also carry other field changes, use `markPaused this`
+or `markUnpaused this` instead. They run the same guard and the same checks but
+return the template value rather than creating it, so you set the sibling fields
+with a record update and create once. Leave `paused` alone in that update.
+
+```daml
+    choice Registry_Pause : ContractId Registry
+      with reason : Optional Text
+      controller admin
+      do
+        r <- markPaused this
+        create r with pauseReason = reason
+```
+
+Do not call `pause` and then archive and recreate its result to change other
+fields: that is two archives and two creates in one transaction, and
+`markPaused` exists to avoid it.
+
+**4. Assert on the constants in your tests.** A gated choice that runs while
+paused fails with `eEnforcedPause`; a paused-only choice that runs while
+unpaused, and `unpause` on an unpaused contract, fail with `eExpectedPause`.
+`eFlagNotApplied` and `eImplementerTypeMismatch` fire only when an interface
+instance breaks the `setPaused` rule, so a test that pauses once catches a
+mis-wired implementation before it ships.
+
+```daml
+Left err <- trySubmit owner do exerciseCmd vault Vault_Withdraw with amount = 1.0
+-- err carries eEnforcedPause
+```
+
 ## Authority and lifecycle
 
 The interface ships no access control, exactly as `_pause()` and `_unpause()`
