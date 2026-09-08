@@ -22,12 +22,9 @@ choice:
 - `whenNotPaused` and `whenPaused`: the guards a gated choice calls.
 - `isPaused`: `paused()` as a pure function, for a choice that branches on the
   flag rather than refusing to run.
-- `pause` and `unpause`: the `_pause()` and `_unpause()` analogues. Each checks
-  the guard, archives the contract at `self`, and creates the successor with
-  the new flag.
-- `markPaused` and `markUnpaused`: the same guard and flip, returning the
-  template value instead of creating it, so that your choice can set sibling
-  fields on it and create once.
+- `pause` and `unpause`: the `_pause()` and `_unpause()` analogues.
+  Each checks the guard, sets the flag, verifies it, and returns the template
+  value for your choice to create.
 - `eEnforcedPause`, `eExpectedPause`, `eFlagNotApplied`, and
   `eImplementerTypeMismatch`: the failure statuses. Each is a `FailureStatus`
   with a stable `errorId` under `openzeppelin.com/pausable-`, so an off-ledger
@@ -89,49 +86,45 @@ omission.
 incident, such as an emergency drain. `isPaused this` returns the flag as a
 `Bool` for a choice that branches rather than refuses; it never fails.
 
-**3. Write the flip choices.** Call `pause self this` or `unpause self this`
-from a **nonconsuming** choice whose controller and body express your pause
-authority. Each one checks the guard, verifies that `setPaused` set the flag,
-archives the contract at `self`, and creates the successor. The choice returns
-the new contract ID. A consuming flip choice fails on its first use, because
-the contract is already archived when `pause` archives it again; the mistake
-cannot leave two contracts behind.
+**3. Write the flip choices.** Call `pause this` or `unpause this`
+from a choice whose controller and body express your pause authority. Each one
+checks the guard, verifies that `setPaused` set the flag, and returns the
+template value with the new flag. Your choice creates it. A consuming choice
+archives the predecessor before the body runs, so this is the whole flip:
 
 ```daml
-    nonconsuming choice Vault_Pause : ContractId Vault
+    choice Vault_Pause : ContractId Vault
       controller admin
-      do pause self this
+      do create =<< pause this
 
-    nonconsuming choice Vault_Unpause : ContractId Vault
+    choice Vault_Unpause : ContractId Vault
       controller admin
-      do unpause self this
+      do create =<< unpause this
 ```
 
-When the successor must also carry other field changes, use `markPaused this`
-or `markUnpaused this` instead. They run the same guard and the same checks but
-return the template value rather than creating it, so you set the sibling fields
-with a record update and create once. Leave `paused` alone in that update, and
-leave alone every field that determines the signatories or the observers: a
-changed signatory field fails the create, and a dropped observer silently
-narrows who sees the paused contract. These two archive nothing, so your choice must archive the contract it runs on: call
-`archive self` beside them, as below, or make the choice consuming.
+When the successor must also carry other field changes, set them with a record
+update on the returned value and create once. Leave `paused` alone in that
+update, and leave alone every field that determines the signatories or the
+observers: a changed signatory field fails the create, and a dropped observer
+silently narrows who sees the paused contract.
 
 ```daml
     choice Registry_Pause : ContractId Registry
       with reason : Optional Text
       controller admin
       do
-        r <- markPaused this
+        r <- pause this
         create r with pauseReason = reason
 ```
 
-Do not call `pause` and then archive and recreate its result to change other
-fields: that is two archives and two creates in one transaction, and
-`markPaused` exists to avoid it.
+The choice kind is yours. The functions archive nothing, so a nonconsuming
+flip choice must call `archive self` beside the create, as any nonconsuming
+choice that replaces its contract must.
 
 **4. Assert on the failure statuses in your tests.** A gated choice that runs
 while paused fails with `eEnforcedPause`; a paused-only choice that runs while
-unpaused, and `unpause` on an unpaused contract, fail with `eExpectedPause`.
+unpaused, and `unpause` on an unpaused contract, fail with
+`eExpectedPause`.
 `eFlagNotApplied` and `eImplementerTypeMismatch` fire only when an interface
 instance breaks the `setPaused` rule, so a test that pauses once catches a
 mis-wired implementation before it ships. Every failure is raised with
@@ -158,10 +151,9 @@ interface instance Pausable for Vault where
   view = PausableView with paused
   setPaused b = toInterface (this with paused = b)
 
-nonconsuming choice Vault_Pause : ContractId Vault
+choice Vault_Pause : ContractId Vault
   controller admin
-  do
-    pause self this
+  do create =<< pause this
 ```
 
 Any authority model fits, because the check runs in the choice body rather than
@@ -170,26 +162,25 @@ fetch a credential to decide who may act; a role, an M-of-N approval, or a
 timelock therefore takes the caller and the credential as choice arguments:
 
 ```daml
-nonconsuming choice TokenRules_Pause : ContractId TokenRules
+choice TokenRules_Pause : ContractId TokenRules
   with caller : Party; grantCid : ContractId RoleGrant
   controller caller
   do
     grant <- fetch grantCid
     requireRole caller "PAUSER_ROLE" admin grant
-    pause self this
+    create =<< pause this
 ```
 
-- Your `pause` and `unpause` choices are **nonconsuming**, because the flip
-  archives `self`. A choice that uses `markPaused` or `markUnpaused` instead
-  must archive the contract itself, with `archive self` or by being consuming;
-  otherwise the unpaused contract stays live beside its paused copy, with no
-  error.
+- `pause` and `unpause` archive nothing. Your flip choice archives
+  the predecessor and creates the successor: a consuming choice does the
+  archive itself, and a nonconsuming one calls `archive self`.
 - Pausing while paused fails with `eEnforcedPause`, and unpausing while unpaused
   fails with `eExpectedPause`, matching `_pause` and `_unpause` in Solidity.
 - A flip archives the contract, so outstanding contract IDs and disclosures for
   it go stale. Callers re-read the contract after a pause or an unpause.
-- `setPaused` is a public interface method, but it is pure: it yields a value
-  and changes nothing. Creating the successor needs the implementing template's
+- `setPaused`, `pause`, and `unpause` are callable on an interface value, but
+  each yields a value and changes nothing, and there is no `create` for an
+  interface value. Creating the successor needs the implementing template's
   signatory authority. A party without that authority cannot flip the flag,
   whatever contract its choice runs on.
 
@@ -238,9 +229,9 @@ ledger, so the record shows when the pause held, not which attempts it blocked.
   checked, and a flip that fails to apply it fails with `eFlagNotApplied`, but
   nothing checks the other fields, so a wrong implementation silently rewrites
   contract state on every pause.
-- After `markPaused` or `markUnpaused`, the record update in your own `create`
+- After `pause` or `unpause`, the record update in your own `create`
   must leave `paused` alone. The library checks the value it returns, not the
-  value you create, so `create r with paused = False` after `markPaused` is a
+  value you create, so `create r with paused = False` after `pause` is a
   pause that does not pause, with no error. The same update must not change a
   field that determines the signatories or the observers; dropping an observer
   succeeds and silently narrows who sees the paused contract.
@@ -257,7 +248,7 @@ version of a package name whose first version defines an interface, so no
 `openzeppelin-pausable-api-v1` above the uploaded version can ever be uploaded.
 The guards, the flips, and the failure statuses ship in the same DAR and run
 from the same package ID, so they are frozen with the interface. Any change,
-including a bug fix in `markPaused`, ships as a sibling
+including a bug fix in `pause`, ships as a sibling
 `openzeppelin-pausable-api-v2` package with module `OpenZeppelin.PausableV2`,
 and the two coexist.
 
@@ -307,5 +298,5 @@ Two runnable consumer projects, each building against this DAR through
   adoption, the guards, an escape hatch that stays open while paused, and a
   recovery path that runs only while paused.
 - [`examples/pausable/registry`](../../../examples/pausable/registry):
-  `markPaused` and `markUnpaused` recording CIP-0112 `pauseInfo` fields in the
+  `pause` and `unpause` recording CIP-0112 `pauseInfo` fields in the
   same transaction as the flip.

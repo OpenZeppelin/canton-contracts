@@ -26,13 +26,13 @@
 -- of that kind lives in a choice body, which means the choice must take the
 -- caller and its credential as arguments - and only the consumer can write it:
 --
--- > nonconsuming choice TokenRules_Pause : ContractId TokenRules
+-- > choice TokenRules_Pause : ContractId TokenRules
 -- >   with caller : Party; grantCid : ContractId RoleGrant
 -- >   controller caller
 -- >   do
 -- >     grant <- fetch grantCid
 -- >     requireRole caller "PAUSER_ROLE" admin grant
--- >     pause self this
+-- >     create =<< pause this
 --
 -- A consumer whose pause authority really is one party writes the same choice
 -- with that party as the controller and no credential argument. The pause
@@ -50,8 +50,8 @@
 -- | `paused()`            | `isPaused`, or the interface view              |
 -- | `whenNotPaused`       | `whenNotPaused`                                |
 -- | `whenPaused`          | `whenPaused`                                   |
--- | `_pause()`            | `pause`, `markPaused`                          |
--- | `_unpause()`          | `unpause`, `markUnpaused`                      |
+-- | `_pause()`            | `pause`                                   |
+-- | `_unpause()`          | `unpause`                                 |
 -- | `EnforcedPause()`     | `eEnforcedPause`                               |
 -- | `ExpectedPause()`     | `eExpectedPause`                               |
 -- | `Paused`/`Unpaused`   | the exercise node in the transaction tree      |
@@ -77,9 +77,20 @@
 --
 -- CIP-0112's `pauseInfo` fields are deliberately absent. A registry that must
 -- serve `reason` and `until` on its metadata endpoint carries them as its own
--- template fields beside `paused` and sets them on the value that `markPaused`
+-- template fields beside `paused` and sets them on the value that `pause`
 -- returns, so the whole response still comes from one on-ledger contract without freezing those
 -- fields into this interface.
+--
+-- # The flip is a value, not a ledger action
+--
+-- `pause` and `unpause` guard the transition, apply it, verify it, and
+-- return the new template value. They archive nothing and create nothing. The
+-- consumer's choice owns both, which leaves the choice kind free: a consuming
+-- choice archives the predecessor and creates the value, a nonconsuming one
+-- adds `archive self`, and a `postconsuming` one works the same as consuming.
+-- The interface cannot declare the choice, because a choice needs a controller
+-- and the pause authority is the consumer's to define, so there is no place in
+-- this package for the archive to live.
 --
 -- # Limits this module cannot enforce
 --
@@ -88,13 +99,12 @@
 --
 -- 1. No Daml construct forces a gated choice to call `whenNotPaused`. A
 --    forgotten guard fails silently in the permitting direction.
--- 2. A choice that calls `markPaused` or `markUnpaused` must archive the
---    contract it runs on, either by being consuming or with `archive self`.
---    `pause` and `unpause` take `self` and archive it themselves, so they
---    carry no such obligation.
+-- 2. The flip returns a value. The consumer's choice creates exactly one
+--    successor from it and archives the predecessor, as any choice that
+--    replaces its contract does. A consuming choice does the archive itself.
 -- 3. `setPaused` must preserve every field other than the flag. The flag
 --    itself is verified; the rest cannot be.
--- 4. A record update applied to the value that `markPaused` or `markUnpaused`
+-- 4. A record update applied to the value that `pause` or `unpause`
 --    returns must leave the flag alone. The check runs on the returned value,
 --    and the caller owns the `create` that follows it.
 --
@@ -133,14 +143,15 @@ data PausableView = PausableView with
 --   detail about why a pause is in force out of the implementing template's
 --   observable fields.
 -- Authorization assumptions: none. The interface confers no ability to pause.
---   The flip archives the contract and creates the successor, so it needs the
---   implementing template's signatory authority. A party without that
+--   `pause` and `unpause` are callable on an interface value, but they yield a
+--   value, and there is no `create` for an interface value. The consumer's
+--   flip choice archives the contract and creates the successor, so it needs
+--   the implementing template's signatory authority. A party without that
 --   authority cannot flip the flag, whatever contract its choice runs on.
 --   Authorization of the flip is entirely the consumer's choice to define.
--- Archival behavior: `setPaused` is pure, and `markPaused` and `markUnpaused`
---   touch the ledger only to fail. `pause` and `unpause` archive the contract
---   whose id they are given and create the successor, so the consumer's flip
---   choice is nonconsuming. See `pause`.
+-- Archival behavior: none. `setPaused` is pure, and `pause` and
+--   `unpause` touch the ledger only to fail. The consumer's flip choice
+--   archives the predecessor and creates the successor. See `pause`.
 -- Failure modes: none of its own. The guards fail with `eEnforcedPause` or
 --   `eExpectedPause`; the flips additionally fail with `eFlagNotApplied` or
 --   `eImplementerTypeMismatch` when an implementation breaks the law below.
@@ -167,11 +178,9 @@ interface Pausable where
     --   one fails at runtime with `eImplementerTypeMismatch`. Ignoring the argument
     --   fails with `eFlagNotApplied`.
     --
-    --   Do not call this method from a choice body. `pause` and `unpause` add the
-    --   guard that makes a double flip fail, verify the flag, and create the
-    --   successor contract; `markPaused` and `markUnpaused` do the same without
-    --   the create, for a choice that sets other fields before creating. Calling
-    --   `setPaused` directly skips every one of those checks.
+    --   Do not call this method from a choice body. `pause` and
+    --   `unpause` add the guard that makes a double flip fail and verify
+    --   that the flag changed. Calling `setPaused` directly skips both checks.
 
 -- | Fail unless the contract is unpaused. The `whenNotPaused` modifier.
 --
@@ -199,92 +208,68 @@ isPaused x = (view (toInterface @Pausable x)).paused
 
 -- | Pause the contract. The `_pause()` analogue: it carries no authorization,
 -- so call it from a choice whose controller and body express your own pause
--- authority. It archives the contract at `self` and creates the successor, so
--- the calling choice is `nonconsuming`. Fails with `eEnforcedPause` if the
--- contract is already paused.
+-- authority. It guards, sets the flag through `setPaused`, verifies that the
+-- flag changed, and returns the template value. The choice creates it:
 --
--- > nonconsuming choice Vault_Pause : ContractId Vault
+-- > choice Vault_Pause : ContractId Vault
 -- >   controller admin
--- >   do
--- >     pause self this
+-- >   do create =<< pause this
 --
--- Both arguments must name the contract the choice runs on. A consuming
--- calling choice fails, because the contract is already archived when `pause`
--- archives it again; that failure is deliberate, so that a flip can never
--- leave the unpaused contract live beside its paused copy.
-pause : ( HasToInterface t Pausable, HasFromInterface t Pausable
-        , HasArchive t, HasCreate t )
-     => ContractId t -> t -> Update (ContractId t)
-pause self x = do
-  y <- markPaused x
-  archive self
-  create y
-
--- | Guard, then return the template value with the flag set, without creating
--- it. Use this when the successor must carry other field changes as well: set
--- them with a record update and create the result yourself, in the same
--- transaction and with no intermediate contract.
+-- When the successor must carry other field changes as well, set them with a
+-- record update on the returned value and create once, in the same transaction
+-- and with no intermediate contract. A registry that must serve CIP-0112's
+-- `pauseInfo` records the reason as it pauses:
 --
--- A registry that must serve CIP-0112's `pauseInfo` records the reason as it
--- pauses:
---
--- > nonconsuming choice Registry_Pause : ContractId Registry
+-- > choice Registry_Pause : ContractId Registry
 -- >   with reason : Optional Text
 -- >   controller admin
 -- >   do
--- >     r <- markPaused this
--- >     archive self
+-- >     r <- pause this
 -- >     create r with pauseReason = reason
 --
--- CAUTION: unlike `pause`, this archives nothing, because the caller owns the
--- create. The calling choice must archive the contract it runs on, with
--- `archive self` as above or by being consuming; otherwise the unpaused
--- contract stays live beside its paused copy, with no error. The flag is
--- verified on the returned value; a record update that clears it again is the
--- caller's own error, and nothing checks it. The update must also leave alone
--- every field that determines the signatories or the observers: a changed
--- signatory field makes the create fail for lack of authority, and a dropped
--- observer silently narrows who sees the paused contract.
+-- The function archives nothing, so the choice kind is the consumer's. A
+-- consuming choice, as above, archives the predecessor before the body runs. A
+-- nonconsuming choice must call `archive self` beside the create, as any
+-- nonconsuming choice that replaces its contract must.
+--
+-- CAUTION: the flag is verified on the returned value; a record update that
+-- clears it again is the caller's own error, and nothing checks it. The update
+-- must also leave alone every field that determines the signatories or the
+-- observers: a changed signatory field makes the create fail for lack of
+-- authority, and a dropped observer silently narrows who sees the paused
+-- contract.
 --
 -- Fails with `eEnforcedPause` if already paused, `eFlagNotApplied` if the
 -- implementation did not set the flag, or `eImplementerTypeMismatch` if
 -- `setPaused` returned another template.
-markPaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
-           => t -> Update t
-markPaused x = do
+pause : (HasToInterface t Pausable, HasFromInterface t Pausable)
+      => t -> Update t
+pause x = do
   whenNotPaused x
   y <- flipTo True x
   unless (isPaused y) (failWithStatus eFlagNotApplied)
   pure y
 
--- | Unpause the contract. The `_unpause()` analogue: it archives the contract
--- at `self` and creates the successor, from a `nonconsuming` choice exactly as
--- `pause`. Fails with `eExpectedPause` if the contract is not paused.
-unpause : ( HasToInterface t Pausable, HasFromInterface t Pausable
-          , HasArchive t, HasCreate t )
-        => ContractId t -> t -> Update (ContractId t)
-unpause self x = do
-  y <- markUnpaused x
-  archive self
-  create y
-
--- | Guard, then return the template value with the flag cleared, without
--- creating it. The counterpart of `markPaused`, for example to clear the
--- fields that recorded why the pause was in force:
+-- | Unpause the contract. The `_unpause()` analogue, used exactly as
+-- `pause`:
 --
--- > r <- markUnpaused this
--- > archive self
+-- > choice Vault_Unpause : ContractId Vault
+-- >   controller admin
+-- >   do create =<< unpause this
+--
+-- A registry clears the fields that recorded why the pause was in force:
+--
+-- > r <- unpause this
 -- > create r with pauseReason = None
 --
--- The same caution as `markPaused`: the calling choice must archive the
--- contract it runs on.
+-- The same caution as `pause` applies to the record update.
 --
 -- Fails with `eExpectedPause` if not paused, `eFlagNotApplied` if the
 -- implementation did not clear the flag, or `eImplementerTypeMismatch` if
 -- `setPaused` returned another template.
-markUnpaused : (HasToInterface t Pausable, HasFromInterface t Pausable)
-             => t -> Update t
-markUnpaused x = do
+unpause : (HasToInterface t Pausable, HasFromInterface t Pausable)
+        => t -> Update t
+unpause x = do
   whenPaused x
   y <- flipTo False x
   unless (not (isPaused y)) (failWithStatus eFlagNotApplied)

@@ -40,9 +40,9 @@ The pause authority does not have to be a signatory. Any party a controller
 expression can name works. A non-stakeholder controller sees the template
 payload at flip time, because a controller is an informee of the exercise node.
 
-The flip choices are nonconsuming. `pause` and `unpause` take `self`, archive
-it, and create the successor, so a consuming flip choice fails on its first use
-instead of leaving two contracts behind.
+The flip choices are consuming. `pause` and `unpause` return the
+flipped value and archive nothing, so the choice archives the predecessor and
+creates the successor.
 
 ## Build and run
 

@@ -6,7 +6,7 @@ import DA.Fail (FailureStatus)
 import Daml.Script
 
 import OpenZeppelin.PausableV1
-import OpenZeppelin.PausableV1TestSupport
+import OpenZeppelin.PausableV1TestFixtures
 
 data Fixture = Fixture with
   admin : Party
@@ -110,8 +110,8 @@ test_pauseUnpauseRoundTrip = script do
   isPaused v2 === False
   v2.balance === 100
 
--- | `pause` archives the contract at `self`, so the flip leaves exactly one
--- contract behind and the stale id is gone. INV-11.
+-- | The consuming flip choice archives the predecessor, so the flip leaves
+-- exactly one contract behind and the stale id is gone. INV-11.
 test_flipArchivesThePredecessor : Script ()
 test_flipArchivesThePredecessor = script do
   Fixture{..} <- setup
@@ -159,13 +159,12 @@ test_archiveIsSignatoryOnly = script do
   res <- queryContractId admin vault
   res === None
 
--- | `setPaused` is a public interface method, but it is pure and there is
--- no way to create from an interface value. A party holding a
--- `ContractId Pausable` can compute a flipped value and change nothing: the
--- flag on the ledger is untouched. `pause` does not even type check on an
--- interface value, because it needs `HasCreate` on a concrete template.
-test_pureMethodCannotFlipAnything : Script ()
-test_pureMethodCannotFlipAnything = script do
+-- | `pause` is callable on an interface value, but it yields a value and there
+-- is no way to create from an interface value. A party holding a
+-- `ContractId Pausable` can compute a paused value and change nothing: the
+-- flag on the ledger is untouched.
+test_flipOnInterfaceValueChangesNothing : Script ()
+test_flipOnInterfaceValueChangesNothing = script do
   Fixture{..} <- setup
   rogue <- submit holder do createCmd Rogue with caller = holder
   computed <- submit holder do
@@ -177,12 +176,12 @@ test_pureMethodCannotFlipAnything = script do
 -- Sibling fields, set in the same transaction as the flip
 -------------------------------------------------------
 
--- | `markPaused` returns the flipped value without creating it, so the
+-- | `pause` returns the flipped value without creating it, so the
 -- consumer sets its own fields on it and creates once. A registry serves
 -- CIP-0112's `pauseInfo` from one on-ledger contract without those fields
 -- being frozen into the view.
-test_markPausedSetsSiblingFields : Script ()
-test_markPausedSetsSiblingFields = script do
+test_pauseSetsSiblingFields : Script ()
+test_pauseSetsSiblingFields = script do
   admin <- allocateParty "admin"
   reg <- submit admin do
     createCmd Registry with admin, paused = False, pauseReason = None
@@ -192,9 +191,9 @@ test_markPausedSetsSiblingFields = script do
   isPaused r === True
   r.pauseReason === Some "sanctions review"
 
--- | `markUnpaused` clears them on the way out.
-test_markUnpausedClearsSiblingFields : Script ()
-test_markUnpausedClearsSiblingFields = script do
+-- | `unpause` clears them on the way out.
+test_unpauseClearsSiblingFields : Script ()
+test_unpauseClearsSiblingFields = script do
   admin <- allocateParty "admin"
   reg <- submit admin do
     createCmd Registry with admin, paused = False, pauseReason = None
@@ -243,36 +242,6 @@ test_implementerReturningAnotherTemplateFailsOnUnpause = script do
   Left e <- trySubmit admin do exerciseCmd b BrokenWrongTemplate_Unpause
   assertMsg "expected ImplementerTypeMismatch"
     (isFailureWith eImplementerTypeMismatch e)
-
--- The choice kind of the flip
--------------------------------------------------------
-
--- | A consuming flip choice fails: the choice has already archived the
--- contract when `pause` archives `self`. The mistake fails closed, and the
--- contract stays unpaused and active. INV-11.
-test_consumingFlipChoiceFails : Script ()
-test_consumingFlipChoiceFails = script do
-  admin <- allocateParty "admin"
-  cv <- submit admin do createCmd ConsumingFlipVault with admin, paused = False
-  submitMustFail admin do exerciseCmd cv ConsumingFlipVault_Pause
-  Some v <- queryContractId admin cv
-  isPaused v === False
-
--- | The obligation the library cannot enforce: a nonconsuming choice that
--- calls `markPaused` and never archives leaves the unpaused contract live
--- beside its paused copy, with no error. This is why `markPaused` documents
--- the `archive self` requirement. INV-11.
-test_markPausedWithoutArchiveLeavesTwoContracts : Script ()
-test_markPausedWithoutArchiveLeavesTwoContracts = script do
-  admin <- allocateParty "admin"
-  lr <- submit admin do
-    createCmd LeakyRegistry with admin, paused = False, pauseReason = None
-  lr' <- submit admin do
-    exerciseCmd lr LeakyRegistry_Pause with reason = Some "incident"
-  Some original <- queryContractId admin lr
-  Some successor <- queryContractId admin lr'
-  isPaused original === False
-  isPaused successor === True
 
 -- The credential case: the consumer's own authority
 -------------------------------------------------------

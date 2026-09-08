@@ -3,7 +3,7 @@
 --
 -- A registry that serves CIP-0112 metadata records why a pause is in force and
 -- when it is expected to end. Those fields belong to the registry, not to the
--- frozen interface: `markPaused` guards, sets the flag, and returns the value,
+-- frozen interface: `pause` guards, sets the flag, and returns the value,
 -- and the choice sets the sibling fields on it before the create.
 --
 -- The metadata endpoint therefore serves `paused` and `pauseInfo{reason,
@@ -34,24 +34,22 @@ template Registry
       setPaused b = toInterface (this with paused = b)
 
     -- The flag and the reason change together, in one transaction, through the
-    -- library rather than around it. `markPaused` archives nothing, because
-    -- this choice owns the create, so the choice archives `self` itself.
-    nonconsuming choice Registry_Pause : ContractId Registry
+    -- library rather than around it. `pause` returns the value and this
+    -- consuming choice owns the create.
+    choice Registry_Pause : ContractId Registry
       with
         reason : Optional Text
         until : Optional Time
       controller admin
       do
-        r <- Pausable.markPaused this
-        archive self
+        r <- Pausable.pause this
         create r with pauseReason = reason, pauseUntil = until
 
     -- Unpausing clears what the pause recorded.
-    nonconsuming choice Registry_Unpause : ContractId Registry
+    choice Registry_Unpause : ContractId Registry
       controller admin
       do
-        r <- Pausable.markUnpaused this
-        archive self
+        r <- Pausable.unpause this
         create r with pauseReason = None, pauseUntil = None
 
     -- A gated operation, guarded the same way as in any other adopter.

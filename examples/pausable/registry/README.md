@@ -12,9 +12,9 @@ flip.
 
 ## What it shows
 
-- `markPaused` and `markUnpaused`. The library guards, sets the flag, and
-  returns the value; the choice archives `self`, sets `pauseReason` and
-  `pauseUntil` on the value, and creates once, through the library rather than
+- `pause` and `unpause`. The library guards, sets the flag, and
+  returns the value; the consuming choice sets `pauseReason` and
+  `pauseUntil` on the value and creates once, through the library rather than
   around it.
 - `pauseInfo.reason` and `pauseInfo.until` as fields of the registry rather than
   of the frozen interface. `PausableView` carries `paused` alone, so the
@@ -30,9 +30,8 @@ the recorded fields.
 ## Authority model
 
 `admin` is the sole signatory of `Registry` and the pause authority. The flip
-choices call `archive self` beside `markPaused` and `markUnpaused`, which is the
-obligation the library cannot enforce: those two functions return a value and
-archive nothing.
+choices are consuming: `pause` and `unpause` return a value and
+archive nothing, so the choice archives the predecessor and creates once.
 
 ## Reporting, not enforcement
 
