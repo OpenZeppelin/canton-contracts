@@ -85,6 +85,37 @@ choice TokenRules_Pause : ContractId TokenRules
   signatory authority, which only a choice on that template carries, so a
   choice on an unrelated contract cannot flip another template's flag.
 
+## Reading the flag off-ledger
+
+`PausableView` is the whole data surface of the interface:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `paused` | `Bool` | `True` while the contract refuses its gated choices |
+
+A wallet, a registry's metadata endpoint, or an auditor reads it without knowing
+the implementing template. Query the Active Contract Service or the update
+stream with an interface filter on `OpenZeppelin.PausableV1:Pausable` and
+request the interface view; every implementing contract visible to the querying
+party returns a `PausableView`. On the Ledger API this is a `CumulativeFilter`
+with an `InterfaceFilter` that sets `include_interface_view`, and the JSON
+Ledger API accepts the same filter shape. In Daml Script the equivalent is:
+
+```daml
+Some v <- queryInterfaceContractId reader (toInterfaceContractId @Pausable cid)
+v.paused === True
+```
+
+A flip archives one contract and creates another, so an Active Contract Service
+delta subscriber sees the state change as an archive event followed by a create
+event carrying the new view. There is no event template, and no `Paused` or
+`Unpaused` event as in Solidity: the consumer's flip choice is a node in the
+transaction tree, recorded with its actor and its ledger time.
+
+The interval during which a pause was in force is the lifetime of a contract
+whose view reads `paused = True`. Refused operations write nothing to the
+ledger, so the record shows when the pause held, not which attempts it blocked.
+
 ## Scope and security caveats
 
 - This is a switch per contract. Pausing several templates at once means one
