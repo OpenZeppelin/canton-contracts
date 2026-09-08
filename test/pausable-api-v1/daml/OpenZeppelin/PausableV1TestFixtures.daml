@@ -22,8 +22,8 @@ template Vault
       view = PausableView with paused
       setPaused b = toInterface (this with paused = b)
 
-    -- The `external pause() onlyOwner` analogue: the consumer supplies the
-    -- authority, the library supplies the flip and the guard.
+    -- The consumer supplies the authority, the library supplies the flip and
+    -- the guard.
     choice Vault_Pause : ContractId Vault
       controller admin
       do

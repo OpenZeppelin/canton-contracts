@@ -1,7 +1,6 @@
 # Pausable API V1
 
-A frozen Daml interface that gives a template an emergency-stop switch, modelled
-on OpenZeppelin's `Pausable.sol`.
+A frozen Daml interface that gives a template an emergency-stop switch.
 
 | Field | Value |
 |---|---|
@@ -9,7 +8,6 @@ on OpenZeppelin's `Pausable.sol`.
 | Public module | `OpenZeppelin.PausableV1` |
 | Version | `0.1.0` |
 | Status | Pre-release; unaudited |
-| Solidity analogue | `Pausable` |
 
 ## What it provides
 
@@ -20,10 +18,9 @@ choice:
 - `setPaused`: the implementer's one obligation. A pure method that returns the
   template value with the flag set and every other field unchanged.
 - `whenNotPaused` and `whenPaused`: the guards a gated choice calls.
-- `isPaused`: `paused()` as a pure function, for a choice that branches on the
+- `isPaused`: the flag as a pure function, for a choice that branches on the
   flag rather than refusing to run.
-- `pause` and `unpause`: the `_pause()` and `_unpause()` analogues.
-  Each checks the guard, sets the flag, verifies it, and returns the template
+- `pause` and `unpause`: the guarded flips. Each checks the guard, sets the flag, verifies it, and returns the template
   value for your choice to create.
 - `eEnforcedPause`, `eExpectedPause`, `eFlagNotApplied`, and
   `eImplementerTypeMismatch`: the failure statuses. Each is a `FailureStatus`
@@ -142,9 +139,8 @@ not on the message text.
 
 ## Authority and lifecycle
 
-The interface ships no access control, exactly as `_pause()` and `_unpause()`
-are `internal` in Solidity. You write the choice that decides who may flip the
-switch, and the interface supplies the flip and the guard:
+The interface ships no access control. You write the choice that decides who
+may flip the switch, and the interface supplies the flip and the guard:
 
 ```daml
 interface instance Pausable for Vault where
@@ -175,7 +171,7 @@ choice TokenRules_Pause : ContractId TokenRules
   the predecessor and creates the successor: a consuming choice does the
   archive itself, and a nonconsuming one calls `archive self`.
 - Pausing while paused fails with `eEnforcedPause`, and unpausing while unpaused
-  fails with `eExpectedPause`, matching `_pause` and `_unpause` in Solidity.
+  fails with `eExpectedPause`.
 - A flip archives the contract, so outstanding contract IDs and disclosures for
   it go stale. Callers re-read the contract after a pause or an unpause.
 - `setPaused`, `pause`, and `unpause` are callable on an interface value, but
@@ -207,9 +203,8 @@ v.paused === True
 
 A flip archives one contract and creates another, so an Active Contract Service
 delta subscriber sees the state change as an archive event followed by a create
-event carrying the new view. There is no event template, and no `Paused` or
-`Unpaused` event as in Solidity: the consumer's flip choice is a node in the
-transaction tree, recorded with its actor and its ledger time.
+event carrying the new view. There is no event template: the consumer's flip
+choice is a node in the transaction tree, recorded with its actor and its ledger time.
 
 The interval during which a pause was in force is the lifetime of a contract
 whose view reads `paused = True`. Refused operations write nothing to the

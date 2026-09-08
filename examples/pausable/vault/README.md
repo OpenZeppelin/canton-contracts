@@ -22,7 +22,7 @@ for one owner, with an emergency stop that the admin controls.
   trap the owner's funds: the owner takes the whole balance as a `Payout` at
   any time. Gating is a decision per choice.
 - `Vault_Pause` and `Vault_Unpause`, the choices that name the pause authority.
-  The library ships none, exactly as `_pause()` is `internal` in Solidity.
+  The library ships none.
 - An off-ledger read of `PausableView` through the interface, which works
   against every implementing template.
 

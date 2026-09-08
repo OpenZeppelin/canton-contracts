@@ -1,30 +1,22 @@
 -- | OpenZeppelin Pausable - an emergency-stop switch for Daml templates.
 --
--- The Daml translation of `Pausable.sol`. In Solidity, `Pausable` is inherited:
--- the flag is a field of the contract that it protects, and gated functions
--- carry the `whenNotPaused` modifier. The Daml analogue of that inheritance is
--- an interface instance, so this package defines the interface and the guards,
--- and the implementing template holds the flag.
+-- The pause flag is a field of the template that it protects, and every gated
+-- choice calls a guard on it. This package defines the interface and the
+-- guards; the implementing template holds the flag.
 --
 -- Keeping the flag on the protected template is what makes the guard sound. The
 -- state cannot be substituted, because it is not a separate contract that a
 -- caller passes in; it is a field of the very contract the caller is exercising.
 -- No extra fetch, no extra disclosure, and no extra authority delegation.
 --
--- # One interface, no authorization
+-- # The consumer writes the flip choice
 --
--- Every operation in Solidity's `Pausable` is `internal` or a view: the
--- component ships no access control, and the deriving contract wires `_pause`
--- to `Ownable`, to `AccessControl`, or to whatever else it uses. This module
--- keeps that boundary. `Pausable` carries the flag, the getter, the guards, and
--- the guarded flips, and it names no authority at all. The consumer writes the
--- choice that decides who may flip the switch.
---
--- The boundary is forced, not chosen. A Daml controller expression is pure, so
--- it cannot fetch a role grant to decide who may act, and a single `Party`
--- field cannot express a role, an M-of-N approval, or a timelock. Authorization
--- of that kind lives in a choice body, which means the choice must take the
--- caller and its credential as arguments - and only the consumer can write it:
+-- The component ships no access control, and the boundary is forced, not
+-- chosen. A Daml controller expression is pure, so it cannot fetch a role grant
+-- to decide who may act, and a single `Party` field cannot express a role, an
+-- M-of-N approval, or a timelock. Authorization of that kind lives in a choice
+-- body, which means the choice must take the caller and its credential as
+-- arguments - and only the consumer can write it:
 --
 -- > choice TokenRules_Pause : ContractId TokenRules
 -- >   with caller : Party; grantCid : ContractId RoleGrant
@@ -42,25 +34,6 @@
 -- informee of the exercise node, so a non-stakeholder authority sees the
 -- template payload at flip time.
 --
--- # Solidity correspondence
---
--- | `Pausable.sol`        | This module                                    |
--- |-----------------------|------------------------------------------------|
--- | `bool _paused`        | `PausableView.paused`                          |
--- | `paused()`            | `isPaused`, or the interface view              |
--- | `whenNotPaused`       | `whenNotPaused`                                |
--- | `whenPaused`          | `whenPaused`                                   |
--- | `_pause()`            | `pause`                                   |
--- | `_unpause()`          | `unpause`                                 |
--- | `EnforcedPause()`     | `eEnforcedPause`                               |
--- | `ExpectedPause()`     | `eExpectedPause`                               |
--- | `Paused`/`Unpaused`   | the exercise node in the transaction tree      |
---
--- Solidity emits `Paused(account)` and `Unpaused(account)` because storage
--- writes are otherwise invisible. Daml needs no such event: the consumer's
--- pause choice is itself a node in the transaction tree, recorded with its
--- actor and timestamp and delivered to every stakeholder.
---
 -- # Scope
 --
 -- This is a switch per contract. Pausing several templates at once means one
@@ -75,38 +48,15 @@
 -- over an interval - bounded by the create and archive of a contract whose flag
 -- is set - and not the individual operations that were refused.
 --
--- CIP-0112's `pauseInfo` fields are deliberately absent. A registry that must
--- serve `reason` and `until` on its metadata endpoint carries them as its own
--- template fields beside `paused` and sets them on the value that `pause`
--- returns, so the whole response still comes from one on-ledger contract without freezing those
--- fields into this interface.
+-- CIP-0112's `pauseInfo` fields are deliberately absent from the view. A
+-- registry that must serve them carries them as its own template fields and
+-- sets them on the value that `pause` returns; see `pause`.
 --
--- # The flip is a value, not a ledger action
+-- # A forgotten guard is not caught
 --
--- `pause` and `unpause` guard the transition, apply it, verify it, and
--- return the new template value. They archive nothing and create nothing. The
--- consumer's choice owns both, which leaves the choice kind free: a consuming
--- choice archives the predecessor and creates the value, a nonconsuming one
--- adds `archive self`, and a `postconsuming` one works the same as consuming.
--- The interface cannot declare the choice, because a choice needs a controller
--- and the pause authority is the consumer's to define, so there is no place in
--- this package for the archive to live.
---
--- # Limits this module cannot enforce
---
--- Four properties are the implementer's responsibility, and none of them is
--- checked by the compiler:
---
--- 1. No Daml construct forces a gated choice to call `whenNotPaused`. A
---    forgotten guard fails silently in the permitting direction.
--- 2. The flip returns a value. The consumer's choice creates exactly one
---    successor from it and archives the predecessor, as any choice that
---    replaces its contract does. A consuming choice does the archive itself.
--- 3. `setPaused` must preserve every field other than the flag. The flag
---    itself is verified; the rest cannot be.
--- 4. A record update applied to the value that `pause` or `unpause`
---    returns must leave the flag alone. The check runs on the returned value,
---    and the caller owns the `create` that follows it.
+-- No Daml construct forces a gated choice to call `whenNotPaused`. A forgotten
+-- guard fails silently in the permitting direction, and neither the compiler
+-- nor this module detects it.
 --
 -- # Interfaces are frozen
 --
@@ -126,11 +76,6 @@ data PausableView = PausableView with
 
 -- | The switch. Implement this on any template that has a pause flag, whatever
 -- authority flips it.
---
--- The interface itself grants no authority and declares no choice. It gives the
--- implementer a uniform read for tooling, the two guards, and the guarded flips
--- - the analogues of Solidity's `internal _pause()` and `_unpause()`, callable
--- only from a choice the implementer writes.
 --
 -- Signatories and observers: this interface adds none. It inherits whatever the
 --   implementing template defines, which is why it costs no privacy surface.
@@ -152,9 +97,7 @@ data PausableView = PausableView with
 -- Archival behavior: none. `setPaused` is pure, and `pause` and
 --   `unpause` touch the ledger only to fail. The consumer's flip choice
 --   archives the predecessor and creates the successor. See `pause`.
--- Failure modes: none of its own. The guards fail with `eEnforcedPause` or
---   `eExpectedPause`; the flips additionally fail with `eFlagNotApplied` or
---   `eImplementerTypeMismatch` when an implementation breaks the law below.
+-- Failure modes: none of its own. See the guards, `pause`, and `unpause`.
 -- Upgrade and migration assumptions: frozen for the life of the package.
 --   `PausableView` gains no fields, and this interface gains no methods. A
 --   breaking change ships as a sibling `-v2` package.
@@ -182,7 +125,7 @@ interface Pausable where
     --   `unpause` add the guard that makes a double flip fail and verify
     --   that the flag changed. Calling `setPaused` directly skips both checks.
 
--- | Fail unless the contract is unpaused. The `whenNotPaused` modifier.
+-- | Fail unless the contract is unpaused.
 --
 -- Accepts an implementing template or a `Pausable`, so the same guard serves a
 -- consumer's gated choice and its flip choice.
@@ -196,20 +139,20 @@ interface Pausable where
 whenNotPaused : (HasToInterface t Pausable) => t -> Update ()
 whenNotPaused x = unless (not (isPaused x)) (failWithStatus eEnforcedPause)
 
--- | Fail unless the contract is paused. The `whenPaused` modifier.
+-- | Fail unless the contract is paused.
 -- Use it on recovery choices that may run only during an incident.
 whenPaused : (HasToInterface t Pausable) => t -> Update ()
 whenPaused x = unless (isPaused x) (failWithStatus eExpectedPause)
 
--- | `paused()` as a pure function, for a choice that branches on the flag
+-- | Read the flag as a pure function, for a choice that branches on the flag
 -- rather than refusing to run.
 isPaused : (HasToInterface t Pausable) => t -> Bool
 isPaused x = (view (toInterface @Pausable x)).paused
 
--- | Pause the contract. The `_pause()` analogue: it carries no authorization,
--- so call it from a choice whose controller and body express your own pause
--- authority. It guards, sets the flag through `setPaused`, verifies that the
--- flag changed, and returns the template value. The choice creates it:
+-- | Pause the contract. It carries no authorization, so call it from a choice
+-- whose controller and body express your own pause authority. It guards, sets
+-- the flag through `setPaused`, verifies that the flag changed, and returns the
+-- template value. The choice creates it:
 --
 -- > choice Vault_Pause : ContractId Vault
 -- >   controller admin
@@ -250,8 +193,7 @@ pause x = do
   unless (isPaused y) (failWithStatus eFlagNotApplied)
   pure y
 
--- | Unpause the contract. The `_unpause()` analogue, used exactly as
--- `pause`:
+-- | Unpause the contract, used exactly as `pause`:
 --
 -- > choice Vault_Unpause : ContractId Vault
 -- >   controller admin
@@ -282,7 +224,7 @@ flipTo b x = case fromInterface (setPaused (toInterface @Pausable x) b) of
   Some y -> pure y
   None -> failWithStatus eImplementerTypeMismatch
 
--- Failure statuses. The Solidity custom errors, plus the two that report an
+-- Failure statuses: the two that a guard raises, plus the two that report an
 -- implementation breaking the `setPaused` law. Each is a `FailureStatus`
 -- raised with `failWithStatus`, so a rejected submission reaches the Ledger
 -- API as `DAML_FAILURE` with the `errorId` below, and a client matches on the
