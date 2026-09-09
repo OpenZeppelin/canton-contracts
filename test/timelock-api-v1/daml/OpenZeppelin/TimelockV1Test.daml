@@ -27,8 +27,8 @@ setupWith config = do
   t0 <- getTime
   treasury <- submit admin do
     createCmd Treasury with
-      admin; proposer; executor; treasuryId = "treasury-1"; limit = 10.0; config
-      pending = []
+      admin; proposer; executors = Some [executor]; cancellers = [proposer, admin]
+      treasuryId = "treasury-1"; limit = 10.0; config; pending = []
   pure Fixture with ..
 
 setup : Script Fixture
@@ -42,6 +42,39 @@ scheduleLimit Fixture{..} newLimit delay = submit proposer do
 
 asOp : ContractId LimitChange -> ContractId Timelocked
 asOp = toInterfaceContractId
+
+opOf : (HasToInterface t Operation) => ContractId t -> ContractId Operation
+opOf = toInterfaceContractId
+
+targetOf : (HasToInterface t Timelock) => ContractId t -> ContractId Timelock
+targetOf = toInterfaceContractId
+
+-- | Execute `op` on `t` as `actor`, returning the successor treasury.
+execute : (HasToInterface o Operation, HasToInterface t Timelock)
+  => Party -> ContractId t -> ContractId o -> Script (ContractId Treasury)
+execute actor t op = fromInterfaceContractId @Treasury <$> submit actor do
+  exerciseCmd (opOf op) Operation_Execute with actor, target = targetOf t
+
+tryExecute : (HasToInterface o Operation, HasToInterface t Timelock)
+  => Party -> ContractId t -> ContractId o -> Script (Either SubmitError (ContractId Timelock))
+tryExecute actor t op = trySubmit actor do
+  exerciseCmd (opOf op) Operation_Execute with actor, target = targetOf t
+
+cancel : (HasToInterface o Operation) => Party -> ContractId Treasury -> ContractId o -> Script (ContractId Treasury)
+cancel actor t op = fromInterfaceContractId @Treasury <$> submit actor do
+  exerciseCmd (opOf op) Operation_Cancel with actor, target = targetOf t
+
+tryCancel : (HasToInterface o Operation) => Party -> ContractId Treasury -> ContractId o -> Script (Either SubmitError (ContractId Timelock))
+tryCancel actor t op = trySubmit actor do
+  exerciseCmd (opOf op) Operation_Cancel with actor, target = targetOf t
+
+cleanup : (HasToInterface o Operation) => Party -> ContractId Treasury -> ContractId o -> Script (ContractId Treasury)
+cleanup actor t op = fromInterfaceContractId @Treasury <$> submit actor do
+  exerciseCmd (opOf op) Operation_Cleanup with actor, target = targetOf t
+
+tryCleanup : (HasToInterface o Operation) => Party -> ContractId Treasury -> ContractId o -> Script (Either SubmitError (ContractId Timelock))
+tryCleanup actor t op = trySubmit actor do
+  exerciseCmd (opOf op) Operation_Cleanup with actor, target = targetOf t
 
 -- A guard failure reaches the submitter as the library's `FailureStatus`,
 -- whole: id, category, message, and metadata.
@@ -57,7 +90,8 @@ expectFailure status (Right _) = fail ("expected " <> status.errorId <> " but th
 -------------------------------------------------------
 
 -- | `scheduleAt` stores the requested `readyAt` and derives `expiresAt` from
--- the grace period, and the schedule choice records the operation as pending.
+-- the grace period, and the schedule choice records the operation as pending
+-- in the `Timelock` view.
 test_scheduleAtDerivesTheView : Script ()
 test_scheduleAtDerivesTheView = script do
   f@Fixture{..} <- setup
@@ -65,8 +99,11 @@ test_scheduleAtDerivesTheView = script do
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   Some v <- queryInterfaceContractId admin (asOp op)
   v === TimelockedView with readyAt, expiresAt = Some (addRelTime readyAt (days 7))
-  Some t <- queryContractId admin t1
-  t.pending === [asOp op]
+  Some tv <- queryInterfaceContractId admin (targetOf t1)
+  tv.pending === [asOp op]
+  tv.authority === admin
+  Some ov <- queryInterfaceContractId executor (opOf op)
+  ov === OperationView with executors = Some [executor], cancellers = [proposer, admin]
 
 -- | `scheduleAfter` measures the delay from the ledger time.
 test_scheduleAfterDerivesTheView : Script ()
@@ -107,7 +144,7 @@ test_zeroMinDelayAllowsImmediateReady : Script ()
 test_zeroMinDelayAllowsImmediateReady = script do
   f@Fixture{..} <- setupWith TimelockConfig with minDelay = hours 0, gracePeriod = None
   (t1, op) <- scheduleLimit f 20.0 (hours 0)
-  t2 <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
+  t2 <- execute executor t1 op
   Some t <- queryContractId admin t2
   t.limit === 20.0
 
@@ -119,87 +156,113 @@ test_noGracePeriodNeverExpires = script do
   Some v <- queryInterfaceContractId admin (asOp op)
   v.expiresAt === None
   passTime (days 400)
-  r <- trySubmit admin do
-    exerciseCmd t1 Treasury_Cleanup with opCid = asOp op, cleaner = admin
+  r <- tryCleanup admin t1 op
   expectFailure eNotExpired r
-  t2 <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
+  t2 <- execute executor t1 op
   Some t <- queryContractId admin t2
   t.limit === 20.0
 
 -- Executing
 -------------------------------------------------------
 
--- | The full lifecycle: schedule, wait, apply. The operation leaves the ledger
--- and the pending list. INV-2.
-test_applyAfterDelay : Script ()
-test_applyAfterDelay = script do
+-- | The full lifecycle: schedule, wait, execute. The operation leaves the
+-- ledger and the pending list, and the treasury carries the new limit. INV-2.
+test_executeAfterDelay : Script ()
+test_executeAfterDelay = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
-  t2 <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
+  t2 <- execute executor t1 op
   Some t <- queryContractId admin t2
   t.limit === 20.0
   t.pending === []
   gone <- queryContractId admin op
   gone === None
+  old <- queryContractId admin t1
+  old === None
 
--- | Applying before `readyAt` fails with `eNotReady`. INV-2.
-test_applyBeforeReadyFails : Script ()
-test_applyBeforeReadyFails = script do
+-- | Executing before `readyAt` fails with `eNotReady`. INV-2.
+test_executeBeforeReadyFails : Script ()
+test_executeBeforeReadyFails = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
-  r0 <- trySubmit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
+  r0 <- tryExecute executor t1 op
   expectFailure eNotReady r0
   passTime (days 2 - minutes 1)
-  r1 <- trySubmit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
+  r1 <- tryExecute executor t1 op
   expectFailure eNotReady r1
 
 -- | `readyAt` itself is ready: the lower bound is inclusive.
-test_applyAtReadyAtSucceeds : Script ()
-test_applyAtReadyAtSucceeds = script do
+test_executeAtReadyAtSucceeds : Script ()
+test_executeAtReadyAtSucceeds = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
-  _ <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
+  _ <- execute executor t1 op
   pure ()
 
--- | Applying at or after `expiresAt` fails with `eExpired`. INV-3.
-test_applyAfterExpiryFails : Script ()
-test_applyAfterExpiryFails = script do
+-- | Executing at or after `expiresAt` fails with `eExpired`. INV-3.
+test_executeAfterExpiryFails : Script ()
+test_executeAfterExpiryFails = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 9)
-  r <- trySubmit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
+  r <- tryExecute executor t1 op
   expectFailure eExpired r
 
 -- | The instant before `expiresAt` is still executable: the upper bound is
 -- exclusive.
-test_applyJustBeforeExpirySucceeds : Script ()
-test_applyJustBeforeExpirySucceeds = script do
+test_executeJustBeforeExpirySucceeds : Script ()
+test_executeJustBeforeExpirySucceeds = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 9 - minutes 1)
-  _ <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
+  _ <- execute executor t1 op
   pure ()
 
--- | An operation executes at most once: the apply choice archives it and
--- removes it from the pending list. INV-4.
+-- | An operation executes at most once: the execute choice archives it and
+-- the successor drops it from the pending list. INV-4.
 test_operationExecutesOnce : Script ()
 test_operationExecutesOnce = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
-  t2 <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
-  submitMustFail executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op
+  t2 <- execute executor t1 op
+  submitMustFail executor do
+    exerciseCmd (opOf op) Operation_Execute with actor = executor, target = targetOf t2
 
--- | Only the consumer's executor may apply; the interface names nobody.
-test_onlyTheConsumersExecutorMayApply : Script ()
-test_onlyTheConsumersExecutorMayApply = script do
+-- | Only an executor named on the operation may execute. INV-9.
+test_onlyNamedExecutorsMayExecute : Script ()
+test_onlyNamedExecutorsMayExecute = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
-  submitMustFail proposer do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
-  submitMustFail admin do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
+  r <- tryExecute proposer t1 op
+  expectFailure eNotExecutor r
+  r2 <- tryExecute admin t1 op
+  expectFailure eNotExecutor r2
+
+-- | With `executors = None`, any party that holds the contracts may execute:
+-- the open executor. INV-9.
+test_openExecutor : Script ()
+test_openExecutor = script do
+  admin <- allocateParty "admin"
+  proposer <- allocateParty "proposer"
+  stranger <- allocateParty "stranger"
+  t0 <- getTime
+  treasury <- submit admin do
+    createCmd Treasury with
+      admin; proposer; executors = None; cancellers = [proposer]
+      treasuryId = "open"; limit = 10.0; config = oneDayWeekGrace; pending = []
+  (t1, op) <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  passTime (days 2)
+  Some dOp <- queryDisclosure @LimitChange admin op
+  Some dT <- queryDisclosure @Treasury admin t1
+  new <- submit (actAs stranger <> disclose dOp <> disclose dT) do
+    exerciseCmd (opOf op) Operation_Execute with actor = stranger, target = targetOf t1
+  Some t <- queryContractId admin (fromInterfaceContractId @Treasury new)
+  t.limit === 20.0
 
 -- | Only the consumer's proposer may schedule.
 test_onlyTheConsumersProposerMaySchedule : Script ()
@@ -220,12 +283,11 @@ test_directlyCreatedOperationRefused = script do
   Fixture{..} <- setup
   forged <- submit admin do
     createCmd LimitChange with
-      admin; proposer; executor; treasuryId = "treasury-1"; newLimit = 1000.0
-      readyAt = t0; expiresAt = None
-  r <- trySubmit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = forged
+      admin; proposer; executors = Some [executor]; cancellers = [admin]
+      treasuryId = "treasury-1"; newLimit = 1000.0; readyAt = t0; expiresAt = None
+  r <- tryExecute executor treasury forged
   expectFailure eNotPending r
-  r2 <- trySubmit admin do
-    exerciseCmd treasury Treasury_Cancel with opCid = asOp forged, canceller = admin
+  r2 <- tryCancel admin treasury forged
   expectFailure eNotPending r2
 
 -- | An operation scheduled on one treasury is absent from another treasury's
@@ -235,32 +297,32 @@ test_operationBoundToItsTarget = script do
   f@Fixture{..} <- setup
   other <- submit admin do
     createCmd Treasury with
-      admin; proposer; executor; treasuryId = "treasury-2"; limit = 5.0
-      config = oneDayWeekGrace; pending = []
+      admin; proposer; executors = Some [executor]; cancellers = [admin]
+      treasuryId = "treasury-2"; limit = 5.0; config = oneDayWeekGrace; pending = []
   (_, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
-  r <- trySubmit executor do exerciseCmd other Treasury_ApplyLimit with opCid = op
+  r <- tryExecute executor other op
   expectFailure eNotPending r
 
--- | An operation scheduled by another admin's treasury is refused before any
--- time check. INV-5, INV-8.
+-- | An operation scheduled by another admin's treasury carries the other
+-- admin's signature, so exercising `Timelock_Apply` under this treasury's
+-- authority fails. INV-5, INV-8.
 test_operationFromAnotherAdminRejected : Script ()
 test_operationFromAnotherAdminRejected = script do
   Fixture{..} <- setup
   rogue <- allocateParty "rogue"
   rogueTreasury <- submit rogue do
     createCmd Treasury with
-      admin = rogue; proposer; executor; treasuryId = "treasury-1"; limit = 0.0
+      admin = rogue; proposer; executors = Some [executor]; cancellers = [rogue]
+      treasuryId = "treasury-1"; limit = 0.0; pending = []
       config = TimelockConfig with minDelay = hours 0, gracePeriod = None
-      pending = []
   (_, forged) <- submit proposer do
     exerciseCmd rogueTreasury Treasury_ScheduleLimit with newLimit = 1000.0, readyAt = t0
-  r <- trySubmit executor do
-    exerciseCmd treasury Treasury_ApplyLimit with opCid = forged
-  expectFailure eNotPending r
+  submitMustFail executor do
+    exerciseCmd (opOf forged) Operation_Execute with actor = executor, target = targetOf treasury
 
 -- | Two pending operations survive each other's application: the second
--- applies on the treasury the first produced. INV-5.
+-- executes on the treasury the first produced. INV-5.
 test_operationSurvivesTargetStateChange : Script ()
 test_operationSurvivesTargetStateChange = script do
   f@Fixture{..} <- setup
@@ -270,13 +332,13 @@ test_operationSurvivesTargetStateChange = script do
   Some t <- queryContractId admin t2
   t.pending === [asOp op2, asOp op1]
   passTime (days 2)
-  t3 <- submit executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op2
-  t4 <- submit executor do exerciseCmd t3 Treasury_ApplyLimit with opCid = op1
+  t3 <- execute executor t2 op2
+  t4 <- execute executor t3 op1
   Some t' <- queryContractId admin t4
   t'.limit === 20.0
   t'.pending === []
 
--- | Two operations ready at the same instant apply one after the other; the
+-- | Two operations ready at the same instant execute one after the other; the
 -- second must target the treasury contract the first produced.
 test_twoOperationsAtTheSameInstant : Script ()
 test_twoOperationsAtTheSameInstant = script do
@@ -285,11 +347,32 @@ test_twoOperationsAtTheSameInstant = script do
   (t2, op2) <- submit proposer do
     exerciseCmd t1 Treasury_ScheduleLimit with newLimit = 30.0, readyAt = addRelTime t0 (days 2)
   passTime (days 2)
-  t3 <- submit executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op1
-  submitMustFail executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op2
-  t4 <- submit executor do exerciseCmd t3 Treasury_ApplyLimit with opCid = op2
+  t3 <- execute executor t2 op1
+  submitMustFail executor do
+    exerciseCmd (opOf op2) Operation_Execute with actor = executor, target = targetOf t2
+  t4 <- execute executor t3 op2
   Some t <- queryContractId admin t4
   t.limit === 30.0
+
+-- | An `apply` that keeps the operation in the pending list is refused, so a
+-- mis-wired protected contract cannot execute an operation twice. INV-4.
+test_applyRetainingTheOperationFails : Script ()
+test_applyRetainingTheOperationFails = script do
+  admin <- allocateParty "admin"
+  proposer <- allocateParty "proposer"
+  t0 <- getTime
+  leaky <- submit admin do
+    createCmd LeakyTreasury with
+      admin; proposer; limit = 10.0; config = oneDayWeekGrace; queue = []
+  (l1, op) <- submit proposer do
+    exerciseCmd leaky LeakyTreasury_ScheduleLimit with newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  passTime (days 2)
+  r <- trySubmit proposer do
+    exerciseCmd (opOf op) Operation_Execute with actor = proposer, target = targetOf l1
+  expectFailure eOperationRetained r
+  r2 <- trySubmit proposer do
+    exerciseCmd (opOf op) Operation_Cancel with actor = proposer, target = targetOf l1
+  expectFailure eOperationRetained r2
 
 -- Cancelling and cleaning up
 -------------------------------------------------------
@@ -300,23 +383,23 @@ test_cancelledOperationCannotExecute : Script ()
 test_cancelledOperationCannotExecute = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
-  t2 <- submit admin do exerciseCmd t1 Treasury_Cancel with opCid = asOp op, canceller = admin
+  t2 <- cancel admin t1 op
   Some t <- queryContractId admin t2
   t.pending === []
   gone <- queryContractId admin op
   gone === None
   passTime (days 2)
-  submitMustFail executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op
+  submitMustFail executor do
+    exerciseCmd (opOf op) Operation_Execute with actor = executor, target = targetOf t2
 
--- | Only the proposer or the admin may cancel.
-test_onlyProposerOrAdminMayCancel : Script ()
-test_onlyProposerOrAdminMayCancel = script do
+-- | Only a canceller named on the operation may cancel. INV-9.
+test_onlyNamedCancellersMayCancel : Script ()
+test_onlyNamedCancellersMayCancel = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
-  submitMustFail executor do
-    exerciseCmd t1 Treasury_Cancel with opCid = asOp op, canceller = executor
-  _ <- submit proposer do
-    exerciseCmd t1 Treasury_Cancel with opCid = asOp op, canceller = proposer
+  r <- tryCancel executor t1 op
+  expectFailure eNotCanceller r
+  _ <- cancel proposer t1 op
   pure ()
 
 -- | Cleanup is refused while the operation can still execute, and accepted once
@@ -325,13 +408,13 @@ test_cleanupOnlyAfterExpiry : Script ()
 test_cleanupOnlyAfterExpiry = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
-  r0 <- trySubmit admin do exerciseCmd t1 Treasury_Cleanup with opCid = asOp op, cleaner = admin
+  r0 <- tryCleanup admin t1 op
   expectFailure eNotExpired r0
   passTime (days 5)
-  r1 <- trySubmit admin do exerciseCmd t1 Treasury_Cleanup with opCid = asOp op, cleaner = admin
+  r1 <- tryCleanup admin t1 op
   expectFailure eNotExpired r1
   passTime (days 4)
-  t2 <- submit admin do exerciseCmd t1 Treasury_Cleanup with opCid = asOp op, cleaner = admin
+  t2 <- cleanup admin t1 op
   Some t <- queryContractId admin t2
   t.pending === []
   gone <- queryContractId admin op
@@ -348,7 +431,7 @@ test_strangerCleansUpExpiredOperation = script do
   Some dOp <- queryDisclosure @LimitChange admin op
   Some dT <- queryDisclosure @Treasury admin t1
   _ <- submit (actAs stranger <> disclose dOp <> disclose dT) do
-    exerciseCmd t1 Treasury_Cleanup with opCid = asOp op, cleaner = stranger
+    exerciseCmd (opOf op) Operation_Cleanup with actor = stranger, target = targetOf t1
   gone <- queryContractId admin op
   gone === None
 
@@ -368,9 +451,10 @@ test_configChangeIsTimelocked = script do
   (t1, op) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig, readyAt = addRelTime t0 (days 1)
-  submitMustFail executor do exerciseCmd t1 Treasury_ApplyConfig with opCid = op
+  r2 <- tryExecute executor t1 op
+  expectFailure eNotReady r2
   passTime (days 1)
-  t2 <- submit executor do exerciseCmd t1 Treasury_ApplyConfig with opCid = op
+  t2 <- execute executor t1 op
   Some t <- queryContractId admin t2
   t.config === newConfig
   now <- getTime
@@ -378,17 +462,17 @@ test_configChangeIsTimelocked = script do
     exerciseCmd t2 Treasury_ScheduleLimit with newLimit = 20.0, readyAt = addRelTime now (hours 1)
   pure ()
 
--- | A cancelled config change cannot apply.
+-- | A cancelled config change cannot execute.
 test_configChangeCancel : Script ()
 test_configChangeCancel = script do
   Fixture{..} <- setup
   (t1, op) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig = oneDayWeekGrace, readyAt = addRelTime t0 (days 1)
-  t2 <- submit admin do
-    exerciseCmd t1 Treasury_Cancel with opCid = toInterfaceContractId op, canceller = admin
+  t2 <- cancel admin t1 op
   passTime (days 1)
-  submitMustFail executor do exerciseCmd t2 Treasury_ApplyConfig with opCid = op
+  submitMustFail executor do
+    exerciseCmd (opOf op) Operation_Execute with actor = executor, target = targetOf t2
 
 -- | An expired config change is cleaned up, and only after expiry. INV-3.
 test_configChangeCleanupAfterExpiry : Script ()
@@ -397,14 +481,12 @@ test_configChangeCleanupAfterExpiry = script do
   (t1, op) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig = oneDayWeekGrace, readyAt = addRelTime t0 (days 1)
-  r <- trySubmit admin do
-    exerciseCmd t1 Treasury_Cleanup with opCid = toInterfaceContractId op, cleaner = admin
+  r <- tryCleanup admin t1 op
   expectFailure eNotExpired r
   passTime (days 8)
-  r2 <- trySubmit executor do exerciseCmd t1 Treasury_ApplyConfig with opCid = op
+  r2 <- tryExecute executor t1 op
   expectFailure eExpired r2
-  _ <- submit admin do
-    exerciseCmd t1 Treasury_Cleanup with opCid = toInterfaceContractId op, cleaner = admin
+  _ <- cleanup admin t1 op
   gone <- queryContractId admin op
   gone === None
 
@@ -468,7 +550,7 @@ test_scheduleNearMaxTimeFails = script do
 -- Reading
 -------------------------------------------------------
 
--- | The view is readable by every stakeholder of the operation and by nobody
+-- | The views are readable by every stakeholder of the operation and by nobody
 -- else. INV-6.
 test_viewVisibilityFollowsTheTemplate : Script ()
 test_viewVisibilityFollowsTheTemplate = script do
@@ -477,6 +559,7 @@ test_viewVisibilityFollowsTheTemplate = script do
   (_, op) <- scheduleLimit f 20.0 (days 2)
   Some _ <- queryInterfaceContractId admin (asOp op)
   Some _ <- queryInterfaceContractId executor (asOp op)
+  Some _ <- queryInterfaceContractId executor (opOf op)
   hidden <- queryInterfaceContractId stranger (asOp op)
   hidden === None
 
@@ -487,7 +570,8 @@ test_purePredicatesMatchTheGuards = script do
   let readyAt = addRelTime t0 (days 2)
       expiresAt = addRelTime readyAt (days 7)
       op = LimitChange with
-        admin; proposer; executor; treasuryId = "treasury-1"; newLimit = 20.0
+        admin; proposer; executors = Some [executor]; cancellers = [admin]
+        treasuryId = "treasury-1"; newLimit = 20.0
         readyAt; expiresAt = Some expiresAt
   isReadyAt t0 op === False
   isReadyAt (addRelTime readyAt (negate (minutes 1))) op === False
@@ -525,3 +609,6 @@ test_failureStatusesAreDistinct = script do
   eNotExpired.errorId === "openzeppelin.com/timelock-not-expired"
   eInvalidConfig.errorId === "openzeppelin.com/timelock-invalid-config"
   eNotPending.errorId === "openzeppelin.com/timelock-not-pending"
+  eNotExecutor.errorId === "openzeppelin.com/timelock-not-executor"
+  eNotCanceller.errorId === "openzeppelin.com/timelock-not-canceller"
+  eOperationRetained.errorId === "openzeppelin.com/timelock-operation-retained"

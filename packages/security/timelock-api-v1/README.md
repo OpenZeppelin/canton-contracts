@@ -12,49 +12,58 @@ privileged operation and its execution.
 
 ## Capabilities
 
-One view-only interface, `Timelocked`, and the functions around it. Proposer,
-executor, and canceller are the controllers of choices the consumer writes:
+Three interfaces and the functions around them:
 
-- `TimelockedView`: `readyAt` and `expiresAt`, the whole frozen data surface.
-- `TimelockConfig`: the delay policy a protected template holds as a field,
-  `minDelay` and an optional `gracePeriod`.
-- `Pending`, `addPending`, and `takePending`: the list of scheduled operations
-  a protected template holds as a field. The schedule choice adds to it, and
-  the apply, cancel, and cleanup choices take from it, so only operations the
-  schedule choice created reach an effect. This binds the delay on the
-  protected contract's own signatories, whose direct creations stay outside
-  the list.
-- `isValidConfig` and `requireValidConfig`: a policy is valid when `minDelay`
-  is zero or greater and `gracePeriod`, when set, is positive. The schedule
-  functions check the policy in force; a choice that proposes a new policy
-  checks the new one.
+- `Timelock`: the protected contract. Its view, `TimelockView`, carries the
+  `authority` that applies operations, the `TimelockConfig` in force, and the
+  `Pending` list of scheduled operations. Its choices, `Timelock_Apply` and
+  `Timelock_Drop`, verify the pending list and call the two methods the
+  consumer implements: `apply`, which dispatches on the operation's template
+  and creates the successor, and `unschedule`, which creates the successor
+  without applying.
+- `Operation`: a scheduled operation. Its view, `OperationView`, names the
+  `executors` and `cancellers`. Its choices, `Operation_Execute`,
+  `Operation_Cancel`, and `Operation_Cleanup`, verify the actor and the
+  schedule, exercise the protected contract's choice, and archive the
+  operation. `Operation` requires `Timelocked`.
+- `Timelocked`: the schedule of an operation, `readyAt` and `expiresAt`, for
+  the guards and for off-ledger readers.
+- `TimelockConfig`, `isValidConfig`, and `requireValidConfig`: the delay
+  policy, `minDelay` and an optional `gracePeriod`, and its validation. A
+  policy is valid when `minDelay` is zero or greater and `gracePeriod`, when
+  set, is positive.
+- `Pending`, `addPending`, and `takePending`: the list of scheduled
+  operations. The schedule choice adds to it; `Timelock_Apply` and
+  `Timelock_Drop` take from it, so only operations the schedule choice created
+  reach an effect. This binds the delay on the protected contract's own
+  signatories, whose direct creations stay outside the list.
 - `scheduleAt` and `scheduleAfter`: compute the view of a new operation from
   the policy, and refuse a delay shorter than `minDelay`.
-- `requireReady`: the guard an apply choice calls. It fails before `readyAt`
-  and at or after `expiresAt`.
-- `requireExpired`: the guard a cleanup choice calls on an expired operation.
-- `isReadyAt` and `isExpiredAt`: the same questions as pure functions of a
-  time, for a choice or an off-ledger reader that branches rather than refuses.
-- `eInvalidConfig`, `eDelayTooShort`, `eNotPending`, `eNotReady`,
-  `eExpired`, and `eNotExpired`: the failure statuses. Each is a `FailureStatus` with a stable `errorId` under
+- `requireReady`, `requireExpired`, `isReadyAt`, and `isExpiredAt`: the time
+  guards and their pure forms, for a consumer that writes its own choices.
+- Nine failure statuses, each a `FailureStatus` with a stable `errorId` under
   `openzeppelin.com/timelock-`, so an off-ledger client matches the id in the
-  `DAML_FAILURE` error, and your tests compare the whole value.
+  `DAML_FAILURE` error and your tests compare the whole value.
 
-The package holds the interface and the functions; ledger state lives in the
+The package holds interfaces and functions; ledger state lives in the
 consumer's templates. A scheduled operation is a contract of the consumer's
 own template, with the typed parameters of the operation as fields committed
-at scheduling time, so the executor applies exactly the operation the proposer
+at scheduling time. The protected contract's `apply` reads them through
+`fromInterface`, so the executor applies exactly the operation the proposer
 scheduled.
 
 ## Usage
 
-Adopting the timelock is five steps.
+Adopting the timelock is four steps. The library supplies the execute, cancel,
+and cleanup choices; you supply the templates, the schedule choice, and the
+`apply` method.
 
-**1. Hold the policy and the pending list on the protected template.** Add a
-`TimelockConfig` field and a `Pending` field to the template whose privileged
-choices the delay guards, and a stable identity field that operations name.
-The identity field stays constant while the contract id changes on every
-consuming choice:
+**1. Implement `Timelock` on the protected template.** Add a `TimelockConfig`
+field and a `Pending` field. The view names the signatory that applies
+operations. `apply` dispatches on the operation's template with
+`fromInterface`, reads its parameters, and creates the successor with the
+reduced pending list the library passes in. `unschedule` creates the successor
+with the reduced list alone:
 
 ```daml
 template Treasury
@@ -62,18 +71,29 @@ template Treasury
     admin : Party
     proposer : Party
     executor : Party
-    treasuryId : Text
     limit : Decimal
     config : TimelockConfig
     pending : Pending
   where
     signatory admin
     observer proposer, executor
+
+    interface instance Timelock for Treasury where
+      view = TimelockView with authority = admin; config; pending
+
+      apply op pending' = case fromInterface @LimitChange op of
+        Some lc -> toInterfaceContractId <$>
+          create this with limit = lc.newLimit, pending = pending'
+        None -> failWithStatus eUnknownOperation
+
+      unschedule pending' = toInterfaceContractId <$>
+        create this with pending = pending'
 ```
 
 **2. Write one operation template per operation kind.** Its fields are the
-typed parameters plus the two the view reads. Give it the interface instance,
-and make the executor a stakeholder, because the apply choice fetches it:
+typed parameters plus the two the `Timelocked` view reads. Implement
+`Timelocked` and `Operation`, and make the executors and cancellers
+stakeholders, because the lifecycle choices run on the operation:
 
 ```daml
 template LimitChange
@@ -81,7 +101,6 @@ template LimitChange
     admin : Party
     proposer : Party
     executor : Party
-    treasuryId : Text
     newLimit : Decimal
     readyAt : Time
     expiresAt : Optional Time
@@ -91,6 +110,11 @@ template LimitChange
 
     interface instance Timelocked for LimitChange where
       view = TimelockedView with readyAt, expiresAt
+
+    interface instance Operation for LimitChange where
+      view = OperationView with
+        executors = Some [executor]
+        cancellers = [proposer, admin]
 ```
 
 **3. Schedule from a consuming choice on the protected template.** The
@@ -107,96 +131,74 @@ pending:
       do
         s <- scheduleAt config readyAt
         op <- create LimitChange with
-          admin; proposer; executor; treasuryId; newLimit
+          admin; proposer; executor; newLimit
           readyAt = s.readyAt; expiresAt = s.expiresAt
         t <- create this with pending = addPending op pending
         pure (t, op)
 ```
 
-**4. Apply from a choice on the protected template.** The choice's controller
-is your executor authority. Take the operation out of the pending list first,
-call `requireReady` second, then archive the operation and apply its
-parameters:
+**4. Execute, cancel, and clean up through the library's choices.** An
+executor exercises `Operation_Execute` on the operation with the current
+protected contract as `target`. The choice verifies the actor and the
+schedule, exercises `Timelock_Apply`, which verifies the pending list and
+calls your `apply`, and archives the operation. `Operation_Cancel` and
+`Operation_Cleanup` go through `Timelock_Drop` and your `unschedule`:
 
 ```daml
-    choice Treasury_ApplyLimit : ContractId Treasury
-      with
-        opCid : ContractId LimitChange
-      controller executor
-      do
-        pending' <- takePending opCid pending
-        op <- fetch opCid
-        requireReady op
-        archive opCid
-        create this with limit = op.newLimit, pending = pending'
+exerciseCmd (toInterfaceContractId @Operation opCid)
+  Operation_Execute with actor = executor, target = toInterfaceContractId treasuryCid
 ```
 
-`takePending` is the binding. An operation reaches an effect only through the
-protected contract whose pending list holds it, and only the schedule choice
-adds to that list. An operation the admin creates directly, an operation
-scheduled on another treasury, and an operation already applied or cancelled
-all fail with `eNotPending`.
-
-**5. Cancel and clean up from choices on the protected template.** Both take
-the operation out of the pending list and archive it. The cancel choice's
-controller is your canceller authority; the cleanup choice calls
-`requireExpired` and may be open to anyone:
-
-```daml
-    choice Treasury_Cancel : ContractId Treasury
-      with
-        opCid : ContractId Timelocked
-      controller proposer
-      do
-        pending' <- takePending opCid pending
-        archive opCid
-        create this with pending = pending'
-```
+The pending list is the binding. An operation reaches an effect only through
+the protected contract whose pending list holds it, and only the schedule
+choice adds to that list. An operation the admin creates directly, an
+operation scheduled on another protected contract, and an operation already
+applied or cancelled all fail with `eNotPending`.
 
 ## Authority and lifecycle
 
-Access control is the consumer's. Proposer, executor, and canceller are the
-controllers of choices you write, and the authority to schedule and to apply
-comes from the protected contract's signatories, because both choices run on
-that contract. The pending list binds the signatories themselves: a signatory
-who creates an operation contract directly holds a contract the apply choice
-refuses, because only the schedule choice adds to the list. A signatory can
-still replace the protected contract wholesale; guarding against that is the
-role of multi-party signatories or of an off-ledger canonical-instance check
-on the protected contract, and lies outside this package.
+Access control is the consumer's. The proposer is the controller of the
+schedule choice you write; executors and cancellers are the parties your
+operation template names in its `OperationView`; and the authority to apply
+comes from the protected contract's signatories, because the operation
+carries their signature and `Timelock_Apply` runs under it. The pending list
+binds the signatories themselves: a signatory who creates an operation
+contract directly holds a contract that `Timelock_Apply` refuses, because
+only the schedule choice adds to the list. A signatory can still replace the
+protected contract wholesale; guarding against that is the role of
+multi-party signatories or of an off-ledger canonical-instance check on the
+protected contract, and lies outside this package.
 
-- A role credential fits in the same slot as a fixed party. The choice takes
-  the caller and the credential as arguments and verifies them in its body, as
-  `OpenZeppelin.PausableV1` describes for the pause authority.
-- An open executor, the `address(0)` idiom of `TimelockController.sol`, is a
-  flexible controller: `with executor : Party` and `controller executor`. An
-  executor outside the stakeholders receives the operation and the protected
-  contract by explicit disclosure.
-- Cancelling and cleaning up are choices on the protected template, because
-  both remove the operation from the pending list. The cleanup choice calls
-  `requireExpired`.
+- A role credential fits in the schedule choice: the choice takes the caller
+  and the credential as arguments and verifies them in its body, as
+  `OpenZeppelin.PausableV1` describes for the pause authority. Executors and
+  cancellers are party lists on the operation, fixed when it is scheduled.
+- An open executor, the `address(0)` idiom of `TimelockController.sol`, is
+  `executors = None`. Any party that holds the operation and the protected
+  contract, by stake or by explicit disclosure, may execute.
+- Cleanup is open to any actor once the operation has expired.
 - Changing the policy is a privileged operation like any other. Schedule the
   new `TimelockConfig` under the current one, call `requireValidConfig` on it
-  in the schedule choice, and apply it after the delay. This is the
-  `updateDelay` behavior of `TimelockController.sol`. A policy change to a
-  shorter delay waits out the current delay, and the shorter delay then
-  applies to every later schedule. The `minSetback` protection of
-  `AccessManager` is the consumer's to add: once a change to `minDelay = 0`
-  has matured and applied, the next operation is immediate, so give the policy
-  change its own, longer delay where that matters.
+  in the schedule choice, and apply it in `apply`. This is the `updateDelay`
+  behavior of `TimelockController.sol`. A policy change to a shorter delay
+  waits out the current delay, and the shorter delay then applies to every
+  later schedule. The `minSetback` protection of `AccessManager` is the
+  consumer's to add: once a change to `minDelay = 0` has matured and applied,
+  the next operation is immediate, so give the policy change its own, longer
+  delay where that matters.
 
 The lifecycle of one operation:
 
 | State | Meaning | Ends when |
 |---|---|---|
-| Waiting | Listed as pending, and the ledger time is before `readyAt` | `readyAt` passes, or the cancel choice archives it |
-| Ready | Listed as pending, `readyAt <= ledger time`, and `ledger time < expiresAt` when set | The apply choice archives it, the cancel choice archives it, or `expiresAt` passes |
-| Expired | Listed as pending, `expiresAt` is set and has passed | The cleanup choice archives it |
-| Done | The apply choice archived it and removed it from the list | Final; the operation executed once |
+| Waiting | Listed as pending, and the ledger time is before `readyAt` | `readyAt` passes, or `Operation_Cancel` archives it |
+| Ready | Listed as pending, `readyAt <= ledger time`, and `ledger time < expiresAt` when set | `Operation_Execute` archives it, `Operation_Cancel` archives it, or `expiresAt` passes |
+| Expired | Listed as pending, `expiresAt` is set and has passed | `Operation_Cleanup` archives it |
+| Done | `Operation_Execute` archived it and the successor dropped it from the list | Final; the operation executed once |
 
-The record of execution is the apply node in the transaction tree, with its
-actor and its ledger time, and the operation's create and archive bound the
-interval during which it was pending.
+The record of execution is the `Operation_Execute` node in the transaction
+tree, with its actor and its ledger time, and the operation's create and
+archive bound the interval during which it was pending.
 
 ## Time on Canton
 
@@ -253,8 +255,15 @@ it is a stakeholder of.
 - The delay covers the privileged choices that demand a matured operation.
   Route every privileged choice through an operation; the library has no way
   to detect one that bypasses it.
-- `takePending` is the binding. An apply choice that skips it accepts an
-  operation the admin created directly or scheduled on another resource.
+- `Timelock_Apply` verifies the pending list, the schedule, and that `apply`
+  dropped the operation. `apply` itself is the consumer's: an `apply` that
+  reads the wrong fields or skips an operation kind is a consumer defect the
+  library reports only as `eUnknownOperation`-style failures the consumer
+  defines.
+- Interface choices are frozen with the package. `Operation_Execute`,
+  `Operation_Cancel`, `Operation_Cleanup`, `Timelock_Apply`, and
+  `Timelock_Drop` keep their names, arguments, and bodies for the life of
+  `openzeppelin-timelock-api-v1`.
 - Every choice that changes the pending list is consuming, so scheduling and
   applying contend on the protected contract. Two proposers scheduling in the
   same instant see one of them fail and resubmit against the successor.
@@ -270,8 +279,8 @@ it is a stakeholder of.
   A negative `minDelay` or a `gracePeriod` of zero or less fails every schedule
   with `eInvalidConfig`, because such a policy would produce operations that
   are born expired.
-- Give every operation template a cleanup choice that calls `requireExpired`,
-  so that expired operations leave the ledger.
+- `Operation_Cleanup` is open to any actor after `expiresAt`, so expired
+  operations leave the ledger and the pending list.
 - A ledger-time check is honored within the synchronizer's tolerance.
 
 ## Compatibility
@@ -287,9 +296,9 @@ and the two coexist.
 
 For a consumer this means:
 
-- Pin the exact DAR. Your `interface instance` binds your operation template
-  to one package ID, and every participant that runs your apply choices must
-  have vetted that package ID.
+- Pin the exact DAR. Your `interface instance` declarations bind your
+  templates to one package ID, and every participant that runs the lifecycle
+  choices must have vetted that package ID.
 - Your own templates stay upgradeable. The protected template and the
   operation templates are yours, so you add fields through Smart Contract
   Upgrade of your package while this package stays fixed. `TimelockConfig`
