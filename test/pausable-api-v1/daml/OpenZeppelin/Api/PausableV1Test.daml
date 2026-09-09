@@ -1,12 +1,12 @@
 -- | Tests for OpenZeppelin.Api.PausableV1.
-module OpenZeppelin.PausableV1Test where
+module OpenZeppelin.Api.PausableV1Test where
 
 import DA.Assert ((===))
 import DA.Fail (FailureStatus)
 import Daml.Script
 
 import OpenZeppelin.Api.PausableV1
-import OpenZeppelin.PausableV1TestFixtures
+import OpenZeppelin.Api.PausableV1TestFixtures
 
 data Fixture = Fixture with
   admin : Party

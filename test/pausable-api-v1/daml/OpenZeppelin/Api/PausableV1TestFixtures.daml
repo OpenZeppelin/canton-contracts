@@ -1,6 +1,6 @@
 -- | Consumer fixtures: the authority models a template author can wire, the
 -- sibling-field case, and implementations that break the `setPaused` law.
-module OpenZeppelin.PausableV1TestFixtures where
+module OpenZeppelin.Api.PausableV1TestFixtures where
 
 import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
