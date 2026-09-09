@@ -238,14 +238,14 @@ ledger, so the record shows when the pause held, not which attempts it blocked.
 ## Compatibility
 
 The whole package is frozen at its first upload. Daml interfaces are not
-upgradeable through Smart Contract Upgrade, and a participant rejects a second
-version of a package name whose first version defines an interface, so no
-`openzeppelin-pausable-api-v1` above the uploaded version can ever be uploaded.
-The guards, the flips, and the failure statuses ship in the same DAR and run
-from the same package ID, so they are frozen with the interface. Any change,
-including a bug fix in `pause`, ships as a sibling
-`openzeppelin-pausable-api-v2` package with module `OpenZeppelin.PausableV2`,
-and the two coexist.
+upgradeable through Smart Contract Upgrade: an interface defined in one version
+of a package must be absent from every later version. A later version of this
+package could upload only without `Pausable`, which is the one thing it
+exists to provide, so no later version is published. The guards, the flips,
+and the failure statuses ship in the same DAR and run from the same package
+ID, so they are frozen with the interface. Any change, including a bug fix in
+`pause`, ships as a sibling `openzeppelin-pausable-api-v2` package with module
+`OpenZeppelin.PausableV2`, and the two coexist.
 
 For a consumer this means:
 
