@@ -34,11 +34,14 @@ submitMustFailWith expected action = action >>= \case
   Left (FailureStatusError actual) -> actual === expected
   other -> fail ("expected " <> show expected <> ", got " <> show other)
 
--- A submission that lacks the authority of a controller or a signatory is
--- rejected by the ledger before any choice body runs.
-isAuthorizationError : SubmitError -> Bool
-isAuthorizationError (AuthorizationError _) = True
-isAuthorizationError _ = False
+-- | Run a submission and require the ledger to reject it for missing
+-- authority, before any choice body runs. Any other outcome fails with what
+-- arrived instead.
+submitMustFailAuthorization
+  : (HasCallStack, Show a) => Script (Either SubmitError a) -> Script ()
+submitMustFailAuthorization action = action >>= \case
+  Left (AuthorizationError _) -> pure ()
+  other -> fail ("expected an authorization failure, got " <> show other)
 
 -- The read side
 -------------------------------------------------------
@@ -165,8 +168,8 @@ test_unpauseWhenUnpausedFails = script do
 test_onlyTheConsumersControllerMayPause : Script ()
 test_onlyTheConsumersControllerMayPause = script do
   Fixture{..} <- setup
-  Left e <- trySubmit holder do exerciseCmd vault Vault_Pause
-  assertMsg "expected an authorization failure" (isAuthorizationError e)
+  submitMustFailAuthorization $ trySubmit holder do
+    exerciseCmd vault Vault_Pause
 
 -- | The two guard failures are distinct, as `EnforcedPause` and
 -- `ExpectedPause` are.
@@ -183,8 +186,7 @@ test_pauseErrorsAreDistinct = script do
 test_archiveIsSignatoryOnly : Script ()
 test_archiveIsSignatoryOnly = script do
   Fixture{..} <- setup
-  Left e <- trySubmit holder do archiveCmd vault
-  assertMsg "expected an authorization failure" (isAuthorizationError e)
+  submitMustFailAuthorization $ trySubmit holder do archiveCmd vault
   submit admin do archiveCmd vault
   res <- queryContractId admin vault
   res === None
