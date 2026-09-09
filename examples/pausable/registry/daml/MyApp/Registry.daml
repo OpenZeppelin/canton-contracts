@@ -12,6 +12,9 @@
 -- move.
 module MyApp.Registry where
 
+import DA.Action (when)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import qualified DA.TextMap as TextMap
 import qualified OpenZeppelin.Api.PausableV1 as Pausable
 
 template Registry
@@ -59,5 +62,13 @@ template Registry
       controller admin
       do
         Pausable.whenNotPaused this
-        assertMsg "Registry: entry must not be empty" (entry /= "")
+        when (entry == "") (failWithStatus eEmptyEntry)
         create this with entries = entry :: entries
+
+-- | Raised when a registration names an empty entry.
+eEmptyEntry : FailureStatus
+eEmptyEntry = FailureStatus with
+  errorId = "myapp.com/registry-empty-entry"
+  category = InvalidIndependentOfSystemState
+  message = "Registry: entry must not be empty"
+  meta = TextMap.empty

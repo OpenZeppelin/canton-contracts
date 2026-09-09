@@ -26,6 +26,12 @@ demo = script do
   registry <- submit admin do
     exerciseCmd registry Registry_Register with entry = "first"
 
+  -- An empty entry is refused by the registry's own check, which has nothing
+  -- to do with pausing.
+  Left (FailureStatusError e) <- trySubmit admin do
+    exerciseCmd registry Registry_Register with entry = ""
+  e === eEmptyEntry
+
   -- One transaction sets the flag and the metadata that reports it.
   registry <- submit admin do
     exerciseCmd registry Registry_Pause with
@@ -42,8 +48,9 @@ demo = script do
   v === Pausable.PausableView with paused = True
 
   -- The refused registration changes nothing.
-  submitMustFail admin do
+  Left (FailureStatusError e) <- trySubmit admin do
     exerciseCmd registry Registry_Register with entry = "second"
+  e === Pausable.eEnforcedPause
   r.entries === ["first"]
 
   -- Unpausing clears what the pause recorded.
