@@ -6,7 +6,7 @@ import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import qualified DA.TextMap as TextMap
 
-import OpenZeppelin.PausableV1
+import OpenZeppelin.Api.PausableV1
 
 -- Consumer-side failures, raised with `failWithStatus` so that a client matches
 -- on a stable `errorId` rather than on message text. This is the convention the

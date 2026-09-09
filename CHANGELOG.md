@@ -14,7 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 #### Added
 
 - Added the frozen interface package `openzeppelin-pausable-api-v1` with public
-  module `OpenZeppelin.PausableV1`.
+  module `OpenZeppelin.Api.PausableV1`.
 
 ### `openzeppelin-tokenCIP112-v1`
 

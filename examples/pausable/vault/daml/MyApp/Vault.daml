@@ -1,4 +1,4 @@
--- | Minimal adoption of `OpenZeppelin.PausableV1`.
+-- | Minimal adoption of `OpenZeppelin.Api.PausableV1`.
 --
 -- A vault holding a balance for one owner, with an emergency stop that the
 -- admin controls. Adopting `Pausable` costs one template field, a three-line
@@ -9,7 +9,7 @@
 -- hatch and the paused-only recovery path both come at no extra cost.
 module MyApp.Vault where
 
-import qualified OpenZeppelin.PausableV1 as Pausable
+import qualified OpenZeppelin.Api.PausableV1 as Pausable
 
 -- | What the vault pays out. The owner receives it on redemption, and the admin
 -- receives it on an emergency drain.

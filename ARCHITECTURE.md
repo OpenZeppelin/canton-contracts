@@ -94,9 +94,15 @@ Public modules use matching major-version namespaces:
 
 ```daml
 OpenZeppelin.OwnableV1
+OpenZeppelin.Api.RbacV1
 OpenZeppelin.RbacV1
 OpenZeppelin.RbacV1.Internal
 ```
+
+An API package places its modules under `OpenZeppelin.Api`, the same way the
+Splice token standard places its interface modules under `Splice.Api`. The
+namespace tells a consumer that the module holds only frozen interface and
+exception definitions.
 
 Compatible SCU releases keep the same package name and increment the package
 version. A breaking change creates a sibling `-v2` package and a `V2` module

@@ -46,7 +46,7 @@ reference for a package from the repository root, for example:
 ```sh
 DAML_PACKAGE=packages/security/pausable-api-v1 dpm damlc docs \
   --output build/docs/pausable-api-v1 --format md --doc-ext md \
-  packages/security/pausable-api-v1/daml/OpenZeppelin/PausableV1.daml
+  packages/security/pausable-api-v1/daml/OpenZeppelin/Api/PausableV1.daml
 ```
 
 Run it after changing a doc comment and read the output. The tool rejects a

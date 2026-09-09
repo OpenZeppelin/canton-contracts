@@ -5,7 +5,7 @@ import DA.Assert ((===))
 import DA.Time (addRelTime, hours)
 import Daml.Script
 
-import qualified OpenZeppelin.PausableV1 as Pausable
+import qualified OpenZeppelin.Api.PausableV1 as Pausable
 import MyApp.Registry
 
 -- | A pause that records its reason, and an unpause that clears it.

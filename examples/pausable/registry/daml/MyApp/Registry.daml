@@ -1,5 +1,5 @@
--- | Adoption of `OpenZeppelin.PausableV1` with sibling fields set in the same
--- transaction as the flip.
+-- | Adoption of `OpenZeppelin.Api.PausableV1` with sibling fields set in the
+-- same transaction as the flip.
 --
 -- A registry that serves CIP-0112 metadata records why a pause is in force and
 -- when it is expected to end. Those fields belong to the registry, not to the
@@ -12,7 +12,7 @@
 -- move.
 module MyApp.Registry where
 
-import qualified OpenZeppelin.PausableV1 as Pausable
+import qualified OpenZeppelin.Api.PausableV1 as Pausable
 
 template Registry
   with

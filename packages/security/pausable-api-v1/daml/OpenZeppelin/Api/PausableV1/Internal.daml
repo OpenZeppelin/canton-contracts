@@ -1,6 +1,6 @@
--- | Implementation details of `OpenZeppelin.PausableV1`. Not public API; the
--- contents may change in any release.
-module OpenZeppelin.PausableV1.Internal where
+-- | Implementation details of `OpenZeppelin.Api.PausableV1`. Not public API;
+-- the contents may change in any release.
+module OpenZeppelin.Api.PausableV1.Internal where
 
 import DA.Fail (FailureCategory, FailureStatus (..))
 import qualified DA.TextMap as TextMap

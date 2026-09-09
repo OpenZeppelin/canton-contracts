@@ -5,7 +5,7 @@ A frozen Daml interface that gives a template an emergency-stop switch.
 | Field | Value |
 |---|---|
 | Package | `openzeppelin-pausable-api-v1` |
-| Public module | `OpenZeppelin.PausableV1` |
+| Public module | `OpenZeppelin.Api.PausableV1` |
 | Version | `0.1.0` |
 | Status | Pre-release; unaudited |
 
@@ -190,7 +190,7 @@ choice TokenRules_Pause : ContractId TokenRules
 
 A wallet, a registry's metadata endpoint, or an auditor reads it without knowing
 the implementing template. Query the Active Contract Service or the update
-stream with an interface filter on `OpenZeppelin.PausableV1:Pausable` and
+stream with an interface filter on `OpenZeppelin.Api.PausableV1:Pausable` and
 request the interface view; every implementing contract visible to the querying
 party returns a `PausableView`. On the Ledger API this is a `CumulativeFilter`
 with an `InterfaceFilter` that sets `include_interface_view`, and the JSON
@@ -285,7 +285,7 @@ data-dependencies:
 ```
 
 ```daml
-import OpenZeppelin.PausableV1
+import OpenZeppelin.Api.PausableV1
 ```
 
 ## Examples

@@ -21,7 +21,7 @@ builds and is tested in CI, but it has no release and no audit.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|
-| [Pausable](packages/security/pausable-api-v1/) | `openzeppelin-pausable-api-v1` | `OpenZeppelin.PausableV1` | Pre-release; unaudited |
+| [Pausable](packages/security/pausable-api-v1/) | `openzeppelin-pausable-api-v1` | `OpenZeppelin.Api.PausableV1` | Pre-release; unaudited |
 
 Two further components are early-stage candidates under
 [`experiments/`](experiments/). They will be redesigned before they move into
@@ -87,7 +87,7 @@ data-dependencies:
 ```
 
 ```daml
-import OpenZeppelin.PausableV1
+import OpenZeppelin.Api.PausableV1
 ```
 
 Each package README shows the consumer code for that component, and

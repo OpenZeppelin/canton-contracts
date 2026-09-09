@@ -4,7 +4,7 @@ module MyApp.VaultDemo where
 import DA.Assert ((===))
 import Daml.Script
 
-import qualified OpenZeppelin.PausableV1 as Pausable
+import qualified OpenZeppelin.Api.PausableV1 as Pausable
 import MyApp.Vault
 
 -- | Normal operation, an emergency stop, and the return to normal operation.

@@ -28,7 +28,8 @@ workspace files exist.
 
 - One independently released unit equals one package and one DAR.
 - Package names use `openzeppelin-<component>-vN`; module names use
-  `OpenZeppelin.<Component>VN`.
+  `OpenZeppelin.<Component>VN`. API packages place their modules under
+  `OpenZeppelin.Api.<Component>VN`.
 - A component that defines Daml interfaces or exceptions uses a frozen
   `-api-vN` package containing no templates. Template-only components do not get
   empty API packages.
