@@ -1,0 +1,89 @@
+-- | A resource-scoped authorization credential for Canton applications.
+-- Protected choices bind the actor as controller and derive requirements from trusted state.
+module OpenZeppelin.ScopedAuthorizationGrantV1 where
+
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1.Internal as Internal
+
+-- | An exact capability. `resourceInstanceCid` can bind the scope to one
+-- contract instance; `policyEpoch` supports bulk invalidation. Every field
+-- participates in exact matching.
+data AuthorizationScope = AuthorizationScope with
+    namespace : Text
+    resourceType : Text
+    resourceId : Text
+    permission : Text
+    policyEpoch : Int
+    resourceInstanceCid : Optional (ContractId ())
+      -- ^ `Some` binds the scope to one contract; `None` uses logical identity only.
+  deriving (Eq, Show, Serializable)
+
+-- | Expected policy, derived from protected state rather than caller input.
+data AuthorizationRequirement = AuthorizationRequirement with
+    expectedAuthority : Party
+    expectedScope : AuthorizationScope
+  deriving (Eq, Show)
+
+-- | An authority-signed permission for one grantee and exact scope.
+-- The authority signs and revokes; the grantee observes, records use, or renounces.
+-- Use preserves the grant; revoke, renounce, and the authority's Archive consume it.
+-- Other readers need disclosure. Creation rejects malformed validity windows.
+-- Consumers must bind the actor and derive trusted policy; see the package README.
+-- Unreleased 0.x API; no upgrade compatibility baseline is published.
+template AuthorizationGrant
+  with
+    authority : Party
+    grantee : Party
+    scope : AuthorizationScope
+    validFrom : Optional Time
+      -- ^ Inclusive lower ledger-time bound, or unbounded when `None`.
+    validUntil : Optional Time
+      -- ^ Exclusive upper ledger-time bound, or unbounded when `None`.
+  where
+    ensure Internal.validityWindowIsWellFormed validFrom validUntil
+    signatory authority
+    observer grantee
+
+    -- | Records use without consuming the grant. Policy validation belongs to
+    -- `requireAuthorization`; this event alone does not prove a protected effect.
+    nonconsuming choice AuthorizationGrant_Use : ()
+      controller grantee
+      do pure ()
+
+    choice AuthorizationGrant_Revoke : ()
+      controller authority
+      do pure ()
+
+    choice AuthorizationGrant_Renounce : ()
+      controller grantee
+      do pure ()
+
+-- | Inputs presented to a protected choice. The choice makes `actor` its
+-- controller; validation binds the fetched grant's grantee to that actor.
+data Authorization = Authorization with
+    actor : Party
+    grantCid : ContractId AuthorizationGrant
+  deriving (Eq, Show, Serializable)
+
+-- | Validate the grant and record its use atomically with the protected effect.
+requireAuthorization : Authorization -> AuthorizationRequirement -> Update ()
+requireAuthorization authorization requirement = do
+  grant <- fetch authorization.grantCid
+  Internal.requireCondition
+    (Internal.authorityMismatch requirement.expectedAuthority grant.authority)
+    (grant.authority == requirement.expectedAuthority)
+  Internal.requireCondition
+    (Internal.granteeMismatch authorization.actor grant.grantee)
+    (grant.grantee == authorization.actor)
+  Internal.requireCondition
+    (Internal.scopeMismatch
+      [ ("namespace", grant.scope.namespace == requirement.expectedScope.namespace)
+      , ("resourceType", grant.scope.resourceType == requirement.expectedScope.resourceType)
+      , ("resourceId", grant.scope.resourceId == requirement.expectedScope.resourceId)
+      , ("permission", grant.scope.permission == requirement.expectedScope.permission)
+      , ("policyEpoch", grant.scope.policyEpoch == requirement.expectedScope.policyEpoch)
+      , ("resourceInstanceCid", grant.scope.resourceInstanceCid == requirement.expectedScope.resourceInstanceCid)
+      ])
+    (grant.scope == requirement.expectedScope)
+  Internal.requireValidFrom grant.validFrom
+  Internal.requireValidUntil grant.validUntil
+  exercise authorization.grantCid AuthorizationGrant_Use

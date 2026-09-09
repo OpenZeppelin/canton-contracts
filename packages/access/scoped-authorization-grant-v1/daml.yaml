@@ -1,5 +1,5 @@
 sdk-version: 3.5.8
-name: openzeppelin-pausable-v1
+name: openzeppelin-scoped-authorization-grant-v1
 source: daml
 version: 0.1.0
 dependencies:

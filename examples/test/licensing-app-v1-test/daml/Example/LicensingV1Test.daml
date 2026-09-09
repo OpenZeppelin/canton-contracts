@@ -1,0 +1,109 @@
+module Example.LicensingV1Test where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import Example.LicensingV1
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+discloseTo : forall t. Template t => Party -> ContractId t -> Script Disclosure
+discloseTo stakeholder cid = do
+  disclosure <- queryDisclosure @t stakeholder cid
+  case disclosure of
+    None -> fail $ "no disclosure for " <> show cid
+    Some value -> pure value
+
+submitDisclosed : Party -> [Disclosure] -> Commands a -> Script a
+submitDisclosed actor contractDisclosures =
+  submit (actAs actor <> discloseMany contractDisclosures)
+
+submitDisclosedMustFail : Party -> [Disclosure] -> Commands a -> Script ()
+submitDisclosedMustFail actor contractDisclosures =
+  submitMustFail (actAs actor <> discloseMany contractDisclosures)
+
+test_operatorIssuesLicense : Script ()
+test_operatorIssuesLicense = script do
+  licensor <- allocateParty "licensor"
+  operator <- allocateParty "operator"
+  licensee <- allocateParty "licensee"
+  registry <- submit licensor do
+    createCmd LicenseRegistry with
+      licensor; registryId = "registry-001"; policyEpoch = 1
+  grant <- submit licensor do
+    exerciseCmd registry LicenseRegistry_AppointOperator with
+      operator; validFrom = None; validUntil = None
+  -- The non-stakeholder operator needs the registry disclosed.
+  submitMustFail operator do
+    exerciseCmd registry LicenseRegistry_Issue with
+      authorization = SAG.Authorization with actor = operator; grantCid = grant
+      licenseId = "license-001"
+      licensee
+      productId = "product-pro"
+  registryDisclosure <- discloseTo @LicenseRegistry licensor registry
+  license <- submitDisclosed operator [registryDisclosure] do
+    exerciseCmd registry LicenseRegistry_Issue with
+      authorization = SAG.Authorization with actor = operator; grantCid = grant
+      licenseId = "license-001"
+      licensee
+      productId = "product-pro"
+  visibleLicense <- queryContractId licensee license
+  case visibleLicense of
+    None -> fail "licensee cannot see the issued license"
+    Some value -> do
+      value.licensor === licensor
+      value.licensee === licensee
+      value.registryId === "registry-001"
+      value.productId === "product-pro"
+
+test_grantForAnotherRegistryInstanceFails : Script ()
+test_grantForAnotherRegistryInstanceFails = script do
+  licensor <- allocateParty "licensor"
+  operator <- allocateParty "operator"
+  licensee <- allocateParty "licensee"
+  registry <- submit licensor do
+    createCmd LicenseRegistry with
+      licensor; registryId = "registry-001"; policyEpoch = 1
+  otherRegistry <- submit licensor do
+    createCmd LicenseRegistry with
+      licensor; registryId = "registry-001"; policyEpoch = 1
+  wrongGrant <- submit licensor do
+    exerciseCmd otherRegistry LicenseRegistry_AppointOperator with
+      operator; validFrom = None; validUntil = None
+  registryDisclosure <- discloseTo @LicenseRegistry licensor registry
+  submitDisclosedMustFail operator [registryDisclosure] do
+    exerciseCmd registry LicenseRegistry_Issue with
+      authorization = SAG.Authorization with actor = operator; grantCid = wrongGrant
+      licenseId = "license-001"
+      licensee
+      productId = "product-pro"
+
+test_policyEpochRotation : Script ()
+test_policyEpochRotation = script do
+  licensor <- allocateParty "licensor"
+  operator <- allocateParty "operator"
+  licensee <- allocateParty "licensee"
+  registry <- submit licensor do
+    createCmd LicenseRegistry with
+      licensor; registryId = "registry-001"; policyEpoch = 1
+  oldGrant <- submit licensor do
+    exerciseCmd registry LicenseRegistry_AppointOperator with
+      operator; validFrom = None; validUntil = None
+  registryV2 <- submit licensor do
+    exerciseCmd registry LicenseRegistry_RotatePolicyEpoch with newPolicyEpoch = 2
+  registryV2Disclosure <- discloseTo @LicenseRegistry licensor registryV2
+  submitDisclosedMustFail operator [registryV2Disclosure] do
+    exerciseCmd registryV2 LicenseRegistry_Issue with
+      authorization = SAG.Authorization with actor = operator; grantCid = oldGrant
+      licenseId = "license-old"
+      licensee
+      productId = "product-pro"
+  newGrant <- submit licensor do
+    exerciseCmd registryV2 LicenseRegistry_AppointOperator with
+      operator; validFrom = None; validUntil = None
+  _license <- submitDisclosed operator [registryV2Disclosure] do
+    exerciseCmd registryV2 LicenseRegistry_Issue with
+      authorization = SAG.Authorization with actor = operator; grantCid = newGrant
+      licenseId = "license-new"
+      licensee
+      productId = "product-pro"
+  pure ()

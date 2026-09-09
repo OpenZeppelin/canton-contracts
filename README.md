@@ -15,17 +15,13 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-No component has been released yet. The three components below are early-stage
-candidates under [`experiments/`](experiments/). They build and are tested in CI,
-but they will be redesigned before they move into `packages/`, and that redesign
-will change module names, template and choice signatures, and package identity.
-Read [`experiments/README.md`](experiments/README.md) before depending on any of
-them.
+No component has been released or audited yet. Scoped Authorization Grant is a
+library candidate under `packages/`. Earlier designs remain under
+[`experiments/`](experiments/); their APIs and package identities are unstable.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|
-| [Access Control](experiments/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | Experimental; unaudited |
-| [Ownable](experiments/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | Experimental; unaudited |
+| [Scoped Authorization Grant](packages/access/scoped-authorization-grant-v1/) | `openzeppelin-scoped-authorization-grant-v1` | `OpenZeppelin.ScopedAuthorizationGrantV1` | Candidate; unaudited |
 | [Pausable](experiments/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Experimental; unaudited |
 
 Each component is a separate dependency and release unit. Applications select
@@ -41,7 +37,8 @@ package IDs.
 
 The workspace declares its Daml SDK in
 [`multi-package.yaml`](multi-package.yaml). Package manifests mirror that value
-for Daml 3.4 compatibility, and repository checks keep them synchronized.
+for standalone builds, and repository checks keep them synchronized. The SDK is
+3.5.8; packages target LF 2.1.
 
 The [Canton building and packaging guide](https://docs.canton.network/appdev/modules/m3-building-packaging)
 explains DPM workspaces, DARs, and `data-dependencies`.
@@ -56,14 +53,13 @@ dpm build --all
 To build one component independently:
 
 ```sh
-cd experiments/access/ownable-v1
-dpm build
+DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm build
 ```
 
 The resulting evaluation DAR is written to:
 
 ```text
-experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+packages/access/scoped-authorization-grant-v1/.daml/dist/openzeppelin-scoped-authorization-grant-v1-0.1.0.dar
 ```
 
 ## Consume a local build
@@ -76,26 +72,27 @@ dependencies:
   - daml-prim
   - daml-stdlib
 data-dependencies:
-  - ../canton-contracts/experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+  - ../canton-contracts/packages/access/scoped-authorization-grant-v1/.daml/dist/openzeppelin-scoped-authorization-grant-v1-0.1.0.dar
 ```
 
 ```daml
-import OpenZeppelin.OwnableV1
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
 ```
 
 ## Repository layout
 
 ```text
-packages/                 Released components; empty until the first release
-test/                     Isolated component test packages
+packages/                 Library components and release candidates
+test/                     Isolated library test packages
 experiments/
-  access/                 Category for authorization and ownership components
   security/               Category for operational security components
+  token/                  Category for token components
   test/                   Isolated component test packages
 dars/
   released/               Immutable OpenZeppelin release baselines
   vendor/                 Verified third-party DAR inputs
-examples/                 Standalone projects that consume packaged DARs
+examples/                 Integration examples demonstrating library usage
+  test/                   Isolated integration-example test packages
 audits/                   Reports keyed to exact package releases
 scripts/                  Repository validation tooling
 ```

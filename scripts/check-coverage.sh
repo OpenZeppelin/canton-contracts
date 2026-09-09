@@ -10,7 +10,7 @@ mkdir -p "$REPORTS"
 
 # Trees under policy as "<source tree>:<test tree>" pairs; keep in sync with
 # scripts/check.sh.
-TREES=("packages:test" "experiments:experiments/test")
+TREES=("packages:test" "experiments:experiments/test" "examples:examples/test")
 
 fail() {
 	printf 'coverage: %s\n' "$*" >&2
@@ -65,7 +65,7 @@ for tree_pair in "${TREES[@]}"; do
 	while IFS= read -r manifest; do
 		package_dir="$(dirname "$manifest")"
 		component="$(basename "$package_dir")"
-		test_package="$test_tree/$component"
+		test_package="$test_tree/$component-test"
 		test_manifest="$test_package/daml.yaml"
 		coverage_report="$REPORTS/$component-coverage.txt"
 

@@ -1,0 +1,13 @@
+module Example.LicensingV1SandboxTest where
+
+import Daml.Script (Script, script)
+import qualified Example.LicensingV1Test as App
+import qualified Example.LicensingV1SecurityTest as Security
+
+sandboxLicensing : Script ()
+sandboxLicensing = script do
+  App.test_operatorIssuesLicense
+  App.test_policyEpochRotation
+  Security.test_forgedAndStolenCredentialsCannotIssue
+  Security.test_revokeRenounceAndArchivePreventFurtherIssuance
+  Security.test_validityBoundsPropagateThroughTheApp

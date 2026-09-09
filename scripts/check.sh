@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Trees under policy, as "<source tree>:<test tree>" pairs. Candidates live in
 # experiments/ and move to packages/ one component at a time, so both trees are
 # checked identically and a tree holding no packages is skipped.
-TREES=("packages:test" "experiments:experiments/test")
+TREES=("packages:test" "experiments:experiments/test" "examples:examples/test")
 
 fail() {
 	printf 'check: %s\n' "$*" >&2
@@ -72,7 +72,7 @@ done
 production_manifests="$(printf '%s' "$production_manifests" | sed '/^$/d' | sort)"
 [ -n "$production_manifests" ] || fail "no production package manifests found"
 
-test_manifests="$(printf '%s' "$test_manifests" | sed '/^$/d' | sort)"
+test_manifests="$(printf '%s' "$test_manifests" | sed '/^$/d' | sort -u)"
 [ -n "$test_manifests" ] || fail "no test package manifests found"
 
 for manifest_list in "$production_manifests" "$test_manifests"; do
@@ -130,6 +130,14 @@ done <<< "$production_manifests"
 while IFS= read -r manifest; do
 	package_name="$(sed -n 's/^name:[[:space:]]*//p' "$manifest")"
 	package_version="$(sed -n 's/^version:[[:space:]]*//p' "$manifest")"
+
+	case "$(basename "$(dirname "$manifest")")" in
+	*-test)
+		;;
+	*)
+		fail "test package ${manifest#"$ROOT/"} must use a -test directory name"
+		;;
+	esac
 
 	case "$package_name" in
 	*-test)

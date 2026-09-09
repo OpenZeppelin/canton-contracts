@@ -1,0 +1,60 @@
+-- | Role and authorization policy for the treasury application.
+module Example.TreasuryRbacV1.RolePolicy where
+
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+treasuryNamespace : Text
+treasuryNamespace = "com.example.treasury"
+
+treasuryResourceType : Text
+treasuryResourceType = "treasury"
+
+data TreasuryRole
+  = PaymentProposer
+  | PaymentApprover
+  | PaymentExecutor
+  deriving (Eq, Show, Serializable)
+
+data TreasuryRolePolicy = TreasuryRolePolicy
+  with
+    treasuryId : Text
+    operationsAuthority : Party
+    approvalAuthority : Party
+    executionAuthority : Party
+    policyEpoch : Int
+  deriving (Eq, Show)
+
+rolePermission : TreasuryRole -> Text
+rolePermission PaymentProposer = "role:payment-proposer"
+rolePermission PaymentApprover = "role:payment-approver"
+rolePermission PaymentExecutor = "role:payment-executor"
+
+roleAuthority : TreasuryRolePolicy -> TreasuryRole -> Party
+roleAuthority policy PaymentProposer = policy.operationsAuthority
+roleAuthority policy PaymentApprover = policy.approvalAuthority
+roleAuthority policy PaymentExecutor = policy.executionAuthority
+
+roleScope
+  : TreasuryRolePolicy
+  -> ContractId ()
+  -> TreasuryRole
+  -> SAG.AuthorizationScope
+roleScope policy treasuryInstanceCid role = SAG.AuthorizationScope with
+  namespace = treasuryNamespace
+  resourceType = treasuryResourceType
+  resourceId = policy.treasuryId
+  resourceInstanceCid = Some treasuryInstanceCid
+  permission = rolePermission role
+  policyEpoch = policy.policyEpoch
+
+requireRole
+  : SAG.Authorization
+  -> TreasuryRolePolicy
+  -> ContractId ()
+  -> TreasuryRole
+  -> Update ()
+requireRole authorization policy treasuryInstanceCid role =
+  SAG.requireAuthorization authorization
+    (SAG.AuthorizationRequirement with
+      expectedAuthority = roleAuthority policy role
+      expectedScope = roleScope policy treasuryInstanceCid role)

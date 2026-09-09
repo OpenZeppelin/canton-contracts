@@ -1,0 +1,100 @@
+module OpenZeppelin.ScopedAuthorizationGrantV1BoundaryTest where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import qualified DA.Optional as Optional
+import Daml.Script
+
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as F
+
+createGrant : Party -> Party -> SAG.AuthorizationScope -> Script (ContractId SAG.AuthorizationGrant)
+createGrant authority grantee scope = submit authority do
+  createCmd SAG.AuthorizationGrant with
+    authority; grantee; scope; validFrom = None; validUntil = None
+
+test_closedWindowAndSelfGrant : Script ()
+test_closedWindowAndSelfGrant = script do
+  setTime F.t0
+  authority <- allocateParty "authority"
+  grant <- submit authority do
+    createCmd SAG.AuthorizationGrant with
+      authority; grantee = authority; scope = F.treasuryScope 1
+      validFrom = Some F.t0; validUntil = Some F.t1
+  check <- submit authority do
+    createCmd F.AuthorizationCheck with authority; requiredScope = F.treasuryScope 1
+  submit authority do
+    exerciseCmd check F.AuthorizationCheck_Run with
+      authorization = SAG.Authorization with actor = authority; grantCid = grant
+  setTime F.t1
+  F.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show F.t1)] authority [] do
+    exerciseCmd check F.AuthorizationCheck_Run with
+      authorization = SAG.Authorization with actor = authority; grantCid = grant
+
+test_implicitArchiveAndStaleDisclosure : Script ()
+test_implicitArchiveAndStaleDisclosure = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  grant <- createGrant authority actor (F.treasuryScope 1)
+  disclosure <- F.discloseTo @SAG.AuthorizationGrant authority grant
+  submitMustFail actor do archiveCmd grant
+  submit authority do archiveCmd grant
+  queryContractId actor grant >>= (=== None)
+  F.submitDisclosedMustFail actor [disclosure] do
+    exerciseCmd grant SAG.AuthorizationGrant_Use
+
+test_logicalScopeCanBeSharedAcrossResources : Script ()
+test_logicalScopeCanBeSharedAcrossResources = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  grant <- createGrant authority actor (F.treasuryScope 1)
+  forA_ ([1, 2] : [Int]) \_ -> do
+    check <- submit authority do
+      createCmd F.AuthorizationCheck with authority; requiredScope = F.treasuryScope 1
+    disclosure <- F.discloseTo @F.AuthorizationCheck authority check
+    F.submitDisclosed actor [disclosure] do
+      exerciseCmd check F.AuthorizationCheck_Run with
+        authorization = SAG.Authorization with actor; grantCid = grant
+
+test_scopeCidIsAnIdentifierNotALivenessCheck : Script ()
+test_scopeCidIsAnIdentifierNotALivenessCheck = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  anchor <- submit authority do createCmd F.ScopeAnchor with authority
+  let scope = (F.treasuryScope 1) with resourceInstanceCid = Some (coerceContractId anchor)
+  grant <- createGrant authority actor scope
+  check <- submit authority do
+    createCmd F.AuthorizationCheck with authority; requiredScope = scope
+  disclosure <- F.discloseTo @F.AuthorizationCheck authority check
+  submit authority do archiveCmd anchor
+  F.submitDisclosed actor [disclosure] do
+    exerciseCmd check F.AuthorizationCheck_Run with
+      authorization = SAG.Authorization with actor; grantCid = grant
+
+test_visibilityDoesNotConferAuthority : Script ()
+test_visibilityDoesNotConferAuthority = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  outsider <- allocateParty "outsider"
+  grant <- createGrant authority actor (F.treasuryScope 1)
+  visible <- query @SAG.AuthorizationGrant actor
+  length visible === 1
+  query @SAG.AuthorizationGrant outsider >>= (=== [])
+  result <- submitWithError (actAs outsider <> readAs actor) do
+    exerciseCmd grant SAG.AuthorizationGrant_Use
+  case result of
+    AuthorizationError _ -> pure ()
+    other -> fail $ "expected authorization failure, got " <> show other
+
+test_revocationOrderingIsAtomic : Script ()
+test_revocationOrderingIsAtomic = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  grant <- createGrant authority actor (F.treasuryScope 1)
+  submitMustFail [authority, actor]
+    (exerciseCmd grant SAG.AuthorizationGrant_Revoke *> exerciseCmd grant SAG.AuthorizationGrant_Use)
+  active <- queryContractId authority grant
+  assertMsg "failed batch must roll back revocation" (Optional.isSome active)
+  submit [authority, actor]
+    (exerciseCmd grant SAG.AuthorizationGrant_Use *> exerciseCmd grant SAG.AuthorizationGrant_Revoke)
+  queryContractId authority grant >>= (=== None)

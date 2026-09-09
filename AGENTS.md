@@ -9,7 +9,8 @@ implementation.
 Research prototypes, local replicas of upstream standards, interoperability
 harnesses, and application-specific business logic belong in `canton-specs` or
 the relevant application repository. A component enters this repository only
-after its promotion boundary is accepted.
+after its promotion boundary is accepted. Focused integration examples under
+`examples/` demonstrate library usage and build separately from the library.
 
 ## Read order
 
@@ -36,8 +37,10 @@ workspace files exist.
   depend on other implementation packages without an accepted architecture
   decision; prefer interface composition or consumer-side wiring.
 - Production packages must not depend on `daml-script`.
-- Test code lives in an isolated `-test` package under the root `test/` and 
-  `experiments/test/` directories and is never released or uploaded.
+- Test code lives in isolated `-test` packages under `test/` for the library,
+  `examples/test/` for integration examples, and `experiments/test/` for
+  experiments. Test-package directory names also end in `-test`. Test packages
+  are never released or uploaded.
 - Do not use `exposed-modules` as an API boundary. Use documented public modules
   and `.Internal` naming for implementation details.
 - Category directories under `packages/` and `experiments/` are navigation only
@@ -52,8 +55,8 @@ assumptions, archival behavior, failure modes, and upgrade/migration assumptions
 ## Daml toolchain
 
 The repository is DPM-native. `multi-package.yaml` declares the workspace SDK,
-and every package manifest mirrors that version because Daml 3.4 requires the
-field locally; `scripts/check.sh` enforces consistency. Package manifests target
+and every package manifest mirrors that version for standalone builds;
+`scripts/check.sh` enforces consistency. Package manifests target
 Daml-LF `2.1`. Use `dpm build`, `dpm damlc lint`, `dpm test`, and
 `dpm upgrade-check`; do not introduce legacy Daml Assistant commands unless a
 documented toolchain decision changes this. For package-scoped commands run from
@@ -67,18 +70,15 @@ Run from the repository root:
 ```sh
 dpm build --all
 scripts/check.sh
-DAML_PACKAGE=experiments/access/access-control-v1 dpm damlc lint
-DAML_PACKAGE=experiments/access/ownable-v1 dpm damlc lint
+DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm damlc lint
 DAML_PACKAGE=experiments/security/pausable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/access-control-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/pausable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/pausable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm damlc lint
+DAML_PACKAGE=experiments/test/pausable-v1-test dpm damlc lint
+DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm damlc lint
+DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=experiments/test/pausable-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm test --all --show-coverage
 scripts/check-sandbox.sh
 ```
 
