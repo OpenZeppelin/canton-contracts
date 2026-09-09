@@ -1,0 +1,15 @@
+-- | Implementation details of `OpenZeppelin.PausableV1`. Not public API; the
+-- contents may change in any release.
+module OpenZeppelin.PausableV1.Internal where
+
+import DA.Fail (FailureCategory, FailureStatus (..))
+import qualified DA.TextMap as TextMap
+
+-- | Build a `FailureStatus` under the `openzeppelin.com/pausable-` error id
+-- prefix.
+pausableFailure : Text -> FailureCategory -> Text -> FailureStatus
+pausableFailure name category message = FailureStatus with
+  errorId = "openzeppelin.com/pausable-" <> name
+  category
+  message
+  meta = TextMap.empty
