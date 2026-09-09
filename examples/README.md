@@ -18,6 +18,14 @@ Consumers of `openzeppelin-pausable-api-v1`.
 | [`vault`](pausable/vault) | Minimal adoption: the interface instance, the guards, an escape hatch, and the pause authority |
 | [`registry`](pausable/registry) | `pause` and `unpause` setting CIP-0112 `pauseInfo` fields in the same transaction as the flip |
 
+## `timelock`
+
+Consumers of `openzeppelin-timelock-api-v1`.
+
+| Example | Shows |
+|---|---|
+| [`treasury`](timelock/treasury) | A spending limit and a delay policy that change only through timelocked operations: schedule, wait, apply, cancel, expiry cleanup, and self-administration of the delay |
+
 ## Build and run
 
 From the repository root, using the package path from `multi-package.yaml`:

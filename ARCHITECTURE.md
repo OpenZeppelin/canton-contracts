@@ -57,6 +57,13 @@ contract it supplies. Nothing therefore remains for an `openzeppelin-pausable-v1
 package to hold. The component is the frozen `-api-v1` package alone, and the
 implementing templates live in consuming packages.
 
+Timelock follows the same shape for a different reason. Daml has no calldata
+and no dynamic dispatch, so a scheduled operation cannot be an opaque payload
+that a library template forwards to a target. The operation is a contract of
+the consumer's own template, typed by its fields and signed by the protected
+contract's signatories, and the library contributes the interface that exposes
+its schedule, the functions that compute it, and the guards that enforce it.
+
 An interface-only component is still one package and one DAR, and it still
 follows the `-api-vN` freeze rule: no templates, no SCU, and a breaking change
 ships as a sibling `-v2` package. The consumer's implementing template upgrades

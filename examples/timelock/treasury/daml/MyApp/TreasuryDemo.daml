@@ -1,0 +1,110 @@
+-- | The lifecycle of `MyApp.Treasury.Treasury`, as a runnable script.
+module MyApp.TreasuryDemo where
+
+import DA.Assert ((===))
+import DA.Time (addRelTime, days, hours)
+import Daml.Script
+
+import qualified OpenZeppelin.TimelockV1 as Timelock
+import MyApp.Treasury
+
+-- | A limit change that waits out its delay, one that a proposer cancels, one
+-- that expires, and a delay-policy change that goes through the same timelock.
+demo : Script ()
+demo = script do
+  admin <- allocateParty "admin"
+  proposer <- allocateParty "proposer"
+  executor <- allocateParty "executor"
+  supplier <- allocateParty "supplier"
+  t0 <- getTime
+
+  -- A two-day delay, and a week to execute once ready.
+  let config = Timelock.TimelockConfig with
+        minDelay = days 2
+        gracePeriod = Some (days 7)
+  treasury <- submit admin do
+    createCmd Treasury with
+      admin; proposer; executor; treasuryId = "ops-treasury"; limit = 100.0; config
+
+  -- The protected operation: a payment above the limit is refused.
+  _ <- submit admin do
+    exerciseCmd treasury Treasury_Pay with recipient = supplier, amount = 100.0
+  submitMustFail admin do
+    exerciseCmd treasury Treasury_Pay with recipient = supplier, amount = 250.0
+
+  -- A delay shorter than the policy is refused at scheduling time.
+  submitMustFail proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with
+      newLimit = 500.0, readyAt = addRelTime t0 (hours 1)
+
+  -- The proposer schedules a limit raise that becomes ready in three days.
+  raise <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with
+      newLimit = 500.0, readyAt = addRelTime t0 (days 3)
+
+  -- Off-ledger tooling reads pending operations through the interface view,
+  -- whatever template implements it.
+  Some v <- queryInterfaceContractId executor (toInterfaceContractId @Timelock.Timelocked raise)
+  v.readyAt === addRelTime t0 (days 3)
+  v.expiresAt === Some (addRelTime t0 (days 10))
+
+  -- Too early: the executor cannot apply it, and the limit stays put.
+  submitMustFail executor do
+    exerciseCmd treasury Treasury_ApplyLimit with opCid = raise
+  submitMustFail admin do
+    exerciseCmd treasury Treasury_Pay with recipient = supplier, amount = 250.0
+
+  -- Three days later the operation is ready. Applying it archives the
+  -- operation and replaces the treasury with the new limit.
+  passTime (days 3)
+  treasury <- submit executor do
+    exerciseCmd treasury Treasury_ApplyLimit with opCid = raise
+  _ <- submit admin do
+    exerciseCmd treasury Treasury_Pay with recipient = supplier, amount = 250.0
+
+  -- The operation executed once; presenting it again fails.
+  submitMustFail executor do
+    exerciseCmd treasury Treasury_ApplyLimit with opCid = raise
+
+  -- A pending change can be cancelled by the proposer before it matures.
+  now <- getTime
+  cut <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with
+      newLimit = 50.0, readyAt = addRelTime now (days 2)
+  submit proposer do exerciseCmd cut LimitChange_Cancel with canceller = proposer
+  passTime (days 2)
+  submitMustFail executor do
+    exerciseCmd treasury Treasury_ApplyLimit with opCid = cut
+
+  -- A change that nobody applies within the grace period expires. It can no
+  -- longer execute, and anyone may clean it up.
+  now <- getTime
+  stale <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with
+      newLimit = 1000.0, readyAt = addRelTime now (days 2)
+  passTime (days 9)
+  submitMustFail executor do
+    exerciseCmd treasury Treasury_ApplyLimit with opCid = stale
+  submit executor do exerciseCmd stale LimitChange_Cleanup with cleaner = executor
+
+  -- The delay policy is protected by itself. Shortening the delay takes the
+  -- current delay to become effective, and then applies to later schedules.
+  now <- getTime
+  let faster = Timelock.TimelockConfig with
+        minDelay = hours 6
+        gracePeriod = Some (days 1)
+  submitMustFail proposer do
+    exerciseCmd treasury Treasury_ScheduleConfig with
+      newConfig = faster, readyAt = addRelTime now (hours 6)
+  policy <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleConfig with
+      newConfig = faster, readyAt = addRelTime now (days 2)
+  passTime (days 2)
+  treasury <- submit executor do
+    exerciseCmd treasury Treasury_ApplyConfig with opCid = policy
+  now <- getTime
+  _ <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with
+      newLimit = 600.0, readyAt = addRelTime now (hours 6)
+
+  pure ()

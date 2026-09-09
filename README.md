@@ -15,13 +15,14 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-No component has been released yet. One component has completed its design
-review and lives under [`packages/`](packages/); its interface is frozen and it
-builds and is tested in CI, but it has no release and no audit.
+No component has been released yet. Two components have completed their design
+review and live under [`packages/`](packages/); their interfaces are frozen and
+they build and are tested in CI, but they have no release and no audit.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|
 | [Pausable](packages/security/pausable-api-v1/) | `openzeppelin-pausable-api-v1` | `OpenZeppelin.PausableV1` | Pre-release; unaudited |
+| [Timelock](packages/security/timelock-api-v1/) | `openzeppelin-timelock-api-v1` | `OpenZeppelin.TimelockV1` | Pre-release; unaudited |
 
 Two further components are early-stage candidates under
 [`experiments/`](experiments/). They will be redesigned before they move into
@@ -97,7 +98,7 @@ Each package README shows the consumer code for that component, and
 
 ```text
 packages/
-  security/               Category for emergency-stop and safety components
+  security/               Category for emergency-stop, delay, and safety components
 test/                     Isolated component test packages
 experiments/
   access/                 Category for authorization and ownership components
