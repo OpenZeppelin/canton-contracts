@@ -32,6 +32,8 @@ the recorded fields.
 `admin` is the sole signatory of `Registry` and the pause authority. The flip
 choices are consuming: `pause` and `unpause` return a value and
 archive nothing, so the choice archives the predecessor and creates once.
+`auditor` is an observer. It reads the registry and its `PausableView` and
+controls no choice.
 
 ## Reporting, not enforcement
 

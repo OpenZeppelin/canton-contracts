@@ -20,6 +20,8 @@ import qualified OpenZeppelin.Api.PausableV1 as Pausable
 template Registry
   with
     admin : Party
+    auditor : Party
+      -- ^ Reads the registry and its pause state; changes nothing.
     paused : Bool
     pauseReason : Optional Text
       -- ^ CIP-0112 `pauseInfo.reason`.
@@ -31,6 +33,7 @@ template Registry
       -- ^ What the registry holds; the state that a pause stops changing.
   where
     signatory admin
+    observer auditor
 
     interface instance Pausable.Pausable for Registry where
       view = Pausable.PausableView with paused

@@ -12,12 +12,14 @@ import MyApp.Registry
 demo : Script ()
 demo = script do
   admin <- allocateParty "admin"
+  auditor <- allocateParty "auditor"
   now <- getTime
   let until = addRelTime now (hours 6)
 
   registry <- submit admin do
     createCmd Registry with
       admin
+      auditor
       paused = False
       pauseReason = None
       pauseUntil = None
@@ -43,8 +45,10 @@ demo = script do
   r.pauseReason === Some "incident 42"
   r.pauseUntil === Some until
 
-  -- The frozen view still carries the flag alone.
-  Some v <- queryInterfaceContractId admin (toInterfaceContractId @Pausable.Pausable registry)
+  -- The frozen view still carries the flag alone, and an observer reads it
+  -- without any choice.
+  Some v <- queryInterfaceContractId auditor
+    (toInterfaceContractId @Pausable.Pausable registry)
   v === Pausable.PausableView with paused = True
 
   -- The refused registration changes nothing.
