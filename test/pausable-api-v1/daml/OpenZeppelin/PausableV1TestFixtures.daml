@@ -2,7 +2,35 @@
 -- sibling-field case, and implementations that break the `setPaused` law.
 module OpenZeppelin.PausableV1TestFixtures where
 
+import DA.Action (unless)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import qualified DA.TextMap as TextMap
+
 import OpenZeppelin.PausableV1
+
+-- Consumer-side failures, raised with `failWithStatus` so that a client matches
+-- on a stable `errorId` rather than on message text. This is the convention the
+-- production module follows, and the one a consumer should copy.
+fixtureFailure : Text -> Text -> FailureStatus
+fixtureFailure name message = FailureStatus with
+  errorId = "example.com/pausable-test-" <> name
+  category = InvalidGivenCurrentSystemStateOther
+  message
+  meta = TextMap.empty
+
+eAmountNotPositive : FailureStatus
+eAmountNotPositive = fixtureFailure "amount-not-positive" "Vault: amount must be positive"
+
+eInsufficientBalance : FailureStatus
+eInsufficientBalance = fixtureFailure "insufficient-balance" "Vault: insufficient balance"
+
+eWrongCredentialIssuer : FailureStatus
+eWrongCredentialIssuer = fixtureFailure "wrong-credential-issuer"
+  "RoleVault: wrong credential issuer"
+
+eCredentialNotCallers : FailureStatus
+eCredentialNotCallers = fixtureFailure "credential-not-callers"
+  "RoleVault: credential is not the caller's"
 
 -- | The single-party case. The pause authority is one party, so the consumer's
 -- choice names it as the controller and creates what `pause` returns. The
@@ -40,8 +68,8 @@ template Vault
       controller holder
       do
         whenNotPaused this
-        assertMsg "Vault: amount must be positive" (amount > 0)
-        assertMsg "Vault: insufficient balance" (amount <= balance)
+        unless (amount > 0) (failWithStatus eAmountNotPositive)
+        unless (amount <= balance) (failWithStatus eInsufficientBalance)
         create this with balance = balance - amount
 
     -- The mirror image: a recovery path that runs only during an incident.
@@ -84,8 +112,8 @@ template RoleVault
       controller caller
       do
         cred <- fetch credCid
-        assertMsg "RoleVault: wrong credential issuer" (cred.admin == admin)
-        assertMsg "RoleVault: credential is not the caller's" (cred.account == caller)
+        unless (cred.admin == admin) (failWithStatus eWrongCredentialIssuer)
+        unless (cred.account == caller) (failWithStatus eCredentialNotCallers)
         create =<< pause this
 
     choice RoleVault_Transfer : ContractId RoleVault

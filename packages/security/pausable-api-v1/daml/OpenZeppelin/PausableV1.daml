@@ -64,7 +64,7 @@
 -- interface and no templates. Implementations live in consuming packages.
 module OpenZeppelin.PausableV1 where
 
-import DA.Action (unless)
+import DA.Action (unless, when)
 import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
 import OpenZeppelin.PausableV1.Internal as Internal
 
@@ -137,7 +137,7 @@ interface Pausable where
 -- >     whenNotPaused this
 -- >     create this with balance = balance - amount
 whenNotPaused : (HasToInterface t Pausable) => t -> Update ()
-whenNotPaused x = unless (not (isPaused x)) (failWithStatus eEnforcedPause)
+whenNotPaused x = when (isPaused x) (failWithStatus eEnforcedPause)
 
 -- | Fail unless the contract is paused.
 -- Use it on recovery choices that may run only during an incident.
@@ -218,7 +218,7 @@ unpause x = do
   y <- case fromInterface (setPaused (toInterface @Pausable x) False) of
     Some y -> pure y
     None -> failWithStatus eImplementerTypeMismatch
-  unless (not (isPaused y)) (failWithStatus eFlagNotApplied)
+  when (isPaused y) (failWithStatus eFlagNotApplied)
   pure y
 
 -- Failure statuses: the two that a guard raises, plus the two that report an
