@@ -20,7 +20,7 @@ workflow, deriving the policy input only from trusted treasury state.
 Each role becomes one exact authorization scope for a stable treasury ID, the
 current Treasury contract ID, and the policy epoch. `Treasury_GrantRole` derives
 the role's authority from treasury state, and its controller is that authority.
-A caller cannot select a weaker authority for a stronger role.
+A caller cannot override which authority controls a role.
 
 Every protected choice derives the expected authority, treasury scope, and role
 from the `Treasury` contract before calling `requireAuthorization`. The caller
@@ -28,8 +28,9 @@ supplies only its actor and live grant contract ID. The workflow also enforces
 separation of duties: a proposer cannot approve the same payment, and an
 executor must differ from both proposer and approver.
 
-Each stage accumulates the parties that authorized it. `PaymentProposal` is
-signed by the owner and proposer, `ApprovedPayment` adds the approver, and
+Each stage keeps the earlier signatories and adds the party authorizing that
+stage. `PaymentProposal` is signed by the owner and proposer,
+`ApprovedPayment` adds the approver, and
 `PaymentReceipt` adds the executor. Approval and execution are consuming choices
 on those workflow contracts, so the previous signatories and the new controller
 jointly authorize each successor.
@@ -42,8 +43,8 @@ rotate `policyEpoch`, which creates a successor Treasury contract. Earlier role
 grants fail because their scope contains the previous contract ID and epoch.
 Pending proposals and approvals also record their originating epoch and exact
 Treasury contract ID, so they cannot cross a policy or Treasury instance
-boundary. After rotation, a stranded workflow contract can be archived only
-with its accumulated signatories' authority; an authorized proposer can submit
+boundary. After rotation, a pending proposal or approval can be archived only
+with all its signatories' authority; an authorized proposer can submit
 a replacement under the successor treasury.
 
 `treasuryId` is a stable application-defined `Text` identifier used in grant
@@ -71,10 +72,10 @@ scope mapping but is not an exclusive issuance path. Applications that must
 enforce additional grant-governance rules need a policy-specific credential
 whose creation is anchored to that policy contract.
 
-The treasury owner remains the root of policy and supplies authority to each
+The treasury owner controls treasury policy and supplies authority to each
 workflow stage, but cannot create a stage naming other signatories without their
-authority. A production treasury should put the owner Party behind suitable
-operator governance, and the actual asset contract must enforce its own transfer
+authority. In production, define who can act as the owner Party and how those
+permissions are managed. The actual asset contract must enforce its own transfer
 authorization.
 
 Every stage's full signatory set can also create that template directly. A

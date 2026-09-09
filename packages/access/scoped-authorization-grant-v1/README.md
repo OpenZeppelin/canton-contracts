@@ -60,7 +60,7 @@ successful check, call the guard again before continuing with protected work.
 ## Resource identity
 
 `resourceId` is a stable application identifier represented as `Text`.
-`resourceInstanceCid` optionally refines that logical identity:
+`resourceInstanceCid` optionally binds the scope to a specific contract:
 
 - `None` makes the scope depend on the logical fields only. Applications can
   use this mode when grants should apply across successor contract instances.
@@ -68,15 +68,15 @@ successful check, call the guard again before continuing with protected work.
   grant cannot then match a different expected ID, even if the text fields are
   identical.
 
-The field uses `ContractId ()` as a type-erased identifier so scopes can refer
-to any template. It is compared for equality and is not fetched by the guard,
-so it proves neither resource liveness nor template type and grants no resource
-visibility. The protected choice must derive the expected ID from trusted state.
+`ContractId ()` lets the field refer to a contract of any template. The guard
+compares IDs; it does not fetch the resource, check whether it is active, or
+verify its template type. Including the ID does not grant read access to the
+resource. Derive the expected ID from trusted contract state.
 
-Scope matching uses full record equality: `None` does not match `Some`, and two
-different contract IDs do not match. Advancing the epoch in a protected
-resource's trusted requirement rejects older grants at that resource. Other
-resources that still accept the old scope remain unaffected.
+Every scope field must match: `None` does not match `Some`, and two different
+contract IDs do not match. Increasing the expected `policyEpoch` in a resource's
+trusted policy rejects grants for earlier epochs. Other resources that still
+accept the old scope remain unaffected.
 
 An instance-bound grant remains active if its resource is archived, but it does
 not match a successor contract ID. Applications that frequently recreate a
@@ -88,9 +88,9 @@ continue across those transitions.
 Applications can map a role to a permission string and reuse the same grant at
 every choice that requires the same authority and scope. For a given authority,
 membership is per grantee and exact scope, not necessarily per business contract.
-Use common logical fields or a shared policy-anchor CID when several contracts
-deliberately share a role. Role mappings, delegated role administration,
-enumeration, and offboarding remain application policy; the
+When several contracts share a role, use the same logical scope or bind their
+grants to the same policy contract ID. The application defines role mappings,
+delegated role administration, membership queries, and offboarding; the
 [treasury example](../../../examples/treasury-rbac-v1/) shows a fixed three-role model.
 
 ## Lifecycle and visibility
@@ -106,16 +106,15 @@ ID to the protected choice. A non-stakeholder actor also needs the protected
 resource disclosed by a stakeholder. Discovery and disclosure provide input
 data; the on-ledger guard and controller clause still enforce authorization.
 
-Using a grant can add a confirming participant and an availability dependency.
-Prefer an authority already involved as a signatory in the protected workflow.
+Using a grant may require another participant to be available to confirm the
+transaction. Prefer an authority already involved as a signatory in the workflow.
 The licensing example uses the same `licensor` for the registry and its grants,
 so the grant does not introduce an unrelated confirming participant.
 
-Validity uses a half-open interval: `validFrom` is inclusive and `validUntil` is
-exclusive. When both bounds are present, creation requires
-`validFrom < validUntil`. Validation uses ledger-time predicates rather than
-reading `getTime`, so the check remains compatible with externally prepared and
-signed transactions.
+`validFrom` is inclusive and `validUntil` is exclusive. When both bounds are
+present, creation requires `validFrom < validUntil`. Validation uses ledger-time
+predicates rather than reading `getTime`, so the check remains compatible with
+externally prepared and signed transactions.
 
 Expiration does not archive a grant. An active grant may be outside its validity
 window or fail the current policy, so discovery alone does not establish permission.
@@ -138,11 +137,11 @@ Ledger API with the appropriate party and event filters. On Canton 3.5, use
 [`TransactionTreeStream` data source](https://docs.canton.network/sdks-tools/development-tools/pqs/configure#transactions-data-source)
 to index exercises.
 
-The choice returns `()` and adds no observers. A standalone `Use` only records
-the grantee's exercise, even if the active grant has expired. Correlate the event
-with the application's guarded choice before treating it as evidence of a
-protected operation. Plain fetches are not usage records, and the authority
-does not necessarily see the enclosing operation's private details.
+The choice returns `()` and adds no observers. Calling `Use` directly only
+records that the grantee exercised it, even if the active grant has expired.
+Check that the event came from the application's guarded choice before treating
+it as proof of a protected operation. Plain fetches are not usage records, and
+the authority does not necessarily see the enclosing operation's private details.
 
 ## Guard failures
 
@@ -170,8 +169,8 @@ occur before the guard's checks run.
 
 ## Authority rotation
 
-Applications own the trusted authority in their resource policy. To rotate it,
-replace that policy through an authorized application choice, select the new
+The application's resource policy determines which authority it trusts. To rotate
+that authority, update the policy through an authorized choice, select the new
 issuer, advance the policy epoch, and issue replacement grants. If the successor
 contract adds a signatory, its creation also needs that party's consent.
 
@@ -186,8 +185,8 @@ archived resource require application-specific migration or cancellation.
 The authority can create grants directly and is trusted to issue the scopes it
 controls. Grant creation does not prove that an application-specific issuance
 choice ran. Validating a grant does not let the caller sign other contracts as
-the issuer: the issuer's authority inside `AuthorizationGrant_Use` does not
-extend to the caller's subsequent sibling actions.
+the issuer. The issuer's authority is available inside `AuthorizationGrant_Use`,
+but does not extend to later actions in the enclosing choice.
 
 There is no canonical lookup in the LF 2.1 keyless model. The caller presents a
 specific contract ID. V1 does not define wildcard matching, hierarchy, delegated

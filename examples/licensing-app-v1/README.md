@@ -1,7 +1,6 @@
 # Licensing app V1
 
-A small integration example demonstrating delegated license issuance through
-the Scoped Authorization Grant DAR.
+A licensor uses scoped authorization grants to let an operator issue licenses.
 
 The package imports the library through `data-dependencies`.
 [`Policy.daml`](daml/Example/LicensingV1/Policy.daml) defines the issuance scope
