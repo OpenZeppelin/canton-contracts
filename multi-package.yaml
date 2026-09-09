@@ -1,14 +1,20 @@
 # Workspace-only coordinator. Every listed directory owns one Daml package and
 # produces one DAR; category directories are navigation only.
-sdk-version: 3.4.11
+sdk-version: 3.5.8
 
 packages:
-  - experiments/access/access-control-v1
-  - experiments/access/ownable-v1
+  # Library
+  - packages/access/scoped-authorization-grant-v1
+  - test/scoped-authorization-grant-v1-test
+
+  # Integration examples
+  - examples/licensing-app-v1
+  - examples/test/licensing-app-v1-test
+  - examples/treasury-rbac-v1
+  - examples/test/treasury-rbac-v1-test
+
+  # Experiments
   - experiments/security/pausable-v1
+  - experiments/test/pausable-v1-test
   - experiments/token/tokenCIP112-v1
-  - experiments/test/access-control-v1
-  - experiments/test/ownable-v1
-  - experiments/test/pausable-v1
-  - experiments/test/tokenCIP112-v1
-  - test/placeholder
+  - experiments/test/tokenCIP112-v1-test

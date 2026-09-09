@@ -1,0 +1,14 @@
+sdk-version: 3.5.8
+name: com-example-licensing-app-v1-test
+source: daml
+version: 0.0.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+data-dependencies:
+  - ../../licensing-app-v1/.daml/dist/com-example-licensing-app-v1-0.1.0.dar
+  - ../../../packages/access/scoped-authorization-grant-v1/.daml/dist/openzeppelin-scoped-authorization-grant-v1-0.1.0.dar
+build-options:
+  - --target=2.1
+  - -Wno-template-interface-depends-on-daml-script

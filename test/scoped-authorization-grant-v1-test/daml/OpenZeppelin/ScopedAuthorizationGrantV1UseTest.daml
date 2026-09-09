@@ -1,0 +1,198 @@
+module OpenZeppelin.ScopedAuthorizationGrantV1UseTest where
+
+import DA.Foldable (forA_)
+import Daml.Script
+
+import OpenZeppelin.ScopedAuthorizationGrantV1
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as Fixtures
+
+-- The consumer signer deliberately differs from the grant issuer.
+template UseProbe
+  with
+    consumer : Party
+    grantAuthority : Party
+    requiredScope : AuthorizationScope
+  where
+    signatory consumer
+
+    nonconsuming choice UseProbe_Run : ()
+      with authorization : Authorization
+      controller authorization.actor
+      do
+        requireAuthorization authorization (probeRequirement this)
+
+    nonconsuming choice UseProbe_CreateIssuerGrant : ContractId AuthorizationGrant
+      with authorization : Authorization
+      controller authorization.actor
+      do
+        requireAuthorization authorization (probeRequirement this)
+        -- Authority available inside Use must not escape into this sibling create.
+        create AuthorizationGrant with
+          authority = grantAuthority
+          grantee = authorization.actor
+          scope = requiredScope
+          validFrom = None
+          validUntil = None
+
+    nonconsuming choice UseProbe_FailAfterUse : ()
+      with authorization : Authorization
+      controller authorization.actor
+      do
+        requireAuthorization authorization (probeRequirement this)
+        _ <- create UseProbeEffect with consumer
+        assertMsg "UseTest: deliberate business failure" False
+
+template UseProbeEffect
+  with consumer : Party
+  where
+    signatory consumer
+
+probeRequirement : UseProbe -> AuthorizationRequirement
+probeRequirement probe = AuthorizationRequirement with
+  expectedAuthority = probe.grantAuthority
+  expectedScope = probe.requiredScope
+
+createGrant : Party -> Party -> Optional Time -> Script (ContractId AuthorizationGrant)
+createGrant authority grantee validUntil = submit authority do
+  createCmd AuthorizationGrant with
+    authority
+    grantee
+    scope = Fixtures.treasuryScope 1
+    validFrom = None
+    validUntil
+
+createProbe : Party -> Party -> Script (ContractId UseProbe, Disclosure)
+createProbe consumer grantAuthority = do
+  probe <- submit consumer do
+    createCmd UseProbe with
+      consumer
+      grantAuthority
+      requiredScope = Fixtures.treasuryScope 1
+  disclosure <- Fixtures.discloseTo @UseProbe consumer probe
+  pure (probe, disclosure)
+
+assertUseEvent : ContractId AuthorizationGrant -> Exercised -> Script ()
+assertUseEvent grant event = do
+  assertMsg "expected AuthorizationGrant_Use" (event.choice == "AuthorizationGrant_Use")
+  assertMsg "Use must target the presented grant"
+    (fromAnyContractId @AuthorizationGrant event.contractId == Some grant)
+  case event.childEvents of
+    [] -> pure ()
+    _ -> fail "Use unexpectedly created child events"
+
+assertNestedUse
+  : ContractId UseProbe -> ContractId AuthorizationGrant -> TransactionTree -> Script ()
+assertNestedUse probe grant tree = case tree.rootEvents of
+  [ExercisedEvent outer] -> do
+    assertMsg "expected the protected operation" (outer.choice == "UseProbe_Run")
+    assertMsg "unexpected protected contract"
+      (fromAnyContractId @UseProbe outer.contractId == Some probe)
+    case outer.childEvents of
+      [ExercisedEvent use] -> assertUseEvent grant use
+      _ -> fail "expected exactly one nested Use event"
+  _ -> fail "expected exactly one protected root exercise"
+
+assertGrantActive : Party -> ContractId AuthorizationGrant -> Script ()
+assertGrantActive stakeholder grant = do
+  active <- queryContractId stakeholder grant
+  case active of
+    Some _ -> pure ()
+    None -> fail "Use consumed the grant"
+
+expectAuthorizationFailure : SubmitOptions -> Commands a -> Script ()
+expectAuthorizationFailure options commands = do
+  result <- submitWithError options commands
+  case result of
+    AuthorizationError _ -> pure ()
+    other -> fail $ "expected authorization failure, got " <> show other
+
+test_guardRecordsNestedUseAndPreservesGrant : Script ()
+test_guardRecordsNestedUseAndPreservesGrant = script do
+  setTime Fixtures.t0
+  issuer <- allocateParty "issuer"
+  actor <- allocateParty "actor"
+  consumer <- allocateParty "consumer"
+  grant <- createGrant issuer actor None
+  (probe, disclosure) <- createProbe consumer issuer
+  forA_ ([1, 2] : [Int]) \_ -> do
+    tree <- submitTree (actAs actor <> disclose disclosure) do
+      exerciseCmd probe UseProbe_Run with
+        authorization = Authorization with actor; grantCid = grant
+    assertNestedUse probe grant tree
+    -- Script's Exercised record has no consuming or acting-parties fields.
+    -- Reuse and active-CID checks establish nonconsuming behavior instead.
+    assertGrantActive actor grant
+  assertGrantActive issuer grant
+
+test_directUseRequiresGrantee : Script ()
+test_directUseRequiresGrantee = script do
+  issuer <- allocateParty "issuer"
+  actor <- allocateParty "actor"
+  outsider <- allocateParty "outsider"
+  grant <- createGrant issuer actor None
+  disclosure <- Fixtures.discloseTo @AuthorizationGrant issuer grant
+  expectAuthorizationFailure (actAs issuer) do
+    exerciseCmd grant AuthorizationGrant_Use
+  -- Disclosure isolates the controller check from contract visibility.
+  expectAuthorizationFailure (actAs outsider <> disclose disclosure) do
+    exerciseCmd grant AuthorizationGrant_Use
+  tree <- submitTree actor do exerciseCmd grant AuthorizationGrant_Use
+  case tree.rootEvents of
+    [ExercisedEvent use] -> assertUseEvent grant use
+    _ -> fail "expected one direct Use event"
+  assertGrantActive actor grant
+
+test_directUseDoesNotValidateExpiry : Script ()
+test_directUseDoesNotValidateExpiry = script do
+  setTime Fixtures.t0
+  issuer <- allocateParty "issuer"
+  actor <- allocateParty "actor"
+  consumer <- allocateParty "consumer"
+  grant <- createGrant issuer actor (Some Fixtures.t1)
+  (probe, disclosure) <- createProbe consumer issuer
+  setTime Fixtures.t1
+  -- A direct Use is an observable marker, not proof of guard validation.
+  submit actor do exerciseCmd grant AuthorizationGrant_Use
+  result <- submitWithError (actAs actor <> disclose disclosure) do
+    exerciseCmd probe UseProbe_Run with
+      authorization = Authorization with actor; grantCid = grant
+  case result of
+    FailureStatusError status ->
+      assertMsg "expected expiry failure" (status.errorId == "OZ_SAG_EXPIRED")
+    other -> fail $ "expected structured expiry failure, got " <> show other
+  assertGrantActive actor grant
+
+test_nestedUseDoesNotLeakIssuerAuthority : Script ()
+test_nestedUseDoesNotLeakIssuerAuthority = script do
+  issuer <- allocateParty "issuer"
+  actor <- allocateParty "actor"
+  consumer <- allocateParty "consumer"
+  grant <- createGrant issuer actor None
+  (probe, disclosure) <- createProbe consumer issuer
+  expectAuthorizationFailure (actAs actor <> disclose disclosure) do
+    exerciseCmd probe UseProbe_CreateIssuerGrant with
+      authorization = Authorization with actor; grantCid = grant
+  grants <- query @AuthorizationGrant issuer
+  assertMsg "unauthorized sibling create must not persist" (length grants == 1)
+  assertGrantActive actor grant
+
+test_businessFailureAfterUseRollsBackEffects : Script ()
+test_businessFailureAfterUseRollsBackEffects = script do
+  issuer <- allocateParty "issuer"
+  actor <- allocateParty "actor"
+  consumer <- allocateParty "consumer"
+  grant <- createGrant issuer actor None
+  (probe, disclosure) <- createProbe consumer issuer
+  result <- trySubmitTree (actAs actor <> disclose disclosure) do
+    exerciseCmd probe UseProbe_FailAfterUse with
+      authorization = Authorization with actor; grantCid = grant
+  case result of
+    Left _ -> pure ()
+    Right _ -> fail "deliberate business failure unexpectedly committed"
+  effects <- query @UseProbeEffect consumer
+  assertMsg "failed transaction must not retain its business effect" (null effects)
+  assertGrantActive actor grant
+  tree <- submitTree (actAs actor <> disclose disclosure) do
+    exerciseCmd probe UseProbe_Run with
+      authorization = Authorization with actor; grantCid = grant
+  assertNestedUse probe grant tree

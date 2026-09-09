@@ -1,0 +1,83 @@
+-- | Implementation details for OpenZeppelin.ScopedAuthorizationGrantV1.
+module OpenZeppelin.ScopedAuthorizationGrantV1.Internal where
+
+import qualified DA.Fail as Fail
+import qualified DA.Foldable as Foldable
+import qualified DA.Text as Text
+import qualified DA.TextMap as TextMap
+import DA.Time (isLedgerTimeGE, isLedgerTimeLT)
+
+validityWindowIsWellFormed : Optional Time -> Optional Time -> Bool
+validityWindowIsWellFormed (Some validFrom) (Some validUntil) =
+  validFrom < validUntil
+validityWindowIsWellFormed _ _ = True
+
+requireValidFrom : Optional Time -> Update ()
+requireValidFrom validFrom =
+  Foldable.forA_ validFrom \start -> do
+    hasStarted <- isLedgerTimeGE start
+    requireCondition (notYetValid start) hasStarted
+
+requireValidUntil : Optional Time -> Update ()
+requireValidUntil validUntil =
+  Foldable.forA_ validUntil \end -> do
+    hasNotExpired <- isLedgerTimeLT end
+    requireCondition (expired end) hasNotExpired
+
+requireCondition : Fail.FailureStatus -> Bool -> Update ()
+requireCondition status condition =
+  if condition then pure () else Fail.failWithStatus status
+
+notYetValid : Time -> Fail.FailureStatus
+notYetValid start = Fail.FailureStatus with
+  errorId = notYetValidErrorId
+  category = Fail.failedPrecondition
+  message = "Grant is not yet valid"
+  meta = TextMap.singleton "validFrom" (show start)
+
+expired : Time -> Fail.FailureStatus
+expired end = Fail.FailureStatus with
+  errorId = expiredErrorId
+  category = Fail.failedPrecondition
+  message = "Grant has expired"
+  meta = TextMap.singleton "validUntil" (show end)
+
+authorityMismatch : Party -> Party -> Fail.FailureStatus
+authorityMismatch expected actual = Fail.FailureStatus with
+  errorId = authorityMismatchErrorId
+  category = Fail.failedPrecondition
+  message = "Unexpected grant authority"
+  meta = TextMap.fromList
+    [("expected", partyToText expected), ("actual", partyToText actual)]
+
+granteeMismatch : Party -> Party -> Fail.FailureStatus
+granteeMismatch expected actual = Fail.FailureStatus with
+  errorId = granteeMismatchErrorId
+  category = Fail.failedPrecondition
+  message = "Grant does not name the actor"
+  meta = TextMap.fromList
+    [("expected", partyToText expected), ("actual", partyToText actual)]
+
+scopeMismatch : [(Text, Bool)] -> Fail.FailureStatus
+scopeMismatch fieldMatches = Fail.FailureStatus with
+  errorId = scopeMismatchErrorId
+  category = Fail.failedPrecondition
+  message = "Grant scope does not match the requirement"
+  meta = TextMap.singleton "fields"
+    (Text.intercalate "," [field | (field, False) <- fieldMatches])
+
+-- Stable identifiers carried in guard failure responses.
+notYetValidErrorId : Text
+notYetValidErrorId = "OZ_SAG_NOT_YET_VALID"
+
+expiredErrorId : Text
+expiredErrorId = "OZ_SAG_EXPIRED"
+
+authorityMismatchErrorId : Text
+authorityMismatchErrorId = "OZ_SAG_AUTHORITY_MISMATCH"
+
+granteeMismatchErrorId : Text
+granteeMismatchErrorId = "OZ_SAG_GRANTEE_MISMATCH"
+
+scopeMismatchErrorId : Text
+scopeMismatchErrorId = "OZ_SAG_SCOPE_MISMATCH"

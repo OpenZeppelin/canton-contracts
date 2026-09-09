@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 #
-# Sandbox validation gate for the token package: runs the sandbox scripts
+# Sandbox validation gate: runs selected scripts
 # against a real local Canton ledger over the Ledger API gRPC endpoint,
 # instead of the in-memory ledger that `dpm test` uses.
 #
-# The sandbox MUST run in static-time mode: every script pins the clock with
-# `setTime`, which a wallclock ledger rejects. Every script allocates fresh
-# parties and uses the same clock instant, so the scripts compose in any
-# order on one forward-only static-time ledger.
+# Static time supports the suites' explicit validity-boundary checks. Each
+# suite allocates fresh parties and advances the shared clock monotonically.
 #
 # To target an already-running ledger instead of the script-managed sandbox,
 # set OZ_USE_EXTERNAL_LEDGER=1 together with OZ_LEDGER_HOST / OZ_LEDGER_PORT.
-# The external ledger must run in static-time mode with a clock at or before
-# 2026-01-01T00:10Z, for the same forward-only-time reason.
+# Use a fresh external static-time ledger for each suite. Scripts that advance
+# time run last. OZ_SANDBOX_SUITE selects token (default), authorization,
+# licensing, or treasury.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,15 +34,43 @@ java_version="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9][0-9]*\).*/\1/
 	exit 1
 }
 
-TEST_PKG="experiments/test/tokenCIP112-v1"
-DAR="$ROOT/$TEST_PKG/.daml/dist/openzeppelin-tokenCIP112-v1-test-0.0.0.dar"
+SUITE="${OZ_SANDBOX_SUITE:-token}"
+case "$SUITE" in
+token)
+	TEST_PKG="experiments/test/tokenCIP112-v1-test"
+	SCRIPTS=(
+		OpenZeppelin.TokenCIP112V1SandboxTest:sandboxMintAndQuery
+		OpenZeppelin.TokenCIP112V1SandboxTest:sandboxTransferLifecycle
+		OpenZeppelin.TokenCIP112V1SandboxTest:sandboxAllowanceLifecycle
+		OpenZeppelin.TokenCIP112V1SandboxTest:sandboxMintAndBurn
+	)
+	;;
+authorization)
+	TEST_PKG="test/scoped-authorization-grant-v1-test"
+	SCRIPTS=(OpenZeppelin.ScopedAuthorizationGrantV1SandboxTest:sandboxAuthorization)
+	;;
+licensing)
+	TEST_PKG="examples/test/licensing-app-v1-test"
+	SCRIPTS=(Example.LicensingV1SandboxTest:sandboxLicensing)
+	;;
+treasury)
+	TEST_PKG="examples/test/treasury-rbac-v1-test"
+	SCRIPTS=(Example.TreasuryRbacV1SandboxTest:sandboxTreasury)
+	;;
+*)
+	printf 'check-sandbox: unknown suite: %s\n' "$SUITE" >&2
+	exit 1
+	;;
+esac
+PACKAGE_NAME="$(sed -n 's/^name:[[:space:]]*//p' "$ROOT/$TEST_PKG/daml.yaml")"
+DAR="$ROOT/$TEST_PKG/.daml/dist/$PACKAGE_NAME-0.0.0.dar"
 LEDGER_HOST="${OZ_LEDGER_HOST:-localhost}"
 LEDGER_PORT="${OZ_LEDGER_PORT:-6865}"
 USE_EXTERNAL_LEDGER="${OZ_USE_EXTERNAL_LEDGER:-0}"
-LOG_DIR="${OZ_SANDBOX_LOG_DIR:-$ROOT/.cache/sandbox-token}"
+LOG_DIR="${OZ_SANDBOX_LOG_DIR:-$ROOT/.cache/sandbox-$SUITE}"
 mkdir -p "$LOG_DIR"
 
-printf 'check-sandbox: building the token test package\n'
+printf 'check-sandbox: building the %s test package\n' "$SUITE"
 (cd "$ROOT" && DAML_PACKAGE="$TEST_PKG" dpm build)
 [ -f "$DAR" ] || {
 	printf 'check-sandbox: expected DAR not found: %s\n' "$DAR" >&2
@@ -124,18 +151,11 @@ else
 	}
 fi
 
-SCRIPTS=(
-	sandboxMintAndQuery
-	sandboxTransferLifecycle
-	sandboxAllowanceLifecycle
-	sandboxMintAndBurn
-)
-
 fail=0
-for s in "${SCRIPTS[@]}"; do
-	name="OpenZeppelin.TokenCIP112V1SandboxTest:$s"
+for name in "${SCRIPTS[@]}"; do
+	s="${name##*:}"
 	log="$LOG_DIR/$s.log"
-	if (cd "$ROOT/$TEST_PKG" && dpm script --dar "$DAR" --script-name "$name" \
+	if (cd "$ROOT" && DAML_PACKAGE="$TEST_PKG" dpm script --dar "$DAR" --script-name "$name" \
 		--ledger-host "$LEDGER_HOST" --ledger-port "$LEDGER_PORT" \
 		--static-time > "$log" 2>&1); then
 		printf 'check-sandbox: PASS %s\n' "$s"
@@ -149,4 +169,4 @@ done
 	printf 'check-sandbox: FAILED\n' >&2
 	exit 1
 }
-printf 'check-sandbox: OK - all %d token scripts passed on the sandbox\n' "${#SCRIPTS[@]}"
+printf 'check-sandbox: OK - all %d %s scripts passed on the sandbox\n' "${#SCRIPTS[@]}" "$SUITE"

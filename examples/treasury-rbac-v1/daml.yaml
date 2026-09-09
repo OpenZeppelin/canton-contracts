@@ -1,0 +1,11 @@
+sdk-version: 3.5.8
+name: com-example-treasury-rbac-v1
+source: daml
+version: 0.1.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  - ../../packages/access/scoped-authorization-grant-v1/.daml/dist/openzeppelin-scoped-authorization-grant-v1-0.1.0.dar
+build-options:
+  - --target=2.1
