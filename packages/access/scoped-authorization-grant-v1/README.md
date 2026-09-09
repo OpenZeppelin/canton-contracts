@@ -1,7 +1,9 @@
 # Scoped Authorization Grant V1
 
-A resource-scoped, non-transferable authorization credential for Daml
-applications.
+An authority issues a grant allowing another party to perform a specific
+operation on a resource. Application choices validate the grant against their
+own trusted policy. Grants can expire, be revoked by the authority, or be
+renounced by the grantee.
 
 | Field | Value |
 |---|---|
@@ -10,38 +12,28 @@ applications.
 | Version | `0.1.0` |
 | Status | Library candidate; unreleased and unaudited |
 
-Build from the repository root with
-`DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm build`.
-The package depends only on `daml-prim` and `daml-stdlib`, builds with SDK 3.5.8,
-and targets LF 2.1. The tested runtime is Canton 3.5; there is no released SCU
-baseline yet. Consumers pin the built DAR and review package vetting separately.
+## Guarding a choice
 
-The [licensing](../../../examples/licensing-app-v1/) and
-[treasury RBAC](../../../examples/treasury-rbac-v1/) examples import this DAR
-through `data-dependencies`. Import the public module with
-`import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG`.
+Import the library DAR through `data-dependencies` and use a qualified import:
 
-## Public surface
+```daml
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+```
 
-- `AuthorizationScope` identifies one namespace, resource type, stable resource
-  ID, permission, policy epoch, and optional exact contract instance.
-- `AuthorizationGrant` records an authority's grant to one Party, with optional
-  validity bounds.
-- `Authorization` carries the exercising actor and grant contract ID presented
-  to a protected choice.
-- `AuthorizationRequirement` carries the authority and exact scope expected by
-  that choice.
-- `requireAuthorization` fetches and validates the presented grant, then
-  exercises `AuthorizationGrant_Use` to record usage.
+The [licensing implementation](../../../examples/licensing-app-v1/daml/Example/LicensingV1.daml)
+and [end-to-end script](../../../examples/test/licensing-app-v1-test/daml/Example/LicensingV1Test.daml)
+show the integration:
 
-`OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contains unsupported
-implementation details and is not part of the consumer API.
+1. The licensor creates a registry and calls `LicenseRegistry_AppointOperator`
+   to issue an `AuthorizationGrant` scoped to that registry.
+2. The operator obtains the grant's contract ID and the registry disclosure.
+3. The operator calls `LicenseRegistry_Issue`, passing
+   `SAG.Authorization with actor = operator; grantCid = grant`.
 
-## Consumer invariant
-
-`requireAuthorization` can bind a grant to an actor, but an `Update` function
-cannot discover who submitted the transaction. The protected choice must make
-that binding authoritative:
+The protected choice makes `authorization.actor` its controller and validates
+the grant before performing protected work. An `Update` function cannot discover
+the transaction submitter, so the controller clause must require the actor's
+authority:
 
 ```daml
 nonconsuming choice ProtectedOperation : ()
@@ -60,9 +52,46 @@ constants. Accepting the expected authority, resource, permission, or epoch
 only from caller-controlled arguments would let the caller choose the policy
 being checked.
 
-`Authorization` is presented input, not proof by itself. The controller clause
-requires the actor's authority, and `requireAuthorization` fetches the grant and
-matches its grantee to that actor.
+`Authorization` is input, not proof by itself. The guard fetches the grant and
+matches its grantee to the authorized actor. Keep the guard on the committed
+execution path of the protected operation. If a caught exception rolls back a
+successful check, call the guard again before continuing with protected work.
+
+## Resource identity
+
+`resourceId` is a stable application identifier represented as `Text`.
+`resourceInstanceCid` optionally refines that logical identity:
+
+- `None` makes the scope depend on the logical fields only. Applications can
+  use this mode when grants should apply across successor contract instances.
+- `Some (coerceContractId cid)` binds the scope to that exact contract ID. A
+  grant cannot then match a different expected ID, even if the text fields are
+  identical.
+
+The field uses `ContractId ()` as a type-erased identifier so scopes can refer
+to any template. It is compared for equality and is not fetched by the guard,
+so it proves neither resource liveness nor template type and grants no resource
+visibility. The protected choice must derive the expected ID from trusted state.
+
+Scope matching uses full record equality: `None` does not match `Some`, and two
+different contract IDs do not match. Advancing the epoch in a protected
+resource's trusted requirement rejects older grants at that resource. Other
+resources that still accept the old scope remain unaffected.
+
+An instance-bound grant remains active if its resource is archived, but it does
+not match a successor contract ID. Applications that frequently recreate a
+resource should use logical-only scope or a stable anchor CID when grants must
+continue across those transitions.
+
+### Role-based access control
+
+Applications can map a role to a permission string and reuse the same grant at
+every choice that requires the same authority and scope. For a given authority,
+membership is per grantee and exact scope, not necessarily per business contract.
+Use common logical fields or a shared policy-anchor CID when several contracts
+deliberately share a role. Role mappings, delegated role administration,
+enumeration, and offboarding remain application policy; the
+[treasury example](../../../examples/treasury-rbac-v1/) shows a fixed three-role model.
 
 ## Lifecycle and visibility
 
@@ -71,16 +100,16 @@ observer and may record use or renounce it. Revocation and renunciation archive
 the credential; a later use of that contract ID fails atomically. Recording use
 preserves the grant and its contract ID.
 
-The grantee normally discovers the grant through stakeholder visibility and
-presents its ID to the protected choice. A non-stakeholder actor also needs the
-protected resource disclosed by a stakeholder. Disclosure supplies transaction
-input data; it does not bypass controller authorization or any validation.
+The grantee's backend queries visible `AuthorizationGrant` contracts through
+its participant's Ledger API or an index such as PQS, then presents the selected
+ID to the protected choice. A non-stakeholder actor also needs the protected
+resource disclosed by a stakeholder. Discovery and disclosure provide input
+data; the on-ledger guard and controller clause still enforce authorization.
 
-Fetching the grant also brings its authority-signed contract into the
-transaction's confirmation and liveness boundary. Prefer an authority that is
-already a signatory in the protected workflow. The licensing integration uses
-the same `licensor` Party for the registry and its grants, so the credential
-does not introduce an unrelated external confirmer.
+Using a grant can add a confirming participant and an availability dependency.
+Prefer an authority already involved as a signatory in the protected workflow.
+The licensing example uses the same `licensor` for the registry and its grants,
+so the grant does not introduce an unrelated confirming participant.
 
 Validity uses a half-open interval: `validFrom` is inclusive and `validUntil` is
 exclusive. When both bounds are present, creation requires
@@ -88,13 +117,23 @@ exclusive. When both bounds are present, creation requires
 reading `getTime`, so the check remains compatible with externally prepared and
 signed transactions.
 
+Expiration does not archive a grant. An active grant may be outside its validity
+window or fail the current policy, so discovery alone does not establish permission.
+
+Duplicate grants have independent contract IDs and can each authorize use;
+instance binding does not enforce uniqueness. To offboard a grantee, revoke
+every applicable grant or update the trusted policy shared by the affected
+operations. Revocation follows ledger ordering and conflict validation; it does
+not undo committed work.
+
 ## Usage records
 
 Every successful `requireAuthorization` call exercises
-`AuthorizationGrant_Use` after validation. The event commits with the protected
-operation; a transaction that fails later leaves no committed use event. The
-authority, grantee, and other witnesses can read the exercise through the Ledger
-API with the appropriate party and event filters. On Canton 3.5, use
+`AuthorizationGrant_Use` after validation. The use event is visible only if the
+transaction commits and that exercise is not rolled back by a
+[caught exception](https://docs.canton.network/appdev/reference/daml-language-reference#catch-exceptions).
+The authority, grantee, and other witnesses can read the exercise through the
+Ledger API with the appropriate party and event filters. On Canton 3.5, use
 `TRANSACTION_SHAPE_LEDGER_EFFECTS`; PQS requires the
 [`TransactionTreeStream` data source](https://docs.canton.network/sdks-tools/development-tools/pqs/configure#transactions-data-source)
 to index exercises.
@@ -142,56 +181,41 @@ requirement rather than changing issuer. The
 epoch, leaving the authority parties unchanged. Pending workflows tied to an
 archived resource require application-specific migration or cancellation.
 
-## Resource identity
-
-`resourceId` is a stable application identifier represented as `Text`.
-`resourceInstanceCid` optionally refines that logical identity:
-
-- `None` makes the scope depend on the logical fields only. Applications can
-  use this mode when grants should apply across successor contract instances.
-- `Some (coerceContractId cid)` binds the scope to that exact contract ID. A
-  grant cannot then authorize another instance whose text fields happen to be
-  identical.
-
-The field uses `ContractId ()` as a type-erased identifier so scopes can refer
-to any template. It is compared for equality and is not fetched by the guard,
-so it proves neither resource liveness nor template type and grants no resource
-visibility. The protected choice must derive the expected ID from trusted state.
-
-Scope matching uses full record equality: `None` does not match `Some`, and two
-different contract IDs do not match. Instance binding prevents cross-instance
-reuse; it does not enforce grant uniqueness. Duplicate grants remain separate
-credentials with independent contract IDs. Advancing the epoch in a protected
-resource's trusted requirement rejects older grants at that resource. Other
-resources that still accept the old scope remain unaffected.
-
-An instance-bound grant remains active if its resource is archived, but it does
-not match a successor contract ID. Applications that frequently recreate a
-resource should use logical-only scope or a stable anchor CID when grants must
-continue across those transitions.
-
-## Limits
+## Trust and limits
 
 The authority can create grants directly and is trusted to issue the scopes it
 controls. Grant creation does not prove that an application-specific issuance
-choice ran. Validation conveys permission, not general signing authority: the
-issuer's authority inside `AuthorizationGrant_Use` does not authorize effects
-in the caller's subsequent sibling actions.
-
-Revocation takes effect through ledger ordering and conflict validation; it
-does not undo committed work. Revoke every duplicate credential when offboarding
-a grantee, or update the trusted policy shared by the affected operations.
+choice ran. Validating a grant does not let the caller sign other contracts as
+the issuer: the issuer's authority inside `AuthorizationGrant_Use` does not
+extend to the caller's subsequent sibling actions.
 
 There is no canonical lookup in the LF 2.1 keyless model. The caller presents a
-specific contract ID, and duplicate active grants are independently valid. V1
-does not define wildcard matching, hierarchy, delegated grant administration,
-transferability, counters, or an interface.
+specific contract ID. V1 does not define wildcard matching, hierarchy, delegated
+grant administration, transferability, counters, or an interface.
 
-## Role-based access control
+## API
 
-Applications can map a role to a permission string and reuse the same grant at
-every choice that requires that scope. Membership is per grantee and exact
-scope, not necessarily per business contract. Use common logical fields or a
-shared policy-anchor CID when several contracts deliberately share a role.
-Role mappings, delegated role administration, enumeration, and offboarding
-remain application policy; the treasury example shows a fixed three-role model.
+- `AuthorizationScope` identifies one namespace, resource type, stable resource
+  ID, permission, policy epoch, and optional exact contract instance.
+- `AuthorizationGrant` records an authority's grant to one Party, with optional
+  validity bounds.
+- `Authorization` carries the exercising actor and grant contract ID presented
+  to a protected choice.
+- `AuthorizationRequirement` carries the authority and exact scope expected by
+  that choice.
+- `requireAuthorization` fetches and validates the presented grant, then
+  exercises `AuthorizationGrant_Use` to record usage.
+
+`OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contains unsupported
+implementation details and is not part of the consumer API.
+
+## Build and compatibility
+
+Build from the repository root with
+`DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm build`.
+See [Consume a local build](../../../README.md#consume-a-local-build) for the
+`data-dependencies` configuration.
+
+The package depends only on `daml-prim` and `daml-stdlib`, builds with SDK 3.5.8,
+and targets LF 2.1. The tested runtime is Canton 3.5; there is no released SCU
+baseline yet. Pin the built DAR and review package vetting for your deployment.

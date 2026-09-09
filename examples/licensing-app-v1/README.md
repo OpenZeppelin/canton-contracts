@@ -3,15 +3,10 @@
 A small integration example demonstrating delegated license issuance through
 the Scoped Authorization Grant DAR.
 
-The package is intentionally separate from the reusable implementation. Its
-manifest imports the built DAR through `data-dependencies`, just as an external
-application does. It uses the library's documented public module.
-
-The example separates policy from workflow code. `Example.LicensingV1.Policy`
-defines the issuance scope and its authorization guard, while
-`Example.LicensingV1` defines the registry, license, and choices that use that
-policy. This keeps the security rule visible without mixing its scope encoding
-into the business workflow.
+The package imports the library through `data-dependencies`.
+[`Policy.daml`](daml/Example/LicensingV1/Policy.daml) defines the issuance scope
+and guard; [`LicensingV1.daml`](daml/Example/LicensingV1.daml) defines the registry,
+license, and choices that apply that policy.
 
 ## Workflow
 

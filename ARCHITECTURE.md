@@ -94,10 +94,12 @@ Every supported release records the production DAR, source commit, package name
 and version, main and dependency package IDs, SDK and LF versions, SHA-256,
 signature/provenance, license information, changelog, and audit status.
 
-Release DARs are distributed through GitHub Releases and retained under
-`dars/released/` as immutable compatibility baselines. `dars/manifest.yaml` is
-the reviewable package-ID and provenance index. CI verifies a candidate against
-the previous released DAR before claiming SCU compatibility.
+Supported releases must distribute DARs through GitHub Releases and retain them
+under `dars/released/` as immutable compatibility baselines. `dars/manifest.yaml`
+records package IDs and provenance. Any SCU compatibility claim requires CI
+verification against the previous released DAR. The current CI has no released
+baseline or upgrade-compatibility check; the release process is tracked in
+[RELEASING.md](RELEASING.md).
 
 Participant vetting behavior varies by Canton version and topology. Publishing
 the exact package closure lets each operator review and vet the package IDs its

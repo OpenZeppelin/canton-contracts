@@ -4,12 +4,10 @@ An application-specific role-based access-control example built from the Scoped
 Authorization Grant DAR. It records a payment workflow but does not transfer a
 token or holding.
 
-The example separates role policy from workflow code.
-`Example.TreasuryRbacV1.RolePolicy` defines the closed role set, maps each role
-to its authority and scope, and applies the authorization guard.
-`Example.TreasuryRbacV1` defines the treasury and payment lifecycle that uses
-that policy. The workflow derives the policy input only from trusted treasury
-state.
+[`RolePolicy.daml`](daml/Example/TreasuryRbacV1/RolePolicy.daml) defines the roles,
+maps each role to its authority and scope, and applies the guard.
+[`TreasuryRbacV1.daml`](daml/Example/TreasuryRbacV1.daml) defines the payment
+workflow, deriving the policy input only from trusted treasury state.
 
 ## Role policy
 
@@ -58,7 +56,7 @@ a member performing protected work, and discloses each pending workflow contract
 to the next actor. An actor becomes a workflow stakeholder after authorizing a
 stage.
 
-## Scope
+## Trust and application responsibilities
 
 Scoped grants fit this application because its roles are a closed set and their
 authorities are part of trusted treasury policy. This is not a generic dynamic

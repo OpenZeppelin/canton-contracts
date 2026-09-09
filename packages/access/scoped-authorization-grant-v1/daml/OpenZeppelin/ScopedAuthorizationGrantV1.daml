@@ -4,9 +4,9 @@ module OpenZeppelin.ScopedAuthorizationGrantV1 where
 
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1.Internal as Internal
 
--- | An exact capability. `resourceInstanceCid` can bind the scope to one
--- contract instance; `policyEpoch` supports bulk invalidation. Every field
--- participates in exact matching.
+-- | The resource and permission a grant covers. Every field matches exactly.
+-- `resourceInstanceCid` can bind one contract instance; advancing the expected
+-- `policyEpoch` rejects grants issued for earlier epochs.
 data AuthorizationScope = AuthorizationScope with
     namespace : Text
     resourceType : Text
@@ -64,7 +64,8 @@ data Authorization = Authorization with
     grantCid : ContractId AuthorizationGrant
   deriving (Eq, Show, Serializable)
 
--- | Validate the grant and record its use atomically with the protected effect.
+-- | Validate the grant and exercise Use. Call on the protected operation's
+-- committed path; a caught exception can roll back the use event.
 requireAuthorization : Authorization -> AuthorizationRequirement -> Update ()
 requireAuthorization authorization requirement = do
   grant <- fetch authorization.grantCid
