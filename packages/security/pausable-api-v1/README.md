@@ -256,8 +256,12 @@ For a consumer this means:
   your template, so you add fields, such as CIP-0112 `pauseInfo`, through Smart
   Contract Upgrade of your package while this package does not move.
 - There is no patch release. Adopting a fix means importing the sibling
-  package, rebuilding, and swapping the `interface instance` through a Smart
-  Contract Upgrade of your own package.
+  package and either of two paths. Under Smart Contract Upgrade of your own
+  package, you add a second `interface instance` for its interface; Smart
+  Contract Upgrade cannot remove an interface instance, so your template
+  keeps the V1 instance for life and implements both. To drop V1 you instead
+  create a new template version outside Smart Contract Upgrade, and migrate
+  existing contracts to it offline.
 
 `0.1.0` is a pre-release and is not for upload to a shared ledger. Until a
 tagged release records the DAR in `dars/released/`, the package ID may change
