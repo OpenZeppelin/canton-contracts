@@ -25,6 +25,7 @@ demo = script do
   treasury <- submit admin do
     createCmd Treasury with
       admin; proposer; executor; treasuryId = "ops-treasury"; limit = 100.0; config
+      pending = []
 
   -- The protected operation: a payment above the limit is refused.
   _ <- submit admin do
@@ -37,10 +38,21 @@ demo = script do
     exerciseCmd treasury Treasury_ScheduleLimit with
       newLimit = 500.0, readyAt = addRelTime t0 (hours 1)
 
-  -- The proposer schedules a limit raise that becomes ready in three days.
-  raise <- submit proposer do
+  -- The proposer schedules a limit raise that becomes ready in three days. The
+  -- treasury records it as pending, so the treasury's contract id changes.
+  (treasury, raise) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleLimit with
       newLimit = 500.0, readyAt = addRelTime t0 (days 3)
+
+  -- The admin is bound by the delay too. An operation created directly, ready
+  -- at once, is absent from the pending list and is refused.
+  forged <- submit admin do
+    createCmd LimitChange with
+      admin; proposer; executor; treasuryId = "ops-treasury"; newLimit = 500.0
+      readyAt = t0; expiresAt = None
+  submitMustFail executor do
+    exerciseCmd treasury Treasury_ApplyLimit with opCid = forged
+  submit admin do archiveCmd forged
 
   -- Off-ledger tooling reads pending operations through the interface view,
   -- whatever template implements it.
@@ -68,10 +80,12 @@ demo = script do
 
   -- A pending change can be cancelled by the proposer before it matures.
   now <- getTime
-  cut <- submit proposer do
+  (treasury, cut) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleLimit with
       newLimit = 50.0, readyAt = addRelTime now (days 2)
-  submit proposer do exerciseCmd cut LimitChange_Cancel with canceller = proposer
+  treasury <- submit proposer do
+    exerciseCmd treasury Treasury_Cancel with
+      opCid = toInterfaceContractId cut, canceller = proposer
   passTime (days 2)
   submitMustFail executor do
     exerciseCmd treasury Treasury_ApplyLimit with opCid = cut
@@ -79,13 +93,15 @@ demo = script do
   -- A change left unapplied through the grace period expires. Apply fails
   -- from then on, and anyone may clean it up.
   now <- getTime
-  stale <- submit proposer do
+  (treasury, stale) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleLimit with
       newLimit = 1000.0, readyAt = addRelTime now (days 2)
   passTime (days 9)
   submitMustFail executor do
     exerciseCmd treasury Treasury_ApplyLimit with opCid = stale
-  submit executor do exerciseCmd stale LimitChange_Cleanup with cleaner = executor
+  treasury <- submit executor do
+    exerciseCmd treasury Treasury_Cleanup with
+      opCid = toInterfaceContractId stale, cleaner = executor
 
   -- The delay policy is protected by itself. Shortening the delay takes the
   -- current delay to become effective, and then applies to later schedules.
@@ -96,7 +112,7 @@ demo = script do
   submitMustFail proposer do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig = faster, readyAt = addRelTime now (hours 6)
-  policy <- submit proposer do
+  (treasury, policy) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig = faster, readyAt = addRelTime now (days 2)
   passTime (days 2)

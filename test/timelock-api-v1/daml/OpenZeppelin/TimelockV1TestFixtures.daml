@@ -1,6 +1,6 @@
--- | Consumer fixtures: a protected template with a delay policy, one operation
--- template per operation kind, and the authority models a template author can
--- wire around them.
+-- | Consumer fixtures: a protected template with a delay policy and a pending
+-- list, one operation template per operation kind, and the authority models a
+-- template author can wire around them.
 module OpenZeppelin.TimelockV1TestFixtures where
 
 import DA.Action (unless)
@@ -12,9 +12,10 @@ import OpenZeppelin.TimelockV1
 
 -- | A treasury whose spending limit and delay policy change only through
 -- timelocked operations. `admin` signs; `proposer` and `executor` are the
--- consumer's answer to who may schedule and who may apply. `treasuryId` is the
--- stable identity that operations bind to, because the contract id changes on
--- every consuming choice.
+-- consumer's answer to who may schedule and who may apply. `pending` lists the
+-- operations the schedule choices created, and the apply, cancel, and cleanup
+-- choices accept only those. `treasuryId` is the stable identity that
+-- operations name.
 template Treasury
   with
     admin : Party
@@ -23,54 +24,60 @@ template Treasury
     treasuryId : Text
     limit : Decimal
     config : TimelockConfig
+    pending : Pending
   where
     signatory admin
     observer proposer, executor
     ensure limit >= 0.0
 
-    -- Schedule a limit change to become ready at `readyAt`. Nonconsuming, so
-    -- the treasury keeps its contract id while operations are pending.
-    nonconsuming choice Treasury_ScheduleLimit : ContractId LimitChange
+    -- Schedule a limit change to become ready at `readyAt`. Consuming: the
+    -- successor records the operation in `pending`.
+    choice Treasury_ScheduleLimit : (ContractId Treasury, ContractId LimitChange)
       with
         newLimit : Decimal
         readyAt : Time
       controller proposer
       do
         s <- scheduleAt config readyAt
-        create LimitChange with
+        op <- create LimitChange with
           admin; proposer; executor; treasuryId; newLimit
           readyAt = s.readyAt; expiresAt = s.expiresAt
+        t <- create this with pending = addPending op pending
+        pure (t, op)
 
     -- The same operation scheduled by a relative delay.
-    nonconsuming choice Treasury_ScheduleLimitAfter : ContractId LimitChange
+    choice Treasury_ScheduleLimitAfter : (ContractId Treasury, ContractId LimitChange)
       with
         newLimit : Decimal
         delay : RelTime
       controller proposer
       do
         s <- scheduleAfter config delay
-        create LimitChange with
+        op <- create LimitChange with
           admin; proposer; executor; treasuryId; newLimit
           readyAt = s.readyAt; expiresAt = s.expiresAt
+        t <- create this with pending = addPending op pending
+        pure (t, op)
 
-    -- Apply a matured limit change. The binding check comes first, the time
-    -- guard second, and the effect last.
+    -- Apply a matured limit change: take it out of the pending list, check the
+    -- identity fields, check the time, archive it, apply the parameters.
     choice Treasury_ApplyLimit : ContractId Treasury
       with
         opCid : ContractId LimitChange
       controller executor
       do
+        pending' <- takePending opCid pending
         op <- fetch opCid
         unless (op.admin == admin && op.treasuryId == treasuryId)
           (failWithStatus eWrongTarget)
         requireReady op
         archive opCid
-        create this with limit = op.newLimit
+        create this with limit = op.newLimit, pending = pending'
 
     -- Self-administration: the delay policy changes only through the timelock
     -- it defines, under the policy in force when the change was scheduled. The
     -- proposed policy is validated here, at proposal time.
-    nonconsuming choice Treasury_ScheduleConfig : ContractId ConfigChange
+    choice Treasury_ScheduleConfig : (ContractId Treasury, ContractId ConfigChange)
       with
         newConfig : TimelockConfig
         readyAt : Time
@@ -78,26 +85,58 @@ template Treasury
       do
         requireValidConfig newConfig
         s <- scheduleAt config readyAt
-        create ConfigChange with
+        op <- create ConfigChange with
           admin; proposer; executor; treasuryId; newConfig
           readyAt = s.readyAt; expiresAt = s.expiresAt
+        t <- create this with pending = addPending op pending
+        pure (t, op)
 
     choice Treasury_ApplyConfig : ContractId Treasury
       with
         opCid : ContractId ConfigChange
       controller executor
       do
+        pending' <- takePending opCid pending
         op <- fetch opCid
         unless (op.admin == admin && op.treasuryId == treasuryId)
           (failWithStatus eWrongTarget)
         requireReady op
         archive opCid
-        create this with config = op.newConfig
+        create this with config = op.newConfig, pending = pending'
+
+    -- Cancel a pending operation of any kind. The proposer or the admin may
+    -- cancel; the operation leaves the pending list and the ledger.
+    choice Treasury_Cancel : ContractId Treasury
+      with
+        opCid : ContractId Timelocked
+        canceller : Party
+      controller canceller
+      do
+        assertMsg "Treasury: only the proposer or the admin may cancel"
+          (canceller == proposer || canceller == admin)
+        pending' <- takePending opCid pending
+        archive opCid
+        create this with pending = pending'
+
+    -- Anyone may clean up an expired operation. The controller is a flexible
+    -- party, so a party outside the stakeholders receives the contracts by
+    -- disclosure.
+    choice Treasury_Cleanup : ContractId Treasury
+      with
+        opCid : ContractId Timelocked
+        cleaner : Party
+      controller cleaner
+      do
+        pending' <- takePending opCid pending
+        op <- fetch opCid
+        requireExpired op
+        archive opCid
+        create this with pending = pending'
 
 -- | A pending limit change. Signed by `admin` because it is created in a choice
--- on the treasury, so only the treasury's admin can create one. The executor
--- observes it because the apply choice fetches it; an executor outside the
--- stakeholders receives the contract by explicit disclosure.
+-- on the treasury. The executor observes it because the apply choice fetches
+-- it; an executor outside the stakeholders receives the contract by explicit
+-- disclosure.
 template LimitChange
   with
     admin : Party
@@ -113,21 +152,6 @@ template LimitChange
 
     interface instance Timelocked for LimitChange where
       view = TimelockedView with readyAt, expiresAt
-
-    -- The canceller. Here the admin; a consumer may name a proposer, a
-    -- guardian, or a credential holder instead.
-    choice LimitChange_Cancel : ()
-      controller admin
-      do pure ()
-
-    -- Anyone may archive an expired operation. The controller is a flexible
-    -- party, so a party outside the stakeholders receives the contract by
-    -- disclosure.
-    choice LimitChange_Cleanup : ()
-      with
-        cleaner : Party
-      controller cleaner
-      do requireExpired this
 
 -- | A pending change of the delay policy itself.
 template ConfigChange
@@ -145,16 +169,6 @@ template ConfigChange
 
     interface instance Timelocked for ConfigChange where
       view = TimelockedView with readyAt, expiresAt
-
-    choice ConfigChange_Cancel : ()
-      controller admin
-      do pure ()
-
-    choice ConfigChange_Cleanup : ()
-      with
-        cleaner : Party
-      controller cleaner
-      do requireExpired this
 
 -- | A stranger's contract for probing the guards on an interface value that
 -- it can see and that another party controls.
@@ -181,7 +195,7 @@ template Probe
         op <- fetch target
         pure (isReadyAt at op)
 
--- | Raised by the fixtures when an operation targets another treasury.
+-- | Raised by the fixtures when an operation names another treasury.
 eWrongTarget : FailureStatus
 eWrongTarget = FailureStatus with
   errorId = "example.com/treasury-wrong-target"

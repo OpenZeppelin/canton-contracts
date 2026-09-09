@@ -3,7 +3,7 @@ module OpenZeppelin.TimelockV1Test where
 
 import DA.Assert ((===))
 import DA.Fail (FailureStatus)
-import DA.Time (addRelTime, days, hours, minutes, microseconds)
+import DA.Time (RelTime, addRelTime, days, hours, minutes, microseconds)
 import Daml.Script
 
 import OpenZeppelin.TimelockV1
@@ -28,10 +28,20 @@ setupWith config = do
   treasury <- submit admin do
     createCmd Treasury with
       admin; proposer; executor; treasuryId = "treasury-1"; limit = 10.0; config
+      pending = []
   pure Fixture with ..
 
 setup : Script Fixture
 setup = setupWith oneDayWeekGrace
+
+-- | Schedule a limit change ready at `t0 + delay`, returning the new treasury
+-- and the operation.
+scheduleLimit : Fixture -> Decimal -> RelTime -> Script (ContractId Treasury, ContractId LimitChange)
+scheduleLimit Fixture{..} newLimit delay = submit proposer do
+  exerciseCmd treasury Treasury_ScheduleLimit with newLimit, readyAt = addRelTime t0 delay
+
+asOp : ContractId LimitChange -> ContractId Timelocked
+asOp = toInterfaceContractId
 
 -- A guard failure reaches the submitter as the library's `FailureStatus`,
 -- whole: id, category, message, and metadata.
@@ -47,23 +57,24 @@ expectFailure status (Right _) = fail ("expected " <> status.errorId <> " but th
 -------------------------------------------------------
 
 -- | `scheduleAt` stores the requested `readyAt` and derives `expiresAt` from
--- the grace period.
+-- the grace period, and the schedule choice records the operation as pending.
 test_scheduleAtDerivesTheView : Script ()
 test_scheduleAtDerivesTheView = script do
-  Fixture{..} <- setup
+  f@Fixture{..} <- setup
   let readyAt = addRelTime t0 (days 2)
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt
-  Some v <- queryInterfaceContractId admin (toInterfaceContractId @Timelocked op)
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  Some v <- queryInterfaceContractId admin (asOp op)
   v === TimelockedView with readyAt, expiresAt = Some (addRelTime readyAt (days 7))
+  Some t <- queryContractId admin t1
+  t.pending === [asOp op]
 
 -- | `scheduleAfter` measures the delay from the ledger time.
 test_scheduleAfterDerivesTheView : Script ()
 test_scheduleAfterDerivesTheView = script do
   Fixture{..} <- setup
-  op <- submit proposer do
+  (_, op) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleLimitAfter with newLimit = 20.0, delay = days 3
-  Some v <- queryInterfaceContractId admin (toInterfaceContractId @Timelocked op)
+  Some v <- queryInterfaceContractId admin (asOp op)
   v.readyAt === addRelTime t0 (days 3)
   v.expiresAt === Some (addRelTime t0 (days 10))
 
@@ -79,10 +90,8 @@ test_scheduleAtRejectsShortDelay = script do
 -- | A `readyAt` exactly `minDelay` away is accepted: the bound is inclusive.
 test_scheduleAtAcceptsExactMinDelay : Script ()
 test_scheduleAtAcceptsExactMinDelay = script do
-  Fixture{..} <- setup
-  _ <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 1)
+  f <- setup
+  _ <- scheduleLimit f 20.0 (days 1)
   pure ()
 
 -- | A relative delay shorter than `minDelay` is refused. INV-1.
@@ -96,114 +105,101 @@ test_scheduleAfterRejectsShortDelay = script do
 -- | A zero `minDelay` disables the delay, as in `TimelockController.sol`.
 test_zeroMinDelayAllowsImmediateReady : Script ()
 test_zeroMinDelayAllowsImmediateReady = script do
-  Fixture{..} <- setupWith TimelockConfig with minDelay = hours 0, gracePeriod = None
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt = t0
-  t2 <- submit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  f@Fixture{..} <- setupWith TimelockConfig with minDelay = hours 0, gracePeriod = None
+  (t1, op) <- scheduleLimit f 20.0 (hours 0)
+  t2 <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
   Some t <- queryContractId admin t2
   t.limit === 20.0
 
 -- | No grace period means no expiry.
 test_noGracePeriodNeverExpires : Script ()
 test_noGracePeriodNeverExpires = script do
-  Fixture{..} <- setupWith TimelockConfig with minDelay = days 1, gracePeriod = None
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 1)
-  Some v <- queryInterfaceContractId admin (toInterfaceContractId @Timelocked op)
+  f@Fixture{..} <- setupWith TimelockConfig with minDelay = days 1, gracePeriod = None
+  (t1, op) <- scheduleLimit f 20.0 (days 1)
+  Some v <- queryInterfaceContractId admin (asOp op)
   v.expiresAt === None
   passTime (days 400)
-  r <- trySubmit admin do exerciseCmd op LimitChange_Cleanup with cleaner = admin
+  r <- trySubmit admin do
+    exerciseCmd t1 Treasury_Cleanup with opCid = asOp op, cleaner = admin
   expectFailure eNotExpired r
-  t2 <- submit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  t2 <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
   Some t <- queryContractId admin t2
   t.limit === 20.0
 
 -- Executing
 -------------------------------------------------------
 
--- | The full lifecycle: schedule, wait, apply. INV-2.
+-- | The full lifecycle: schedule, wait, apply. The operation leaves the ledger
+-- and the pending list. INV-2.
 test_applyAfterDelay : Script ()
 test_applyAfterDelay = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
-  t2 <- submit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  t2 <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
   Some t <- queryContractId admin t2
   t.limit === 20.0
+  t.pending === []
   gone <- queryContractId admin op
   gone === None
 
 -- | Applying before `readyAt` fails with `eNotReady`. INV-2.
 test_applyBeforeReadyFails : Script ()
 test_applyBeforeReadyFails = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
-  r0 <- trySubmit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  r0 <- trySubmit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
   expectFailure eNotReady r0
   passTime (days 2 - minutes 1)
-  r1 <- trySubmit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  r1 <- trySubmit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
   expectFailure eNotReady r1
 
 -- | `readyAt` itself is ready: the lower bound is inclusive.
 test_applyAtReadyAtSucceeds : Script ()
 test_applyAtReadyAtSucceeds = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
-  _ <- submit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  _ <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
   pure ()
 
 -- | Applying at or after `expiresAt` fails with `eExpired`. INV-3.
 test_applyAfterExpiryFails : Script ()
 test_applyAfterExpiryFails = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 9)
-  r <- trySubmit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  r <- trySubmit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
   expectFailure eExpired r
 
 -- | The instant before `expiresAt` is still executable: the upper bound is
 -- exclusive.
 test_applyJustBeforeExpirySucceeds : Script ()
 test_applyJustBeforeExpirySucceeds = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 9 - minutes 1)
-  _ <- submit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  _ <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
   pure ()
 
--- | An operation executes at most once: the apply choice archives it. INV-4.
+-- | An operation executes at most once: the apply choice archives it and
+-- removes it from the pending list. INV-4.
 test_operationExecutesOnce : Script ()
 test_operationExecutesOnce = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
-  t2 <- submit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  t2 <- submit executor do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
   submitMustFail executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op
 
 -- | Only the consumer's executor may apply; the interface names nobody.
 test_onlyTheConsumersExecutorMayApply : Script ()
 test_onlyTheConsumersExecutorMayApply = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
-  submitMustFail proposer do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
-  submitMustFail admin do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  submitMustFail proposer do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
+  submitMustFail admin do exerciseCmd t1 Treasury_ApplyLimit with opCid = op
 
 -- | Only the consumer's proposer may schedule.
 test_onlyTheConsumersProposerMaySchedule : Script ()
@@ -213,27 +209,41 @@ test_onlyTheConsumersProposerMaySchedule = script do
     exerciseCmd treasury Treasury_ScheduleLimit with
       newLimit = 20.0, readyAt = addRelTime t0 (days 2)
 
--- Binding
+-- The pending list
 -------------------------------------------------------
 
--- | An operation scheduled on one treasury does not apply to another treasury
--- of the same admin: the consumer's binding check refuses it. INV-5.
+-- | The signatory itself is bound by the delay. An operation the admin creates
+-- directly, ready at once, is absent from the pending list and is refused
+-- with `eNotPending`. INV-8.
+test_directlyCreatedOperationRefused : Script ()
+test_directlyCreatedOperationRefused = script do
+  Fixture{..} <- setup
+  forged <- submit admin do
+    createCmd LimitChange with
+      admin; proposer; executor; treasuryId = "treasury-1"; newLimit = 1000.0
+      readyAt = t0; expiresAt = None
+  r <- trySubmit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = forged
+  expectFailure eNotPending r
+  r2 <- trySubmit admin do
+    exerciseCmd treasury Treasury_Cancel with opCid = asOp forged, canceller = admin
+  expectFailure eNotPending r2
+
+-- | An operation scheduled on one treasury is absent from another treasury's
+-- pending list, so the other treasury refuses it. INV-5, INV-8.
 test_operationBoundToItsTarget : Script ()
 test_operationBoundToItsTarget = script do
-  Fixture{..} <- setup
+  f@Fixture{..} <- setup
   other <- submit admin do
     createCmd Treasury with
       admin; proposer; executor; treasuryId = "treasury-2"; limit = 5.0
-      config = oneDayWeekGrace
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+      config = oneDayWeekGrace; pending = []
+  (_, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
   r <- trySubmit executor do exerciseCmd other Treasury_ApplyLimit with opCid = op
-  expectFailure eWrongTarget r
+  expectFailure eNotPending r
 
--- | An operation forged by another admin never carries this treasury's
--- signature, so it is refused before any time check. INV-5.
+-- | An operation scheduled by another admin's treasury is refused before any
+-- time check. INV-5, INV-8.
 test_operationFromAnotherAdminRejected : Script ()
 test_operationFromAnotherAdminRejected = script do
   Fixture{..} <- setup
@@ -242,74 +252,103 @@ test_operationFromAnotherAdminRejected = script do
     createCmd Treasury with
       admin = rogue; proposer; executor; treasuryId = "treasury-1"; limit = 0.0
       config = TimelockConfig with minDelay = hours 0, gracePeriod = None
-  forged <- submit proposer do
+      pending = []
+  (_, forged) <- submit proposer do
     exerciseCmd rogueTreasury Treasury_ScheduleLimit with newLimit = 1000.0, readyAt = t0
   r <- trySubmit executor do
     exerciseCmd treasury Treasury_ApplyLimit with opCid = forged
-  expectFailure eWrongTarget r
+  expectFailure eNotPending r
 
--- | Binding by stable identity survives unrelated state changes on the
--- protected contract. The treasury's contract id changes when another
--- operation applies, and the earlier operation still applies. INV-5.
+-- | Two pending operations survive each other's application: the second
+-- applies on the treasury the first produced. INV-5.
 test_operationSurvivesTargetStateChange : Script ()
 test_operationSurvivesTargetStateChange = script do
-  Fixture{..} <- setup
-  op1 <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
-  op2 <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 30.0, readyAt = addRelTime t0 (days 2)
+  f@Fixture{..} <- setup
+  (t1, op1) <- scheduleLimit f 20.0 (days 2)
+  (t2, op2) <- submit proposer do
+    exerciseCmd t1 Treasury_ScheduleLimit with newLimit = 30.0, readyAt = addRelTime t0 (days 2)
+  Some t <- queryContractId admin t2
+  t.pending === [asOp op2, asOp op1]
   passTime (days 2)
-  t2 <- submit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op2
+  t3 <- submit executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op2
+  t4 <- submit executor do exerciseCmd t3 Treasury_ApplyLimit with opCid = op1
+  Some t' <- queryContractId admin t4
+  t'.limit === 20.0
+  t'.pending === []
+
+-- | Two operations ready at the same instant apply one after the other; the
+-- second must target the treasury contract the first produced.
+test_twoOperationsAtTheSameInstant : Script ()
+test_twoOperationsAtTheSameInstant = script do
+  f@Fixture{..} <- setup
+  (t1, op1) <- scheduleLimit f 20.0 (days 2)
+  (t2, op2) <- submit proposer do
+    exerciseCmd t1 Treasury_ScheduleLimit with newLimit = 30.0, readyAt = addRelTime t0 (days 2)
+  passTime (days 2)
   t3 <- submit executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op1
-  Some t <- queryContractId admin t3
-  t.limit === 20.0
+  submitMustFail executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op2
+  t4 <- submit executor do exerciseCmd t3 Treasury_ApplyLimit with opCid = op2
+  Some t <- queryContractId admin t4
+  t.limit === 30.0
 
 -- Cancelling and cleaning up
 -------------------------------------------------------
 
--- | A cancelled operation cannot execute, before or after `readyAt`.
+-- | A cancelled operation leaves the ledger and the pending list, and cannot
+-- execute afterwards.
 test_cancelledOperationCannotExecute : Script ()
 test_cancelledOperationCannotExecute = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
-  submit admin do exerciseCmd op LimitChange_Cancel
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  t2 <- submit admin do exerciseCmd t1 Treasury_Cancel with opCid = asOp op, canceller = admin
+  Some t <- queryContractId admin t2
+  t.pending === []
+  gone <- queryContractId admin op
+  gone === None
   passTime (days 2)
-  submitMustFail executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op
+  submitMustFail executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op
+
+-- | Only the proposer or the admin may cancel.
+test_onlyProposerOrAdminMayCancel : Script ()
+test_onlyProposerOrAdminMayCancel = script do
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  submitMustFail executor do
+    exerciseCmd t1 Treasury_Cancel with opCid = asOp op, canceller = executor
+  _ <- submit proposer do
+    exerciseCmd t1 Treasury_Cancel with opCid = asOp op, canceller = proposer
+  pure ()
 
 -- | Cleanup is refused while the operation can still execute, and accepted once
 -- it has expired. INV-3.
 test_cleanupOnlyAfterExpiry : Script ()
 test_cleanupOnlyAfterExpiry = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
-  r0 <- trySubmit admin do exerciseCmd op LimitChange_Cleanup with cleaner = admin
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  r0 <- trySubmit admin do exerciseCmd t1 Treasury_Cleanup with opCid = asOp op, cleaner = admin
   expectFailure eNotExpired r0
   passTime (days 5)
-  r1 <- trySubmit admin do exerciseCmd op LimitChange_Cleanup with cleaner = admin
+  r1 <- trySubmit admin do exerciseCmd t1 Treasury_Cleanup with opCid = asOp op, cleaner = admin
   expectFailure eNotExpired r1
   passTime (days 4)
-  submit admin do exerciseCmd op LimitChange_Cleanup with cleaner = admin
+  t2 <- submit admin do exerciseCmd t1 Treasury_Cleanup with opCid = asOp op, cleaner = admin
+  Some t <- queryContractId admin t2
+  t.pending === []
   gone <- queryContractId admin op
   gone === None
 
--- | A non-stakeholder cleans up an expired operation through disclosure.
+-- | A non-stakeholder cleans up an expired operation through disclosure of
+-- the operation and of the treasury.
 test_strangerCleansUpExpiredOperation : Script ()
 test_strangerCleansUpExpiredOperation = script do
-  Fixture{..} <- setup
+  f@Fixture{..} <- setup
   stranger <- allocateParty "stranger"
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 9)
-  Some d <- queryDisclosure @LimitChange admin op
-  submit (actAs stranger <> disclose d) do
-    exerciseCmd op LimitChange_Cleanup with cleaner = stranger
+  Some dOp <- queryDisclosure @LimitChange admin op
+  Some dT <- queryDisclosure @Treasury admin t1
+  _ <- submit (actAs stranger <> disclose dOp <> disclose dT) do
+    exerciseCmd t1 Treasury_Cleanup with opCid = asOp op, cleaner = stranger
   gone <- queryContractId admin op
   gone === None
 
@@ -326,12 +365,12 @@ test_configChangeIsTimelocked = script do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig, readyAt = addRelTime t0 (hours 1)
   expectFailure eDelayTooShort r
-  op <- submit proposer do
+  (t1, op) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig, readyAt = addRelTime t0 (days 1)
-  submitMustFail executor do exerciseCmd treasury Treasury_ApplyConfig with opCid = op
+  submitMustFail executor do exerciseCmd t1 Treasury_ApplyConfig with opCid = op
   passTime (days 1)
-  t2 <- submit executor do exerciseCmd treasury Treasury_ApplyConfig with opCid = op
+  t2 <- submit executor do exerciseCmd t1 Treasury_ApplyConfig with opCid = op
   Some t <- queryContractId admin t2
   t.config === newConfig
   now <- getTime
@@ -339,60 +378,35 @@ test_configChangeIsTimelocked = script do
     exerciseCmd t2 Treasury_ScheduleLimit with newLimit = 20.0, readyAt = addRelTime now (hours 1)
   pure ()
 
--- Reading
--------------------------------------------------------
-
--- | The view is readable by every stakeholder of the operation and by nobody
--- else. INV-6.
-test_viewVisibilityFollowsTheTemplate : Script ()
-test_viewVisibilityFollowsTheTemplate = script do
+-- | A cancelled config change cannot apply.
+test_configChangeCancel : Script ()
+test_configChangeCancel = script do
   Fixture{..} <- setup
-  stranger <- allocateParty "stranger"
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
-  Some _ <- queryInterfaceContractId admin (toInterfaceContractId @Timelocked op)
-  Some _ <- queryInterfaceContractId executor (toInterfaceContractId @Timelocked op)
-  hidden <- queryInterfaceContractId stranger (toInterfaceContractId @Timelocked op)
-  hidden === None
+  (t1, op) <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleConfig with
+      newConfig = oneDayWeekGrace, readyAt = addRelTime t0 (days 1)
+  t2 <- submit admin do
+    exerciseCmd t1 Treasury_Cancel with opCid = toInterfaceContractId op, canceller = admin
+  passTime (days 1)
+  submitMustFail executor do exerciseCmd t2 Treasury_ApplyConfig with opCid = op
 
--- | The pure predicates agree with the guards at the boundaries.
-test_purePredicatesMatchTheGuards : Script ()
-test_purePredicatesMatchTheGuards = script do
+-- | An expired config change is cleaned up, and only after expiry. INV-3.
+test_configChangeCleanupAfterExpiry : Script ()
+test_configChangeCleanupAfterExpiry = script do
   Fixture{..} <- setup
-  let readyAt = addRelTime t0 (days 2)
-      expiresAt = addRelTime readyAt (days 7)
-      op = LimitChange with
-        admin; proposer; executor; treasuryId = "treasury-1"; newLimit = 20.0
-        readyAt; expiresAt = Some expiresAt
-  isReadyAt t0 op === False
-  isReadyAt (addRelTime readyAt (negate (minutes 1))) op === False
-  isReadyAt readyAt op === True
-  isReadyAt (addRelTime expiresAt (negate (minutes 1))) op === True
-  isReadyAt expiresAt op === False
-  isExpiredAt readyAt op === False
-  isExpiredAt expiresAt op === True
-  isExpiredAt expiresAt (op with expiresAt = None) === False
-
--- | The guards accept a bare `Timelocked`, so a party holding only the
--- interface contract id can check readiness. The check changes nothing.
-test_guardsAcceptAnInterfaceValue : Script ()
-test_guardsAcceptAnInterfaceValue = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 2)
-  probe <- submit admin do createCmd Probe with caller = admin
-  let target = toInterfaceContractId @Timelocked op
-  r <- trySubmit admin do exerciseCmd probe Probe_RequireReady with target
-  expectFailure eNotReady r
-  ready <- submit admin do
-    exerciseCmd probe Probe_IsReadyAt with target, at = addRelTime t0 (days 2)
-  ready === True
-  passTime (days 2)
-  submit admin do exerciseCmd probe Probe_RequireReady with target
-  Some _ <- queryContractId admin op
-  pure ()
+  (t1, op) <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleConfig with
+      newConfig = oneDayWeekGrace, readyAt = addRelTime t0 (days 1)
+  r <- trySubmit admin do
+    exerciseCmd t1 Treasury_Cleanup with opCid = toInterfaceContractId op, cleaner = admin
+  expectFailure eNotExpired r
+  passTime (days 8)
+  r2 <- trySubmit executor do exerciseCmd t1 Treasury_ApplyConfig with opCid = op
+  expectFailure eExpired r2
+  _ <- submit admin do
+    exerciseCmd t1 Treasury_Cleanup with opCid = toInterfaceContractId op, cleaner = admin
+  gone <- queryContractId admin op
+  gone === None
 
 -- Policy validation
 -------------------------------------------------------
@@ -430,9 +444,8 @@ test_bothZeroRejected = script do
   isValidConfig (TimelockConfig with minDelay = hours 0, gracePeriod = Some (microseconds 1)) === True
   isValidConfig (TimelockConfig with minDelay = hours 0, gracePeriod = None) === True
 
--- | The self-administration path cannot lock the treasury out: a config
--- change to a stillborn policy is refused when it is scheduled, because the
--- consumer's schedule choice validates the new policy. INV-7.
+-- | A config change to a stillborn policy is refused when it is scheduled,
+-- because the consumer's schedule choice validates the new policy. INV-7.
 test_configChangeToInvalidPolicyIsRefused : Script ()
 test_configChangeToInvalidPolicyIsRefused = script do
   Fixture{..} <- setup
@@ -452,52 +465,56 @@ test_scheduleNearMaxTimeFails = script do
   ops <- query @LimitChange admin
   ops === []
 
--- ConfigChange lifecycle
+-- Reading
 -------------------------------------------------------
 
--- | A cancelled config change cannot apply.
-test_configChangeCancel : Script ()
-test_configChangeCancel = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleConfig with
-      newConfig = oneDayWeekGrace, readyAt = addRelTime t0 (days 1)
-  submit admin do exerciseCmd op ConfigChange_Cancel
-  passTime (days 1)
-  submitMustFail executor do exerciseCmd treasury Treasury_ApplyConfig with opCid = op
+-- | The view is readable by every stakeholder of the operation and by nobody
+-- else. INV-6.
+test_viewVisibilityFollowsTheTemplate : Script ()
+test_viewVisibilityFollowsTheTemplate = script do
+  f@Fixture{..} <- setup
+  stranger <- allocateParty "stranger"
+  (_, op) <- scheduleLimit f 20.0 (days 2)
+  Some _ <- queryInterfaceContractId admin (asOp op)
+  Some _ <- queryInterfaceContractId executor (asOp op)
+  hidden <- queryInterfaceContractId stranger (asOp op)
+  hidden === None
 
--- | An expired config change is cleaned up, and only after expiry. INV-3.
-test_configChangeCleanupAfterExpiry : Script ()
-test_configChangeCleanupAfterExpiry = script do
-  Fixture{..} <- setup
-  op <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleConfig with
-      newConfig = oneDayWeekGrace, readyAt = addRelTime t0 (days 1)
-  r <- trySubmit admin do exerciseCmd op ConfigChange_Cleanup with cleaner = admin
-  expectFailure eNotExpired r
-  passTime (days 8)
-  r2 <- trySubmit executor do exerciseCmd treasury Treasury_ApplyConfig with opCid = op
-  expectFailure eExpired r2
-  submit admin do exerciseCmd op ConfigChange_Cleanup with cleaner = admin
-  gone <- queryContractId admin op
-  gone === None
-
--- | Two operations ready at the same instant apply one after the other; the
--- second must target the treasury contract the first produced.
-test_twoOperationsAtTheSameInstant : Script ()
-test_twoOperationsAtTheSameInstant = script do
+-- | The pure predicates agree with the guards at the boundaries.
+test_purePredicatesMatchTheGuards : Script ()
+test_purePredicatesMatchTheGuards = script do
   Fixture{..} <- setup
   let readyAt = addRelTime t0 (days 2)
-  op1 <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt
-  op2 <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 30.0, readyAt
+      expiresAt = addRelTime readyAt (days 7)
+      op = LimitChange with
+        admin; proposer; executor; treasuryId = "treasury-1"; newLimit = 20.0
+        readyAt; expiresAt = Some expiresAt
+  isReadyAt t0 op === False
+  isReadyAt (addRelTime readyAt (negate (minutes 1))) op === False
+  isReadyAt readyAt op === True
+  isReadyAt (addRelTime expiresAt (negate (minutes 1))) op === True
+  isReadyAt expiresAt op === False
+  isExpiredAt readyAt op === False
+  isExpiredAt expiresAt op === True
+  isExpiredAt expiresAt (op with expiresAt = None) === False
+
+-- | The guards accept a bare `Timelocked`, so a party holding only the
+-- interface contract id can check readiness. The check changes nothing.
+test_guardsAcceptAnInterfaceValue : Script ()
+test_guardsAcceptAnInterfaceValue = script do
+  f@Fixture{..} <- setup
+  (_, op) <- scheduleLimit f 20.0 (days 2)
+  probe <- submit admin do createCmd Probe with caller = admin
+  let target = asOp op
+  r <- trySubmit admin do exerciseCmd probe Probe_RequireReady with target
+  expectFailure eNotReady r
+  ready <- submit admin do
+    exerciseCmd probe Probe_IsReadyAt with target, at = addRelTime t0 (days 2)
+  ready === True
   passTime (days 2)
-  t2 <- submit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op1
-  submitMustFail executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op2
-  t3 <- submit executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op2
-  Some t <- queryContractId admin t3
-  t.limit === 30.0
+  submit admin do exerciseCmd probe Probe_RequireReady with target
+  Some _ <- queryContractId admin op
+  pure ()
 
 -- | The failure statuses are distinct and carry stable ids.
 test_failureStatusesAreDistinct : Script ()
@@ -507,3 +524,4 @@ test_failureStatusesAreDistinct = script do
   eExpired.errorId === "openzeppelin.com/timelock-expired"
   eNotExpired.errorId === "openzeppelin.com/timelock-not-expired"
   eInvalidConfig.errorId === "openzeppelin.com/timelock-invalid-config"
+  eNotPending.errorId === "openzeppelin.com/timelock-not-pending"

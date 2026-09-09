@@ -6,10 +6,11 @@
 -- itself changes the same way, so shortening the delay takes a full delay of
 -- its own.
 --
--- Adopting the timelock costs one `TimelockConfig` field on the protected
--- template, one operation template per operation kind with a two-line
--- `interface instance`, and the schedule and apply choices that name the
--- authorities. The library supplies the schedule computation and the guards.
+-- Adopting the timelock costs a `TimelockConfig` field and a `Pending` list on
+-- the protected template, one operation template per operation kind with a
+-- two-line `interface instance`, and the schedule and apply choices that name
+-- the authorities. The library supplies the schedule computation, the pending
+-- list functions, and the guards.
 module MyApp.Treasury where
 
 import DA.Action (unless)
@@ -30,8 +31,9 @@ template Payout
     ensure amount > 0.0
 
 -- | The protected contract. `admin` signs it, so every operation created in
--- one of its choices carries `admin`'s signature, and only `admin`'s choices
--- create operations.
+-- one of its choices carries `admin`'s signature. `pending` lists the
+-- operations the schedule choices created; the apply, cancel, and cleanup
+-- choices accept only those, which binds the delay on `admin` as well.
 -- `proposer` and `executor` are the treasury's answer to who may schedule and
 -- who may apply; a role credential would fit in the same slots.
 template Treasury
@@ -42,6 +44,7 @@ template Treasury
     treasuryId : Text
     limit : Decimal
     config : Timelock.TimelockConfig
+    pending : Timelock.Pending
   where
     signatory admin
     observer proposer, executor
@@ -59,38 +62,43 @@ template Treasury
         create Payout with payer = admin, recipient, amount
 
     -- Schedule a limit change. `scheduleAt` refuses a `readyAt` closer than
-    -- `config.minDelay` and derives `expiresAt` from `config.gracePeriod`.
-    nonconsuming choice Treasury_ScheduleLimit : ContractId LimitChange
+    -- `config.minDelay` and derives `expiresAt` from `config.gracePeriod`. The
+    -- successor treasury records the operation as pending.
+    choice Treasury_ScheduleLimit : (ContractId Treasury, ContractId LimitChange)
       with
         newLimit : Decimal
         readyAt : Time
       controller proposer
       do
         s <- Timelock.scheduleAt config readyAt
-        create LimitChange with
+        op <- create LimitChange with
           admin; proposer; executor; treasuryId; newLimit
           readyAt = s.readyAt; expiresAt = s.expiresAt
+        t <- create this with pending = Timelock.addPending op pending
+        pure (t, op)
 
-    -- Apply a matured limit change. The order matters: bind the operation to
-    -- this treasury first, check the time second, and only then apply the
-    -- typed parameters and archive the operation so it executes once.
+    -- Apply a matured limit change. The order matters: take the operation out
+    -- of the pending list first, which binds it to this treasury lineage, check
+    -- the identity fields and the time, and only then apply the typed
+    -- parameters and archive the operation so it executes once.
     choice Treasury_ApplyLimit : ContractId Treasury
       with
         opCid : ContractId LimitChange
       controller executor
       do
+        pending' <- Timelock.takePending opCid pending
         op <- fetch opCid
         unless (op.admin == admin && op.treasuryId == treasuryId)
           (failWithStatus eWrongTarget)
         Timelock.requireReady op
         archive opCid
-        create this with limit = op.newLimit
+        create this with limit = op.newLimit, pending = pending'
 
     -- Self-administration: the delay policy changes only through a timelocked
     -- operation scheduled under the policy in force at the time. The proposed
     -- policy is validated at proposal time, so every policy that reaches the
     -- treasury produces executable operations.
-    nonconsuming choice Treasury_ScheduleConfig : ContractId ConfigChange
+    choice Treasury_ScheduleConfig : (ContractId Treasury, ContractId ConfigChange)
       with
         newConfig : Timelock.TimelockConfig
         readyAt : Time
@@ -98,21 +106,54 @@ template Treasury
       do
         Timelock.requireValidConfig newConfig
         s <- Timelock.scheduleAt config readyAt
-        create ConfigChange with
+        op <- create ConfigChange with
           admin; proposer; executor; treasuryId; newConfig
           readyAt = s.readyAt; expiresAt = s.expiresAt
+        t <- create this with pending = Timelock.addPending op pending
+        pure (t, op)
 
     choice Treasury_ApplyConfig : ContractId Treasury
       with
         opCid : ContractId ConfigChange
       controller executor
       do
+        pending' <- Timelock.takePending opCid pending
         op <- fetch opCid
         unless (op.admin == admin && op.treasuryId == treasuryId)
           (failWithStatus eWrongTarget)
         Timelock.requireReady op
         archive opCid
-        create this with config = op.newConfig
+        create this with config = op.newConfig, pending = pending'
+
+    -- Cancel a pending operation of any kind. Either the proposer or the admin
+    -- may withdraw a pending change before it executes; the operation leaves
+    -- the pending list and the ledger.
+    choice Treasury_Cancel : ContractId Treasury
+      with
+        opCid : ContractId Timelock.Timelocked
+        canceller : Party
+      controller canceller
+      do
+        assertMsg "Treasury: only the proposer or the admin may cancel"
+          (canceller == proposer || canceller == admin)
+        pending' <- Timelock.takePending opCid pending
+        archive opCid
+        create this with pending = pending'
+
+    -- Anyone may clean up an expired operation. The controller is a flexible
+    -- party, so a party outside the stakeholders receives the operation and
+    -- the treasury by explicit disclosure.
+    choice Treasury_Cleanup : ContractId Treasury
+      with
+        opCid : ContractId Timelock.Timelocked
+        cleaner : Party
+      controller cleaner
+      do
+        pending' <- Timelock.takePending opCid pending
+        op <- fetch opCid
+        Timelock.requireExpired op
+        archive opCid
+        create this with pending = pending'
 
 -- | A pending limit change: the typed parameters of one operation, plus the
 -- two fields the interface view reads. The executor observes it because the
@@ -133,25 +174,6 @@ template LimitChange
     interface instance Timelock.Timelocked for LimitChange where
       view = Timelock.TimelockedView with readyAt, expiresAt
 
-    -- The canceller. Either the proposer or the admin may withdraw a pending
-    -- change before it executes.
-    choice LimitChange_Cancel : ()
-      with
-        canceller : Party
-      controller canceller
-      do
-        assertMsg "LimitChange: only the proposer or the admin may cancel"
-          (canceller == proposer || canceller == admin)
-
-    -- Anyone may archive an expired operation. The controller is a flexible
-    -- party, so a party outside the stakeholders receives the contract by
-    -- explicit disclosure.
-    choice LimitChange_Cleanup : ()
-      with
-        cleaner : Party
-      controller cleaner
-      do Timelock.requireExpired this
-
 -- | A pending change of the delay policy.
 template ConfigChange
   with
@@ -168,20 +190,6 @@ template ConfigChange
 
     interface instance Timelock.Timelocked for ConfigChange where
       view = Timelock.TimelockedView with readyAt, expiresAt
-
-    choice ConfigChange_Cancel : ()
-      with
-        canceller : Party
-      controller canceller
-      do
-        assertMsg "ConfigChange: only the proposer or the admin may cancel"
-          (canceller == proposer || canceller == admin)
-
-    choice ConfigChange_Cleanup : ()
-      with
-        cleaner : Party
-      controller cleaner
-      do Timelock.requireExpired this
 
 -- | Raised when an operation targets another treasury. The binding check is the
 -- consumer's, so the failure status is the consumer's too.

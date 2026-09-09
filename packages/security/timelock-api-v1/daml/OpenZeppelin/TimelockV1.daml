@@ -11,12 +11,14 @@
 -- # Authority model
 --
 -- The protected contract's signatories authorize both ends of the flow. The
--- schedule choice runs on the protected contract, so the operation it creates
--- carries those signatures, and only those signatories can create one. The
--- apply choice runs on the protected contract too: it fetches the operation
--- the executor presents, checks that it targets this resource, calls
--- `requireReady`, archives it, and applies the typed parameters. A matured
--- operation is the single path to the privileged effect.
+-- schedule choice runs on the protected contract: it creates the operation and
+-- records the operation's contract id in the protected contract's `Pending`
+-- list. The apply choice runs on the protected contract too: it takes the
+-- operation out of the list with `takePending`, calls `requireReady`, archives
+-- the operation, and applies the typed parameters. The list is what makes the
+-- delay binding on the signatories themselves: an operation contract that a
+-- signatory creates directly is absent from the list, so the apply choice
+-- refuses it, and the only way into the list is the schedule choice.
 --
 -- Proposer, executor, and canceller are the controllers of the consumer's own
 -- choices. A fixed party, a role credential, a party set, or an open executor
@@ -56,6 +58,7 @@ module OpenZeppelin.TimelockV1 where
 
 import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import DA.List (delete)
 import DA.Optional (whenSome)
 import qualified DA.TextMap as TextMap
 import DA.Time (RelTime, addRelTime, isLedgerTimeGE, isLedgerTimeLE, isLedgerTimeLT, microseconds)
@@ -96,6 +99,39 @@ data TimelockedView = TimelockedView with
 --   methods. A breaking change ships as a sibling `-v2` package.
 interface Timelocked where
   viewtype TimelockedView
+
+-- | The operations a protected contract has scheduled and may still apply,
+-- cancel, or clean up. Hold it as a field of the protected template beside
+-- `TimelockConfig`. The schedule choice appends with `addPending`; the apply,
+-- cancel, and cleanup choices remove with `takePending`, which refuses an
+-- operation the list does not hold. Every choice that changes the list is
+-- consuming, so a protected contract with pending operations changes its
+-- contract id on each schedule and each apply.
+type Pending = [ContractId Timelocked]
+
+-- | Record a newly created operation in the protected contract's list. Call it
+-- in the schedule choice on the operation it created:
+--
+-- > op <- create LimitChange with ..
+-- > create this with pending = addPending op pending
+addPending : (HasToInterface t Timelocked) => ContractId t -> Pending -> Pending
+addPending op pending = toInterfaceContractId @Timelocked op :: pending
+
+-- | Remove an operation from the protected contract's list, and fail with
+-- `eNotPending` when the list does not hold it. Call it first in the apply,
+-- cancel, and cleanup choices, so that only operations the schedule choice
+-- created reach the effect:
+--
+-- > pending' <- takePending opCid pending
+-- > op <- fetch opCid
+-- > requireReady op
+-- > archive opCid
+-- > create this with limit = op.newLimit, pending = pending'
+takePending : (HasToInterface t Timelocked) => ContractId t -> Pending -> Update Pending
+takePending op pending = do
+  let cid = toInterfaceContractId @Timelocked op
+  unless (cid `elem` pending) (failWithStatus eNotPending)
+  pure (delete cid pending)
 
 -- | The delay policy of a protected contract. Hold it as a field of the
 -- template whose privileged choices the timelock guards, so that the policy is
@@ -148,7 +184,8 @@ requireValidConfig config = unless (isValidConfig config) (failWithStatus eInval
 -- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
 -- with `eDelayTooShort` unless the ledger time is at least `config.minDelay`
 -- before `readyAt`. The check is a ledger-time bound, so the transaction's
--- ledger time stays free within it.
+-- ledger time stays free within it. Record the created operation with
+-- `addPending`.
 scheduleAt : TimelockConfig -> Time -> Update TimelockedView
 scheduleAt config readyAt = do
   requireValidConfig config
@@ -176,19 +213,17 @@ scheduleAfter config delay = do
 
 -- | Fail unless the operation may execute now: the ledger time is at or after
 -- `readyAt` and, when `expiresAt` is set, before it. Call it in the apply
--- choice after checking that the operation targets this resource, and before
--- applying its parameters:
+-- choice after `takePending` and before applying the parameters:
 --
 -- > choice Treasury_ApplyLimit : ContractId Treasury
 -- >   with opCid : ContractId LimitChange
 -- >   controller executor
 -- >   do
+-- >     pending' <- takePending opCid pending
 -- >     op <- fetch opCid
--- >     unless (op.admin == admin && op.treasuryId == treasuryId)
--- >       (failWithStatus eWrongTarget)
 -- >     requireReady op
 -- >     archive opCid
--- >     create this with limit = op.newLimit
+-- >     create this with limit = op.newLimit, pending = pending'
 --
 -- Accepts an implementing template or a `Timelocked`. Fails with `eNotReady`
 -- before `readyAt` and with `eExpired` at or after `expiresAt`.
@@ -249,6 +284,15 @@ isExpiredAt now x =
 eInvalidConfig : FailureStatus
 eInvalidConfig = timelockFailure "invalid-config" InvalidIndependentOfSystemState
   "Timelock: the policy needs a minDelay of zero or greater and a positive gracePeriod"
+
+-- | Raised when an apply, cancel, or cleanup choice presents an operation that
+-- the protected contract's `Pending` list does not hold: an operation created
+-- outside the schedule choice, one already applied or cancelled, or one
+-- scheduled on another protected contract.
+-- `errorId`: `openzeppelin.com/timelock-not-pending`.
+eNotPending : FailureStatus
+eNotPending = timelockFailure "not-pending" InvalidGivenCurrentSystemStateOther
+  "Timelock: the operation is not pending on this contract"
 
 -- | Raised when a schedule requests a delay shorter than `minDelay`.
 -- `errorId`: `openzeppelin.com/timelock-delay-too-short`.
