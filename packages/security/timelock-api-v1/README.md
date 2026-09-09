@@ -18,6 +18,10 @@ and declares no choice:
 - `TimelockedView`: `readyAt` and `expiresAt`, the whole frozen data surface.
 - `TimelockConfig`: the delay policy a protected template holds as a field,
   `minDelay` and an optional `gracePeriod`.
+- `isValidConfig` and `requireValidConfig`: a policy is valid when `minDelay`
+  is not negative and `gracePeriod`, when set, is positive. The schedule
+  functions check the policy in force; a choice that proposes a new policy
+  checks the new one.
 - `scheduleAt` and `scheduleAfter`: compute the view of a new operation from
   the policy, and refuse a delay shorter than `minDelay`.
 - `requireReady`: the guard an apply choice calls. It fails before `readyAt`
@@ -26,8 +30,8 @@ and declares no choice:
   no longer execute.
 - `isReadyAt` and `isExpiredAt`: the same questions as pure functions of a
   time, for a choice or an off-ledger reader that branches rather than refuses.
-- `eDelayTooShort`, `eNotReady`, `eExpired`, and `eNotExpired`: the failure
-  statuses. Each is a `FailureStatus` with a stable `errorId` under
+- `eInvalidConfig`, `eDelayTooShort`, `eNotReady`, `eExpired`, and
+  `eNotExpired`: the failure statuses. Each is a `FailureStatus` with a stable `errorId` under
   `openzeppelin.com/timelock-`, so an off-ledger client matches the id in the
   `DAML_FAILURE` error, and your tests compare the whole value.
 
@@ -144,8 +148,14 @@ run on that contract:
 - Cancelling is a choice on the operation template. Cleaning up an expired
   operation is a choice on the operation template that calls `requireExpired`.
 - Changing the policy is a privileged operation like any other. Schedule the
-  new `TimelockConfig` under the current one, and apply it after the delay.
-  This is the `updateDelay` behavior of `TimelockController.sol`.
+  new `TimelockConfig` under the current one, call `requireValidConfig` on it
+  in the schedule choice, and apply it after the delay. This is the
+  `updateDelay` behavior of `TimelockController.sol`. A policy change to a
+  shorter delay waits out the current delay, and the shorter delay then
+  applies to every later schedule. There is no `minSetback` as in
+  `AccessManager`: once a change to `minDelay = 0` has matured and applied,
+  the next operation is immediate. Give the policy change its own, longer
+  delay in the consumer if that matters.
 
 The lifecycle of one operation:
 
@@ -172,9 +182,15 @@ consequences follow:
   passes, which matters for externally signed transactions that are prepared
   well before submission. `scheduleAfter` is the one function that reads
   `getTime`; use `scheduleAt` when the proposer knows the target time.
-- A submitter can move its ledger time inside the tolerance. A delay shorter
-  than the tolerance is not a delay. Use minutes at least, and days for
-  governance.
+- A submitter can move its ledger time anywhere inside the tolerance, so a
+  proposer using `scheduleAt` shortens the effective delay by up to the whole
+  tolerance. The enforceable minimum is `minDelay` minus the tolerance, not
+  `minDelay`, and a `minDelay` at or below the tolerance is no delay. Use
+  minutes at least, and days for governance. `scheduleAfter` reads `getTime`
+  and is not shortened this way, at the cost of pinning the ledger time.
+- `Time` arithmetic near the maximum representable time aborts the
+  transaction. A `readyAt` that leaves no room for the grace period fails
+  without creating an operation.
 
 Nothing executes on its own. Canton has no scheduled execution, so once an
 operation is ready, an executor must submit the apply choice. An automation
@@ -221,7 +237,11 @@ it is a stakeholder of, and nobody else's.
   observe.
 - A `minDelay` of zero disables the delay. A missing `gracePeriod` means an
   operation stays executable until it is archived, as in
-  `TimelockController.sol`.
+  `TimelockController.sol`. A negative `minDelay` or a non-positive
+  `gracePeriod` fails every schedule with `eInvalidConfig`, because such a
+  policy would produce operations that are born expired.
+- Every operation template needs a cleanup choice that calls
+  `requireExpired`, or an expired operation stays on the ledger for good.
 - A ledger-time check is honored within the synchronizer's tolerance, not to
   the microsecond.
 
@@ -243,7 +263,9 @@ For a consumer this means:
   have vetted that package ID.
 - Your own templates stay upgradeable. The protected template and the
   operation templates are yours, so you add fields through Smart Contract
-  Upgrade of your package while this package does not move.
+  Upgrade of your package while this package does not move. `TimelockConfig`
+  as a field of your template is safe under Smart Contract Upgrade because the
+  record is frozen and can never change shape.
 - There is no patch release. Adopting a fix means importing the sibling
   package, rebuilding, and swapping the `interface instance` through a Smart
   Contract Upgrade of your own package.

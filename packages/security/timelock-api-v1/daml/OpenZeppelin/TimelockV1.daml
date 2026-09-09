@@ -31,9 +31,12 @@
 -- record time within a tolerance that the synchronizer configures. The guards
 -- use the ledger-time bound primitives `isLedgerTimeGE` and `isLedgerTimeLT`,
 -- so a check constrains only the bound that matters and does not pin the
--- ledger time to one instant. A submitter can move its ledger time inside the
--- tolerance, so a delay must be far longer than the tolerance for the
--- mechanism to mean anything; minutes at least, and days for governance.
+-- ledger time to one instant. A submitter can move its ledger time anywhere
+-- inside the tolerance, so a proposer using `scheduleAt` can shorten the
+-- effective delay by up to the whole tolerance, one minute by default.
+-- `scheduleAfter` reads `getTime` instead and is not shortened this way. A
+-- delay must be far longer than the tolerance for the mechanism to mean
+-- anything: minutes at least, and days for governance.
 --
 -- Nothing executes on its own. Canton has no scheduled execution, so when an
 -- operation is ready an executor must submit the apply choice. An automation
@@ -59,7 +62,7 @@ import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import DA.Optional (whenSome)
 import qualified DA.TextMap as TextMap
-import DA.Time (RelTime, addRelTime, isLedgerTimeGE, isLedgerTimeLE, isLedgerTimeLT)
+import DA.Time (RelTime, addRelTime, isLedgerTimeGE, isLedgerTimeLE, isLedgerTimeLT, microseconds)
 
 -- | When a scheduled operation may execute.
 data TimelockedView = TimelockedView with
@@ -108,10 +111,30 @@ interface Timelocked where
 data TimelockConfig = TimelockConfig with
     minDelay : RelTime
       -- ^ The shortest delay a schedule may request. Zero disables the delay.
+      --   Must not be negative.
     gracePeriod : Optional RelTime
       -- ^ How long after `readyAt` an operation stays executable. `None`
       --   means an operation never expires, matching `TimelockController.sol`.
+      --   When set, it must be positive: a zero or negative grace period
+      --   leaves no ledger time at which the operation is ready, so every
+      --   operation would be born expired.
   deriving (Eq, Show)
+
+-- | Whether a policy can produce executable operations: `minDelay` is not
+-- negative, and `gracePeriod`, when set, is positive. The schedule functions
+-- check it, so a protected template whose policy changes through a timelocked
+-- operation cannot lock itself out.
+isValidConfig : TimelockConfig -> Bool
+isValidConfig config =
+  config.minDelay >= aeternity && optional True (> aeternity) config.gracePeriod
+  where aeternity = microseconds 0
+
+-- | Fail with `eInvalidConfig` unless `isValidConfig` holds. The schedule
+-- functions call it on the policy in force; call it yourself on a new policy in
+-- the choice that schedules a policy change, so that the change is refused when
+-- it is proposed rather than discovered when nothing can be scheduled under it.
+requireValidConfig : TimelockConfig -> Update ()
+requireValidConfig config = unless (isValidConfig config) (failWithStatus eInvalidConfig)
 
 -- | Compute the schedule of an operation that becomes ready at `readyAt`.
 -- Call it in the choice that creates the operation contract and store the
@@ -126,11 +149,13 @@ data TimelockConfig = TimelockConfig with
 -- >       admin; treasuryId; newLimit
 -- >       readyAt = s.readyAt; expiresAt = s.expiresAt
 --
--- Fails with `eDelayTooShort` unless the ledger time is at least
+-- Fails with `eInvalidConfig` when the policy cannot produce executable
+-- operations, and with `eDelayTooShort` unless the ledger time is at least
 -- `config.minDelay` before `readyAt`. The check is a ledger-time bound, so it
 -- does not pin the transaction's ledger time.
 scheduleAt : TimelockConfig -> Time -> Update TimelockedView
 scheduleAt config readyAt = do
+  requireValidConfig config
   early <- isLedgerTimeLE (addRelTime readyAt (negate config.minDelay))
   unless early (failWithStatus eDelayTooShort)
   pure TimelockedView with
@@ -141,9 +166,12 @@ scheduleAt config readyAt = do
 -- transaction's ledger time. It reads `getTime`, which pins the ledger time
 -- of the transaction; use `scheduleAt` when the proposer knows the target time.
 --
--- Fails with `eDelayTooShort` unless `delay` is at least `config.minDelay`.
+-- Fails with `eInvalidConfig` when the policy cannot produce executable
+-- operations, and with `eDelayTooShort` unless `delay` is at least
+-- `config.minDelay`.
 scheduleAfter : TimelockConfig -> RelTime -> Update TimelockedView
 scheduleAfter config delay = do
+  requireValidConfig config
   unless (delay >= config.minDelay) (failWithStatus eDelayTooShort)
   now <- getTime
   let readyAt = addRelTime now delay
@@ -211,6 +239,21 @@ isExpiredAt now x =
 -- a rejected submission reaches the Ledger API as `DAML_FAILURE` with the
 -- `errorId` below, and a client matches on the id rather than on the message
 -- text. In Daml Script, `trySubmit` returns it as `FailureStatusError`.
+--
+-- Categories follow Canton's error-category semantics for the request itself:
+-- `InvalidIndependentOfSystemState` when the same request can never succeed
+-- (a bad policy, a delay below the minimum), and
+-- `InvalidGivenCurrentSystemStateOther` when the outcome depends on ledger
+-- time. `eNotReady` becomes success by waiting; `eExpired` and `eNotExpired`
+-- share the category because they are the same time comparison, and a client
+-- must not retry `eExpired`.
+
+-- | Raised when a policy has a negative `minDelay` or a non-positive
+-- `gracePeriod`.
+-- `errorId`: `openzeppelin.com/timelock-invalid-config`.
+eInvalidConfig : FailureStatus
+eInvalidConfig = timelockFailure "invalid-config" InvalidIndependentOfSystemState
+  "Timelock: minDelay must not be negative and gracePeriod must be positive"
 
 -- | Raised when a schedule requests a delay shorter than `minDelay`.
 -- `errorId`: `openzeppelin.com/timelock-delay-too-short`.

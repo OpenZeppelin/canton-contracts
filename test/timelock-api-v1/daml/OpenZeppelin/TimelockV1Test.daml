@@ -3,7 +3,7 @@ module OpenZeppelin.TimelockV1Test where
 
 import DA.Assert ((===))
 import DA.Fail (FailureStatus)
-import DA.Time (addRelTime, days, hours, minutes)
+import DA.Time (addRelTime, days, hours, minutes, microseconds)
 import Daml.Script
 
 import OpenZeppelin.TimelockV1
@@ -394,6 +394,111 @@ test_guardsAcceptAnInterfaceValue = script do
   Some _ <- queryContractId admin op
   pure ()
 
+-- Policy validation
+-------------------------------------------------------
+
+-- | A zero grace period leaves no ledger time at which an operation is ready,
+-- so the schedule refuses the policy instead of creating a stillborn
+-- operation. INV-7.
+test_zeroGracePeriodRejected : Script ()
+test_zeroGracePeriodRejected = script do
+  Fixture{..} <- setupWith TimelockConfig with minDelay = days 1, gracePeriod = Some (hours 0)
+  r <- trySubmit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with
+      newLimit = 20.0, readyAt = addRelTime t0 (days 1)
+  expectFailure eInvalidConfig r
+  r2 <- trySubmit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimitAfter with newLimit = 20.0, delay = days 1
+  expectFailure eInvalidConfig r2
+
+-- | A negative minimum delay would widen the acceptance window instead of
+-- disabling the delay, so it is refused. INV-7.
+test_negativeMinDelayRejected : Script ()
+test_negativeMinDelayRejected = script do
+  Fixture{..} <- setupWith TimelockConfig with minDelay = negate (hours 1), gracePeriod = None
+  r <- trySubmit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt = t0
+  expectFailure eInvalidConfig r
+
+-- | Both fields at zero is the most extreme misconfiguration. INV-7.
+test_bothZeroRejected : Script ()
+test_bothZeroRejected = script do
+  Fixture{..} <- setupWith TimelockConfig with minDelay = hours 0, gracePeriod = Some (hours 0)
+  r <- trySubmit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt = t0
+  expectFailure eInvalidConfig r
+  isValidConfig (TimelockConfig with minDelay = hours 0, gracePeriod = Some (microseconds 1)) === True
+  isValidConfig (TimelockConfig with minDelay = hours 0, gracePeriod = None) === True
+
+-- | The self-administration path cannot lock the treasury out: a config
+-- change to a stillborn policy is refused when it is scheduled, because the
+-- consumer's schedule choice validates the new policy. INV-7.
+test_configChangeToInvalidPolicyIsRefused : Script ()
+test_configChangeToInvalidPolicyIsRefused = script do
+  Fixture{..} <- setup
+  let broken = TimelockConfig with minDelay = days 1, gracePeriod = Some (hours 0)
+  r <- trySubmit proposer do
+    exerciseCmd treasury Treasury_ScheduleConfig with
+      newConfig = broken, readyAt = addRelTime t0 (days 1)
+  expectFailure eInvalidConfig r
+
+-- | A `readyAt` at the maximum time fails: `expiresAt` cannot be computed, so
+-- `Time` arithmetic aborts the transaction and no operation is created.
+test_scheduleNearMaxTimeFails : Script ()
+test_scheduleNearMaxTimeFails = script do
+  Fixture{..} <- setup
+  submitMustFail proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt = maxBound
+  ops <- query @LimitChange admin
+  ops === []
+
+-- ConfigChange lifecycle
+-------------------------------------------------------
+
+-- | A cancelled config change cannot apply.
+test_configChangeCancel : Script ()
+test_configChangeCancel = script do
+  Fixture{..} <- setup
+  op <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleConfig with
+      newConfig = oneDayWeekGrace, readyAt = addRelTime t0 (days 1)
+  submit admin do exerciseCmd op ConfigChange_Cancel
+  passTime (days 1)
+  submitMustFail executor do exerciseCmd treasury Treasury_ApplyConfig with opCid = op
+
+-- | An expired config change is cleaned up, and only after expiry. INV-3.
+test_configChangeCleanupAfterExpiry : Script ()
+test_configChangeCleanupAfterExpiry = script do
+  Fixture{..} <- setup
+  op <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleConfig with
+      newConfig = oneDayWeekGrace, readyAt = addRelTime t0 (days 1)
+  r <- trySubmit admin do exerciseCmd op ConfigChange_Cleanup with cleaner = admin
+  expectFailure eNotExpired r
+  passTime (days 8)
+  r2 <- trySubmit executor do exerciseCmd treasury Treasury_ApplyConfig with opCid = op
+  expectFailure eExpired r2
+  submit admin do exerciseCmd op ConfigChange_Cleanup with cleaner = admin
+  gone <- queryContractId admin op
+  gone === None
+
+-- | Two operations ready at the same instant apply one after the other; the
+-- second must target the treasury contract the first produced.
+test_twoOperationsAtTheSameInstant : Script ()
+test_twoOperationsAtTheSameInstant = script do
+  Fixture{..} <- setup
+  let readyAt = addRelTime t0 (days 2)
+  op1 <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt
+  op2 <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 30.0, readyAt
+  passTime (days 2)
+  t2 <- submit executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op1
+  submitMustFail executor do exerciseCmd treasury Treasury_ApplyLimit with opCid = op2
+  t3 <- submit executor do exerciseCmd t2 Treasury_ApplyLimit with opCid = op2
+  Some t <- queryContractId admin t3
+  t.limit === 30.0
+
 -- | The failure statuses are distinct and carry stable ids.
 test_failureStatusesAreDistinct : Script ()
 test_failureStatusesAreDistinct = script do
@@ -401,3 +506,4 @@ test_failureStatusesAreDistinct = script do
   eNotReady.errorId === "openzeppelin.com/timelock-not-ready"
   eExpired.errorId === "openzeppelin.com/timelock-expired"
   eNotExpired.errorId === "openzeppelin.com/timelock-not-expired"
+  eInvalidConfig.errorId === "openzeppelin.com/timelock-invalid-config"

@@ -86,13 +86,16 @@ template Treasury
         create this with limit = op.newLimit
 
     -- Self-administration: the delay policy changes only through a timelocked
-    -- operation scheduled under the policy in force at the time.
+    -- operation scheduled under the policy in force at the time. The new policy
+    -- is validated when it is proposed, so a policy nobody can execute under
+    -- never reaches the treasury.
     nonconsuming choice Treasury_ScheduleConfig : ContractId ConfigChange
       with
         newConfig : Timelock.TimelockConfig
         readyAt : Time
       controller proposer
       do
+        Timelock.requireValidConfig newConfig
         s <- Timelock.scheduleAt config readyAt
         create ConfigChange with
           admin; proposer; executor; treasuryId; newConfig
@@ -171,6 +174,12 @@ template ConfigChange
       do
         assertMsg "ConfigChange: only the proposer or the admin may cancel"
           (canceller == proposer || canceller == admin)
+
+    choice ConfigChange_Cleanup : ()
+      with
+        cleaner : Party
+      controller cleaner
+      do Timelock.requireExpired this
 
 -- | Raised when an operation targets another treasury. The binding check is the
 -- consumer's, so the failure status is the consumer's too.

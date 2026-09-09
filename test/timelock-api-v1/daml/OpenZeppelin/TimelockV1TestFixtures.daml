@@ -68,13 +68,15 @@ template Treasury
         create this with limit = op.newLimit
 
     -- Self-administration: the delay policy changes only through the timelock
-    -- it defines, under the policy in force when the change was scheduled.
+    -- it defines, under the policy in force when the change was scheduled. The
+    -- new policy is validated here, so a stillborn policy never applies.
     nonconsuming choice Treasury_ScheduleConfig : ContractId ConfigChange
       with
         newConfig : TimelockConfig
         readyAt : Time
       controller proposer
       do
+        requireValidConfig newConfig
         s <- scheduleAt config readyAt
         create ConfigChange with
           admin; proposer; executor; treasuryId; newConfig
@@ -147,6 +149,12 @@ template ConfigChange
     choice ConfigChange_Cancel : ()
       controller admin
       do pure ()
+
+    choice ConfigChange_Cleanup : ()
+      with
+        cleaner : Party
+      controller cleaner
+      do requireExpired this
 
 -- | A stranger's contract for probing the guards on an interface value it can
 -- see but does not control.
