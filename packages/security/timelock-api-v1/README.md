@@ -10,24 +10,23 @@ privileged operation and its execution.
 | Version | `0.1.0` |
 | Status | Pre-release; unaudited |
 
-## What it provides
+## Capabilities
 
-One interface, `Timelocked`, which names no proposer, executor, or canceller
-and declares no choice:
+One view-only interface, `Timelocked`, and the functions around it. Proposer,
+executor, and canceller are the controllers of choices the consumer writes:
 
 - `TimelockedView`: `readyAt` and `expiresAt`, the whole frozen data surface.
 - `TimelockConfig`: the delay policy a protected template holds as a field,
   `minDelay` and an optional `gracePeriod`.
 - `isValidConfig` and `requireValidConfig`: a policy is valid when `minDelay`
-  is not negative and `gracePeriod`, when set, is positive. The schedule
+  is zero or greater and `gracePeriod`, when set, is positive. The schedule
   functions check the policy in force; a choice that proposes a new policy
   checks the new one.
 - `scheduleAt` and `scheduleAfter`: compute the view of a new operation from
   the policy, and refuse a delay shorter than `minDelay`.
 - `requireReady`: the guard an apply choice calls. It fails before `readyAt`
   and at or after `expiresAt`.
-- `requireExpired`: the guard a cleanup choice calls on an operation that can
-  no longer execute.
+- `requireExpired`: the guard a cleanup choice calls on an expired operation.
 - `isReadyAt` and `isExpiredAt`: the same questions as pure functions of a
   time, for a choice or an off-ledger reader that branches rather than refuses.
 - `eInvalidConfig`, `eDelayTooShort`, `eNotReady`, `eExpired`, and
@@ -35,12 +34,11 @@ and declares no choice:
   `openzeppelin.com/timelock-`, so an off-ledger client matches the id in the
   `DAML_FAILURE` error, and your tests compare the whole value.
 
-The package defines no templates, so it carries no ledger state of its own. A
-scheduled operation is a contract of the consumer's own template, with the
-typed parameters of the operation as fields. Daml has no calldata and no
-dynamic dispatch, so an operation is never an opaque payload that a timelock
-forwards: the executor can execute exactly the operation the proposer
-scheduled, and nothing else.
+The package holds the interface and the functions; ledger state lives in the
+consumer's templates. A scheduled operation is a contract of the consumer's
+own template, with the typed parameters of the operation as fields committed
+at scheduling time, so the executor applies exactly the operation the proposer
+scheduled.
 
 ## Usage
 
@@ -48,8 +46,8 @@ Adopting the timelock is four steps.
 
 **1. Hold the policy on the protected template.** Add a `TimelockConfig` field
 to the template whose privileged choices the delay guards, and a stable
-identity field that operations bind to. The contract id changes on every
-consuming choice, so an operation must not bind to it:
+identity field that operations bind to. The identity field stays constant
+while the contract id changes on every consuming choice:
 
 ```daml
 template Treasury
@@ -93,8 +91,8 @@ template LimitChange
 
 **3. Schedule from a choice on the protected template.** The choice's
 controller is your proposer authority. `scheduleAt` refuses a `readyAt` closer
-than `minDelay`, and the operation it creates carries the protected contract's
-signature, so nobody can forge one:
+than `minDelay`, and the operation carries the protected contract's signature,
+so only that contract's signatories can create one:
 
 ```daml
     nonconsuming choice Treasury_ScheduleLimit : ContractId LimitChange
@@ -128,23 +126,23 @@ is your executor authority. Bind the operation to this resource first, call
 ```
 
 The binding check is yours, because only you know what identifies your
-resource. Without it, an operation scheduled on one treasury applies to
-another treasury of the same admin.
+resource. It is what keeps an operation scheduled on one treasury from
+applying to another treasury of the same admin.
 
 ## Authority and lifecycle
 
-The interface ships no access control. Proposer, executor, and canceller are
-the controllers of choices you write, and the authority to schedule and to
-apply comes from the protected contract's signatories, because both choices
-run on that contract:
+Access control is the consumer's. Proposer, executor, and canceller are the
+controllers of choices you write, and the authority to schedule and to apply
+comes from the protected contract's signatories, because both choices run on
+that contract:
 
 - A role credential fits in the same slot as a fixed party. The choice takes
   the caller and the credential as arguments and verifies them in its body, as
   `OpenZeppelin.PausableV1` describes for the pause authority.
 - An open executor, the `address(0)` idiom of `TimelockController.sol`, is a
-  flexible controller: `with executor : Party` and `controller executor`. A
-  non-stakeholder executor receives the operation and the protected contract
-  by explicit disclosure.
+  flexible controller: `with executor : Party` and `controller executor`. An
+  executor outside the stakeholders receives the operation and the protected
+  contract by explicit disclosure.
 - Cancelling is a choice on the operation template. Cleaning up an expired
   operation is a choice on the operation template that calls `requireExpired`.
 - Changing the policy is a privileged operation like any other. Schedule the
@@ -152,10 +150,10 @@ run on that contract:
   in the schedule choice, and apply it after the delay. This is the
   `updateDelay` behavior of `TimelockController.sol`. A policy change to a
   shorter delay waits out the current delay, and the shorter delay then
-  applies to every later schedule. There is no `minSetback` as in
-  `AccessManager`: once a change to `minDelay = 0` has matured and applied,
-  the next operation is immediate. Give the policy change its own, longer
-  delay in the consumer if that matters.
+  applies to every later schedule. The `minSetback` protection of
+  `AccessManager` is the consumer's to add: once a change to `minDelay = 0`
+  has matured and applied, the next operation is immediate, so give the policy
+  change its own, longer delay where that matters.
 
 The lifecycle of one operation:
 
@@ -164,11 +162,11 @@ The lifecycle of one operation:
 | Waiting | The contract exists and the ledger time is before `readyAt` | `readyAt` passes, or a cancel choice archives it |
 | Ready | `readyAt <= ledger time`, and `ledger time < expiresAt` when set | The apply choice archives it, a cancel archives it, or `expiresAt` passes |
 | Expired | `expiresAt` is set and has passed | A cleanup choice archives it |
-| Done | The apply choice archived it | Never; the operation executed once |
+| Done | The apply choice archived it | Final; the operation executed once |
 
-No `Done` marker remains on the ledger. The apply choice is a node in the
-transaction tree, recorded with its actor and its ledger time, and the
-operation's create and archive bound the interval during which it was pending.
+The record of execution is the apply node in the transaction tree, with its
+actor and its ledger time, and the operation's create and archive bound the
+interval during which it was pending.
 
 ## Time on Canton
 
@@ -176,29 +174,28 @@ A transaction carries a ledger time that Canton checks against the record time
 within a tolerance the synchronizer configures, one minute by default. Two
 consequences follow:
 
-- The guards use ledger-time bounds, `isLedgerTimeGE` and `isLedgerTimeLT`,
-  rather than `getTime`. A bound constrains only the side that matters, so an
+- The guards use ledger-time bounds, `isLedgerTimeGE` and `isLedgerTimeLT`.
+  A bound constrains one side and leaves the ledger time free within it, so an
   apply transaction prepared before `readyAt` stays valid once `readyAt`
   passes, which matters for externally signed transactions that are prepared
-  well before submission. `scheduleAfter` is the one function that reads
-  `getTime`; use `scheduleAt` when the proposer knows the target time.
-- A submitter can move its ledger time anywhere inside the tolerance, so a
+  well before submission. `scheduleAfter` reads `getTime`; use `scheduleAt`
+  when the proposer knows the target time.
+- A submitter chooses its ledger time anywhere inside the tolerance, so a
   proposer using `scheduleAt` shortens the effective delay by up to the whole
-  tolerance. The enforceable minimum is `minDelay` minus the tolerance, not
-  `minDelay`, and a `minDelay` at or below the tolerance is no delay. Use
-  minutes at least, and days for governance. `scheduleAfter` reads `getTime`
-  and is not shortened this way, at the cost of pinning the ledger time.
+  tolerance. The enforceable minimum is `minDelay` minus the tolerance, so
+  choose a `minDelay` well above it: minutes at least, and days for
+  governance. `scheduleAfter` fixes the ledger time with `getTime` and keeps
+  the delay exact.
 - `Time` arithmetic near the maximum representable time aborts the
   transaction. A `readyAt` that leaves no room for the grace period fails
-  without creating an operation.
+  before any operation is created.
 
-Nothing executes on its own. Canton has no scheduled execution, so once an
-operation is ready, an executor must submit the apply choice. An automation
-that watches pending operations and submits at `readyAt` is the consumer's
-off-ledger responsibility, and it is the same pattern the Canton Network's
-own governance uses.
+Execution is a submission. Once an operation is ready, an executor submits the
+apply choice. An automation that watches pending operations and submits at
+`readyAt` is the consumer's off-ledger component, the same pattern the Canton
+Network's own governance uses.
 
-## Reading pending operations off-ledger
+## Off-ledger reads
 
 `TimelockedView` is the whole data surface of the interface:
 
@@ -219,42 +216,41 @@ v.readyAt
 ```
 
 Visibility is the implementing template's. A party sees the pending operations
-it is a stakeholder of, and nobody else's.
+it is a stakeholder of.
 
 ## Scope and security caveats
 
-- The delay is enforced only where the protected contract's privileged choice
-  demands a matured operation. A privileged choice that does not go through an
-  operation is not delayed, and nothing detects the omission.
+- The delay covers the privileged choices that demand a matured operation.
+  Route every privileged choice through an operation; the library has no way
+  to detect one that bypasses it.
 - The binding check is the consumer's. An apply choice that skips it accepts
   an operation scheduled on another resource of the same admin.
 - One operation is one contract and one apply choice. A batch is one operation
   template whose parameters list several effects, applied atomically in one
-  choice body. There is no predecessor field; an operation that depends on
-  another states the precondition it needs on the protected contract's state.
+  choice body. Ordering between operations is a precondition on the protected
+  contract's state.
 - Pending operations are visible to the stakeholders of the operation
   template. Keep sensitive parameters off an operation that many parties
   observe.
-- A `minDelay` of zero disables the delay. A missing `gracePeriod` means an
-  operation stays executable until it is archived, as in
-  `TimelockController.sol`. A negative `minDelay` or a non-positive
-  `gracePeriod` fails every schedule with `eInvalidConfig`, because such a
-  policy would produce operations that are born expired.
-- Every operation template needs a cleanup choice that calls
-  `requireExpired`, or an expired operation stays on the ledger for good.
-- A ledger-time check is honored within the synchronizer's tolerance, not to
-  the microsecond.
+- A `minDelay` of zero disables the delay. A `gracePeriod` of `None` keeps an
+  operation executable until it is archived, as in `TimelockController.sol`.
+  A negative `minDelay` or a `gracePeriod` of zero or less fails every schedule
+  with `eInvalidConfig`, because such a policy would produce operations that
+  are born expired.
+- Give every operation template a cleanup choice that calls `requireExpired`,
+  so that expired operations leave the ledger.
+- A ledger-time check is honored within the synchronizer's tolerance.
 
 ## Compatibility
 
-The whole package is frozen at its first upload. Daml interfaces are not
-upgradeable through Smart Contract Upgrade, and a participant rejects a second
-version of a package name whose first version defines an interface, so no
-`openzeppelin-timelock-api-v1` above the uploaded version can ever be uploaded.
-The guards and the failure statuses ship in the same DAR and run from the same
-package ID, so they are frozen with the interface. Any change ships as a
-sibling `openzeppelin-timelock-api-v2` package with module
-`OpenZeppelin.TimelockV2`, and the two coexist.
+The whole package is frozen at its first upload. Daml interfaces sit outside
+Smart Contract Upgrade, and a participant accepts exactly one version of a
+package name whose first version defines an interface, so the uploaded
+`openzeppelin-timelock-api-v1` is the only version. The guards and the failure
+statuses ship in the same DAR and run from the same package ID, so they are
+frozen with the interface. Any change ships as a sibling
+`openzeppelin-timelock-api-v2` package with module `OpenZeppelin.TimelockV2`,
+and the two coexist.
 
 For a consumer this means:
 
@@ -263,16 +259,16 @@ For a consumer this means:
   have vetted that package ID.
 - Your own templates stay upgradeable. The protected template and the
   operation templates are yours, so you add fields through Smart Contract
-  Upgrade of your package while this package does not move. `TimelockConfig`
+  Upgrade of your package while this package stays fixed. `TimelockConfig`
   as a field of your template is safe under Smart Contract Upgrade because the
-  record is frozen and can never change shape.
-- There is no patch release. Adopting a fix means importing the sibling
+  record is frozen and keeps its shape.
+- A fix ships as the sibling package. Adopting it means importing that
   package, rebuilding, and swapping the `interface instance` through a Smart
   Contract Upgrade of your own package.
 
-`0.1.0` is a pre-release and is not for upload to a shared ledger. Until a
-tagged release records the DAR in `dars/released/`, the package ID may change
-between commits, and no audit has been performed. See
+`0.1.0` is a pre-release for local evaluation. A tagged release records the
+DAR in `dars/released/` and fixes its package ID; until then the package ID may
+change between commits, and the package is unaudited. See
 [`RELEASING.md`](../../../RELEASING.md).
 
 ## Build

@@ -1,61 +1,57 @@
 -- | OpenZeppelin Timelock - a mandatory delay between the proposal of a
 -- privileged operation and its execution.
 --
--- The Daml analogue of `TimelockController.sol`. On the EVM the timelock is a
--- contract that owns the protected contract and forwards calldata after a
--- delay. Daml has no dynamic dispatch and no calldata, so the operation is a
--- contract of its own: the consumer writes one template per operation kind,
--- with the typed parameters as fields, and gives it the `Timelocked` interface.
+-- The Daml analogue of `TimelockController.sol`. A scheduled operation is a
+-- contract of the consumer's own template, one template per operation kind,
+-- with the typed parameters as fields and the `Timelocked` interface on it.
 -- The protected template schedules such an operation in one choice and applies
--- it in another, and this package supplies the schedule computation and the
--- guards that make the delay hold.
+-- it in another. This package supplies the schedule computation, the guards
+-- that enforce the delay, and the view that lists pending operations.
 --
--- # Authority comes from the protected contract
+-- # Authority model
 --
--- An operation contract is created inside a choice on the protected contract,
--- so it carries the signatures of that contract's signatories and nobody else
--- can forge one. The apply choice runs on the protected contract too, fetches
--- the operation the executor presents, checks that it targets this resource,
--- calls `requireReady`, archives it, and applies the typed parameters. The
--- only way to reach the privileged effect is through an operation that
--- matured, which is the whole guarantee.
+-- The protected contract's signatories authorize both ends of the flow. The
+-- schedule choice runs on the protected contract, so the operation it creates
+-- carries those signatures, and only those signatories can create one. The
+-- apply choice runs on the protected contract too: it fetches the operation
+-- the executor presents, checks that it targets this resource, calls
+-- `requireReady`, archives it, and applies the typed parameters. A matured
+-- operation is the single path to the privileged effect.
 --
--- The package names no proposer, executor, or canceller. Those are the
--- controllers of the consumer's own choices, and a role credential, a party
--- set, or an open executor all fit in a choice body, as `PausableV1` explains
--- for the pause authority.
+-- Proposer, executor, and canceller are the controllers of the consumer's own
+-- choices. A fixed party, a role credential, a party set, or an open executor
+-- all fit in a choice body, as `PausableV1` describes for the pause authority.
 --
 -- # Time on Canton
 --
 -- A Daml transaction carries a ledger time that Canton checks against the
 -- record time within a tolerance that the synchronizer configures. The guards
 -- use the ledger-time bound primitives `isLedgerTimeGE` and `isLedgerTimeLT`,
--- so a check constrains only the bound that matters and does not pin the
--- ledger time to one instant. A submitter can move its ledger time anywhere
--- inside the tolerance, so a proposer using `scheduleAt` can shorten the
--- effective delay by up to the whole tolerance, one minute by default.
--- `scheduleAfter` reads `getTime` instead and is not shortened this way. A
--- delay must be far longer than the tolerance for the mechanism to mean
--- anything: minutes at least, and days for governance.
+-- so each check constrains one bound and leaves the ledger time free within
+-- it. A submitter chooses its ledger time anywhere inside the tolerance, so a
+-- proposer using `scheduleAt` shortens the effective delay by up to the whole
+-- tolerance, one minute by default. `scheduleAfter` reads `getTime`, which
+-- fixes the ledger time and keeps the delay exact. Choose a delay far longer
+-- than the tolerance: minutes at least, and days for governance.
 --
--- Nothing executes on its own. Canton has no scheduled execution, so when an
--- operation is ready an executor must submit the apply choice. An automation
--- that watches the interface view and submits at `readyAt` is the consumer's
--- off-ledger responsibility.
+-- Execution is a submission. Once an operation is ready, an executor submits
+-- the apply choice; an automation that watches the interface view and submits
+-- at `readyAt` is the consumer's off-ledger component, as in the Canton
+-- Network's own governance.
 --
 -- # Scope
 --
 -- One operation is one contract and one apply choice. A Daml choice body is
 -- atomic, so a batch is one operation template whose parameters list several
--- effects, applied in one choice. There is no predecessor field: an operation
--- that depends on another states the precondition it needs on the protected
--- contract's state, which is a stronger check than the identity of a
--- previously executed operation.
+-- effects, applied in one choice. Ordering between operations is a
+-- precondition on the protected contract's state, which is a stronger check
+-- than the identity of an earlier operation.
 --
--- # Interfaces are frozen
+-- # Package boundary
 --
--- Daml interfaces are not SCU-upgradeable, so this package defines one
--- interface and no templates. Operation templates live in consuming packages.
+-- This package holds the frozen interface, the schedule functions, and the
+-- guards. Operation templates live in consuming packages, where they upgrade
+-- through Smart Contract Upgrade independently of this package.
 module OpenZeppelin.TimelockV1 where
 
 import DA.Action (unless)
@@ -76,27 +72,28 @@ data TimelockedView = TimelockedView with
 -- | A scheduled operation. Implement this on every template that represents an
 -- operation waiting out its delay, whatever authority proposed it.
 --
--- Signatories and observers: this interface adds none. It inherits whatever
---   the implementing template defines. An operation created in a choice on the
---   protected contract carries that contract's signatures.
--- Controllers: none. The interface declares no choice, because a choice needs
---   a controller expression drawn from the view and the view names no party.
--- Choices: none. Scheduling, executing, cancelling, and cleaning up are
---   choices the consumer writes.
--- Disclosure and privacy expectations: the pending operation is visible to
---   exactly the stakeholders of the implementing template. An executor that is
---   not a stakeholder receives the contract by explicit disclosure. Keep
---   sensitive parameters off a template that many parties observe.
--- Authorization assumptions: none. The interface confers no ability to
---   schedule or execute. Both need the protected contract's signatory
---   authority, which only a choice on the protected contract carries.
--- Archival behavior: none of its own. The consumer's apply choice archives the
---   operation when it executes, the cancel choice archives it early, and a
---   cleanup choice archives it after `expiresAt`.
--- Failure modes: none of its own. See the guards.
+-- Signatories and observers: those of the implementing template. An operation
+--   created in a choice on the protected contract carries that contract's
+--   signatures.
+-- Controllers: the consumer's choices name them. The interface is view-only,
+--   because an interface choice needs a controller drawn from the view and the
+--   view carries times, not parties.
+-- Choices: scheduling, applying, cancelling, and cleaning up are choices on
+--   the consumer's protected and operation templates.
+-- Disclosure and privacy expectations: a pending operation is visible to the
+--   stakeholders of the implementing template. An executor outside that set
+--   receives the contract by explicit disclosure. Keep sensitive parameters off
+--   a template that many parties observe.
+-- Authorization assumptions: scheduling and applying use the protected
+--   contract's signatory authority, which choices on that contract carry.
+-- Archival behavior: the consumer's apply choice archives the operation when
+--   it executes, the cancel choice archives it early, and a cleanup choice
+--   archives it after `expiresAt`.
+-- Failure modes: the guards raise `eNotReady`, `eExpired`, and `eNotExpired`;
+--   the schedule functions raise `eInvalidConfig` and `eDelayTooShort`.
 -- Upgrade and migration assumptions: frozen for the life of the package.
---   `TimelockedView` gains no fields, and this interface gains no methods. A
---   breaking change ships as a sibling `-v2` package.
+--   `TimelockedView` keeps its two fields and this interface keeps zero
+--   methods. A breaking change ships as a sibling `-v2` package.
 interface Timelocked where
   viewtype TimelockedView
 
@@ -110,29 +107,28 @@ interface Timelocked where
 -- pattern the example package shows.
 data TimelockConfig = TimelockConfig with
     minDelay : RelTime
-      -- ^ The shortest delay a schedule may request. Zero disables the delay.
-      --   Must not be negative.
+      -- ^ The shortest delay a schedule may request, zero or greater. Zero
+      --   disables the delay.
     gracePeriod : Optional RelTime
       -- ^ How long after `readyAt` an operation stays executable. `None`
-      --   means an operation never expires, matching `TimelockController.sol`.
-      --   When set, it must be positive: a zero or negative grace period
-      --   leaves no ledger time at which the operation is ready, so every
-      --   operation would be born expired.
+      --   keeps an operation executable until it is archived, matching
+      --   `TimelockController.sol`. When set, a positive duration: it is the
+      --   width of the window in which `requireReady` succeeds.
   deriving (Eq, Show)
 
--- | Whether a policy can produce executable operations: `minDelay` is not
--- negative, and `gracePeriod`, when set, is positive. The schedule functions
--- check it, so a protected template whose policy changes through a timelocked
--- operation cannot lock itself out.
+-- | Whether a policy produces executable operations: `minDelay` is zero or
+-- greater, and `gracePeriod`, when set, is positive. The schedule functions
+-- check it, which keeps a protected template able to schedule operations
+-- after its policy changes through a timelocked operation.
 isValidConfig : TimelockConfig -> Bool
 isValidConfig config =
   config.minDelay >= aeternity && optional True (> aeternity) config.gracePeriod
   where aeternity = microseconds 0
 
 -- | Fail with `eInvalidConfig` unless `isValidConfig` holds. The schedule
--- functions call it on the policy in force; call it yourself on a new policy in
--- the choice that schedules a policy change, so that the change is refused when
--- it is proposed rather than discovered when nothing can be scheduled under it.
+-- functions call it on the policy in force. Call it on the proposed policy in
+-- the choice that schedules a policy change, so that an invalid policy is
+-- refused at proposal time.
 requireValidConfig : TimelockConfig -> Update ()
 requireValidConfig config = unless (isValidConfig config) (failWithStatus eInvalidConfig)
 
@@ -149,10 +145,10 @@ requireValidConfig config = unless (isValidConfig config) (failWithStatus eInval
 -- >       admin; treasuryId; newLimit
 -- >       readyAt = s.readyAt; expiresAt = s.expiresAt
 --
--- Fails with `eInvalidConfig` when the policy cannot produce executable
--- operations, and with `eDelayTooShort` unless the ledger time is at least
--- `config.minDelay` before `readyAt`. The check is a ledger-time bound, so it
--- does not pin the transaction's ledger time.
+-- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
+-- with `eDelayTooShort` unless the ledger time is at least `config.minDelay`
+-- before `readyAt`. The check is a ledger-time bound, so the transaction's
+-- ledger time stays free within it.
 scheduleAt : TimelockConfig -> Time -> Update TimelockedView
 scheduleAt config readyAt = do
   requireValidConfig config
@@ -163,12 +159,11 @@ scheduleAt config readyAt = do
     expiresAt = fmap (addRelTime readyAt) config.gracePeriod
 
 -- | Compute the schedule of an operation that becomes ready `delay` after the
--- transaction's ledger time. It reads `getTime`, which pins the ledger time
+-- transaction's ledger time. It reads `getTime`, which fixes the ledger time
 -- of the transaction; use `scheduleAt` when the proposer knows the target time.
 --
--- Fails with `eInvalidConfig` when the policy cannot produce executable
--- operations, and with `eDelayTooShort` unless `delay` is at least
--- `config.minDelay`.
+-- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
+-- with `eDelayTooShort` unless `delay` is at least `config.minDelay`.
 scheduleAfter : TimelockConfig -> RelTime -> Update TimelockedView
 scheduleAfter config delay = do
   requireValidConfig config
@@ -179,10 +174,10 @@ scheduleAfter config delay = do
     readyAt
     expiresAt = fmap (addRelTime readyAt) config.gracePeriod
 
--- | Fail unless the operation may execute now: the ledger time has reached
--- `readyAt` and, when `expiresAt` is set, has not reached it. Call it in the
--- apply choice after checking that the operation targets this resource, and
--- before applying its parameters:
+-- | Fail unless the operation may execute now: the ledger time is at or after
+-- `readyAt` and, when `expiresAt` is set, before it. Call it in the apply
+-- choice after checking that the operation targets this resource, and before
+-- applying its parameters:
 --
 -- > choice Treasury_ApplyLimit : ContractId Treasury
 -- >   with opCid : ContractId LimitChange
@@ -207,8 +202,8 @@ requireReady x = do
     unless live (failWithStatus eExpired)
 
 -- | Fail unless the operation has expired: `expiresAt` is set and the ledger
--- time has reached it. Use it on a cleanup choice that lets any party archive
--- an operation that can no longer execute.
+-- time is at or after it. Use it on a cleanup choice that lets any party
+-- archive an expired operation.
 --
 -- Fails with `eNotExpired` when `expiresAt` is `None` or lies in the future.
 requireExpired : (HasToInterface t Timelocked) => t -> Update ()
@@ -241,19 +236,19 @@ isExpiredAt now x =
 -- text. In Daml Script, `trySubmit` returns it as `FailureStatusError`.
 --
 -- Categories follow Canton's error-category semantics for the request itself:
--- `InvalidIndependentOfSystemState` when the same request can never succeed
--- (a bad policy, a delay below the minimum), and
--- `InvalidGivenCurrentSystemStateOther` when the outcome depends on ledger
--- time. `eNotReady` becomes success by waiting; `eExpired` and `eNotExpired`
--- share the category because they are the same time comparison, and a client
--- must not retry `eExpired`.
+-- `InvalidIndependentOfSystemState` for a request that fails on its own
+-- content (an invalid policy, a delay below the minimum), and
+-- `InvalidGivenCurrentSystemStateOther` for a request whose outcome depends
+-- on ledger time. Waiting turns `eNotReady` into success. `eExpired` and
+-- `eNotExpired` share the category because they are the same time comparison;
+-- a client treats `eExpired` as final.
 
--- | Raised when a policy has a negative `minDelay` or a non-positive
--- `gracePeriod`.
+-- | Raised when `isValidConfig` rejects a policy: a negative `minDelay`, or a
+-- `gracePeriod` of zero or less.
 -- `errorId`: `openzeppelin.com/timelock-invalid-config`.
 eInvalidConfig : FailureStatus
 eInvalidConfig = timelockFailure "invalid-config" InvalidIndependentOfSystemState
-  "Timelock: minDelay must not be negative and gracePeriod must be positive"
+  "Timelock: the policy needs a minDelay of zero or greater and a positive gracePeriod"
 
 -- | Raised when a schedule requests a delay shorter than `minDelay`.
 -- `errorId`: `openzeppelin.com/timelock-delay-too-short`.
@@ -273,7 +268,7 @@ eExpired : FailureStatus
 eExpired = timelockFailure "expired" InvalidGivenCurrentSystemStateOther
   "Timelock: the operation has expired"
 
--- | Raised when a cleanup runs on an operation that has not expired.
+-- | Raised when a cleanup runs before `expiresAt`, or on an operation without one.
 -- `errorId`: `openzeppelin.com/timelock-not-expired`.
 eNotExpired : FailureStatus
 eNotExpired = timelockFailure "not-expired" InvalidGivenCurrentSystemStateOther

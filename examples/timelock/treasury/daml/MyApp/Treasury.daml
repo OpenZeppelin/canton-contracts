@@ -3,8 +3,8 @@
 -- A treasury pays out up to a spending limit. Raising the limit is a privileged
 -- operation, so it runs through a timelock: a proposer schedules a limit change,
 -- the change waits out the delay, and an executor applies it. The delay policy
--- itself changes the same way, so a compromised proposer cannot shorten the
--- delay in one step.
+-- itself changes the same way, so shortening the delay takes a full delay of
+-- its own.
 --
 -- Adopting the timelock costs one `TimelockConfig` field on the protected
 -- template, one operation template per operation kind with a two-line
@@ -30,7 +30,8 @@ template Payout
     ensure amount > 0.0
 
 -- | The protected contract. `admin` signs it, so every operation created in
--- one of its choices carries `admin`'s signature and nobody else can forge one.
+-- one of its choices carries `admin`'s signature, and only `admin`'s choices
+-- create operations.
 -- `proposer` and `executor` are the treasury's answer to who may schedule and
 -- who may apply; a role credential would fit in the same slots.
 template Treasury
@@ -86,9 +87,9 @@ template Treasury
         create this with limit = op.newLimit
 
     -- Self-administration: the delay policy changes only through a timelocked
-    -- operation scheduled under the policy in force at the time. The new policy
-    -- is validated when it is proposed, so a policy nobody can execute under
-    -- never reaches the treasury.
+    -- operation scheduled under the policy in force at the time. The proposed
+    -- policy is validated at proposal time, so every policy that reaches the
+    -- treasury produces executable operations.
     nonconsuming choice Treasury_ScheduleConfig : ContractId ConfigChange
       with
         newConfig : Timelock.TimelockConfig
@@ -143,7 +144,8 @@ template LimitChange
           (canceller == proposer || canceller == admin)
 
     -- Anyone may archive an expired operation. The controller is a flexible
-    -- party, so a non-stakeholder needs the contract by explicit disclosure.
+    -- party, so a party outside the stakeholders receives the contract by
+    -- explicit disclosure.
     choice LimitChange_Cleanup : ()
       with
         cleaner : Party

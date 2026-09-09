@@ -48,7 +48,7 @@ demo = script do
   v.readyAt === addRelTime t0 (days 3)
   v.expiresAt === Some (addRelTime t0 (days 10))
 
-  -- Too early: the executor cannot apply it, and the limit stays put.
+  -- Too early: the apply choice fails, and the limit stays at 100.
   submitMustFail executor do
     exerciseCmd treasury Treasury_ApplyLimit with opCid = raise
   submitMustFail admin do
@@ -76,8 +76,8 @@ demo = script do
   submitMustFail executor do
     exerciseCmd treasury Treasury_ApplyLimit with opCid = cut
 
-  -- A change that nobody applies within the grace period expires. It can no
-  -- longer execute, and anyone may clean it up.
+  -- A change left unapplied through the grace period expires. Apply fails
+  -- from then on, and anyone may clean it up.
   now <- getTime
   stale <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleLimit with
