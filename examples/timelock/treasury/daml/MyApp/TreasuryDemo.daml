@@ -31,8 +31,7 @@ demo = script do
         gracePeriod = Some (days 7)
   treasury <- submit admin do
     createCmd Treasury with
-      admin; proposer; executor; treasuryId = "ops-treasury"; limit = 100.0; config
-      pending = []
+      admin; proposer; executor; limit = 100.0; config; pending = []
 
   -- The protected operation: a payment above the limit is refused.
   _ <- submit admin do
@@ -55,8 +54,7 @@ demo = script do
   -- at once, is absent from the pending list and is refused.
   forged <- submit admin do
     createCmd LimitChange with
-      admin; proposer; executor; treasuryId = "ops-treasury"; newLimit = 500.0
-      readyAt = t0; expiresAt = None
+      admin; proposer; executor; newLimit = 500.0; readyAt = t0; expiresAt = None
   submitMustFail executor do
     exerciseCmd (toInterfaceContractId @Timelock.Operation forged)
       Timelock.Operation_Execute with actor = executor, target = toInterfaceContractId treasury

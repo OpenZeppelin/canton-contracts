@@ -14,7 +14,6 @@
 -- pending list, the guards, and the execute, cancel, and cleanup choices.
 module MyApp.Treasury where
 
-import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import qualified DA.TextMap as TextMap
 
@@ -35,14 +34,14 @@ template Payout
 -- operations, so every operation created in one of its choices carries
 -- `admin`'s signature. `pending` lists the operations the schedule choices
 -- created; the library's lifecycle choices accept only those, which binds the
--- delay on `admin` as well. `proposer` schedules; `executor` executes; the
--- proposer and the admin cancel.
+-- delay on `admin` as well and binds each operation to this treasury and no
+-- other. `proposer` schedules; `executor` executes; the proposer and the admin
+-- cancel.
 template Treasury
   with
     admin : Party
     proposer : Party
     executor : Party
-    treasuryId : Text
     limit : Decimal
     config : Timelock.TimelockConfig
     pending : Timelock.Pending
@@ -53,19 +52,17 @@ template Treasury
 
     -- The `Timelock` instance: the view the lifecycle choices read, and the
     -- two methods that create the successor. `apply` dispatches on the
-    -- operation's template and reads its typed parameters.
+    -- operation's template and reads its typed parameters. The library has
+    -- verified that the operation is pending on this treasury before it calls
+    -- `apply`, so the branches read parameters only.
     interface instance Timelock.Timelock for Treasury where
       view = Timelock.TimelockView with authority = admin; config; pending
 
       apply op pending' = case fromInterface @LimitChange op of
-        Some lc -> do
-          unless (lc.admin == admin && lc.treasuryId == treasuryId)
-            (failWithStatus eWrongTarget)
+        Some lc ->
           toInterfaceContractId <$> create this with limit = lc.newLimit, pending = pending'
         None -> case fromInterface @ConfigChange op of
-          Some cc -> do
-            unless (cc.admin == admin && cc.treasuryId == treasuryId)
-              (failWithStatus eWrongTarget)
+          Some cc ->
             toInterfaceContractId <$> create this with config = cc.newConfig, pending = pending'
           None -> failWithStatus eUnknownOperation
 
@@ -93,7 +90,7 @@ template Treasury
       do
         s <- Timelock.scheduleAt config readyAt
         op <- create LimitChange with
-          admin; proposer; executor; treasuryId; newLimit
+          admin; proposer; executor; newLimit
           readyAt = s.readyAt; expiresAt = s.expiresAt
         t <- create this with pending = Timelock.addPending op pending
         pure (t, op)
@@ -111,7 +108,7 @@ template Treasury
         Timelock.requireValidConfig newConfig
         s <- Timelock.scheduleAt config readyAt
         op <- create ConfigChange with
-          admin; proposer; executor; treasuryId; newConfig
+          admin; proposer; executor; newConfig
           readyAt = s.readyAt; expiresAt = s.expiresAt
         t <- create this with pending = Timelock.addPending op pending
         pure (t, op)
@@ -124,7 +121,6 @@ template LimitChange
     admin : Party
     proposer : Party
     executor : Party
-    treasuryId : Text
     newLimit : Decimal
     readyAt : Time
     expiresAt : Optional Time
@@ -146,7 +142,6 @@ template ConfigChange
     admin : Party
     proposer : Party
     executor : Party
-    treasuryId : Text
     newConfig : Timelock.TimelockConfig
     readyAt : Time
     expiresAt : Optional Time
@@ -161,15 +156,6 @@ template ConfigChange
       view = Timelock.OperationView with
         executors = Some [executor]
         cancellers = [proposer, admin]
-
--- | Raised when an operation names another treasury. The identity check is the
--- consumer's, so the failure status is the consumer's too.
-eWrongTarget : FailureStatus
-eWrongTarget = FailureStatus with
-  errorId = "myapp.example/treasury-wrong-target"
-  category = InvalidIndependentOfSystemState
-  message = "Treasury: the operation targets another treasury"
-  meta = TextMap.empty
 
 -- | Raised when `apply` receives an operation of a template the treasury does
 -- not handle.

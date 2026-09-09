@@ -4,7 +4,6 @@
 -- them.
 module OpenZeppelin.TimelockV1TestFixtures where
 
-import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import DA.Optional (fromOptional)
 import qualified DA.TextMap as TextMap
@@ -16,14 +15,14 @@ import OpenZeppelin.TimelockV1
 -- timelocked operations. `admin` signs and is the `authority` that applies
 -- operations; `proposer` schedules; `executors` and `cancellers` are recorded
 -- on each operation. `pending` lists the operations the schedule choices
--- created. `treasuryId` is the stable identity that operations name.
+-- created, and membership in that list is what binds an operation to this
+-- treasury.
 template Treasury
   with
     admin : Party
     proposer : Party
     executors : Optional [Party]
     cancellers : [Party]
-    treasuryId : Text
     limit : Decimal
     config : TimelockConfig
     pending : Pending
@@ -37,16 +36,13 @@ template Treasury
 
       -- Dispatch on the operation's template. Each branch reads the typed
       -- parameters and creates the successor with the pending list the
-      -- library already reduced.
+      -- library already reduced. The library has verified that the operation
+      -- is pending on this treasury, so the branches read parameters only.
       apply op pending' = case fromInterface @LimitChange op of
-        Some lc -> do
-          unless (lc.admin == admin && lc.treasuryId == treasuryId)
-            (failWithStatus eWrongTarget)
+        Some lc ->
           toInterfaceContractId <$> create this with limit = lc.newLimit, pending = pending'
         None -> case fromInterface @ConfigChange op of
-          Some cc -> do
-            unless (cc.admin == admin && cc.treasuryId == treasuryId)
-              (failWithStatus eWrongTarget)
+          Some cc ->
             toInterfaceContractId <$> create this with config = cc.newConfig, pending = pending'
           None -> failWithStatus eUnknownOperation
 
@@ -62,7 +58,7 @@ template Treasury
       do
         s <- scheduleAt config readyAt
         op <- create LimitChange with
-          admin; proposer; executors; cancellers; treasuryId; newLimit
+          admin; proposer; executors; cancellers; newLimit
           readyAt = s.readyAt; expiresAt = s.expiresAt
         t <- create this with pending = addPending op pending
         pure (t, op)
@@ -76,7 +72,7 @@ template Treasury
       do
         s <- scheduleAfter config delay
         op <- create LimitChange with
-          admin; proposer; executors; cancellers; treasuryId; newLimit
+          admin; proposer; executors; cancellers; newLimit
           readyAt = s.readyAt; expiresAt = s.expiresAt
         t <- create this with pending = addPending op pending
         pure (t, op)
@@ -93,7 +89,7 @@ template Treasury
         requireValidConfig newConfig
         s <- scheduleAt config readyAt
         op <- create ConfigChange with
-          admin; proposer; executors; cancellers; treasuryId; newConfig
+          admin; proposer; executors; cancellers; newConfig
           readyAt = s.readyAt; expiresAt = s.expiresAt
         t <- create this with pending = addPending op pending
         pure (t, op)
@@ -107,7 +103,6 @@ template LimitChange
     proposer : Party
     executors : Optional [Party]
     cancellers : [Party]
-    treasuryId : Text
     newLimit : Decimal
     readyAt : Time
     expiresAt : Optional Time
@@ -128,7 +123,6 @@ template ConfigChange
     proposer : Party
     executors : Optional [Party]
     cancellers : [Party]
-    treasuryId : Text
     newConfig : TimelockConfig
     readyAt : Time
     expiresAt : Optional Time
@@ -170,8 +164,7 @@ template LeakyTreasury
       do
         s <- scheduleAt config readyAt
         op <- create LimitChange with
-          admin; proposer; executors = None; cancellers = [proposer]
-          treasuryId = "leaky"; newLimit
+          admin; proposer; executors = None; cancellers = [proposer]; newLimit
           readyAt = s.readyAt; expiresAt = s.expiresAt
         t <- create this with queue = addPending op queue
         pure (t, op)
@@ -200,14 +193,6 @@ template Probe
       do
         op <- fetch target
         pure (isReadyAt at op)
-
--- | Raised by the fixtures when an operation names another treasury.
-eWrongTarget : FailureStatus
-eWrongTarget = FailureStatus with
-  errorId = "example.com/treasury-wrong-target"
-  category = InvalidIndependentOfSystemState
-  message = "Treasury: the operation targets another treasury"
-  meta = TextMap.empty
 
 -- | Raised by the fixtures when `apply` receives an operation of a template
 -- the treasury does not handle.

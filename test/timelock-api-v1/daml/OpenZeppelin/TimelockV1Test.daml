@@ -28,7 +28,7 @@ setupWith config = do
   treasury <- submit admin do
     createCmd Treasury with
       admin; proposer; executors = Some [executor]; cancellers = [proposer, admin]
-      treasuryId = "treasury-1"; limit = 10.0; config; pending = []
+      limit = 10.0; config; pending = []
   pure Fixture with ..
 
 setup : Script Fixture
@@ -253,7 +253,7 @@ test_openExecutor = script do
   treasury <- submit admin do
     createCmd Treasury with
       admin; proposer; executors = None; cancellers = [proposer]
-      treasuryId = "open"; limit = 10.0; config = oneDayWeekGrace; pending = []
+      limit = 10.0; config = oneDayWeekGrace; pending = []
   (t1, op) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt = addRelTime t0 (days 2)
   passTime (days 2)
@@ -284,25 +284,46 @@ test_directlyCreatedOperationRefused = script do
   forged <- submit admin do
     createCmd LimitChange with
       admin; proposer; executors = Some [executor]; cancellers = [admin]
-      treasuryId = "treasury-1"; newLimit = 1000.0; readyAt = t0; expiresAt = None
+      newLimit = 1000.0; readyAt = t0; expiresAt = None
   r <- tryExecute executor treasury forged
   expectFailure eNotPending r
   r2 <- tryCancel admin treasury forged
   expectFailure eNotPending r2
 
--- | An operation scheduled on one treasury is absent from another treasury's
--- pending list, so the other treasury refuses it. INV-5, INV-8.
+-- | Two treasuries of the same admin with the same policy are told apart by
+-- their pending lists alone: an operation scheduled on one is absent from the
+-- other's list, so the other refuses it. INV-5, INV-8.
 test_operationBoundToItsTarget : Script ()
 test_operationBoundToItsTarget = script do
   f@Fixture{..} <- setup
   other <- submit admin do
     createCmd Treasury with
       admin; proposer; executors = Some [executor]; cancellers = [admin]
-      treasuryId = "treasury-2"; limit = 5.0; config = oneDayWeekGrace; pending = []
+      limit = 5.0; config = oneDayWeekGrace; pending = []
   (_, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
   r <- tryExecute executor other op
   expectFailure eNotPending r
+
+-- | The binding holds across the lineage: after other operations reshape the
+-- treasury, the pending operation still applies on the latest successor and
+-- on no earlier contract. INV-5.
+test_bindingFollowsTheLineage : Script ()
+test_bindingFollowsTheLineage = script do
+  f@Fixture{..} <- setup
+  (t1, op1) <- scheduleLimit f 20.0 (days 2)
+  (t2, op2) <- submit proposer do
+    exerciseCmd t1 Treasury_ScheduleLimit with newLimit = 30.0, readyAt = addRelTime t0 (days 3)
+  passTime (days 2)
+  t3 <- execute executor t2 op1
+  passTime (days 1)
+  -- t1 and t2 are archived, so they are no longer valid targets.
+  submitMustFail executor do
+    exerciseCmd (opOf op2) Operation_Execute with actor = executor, target = targetOf t2
+  t4 <- execute executor t3 op2
+  Some t <- queryContractId admin t4
+  t.limit === 30.0
+  t.pending === []
 
 -- | An operation scheduled by another admin's treasury carries the other
 -- admin's signature, so exercising `Timelock_Apply` under this treasury's
@@ -314,7 +335,7 @@ test_operationFromAnotherAdminRejected = script do
   rogueTreasury <- submit rogue do
     createCmd Treasury with
       admin = rogue; proposer; executors = Some [executor]; cancellers = [rogue]
-      treasuryId = "treasury-1"; limit = 0.0; pending = []
+      limit = 0.0; pending = []
       config = TimelockConfig with minDelay = hours 0, gracePeriod = None
   (_, forged) <- submit proposer do
     exerciseCmd rogueTreasury Treasury_ScheduleLimit with newLimit = 1000.0, readyAt = t0
@@ -571,8 +592,7 @@ test_purePredicatesMatchTheGuards = script do
       expiresAt = addRelTime readyAt (days 7)
       op = LimitChange with
         admin; proposer; executors = Some [executor]; cancellers = [admin]
-        treasuryId = "treasury-1"; newLimit = 20.0
-        readyAt; expiresAt = Some expiresAt
+        newLimit = 20.0; readyAt; expiresAt = Some expiresAt
   isReadyAt t0 op === False
   isReadyAt (addRelTime readyAt (negate (minutes 1))) op === False
   isReadyAt readyAt op === True

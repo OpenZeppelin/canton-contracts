@@ -149,11 +149,20 @@ exerciseCmd (toInterfaceContractId @Operation opCid)
   Operation_Execute with actor = executor, target = toInterfaceContractId treasuryCid
 ```
 
-The pending list is the binding. An operation reaches an effect only through
-the protected contract whose pending list holds it, and only the schedule
-choice adds to that list. An operation the admin creates directly, an
-operation scheduled on another protected contract, and an operation already
-applied or cancelled all fail with `eNotPending`.
+The pending list is the binding, and it is unique by construction. An
+operation reaches an effect only through the protected contract whose pending
+list holds it, only the schedule choice adds to that list, and a contract id
+appears in one lineage's list. Two protected contracts of the same admin with
+the same policy are told apart by their lists alone, so `apply` reads
+parameters and needs no identity check. An operation the admin creates
+directly, an operation scheduled on another protected contract, and an
+operation already applied or cancelled all fail with `eNotPending`.
+
+The `target` argument of the lifecycle choices names the current protected
+contract. Its contract id changes on every schedule and every apply, so an
+executor reads the current id from the ledger at execution time; a contract
+id stored on the operation at scheduling time would go stale on the next
+schedule.
 
 ## Authority and lifecycle
 

@@ -174,14 +174,16 @@ requireValidConfig config = unless (isValidConfig config) (failWithStatus eInval
 -- Call it in the choice that creates the operation contract and store the
 -- returned fields on it:
 --
--- > nonconsuming choice Treasury_ScheduleLimit : ContractId LimitChange
+-- > choice Treasury_ScheduleLimit : (ContractId Treasury, ContractId LimitChange)
 -- >   with newLimit : Decimal; readyAt : Time
 -- >   controller proposer
 -- >   do
 -- >     s <- scheduleAt config readyAt
--- >     create LimitChange with
--- >       admin; treasuryId; newLimit
+-- >     op <- create LimitChange with
+-- >       admin; proposer; executor; newLimit
 -- >       readyAt = s.readyAt; expiresAt = s.expiresAt
+-- >     t <- create this with pending = addPending op pending
+-- >     pure (t, op)
 --
 -- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
 -- with `eDelayTooShort` unless the ledger time is at least `config.minDelay`
