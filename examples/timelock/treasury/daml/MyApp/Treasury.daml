@@ -1,0 +1,167 @@
+-- | Minimal adoption of `OpenZeppelin.TimelockV1`.
+--
+-- A treasury pays out up to a spending limit. Raising the limit is a privileged
+-- operation, so it runs through a timelock: a proposer schedules a limit change,
+-- the change waits out the delay, and an executor executes it. The delay policy
+-- itself changes the same way, so shortening the delay takes a full delay of
+-- its own.
+--
+-- Adopting the timelock costs a `TimelockConfig` field and a `Pending` list on
+-- the protected template, a `Timelock` interface instance whose `apply` method
+-- dispatches on the operation kinds, one operation template per operation kind
+-- with `Timelocked` and `Operation` instances, and the schedule choices that
+-- name the proposer. The library supplies the schedule computation, the
+-- pending list, the guards, and the execute, cancel, and cleanup choices.
+module MyApp.Treasury where
+
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import qualified DA.TextMap as TextMap
+
+import qualified OpenZeppelin.TimelockV1 as Timelock
+
+-- | What the treasury pays out.
+template Payout
+  with
+    payer : Party
+    recipient : Party
+    amount : Decimal
+  where
+    signatory payer
+    observer recipient
+    ensure amount > 0.0
+
+-- | The protected contract. `admin` signs it and is the authority that applies
+-- operations, so every operation created in one of its choices carries
+-- `admin`'s signature. `pending` lists the operations the schedule choices
+-- created; the library's lifecycle choices accept only those, which binds the
+-- delay on `admin` as well and binds each operation to this treasury and no
+-- other. `proposer` schedules; `executor` executes; the proposer and the admin
+-- cancel.
+template Treasury
+  with
+    admin : Party
+    proposer : Party
+    executor : Party
+    limit : Decimal
+    config : Timelock.TimelockConfig
+    pending : Timelock.Pending
+  where
+    signatory admin
+    observer proposer, executor
+    ensure limit >= 0.0
+
+    -- The `Timelock` instance: the view the lifecycle choices read, and the
+    -- two methods that create the successor. `apply` dispatches on the
+    -- operation's template and reads its typed parameters. The library has
+    -- verified that the operation is pending on this treasury before it calls
+    -- `apply`, so the branches read parameters only.
+    interface instance Timelock.Timelock for Treasury where
+      view = Timelock.TimelockView with authority = admin; config; pending
+
+      apply op pending' = case fromInterface @LimitChange op of
+        Some lc ->
+          toInterfaceContractId <$> create this with limit = lc.newLimit, pending = pending'
+        None -> case fromInterface @ConfigChange op of
+          Some cc ->
+            toInterfaceContractId <$> create this with config = cc.newConfig, pending = pending'
+          None -> failWithStatus eUnknownOperation
+
+      unschedule pending' = toInterfaceContractId <$> create this with pending = pending'
+
+    -- The operation the timelock protects: paying above the limit is
+    -- impossible, so raising the limit is the privileged action.
+    nonconsuming choice Treasury_Pay : ContractId Payout
+      with
+        recipient : Party
+        amount : Decimal
+      controller admin
+      do
+        assertMsg "Treasury: amount exceeds the spending limit" (amount <= limit)
+        create Payout with payer = admin, recipient, amount
+
+    -- Schedule a limit change. `scheduleAt` refuses a `readyAt` closer than
+    -- `config.minDelay` and derives `expiresAt` from `config.gracePeriod`. The
+    -- successor treasury records the operation as pending.
+    choice Treasury_ScheduleLimit : (ContractId Treasury, ContractId LimitChange)
+      with
+        newLimit : Decimal
+        readyAt : Time
+      controller proposer
+      do
+        s <- Timelock.scheduleAt config readyAt
+        op <- create LimitChange with
+          admin; proposer; executor; newLimit
+          readyAt = s.readyAt; expiresAt = s.expiresAt
+        t <- create this with pending = Timelock.addPending op pending
+        pure (t, op)
+
+    -- Self-administration: the delay policy changes only through a timelocked
+    -- operation scheduled under the policy in force at the time. The proposed
+    -- policy is validated at proposal time, so every policy that reaches the
+    -- treasury produces executable operations.
+    choice Treasury_ScheduleConfig : (ContractId Treasury, ContractId ConfigChange)
+      with
+        newConfig : Timelock.TimelockConfig
+        readyAt : Time
+      controller proposer
+      do
+        Timelock.requireValidConfig newConfig
+        s <- Timelock.scheduleAt config readyAt
+        op <- create ConfigChange with
+          admin; proposer; executor; newConfig
+          readyAt = s.readyAt; expiresAt = s.expiresAt
+        t <- create this with pending = Timelock.addPending op pending
+        pure (t, op)
+
+-- | A pending limit change: the typed parameters of one operation, plus the
+-- fields the two interface views read. The executor observes it because the
+-- execute choice runs on it.
+template LimitChange
+  with
+    admin : Party
+    proposer : Party
+    executor : Party
+    newLimit : Decimal
+    readyAt : Time
+    expiresAt : Optional Time
+  where
+    signatory admin
+    observer proposer, executor
+
+    interface instance Timelock.Timelocked for LimitChange where
+      view = Timelock.TimelockedView with readyAt, expiresAt
+
+    interface instance Timelock.Operation for LimitChange where
+      view = Timelock.OperationView with
+        executors = Some [executor]
+        cancellers = [proposer, admin]
+
+-- | A pending change of the delay policy.
+template ConfigChange
+  with
+    admin : Party
+    proposer : Party
+    executor : Party
+    newConfig : Timelock.TimelockConfig
+    readyAt : Time
+    expiresAt : Optional Time
+  where
+    signatory admin
+    observer proposer, executor
+
+    interface instance Timelock.Timelocked for ConfigChange where
+      view = Timelock.TimelockedView with readyAt, expiresAt
+
+    interface instance Timelock.Operation for ConfigChange where
+      view = Timelock.OperationView with
+        executors = Some [executor]
+        cancellers = [proposer, admin]
+
+-- | Raised when `apply` receives an operation of a template the treasury does
+-- not handle.
+eUnknownOperation : FailureStatus
+eUnknownOperation = FailureStatus with
+  errorId = "myapp.example/treasury-unknown-operation"
+  category = InvalidIndependentOfSystemState
+  message = "Treasury: unknown operation template"
+  meta = TextMap.empty

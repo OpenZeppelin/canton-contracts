@@ -9,6 +9,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## Unreleased
 
+### `openzeppelin-timelock-api-v1`
+
+#### Added
+
+- Added the frozen interface package `openzeppelin-timelock-api-v1` with public
+  module `OpenZeppelin.TimelockV1`.
+
 ### `openzeppelin-pausable-api-v1`
 
 #### Added

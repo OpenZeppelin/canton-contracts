@@ -1,0 +1,535 @@
+-- | OpenZeppelin Timelock - a mandatory delay between the proposal of a
+-- privileged operation and its execution.
+--
+-- The Daml analogue of `TimelockController.sol`, built on two interfaces. The
+-- protected contract implements `Timelock`: its view carries the delay policy
+-- and the list of pending operations, and its `apply` method applies one
+-- operation's typed parameters. Each operation kind is a template of the
+-- consumer's own, with the typed parameters as fields, that implements
+-- `Operation` and `Timelocked`. The interfaces carry the lifecycle choices:
+-- `Operation_Execute`, `Operation_Cancel`, and `Operation_Cleanup` on the
+-- operation, and `Timelock_Apply` and `Timelock_Drop` on the protected
+-- contract. The consumer writes the schedule choice, which creates the
+-- operation and records it as pending, and the `apply` method, which
+-- dispatches on the operation's template with `fromInterface`.
+--
+-- # Authority model
+--
+-- The protected contract's signatories authorize both ends of the flow. The
+-- schedule choice runs on the protected contract, so the operation it creates
+-- carries those signatures, and the same choice records the operation in the
+-- protected contract's `Pending` list. `Operation_Execute` runs on the
+-- operation with the executor as controller; its body carries the operation's
+-- signatures, which is what lets it exercise `Timelock_Apply`, whose
+-- controller is the protected contract's `authority`. `Timelock_Apply` takes
+-- the operation out of the pending list with `takePending`, calls the
+-- consumer's `apply`, and checks that the successor dropped the operation.
+-- The list binds the delay on the signatories themselves: an operation a
+-- signatory creates directly is absent from the list and is refused, and the
+-- schedule choice is the only way in.
+--
+-- Executors and cancellers are named on the operation's view, and the
+-- schedule choice's controller is the proposer. A fixed party, a party set, an
+-- open executor, or a role credential checked in the schedule choice all fit.
+--
+-- # Time on Canton
+--
+-- A Daml transaction carries a ledger time that Canton checks against the
+-- record time within a tolerance that the synchronizer configures. The guards
+-- use the ledger-time bound primitives `isLedgerTimeGE` and `isLedgerTimeLT`,
+-- so each check constrains one bound and leaves the ledger time free within
+-- it. A submitter chooses its ledger time anywhere inside the tolerance, so a
+-- proposer using `scheduleAt` shortens the effective delay by up to the whole
+-- tolerance, one minute by default. `scheduleAfter` reads `getTime`, which
+-- fixes the ledger time and keeps the delay exact. Choose a delay far longer
+-- than the tolerance: minutes at least, and days for governance.
+--
+-- Execution is a submission. Once an operation is ready, an executor submits
+-- the apply choice; an automation that watches the interface view and submits
+-- at `readyAt` is the consumer's off-ledger component, as in the Canton
+-- Network's own governance.
+--
+-- # Scope
+--
+-- One operation is one contract and one apply choice. A Daml choice body is
+-- atomic, so a batch is one operation template whose parameters list several
+-- effects, applied in one choice. Ordering between operations is a
+-- precondition on the protected contract's state, which is a stronger check
+-- than the identity of an earlier operation.
+--
+-- # Package boundary
+--
+-- This package holds the frozen interface, the schedule functions, and the
+-- guards. Operation templates live in consuming packages, where they upgrade
+-- through Smart Contract Upgrade independently of this package.
+module OpenZeppelin.TimelockV1 where
+
+import DA.Action (unless, when)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import DA.List (delete)
+import DA.Optional (whenSome)
+import qualified DA.TextMap as TextMap
+import DA.Time (RelTime, addRelTime, isLedgerTimeGE, isLedgerTimeLE, isLedgerTimeLT, microseconds)
+
+-- | When a scheduled operation may execute.
+data TimelockedView = TimelockedView with
+    readyAt : Time
+      -- ^ The earliest ledger time at which the operation may execute.
+    expiresAt : Optional Time
+      -- ^ The ledger time from which the operation may no longer execute, or
+      --   `None` when the operation stays executable until it is archived.
+  deriving (Eq, Show)
+
+-- | A scheduled operation. Implement this on every template that represents an
+-- operation waiting out its delay, whatever authority proposed it.
+--
+-- Signatories and observers: those of the implementing template. An operation
+--   created in a choice on the protected contract carries that contract's
+--   signatures.
+-- Controllers: the consumer's choices name them. The interface is view-only,
+--   because an interface choice needs a controller drawn from the view and the
+--   view carries times, not parties.
+-- Choices: scheduling, applying, cancelling, and cleaning up are choices on
+--   the consumer's protected and operation templates.
+-- Disclosure and privacy expectations: a pending operation is visible to the
+--   stakeholders of the implementing template. An executor outside that set
+--   receives the contract by explicit disclosure. Keep sensitive parameters off
+--   a template that many parties observe.
+-- Authorization assumptions: scheduling and applying use the protected
+--   contract's signatory authority, which choices on that contract carry.
+-- Archival behavior: the consumer's apply choice archives the operation when
+--   it executes, the cancel choice archives it early, and a cleanup choice
+--   archives it after `expiresAt`.
+-- Failure modes: the guards raise `eNotReady`, `eExpired`, and `eNotExpired`;
+--   the schedule functions raise `eInvalidConfig` and `eDelayTooShort`.
+-- Upgrade and migration assumptions: frozen for the life of the package.
+--   `TimelockedView` keeps its two fields and this interface keeps zero
+--   methods. A breaking change ships as a sibling `-v2` package.
+interface Timelocked where
+  viewtype TimelockedView
+
+-- | The operations a protected contract has scheduled and may still apply,
+-- cancel, or clean up. Hold it as a field of the protected template beside
+-- `TimelockConfig` and expose both through `TimelockView`. The schedule choice
+-- appends with `addPending`; `Timelock_Apply` and `Timelock_Drop` remove with
+-- `takePending`, which refuses an operation the list does not hold. Every
+-- choice that changes the list is consuming, so a protected contract with
+-- pending operations changes its contract id on each schedule and each apply.
+type Pending = [ContractId Timelocked]
+
+-- | Record a newly created operation in the protected contract's list. Call it
+-- in the schedule choice on the operation it created:
+--
+-- > op <- create LimitChange with ..
+-- > create this with pending = addPending op pending
+addPending : (HasToInterface t Timelocked) => ContractId t -> Pending -> Pending
+addPending op pending = toInterfaceContractId @Timelocked op :: pending
+
+-- | Remove an operation from the protected contract's list, and fail with
+-- `eNotPending` when the list does not hold it. `Timelock_Apply` and
+-- `Timelock_Drop` call it, so only operations the schedule choice created reach
+-- an effect. A consumer that writes its own apply choice calls it first.
+takePending : (HasToInterface t Timelocked) => ContractId t -> Pending -> Update Pending
+takePending op pending = do
+  let cid = toInterfaceContractId @Timelocked op
+  unless (cid `elem` pending) (failWithStatus eNotPending)
+  pure (delete cid pending)
+
+-- | The delay policy of a protected contract. Hold it as a field of the
+-- template whose privileged choices the timelock guards, so that the policy is
+-- part of the state that the schedule choice already exercises.
+--
+-- Changing the policy is itself a privileged operation. A consumer that wants
+-- the `updateDelay` behavior of `TimelockController.sol` schedules the change
+-- as an operation under the current policy, which is the self-administration
+-- pattern the example package shows.
+data TimelockConfig = TimelockConfig with
+    minDelay : RelTime
+      -- ^ The shortest delay a schedule may request, zero or greater. Zero
+      --   disables the delay.
+    gracePeriod : Optional RelTime
+      -- ^ How long after `readyAt` an operation stays executable. `None`
+      --   keeps an operation executable until it is archived, matching
+      --   `TimelockController.sol`. When set, a positive duration: it is the
+      --   width of the window in which `requireReady` succeeds.
+  deriving (Eq, Show)
+
+-- | Whether a policy produces executable operations: `minDelay` is zero or
+-- greater, and `gracePeriod`, when set, is positive. The schedule functions
+-- check it, which keeps a protected template able to schedule operations
+-- after its policy changes through a timelocked operation.
+isValidConfig : TimelockConfig -> Bool
+isValidConfig config =
+  config.minDelay >= aeternity && optional True (> aeternity) config.gracePeriod
+  where aeternity = microseconds 0
+
+-- | Fail with `eInvalidConfig` unless `isValidConfig` holds. The schedule
+-- functions call it on the policy in force. Call it on the proposed policy in
+-- the choice that schedules a policy change, so that an invalid policy is
+-- refused at proposal time.
+requireValidConfig : TimelockConfig -> Update ()
+requireValidConfig config = unless (isValidConfig config) (failWithStatus eInvalidConfig)
+
+-- | Compute the schedule of an operation that becomes ready at `readyAt`.
+-- Call it in the choice that creates the operation contract and store the
+-- returned fields on it:
+--
+-- > choice Treasury_ScheduleLimit : (ContractId Treasury, ContractId LimitChange)
+-- >   with newLimit : Decimal; readyAt : Time
+-- >   controller proposer
+-- >   do
+-- >     s <- scheduleAt config readyAt
+-- >     op <- create LimitChange with
+-- >       admin; proposer; executor; newLimit
+-- >       readyAt = s.readyAt; expiresAt = s.expiresAt
+-- >     t <- create this with pending = addPending op pending
+-- >     pure (t, op)
+--
+-- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
+-- with `eDelayTooShort` unless the ledger time is at least `config.minDelay`
+-- before `readyAt`. The check is a ledger-time bound, so the transaction's
+-- ledger time stays free within it. Record the created operation with
+-- `addPending`.
+scheduleAt : TimelockConfig -> Time -> Update TimelockedView
+scheduleAt config readyAt = do
+  requireValidConfig config
+  early <- isLedgerTimeLE (addRelTime readyAt (negate config.minDelay))
+  unless early (failWithStatus eDelayTooShort)
+  pure TimelockedView with
+    readyAt
+    expiresAt = fmap (addRelTime readyAt) config.gracePeriod
+
+-- | Compute the schedule of an operation that becomes ready `delay` after the
+-- transaction's ledger time. It reads `getTime`, which fixes the ledger time
+-- of the transaction; use `scheduleAt` when the proposer knows the target time.
+--
+-- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
+-- with `eDelayTooShort` unless `delay` is at least `config.minDelay`.
+scheduleAfter : TimelockConfig -> RelTime -> Update TimelockedView
+scheduleAfter config delay = do
+  requireValidConfig config
+  unless (delay >= config.minDelay) (failWithStatus eDelayTooShort)
+  now <- getTime
+  let readyAt = addRelTime now delay
+  pure TimelockedView with
+    readyAt
+    expiresAt = fmap (addRelTime readyAt) config.gracePeriod
+
+-- | Fail unless the operation may execute now: the ledger time is at or after
+-- `readyAt` and, when `expiresAt` is set, before it. Call it in the apply
+-- choice after `takePending` and before applying the parameters:
+--
+-- > choice Treasury_ApplyLimit : ContractId Treasury
+-- >   with opCid : ContractId LimitChange
+-- >   controller executor
+-- >   do
+-- >     pending' <- takePending opCid pending
+-- >     op <- fetch opCid
+-- >     requireReady op
+-- >     archive opCid
+-- >     create this with limit = op.newLimit, pending = pending'
+--
+-- Accepts an implementing template or a `Timelocked`. Fails with `eNotReady`
+-- before `readyAt` and with `eExpired` at or after `expiresAt`.
+requireReady : (HasToInterface t Timelocked) => t -> Update ()
+requireReady x = do
+  let v = view (toInterface @Timelocked x)
+  ready <- isLedgerTimeGE v.readyAt
+  unless ready (failWithStatus eNotReady)
+  whenSome v.expiresAt $ \expiresAt -> do
+    live <- isLedgerTimeLT expiresAt
+    unless live (failWithStatus eExpired)
+
+-- | Fail unless the operation has expired: `expiresAt` is set and the ledger
+-- time is at or after it. Use it on a cleanup choice that lets any party
+-- archive an expired operation.
+--
+-- Fails with `eNotExpired` when `expiresAt` is `None` or lies in the future.
+requireExpired : (HasToInterface t Timelocked) => t -> Update ()
+requireExpired x = do
+  let v = view (toInterface @Timelocked x)
+  case v.expiresAt of
+    None -> failWithStatus eNotExpired
+    Some expiresAt -> do
+      expired <- isLedgerTimeGE expiresAt
+      unless expired (failWithStatus eNotExpired)
+
+-- | Whether the operation may execute at `now`: `readyAt <= now`, and
+-- `now < expiresAt` when `expiresAt` is set. A pure function for a choice or
+-- an off-ledger reader that branches rather than refuses.
+isReadyAt : (HasToInterface t Timelocked) => Time -> t -> Bool
+isReadyAt now x =
+  let v = view (toInterface @Timelocked x)
+  in v.readyAt <= now && optional True (now <) v.expiresAt
+
+-- | Whether the operation has expired at `now`: `expiresAt` is set and
+-- `expiresAt <= now`.
+isExpiredAt : (HasToInterface t Timelocked) => Time -> t -> Bool
+isExpiredAt now x =
+  let v = view (toInterface @Timelocked x)
+  in optional False (<= now) v.expiresAt
+
+-- | The state of a protected contract that the lifecycle choices read.
+data TimelockView = TimelockView with
+    authority : Party
+      -- ^ The signatory whose authority applies operations. `Timelock_Apply`
+      --   and `Timelock_Drop` name it as controller; an operation created in a
+      --   choice on the protected contract carries its signature.
+    config : TimelockConfig
+      -- ^ The delay policy in force.
+    pending : Pending
+      -- ^ The operations the schedule choice created and that may still
+      --   apply, cancel, or clean up.
+  deriving (Eq, Show)
+
+-- | Who may execute and cancel an operation.
+data OperationView = OperationView with
+    executors : Optional [Party]
+      -- ^ The parties that may call `Operation_Execute`. `None` opens
+      --   execution to any party, the `address(0)` executor of
+      --   `TimelockController.sol`; an open executor receives the operation
+      --   and the protected contract by explicit disclosure.
+    cancellers : [Party]
+      -- ^ The parties that may call `Operation_Cancel`.
+  deriving (Eq, Show)
+
+-- | The protected contract: the template whose privileged state changes only
+-- through matured operations. Implement it beside a `TimelockConfig` field, a
+-- `Pending` field, and the schedule choices you write.
+--
+-- Signatories and observers: those of the implementing template. Executors
+--   and cancellers fetch the protected contract when they exercise the
+--   operation's choices, so they observe it or receive it by disclosure.
+-- Controllers: `authority` controls `Timelock_Apply` and `Timelock_Drop`.
+--   Both are exercised from the operation's choices, whose bodies carry the
+--   operation's signatures.
+-- Choices: `Timelock_Apply` applies one pending operation through `apply`;
+--   `Timelock_Drop` removes one pending operation through `unschedule`. Scheduling
+--   is a choice the consumer writes, because it creates a typed operation.
+-- Disclosure and privacy expectations: the view exposes the policy and the
+--   pending list to every stakeholder of the protected contract. An open
+--   executor sees the protected contract's payload at execution time.
+-- Authorization assumptions: `authority` is a signatory of the implementing
+--   template and of every operation its schedule choice creates; the pending
+--   list holds only operations that choice created.
+-- Archival behavior: both choices are consuming and the methods create the
+--   successor, so the protected contract changes its contract id on each
+--   apply and each drop, as it does on each schedule.
+-- Failure modes: `eNotPending` for an operation outside the list;
+--   `eOperationRetained` when `apply` or `unschedule` returns a successor that still
+--   lists the operation.
+-- Upgrade and migration assumptions: frozen for the life of the package. The
+--   implementing template upgrades independently.
+interface Timelock where
+  viewtype TimelockView
+
+  apply : Operation -> Pending -> Update (ContractId Timelock)
+    -- ^ Apply one matured operation and create the successor. Dispatch on the
+    --   operation's template with `fromInterface`, and store the given list,
+    --   which is the pending list without this operation:
+    --
+    --   > apply op pending' = case fromInterface @LimitChange op of
+    --   >   Some lc -> toInterfaceContractId <$>
+    --   >     create this with limit = lc.newLimit, pending = pending'
+    --   >   None -> failWithStatus eUnknownOperation
+    --
+    --   `Timelock_Apply` has already checked that the operation is pending
+    --   and ready, and it archives the operation after this method returns.
+
+  unschedule : Pending -> Update (ContractId Timelock)
+    -- ^ Create the successor with the given list, which is the pending list
+    --   without the cancelled or expired operation:
+    --
+    --   > unschedule pending' = toInterfaceContractId <$> create this with pending = pending'
+
+  -- Apply a pending operation. Exercised by `Operation_Execute`, which has
+  -- verified the executor and the schedule; this choice verifies the pending
+  -- list, calls `apply`, and checks that the successor dropped the operation.
+  choice Timelock_Apply : ContractId Timelock
+    with
+      op : ContractId Operation
+    controller (view this).authority
+    do
+      pending' <- takePending op (view this).pending
+      opValue <- fetch op
+      new <- apply this opValue pending'
+      requireDropped op new
+      pure new
+
+  -- Remove a pending operation without applying it. Exercised by
+  -- `Operation_Cancel` and `Operation_Cleanup`.
+  choice Timelock_Drop : ContractId Timelock
+    with
+      op : ContractId Operation
+    controller (view this).authority
+    do
+      pending' <- takePending op (view this).pending
+      new <- unschedule this pending'
+      requireDropped op new
+      pure new
+
+-- | A scheduled operation with its lifecycle choices. Implement it beside
+-- `Timelocked` on every operation template. The template's fields are the
+-- operation's typed parameters; the protected contract's `apply` reads them.
+--
+-- Signatories and observers: those of the implementing template. An operation
+--   created in a choice on the protected contract carries `authority`'s
+--   signature; executors and cancellers observe it or receive it by
+--   disclosure.
+-- Controllers: the `actor` argument of each choice. `Operation_Execute`
+--   accepts an actor the view lists as executor, or any actor when
+--   `executors` is `None`; `Operation_Cancel` accepts an actor the view lists
+--   as canceller; `Operation_Cleanup` accepts any actor once the operation has
+--   expired.
+-- Choices: `Operation_Execute`, `Operation_Cancel`, `Operation_Cleanup`. Each
+--   exercises the matching choice on the protected contract and archives the
+--   operation.
+-- Disclosure and privacy expectations: a pending operation is visible to the
+--   stakeholders of the implementing template. An actor outside that set
+--   receives the operation and the protected contract by explicit disclosure,
+--   and sees both payloads.
+-- Authorization assumptions: the choice bodies carry the implementing
+--   template's signatures, which is what lets them exercise `Timelock_Apply`
+--   and `Timelock_Drop` under `authority`. An operation signed by another
+--   party fails that authorization.
+-- Archival behavior: each choice archives the operation after the protected
+--   contract's choice succeeds.
+-- Failure modes: `eNotExecutor`, `eNotCanceller`, and the guards' statuses,
+--   plus those of `Timelock_Apply` and `Timelock_Drop`.
+-- Upgrade and migration assumptions: frozen for the life of the package. The
+--   implementing template upgrades independently.
+interface Operation requires Timelocked where
+  viewtype OperationView
+
+  -- Execute the operation on `target` once it is ready.
+  nonconsuming choice Operation_Execute : ContractId Timelock
+    with
+      actor : Party
+      target : ContractId Timelock
+    controller actor
+    do
+      requireExecutor actor (view this)
+      requireReady this
+      new <- exercise target Timelock_Apply with op = self
+      archive self
+      pure new
+
+  -- Withdraw the operation before it executes.
+  nonconsuming choice Operation_Cancel : ContractId Timelock
+    with
+      actor : Party
+      target : ContractId Timelock
+    controller actor
+    do
+      requireCanceller actor (view this)
+      new <- exercise target Timelock_Drop with op = self
+      archive self
+      pure new
+
+  -- Remove the operation once it has expired. Open to any actor.
+  nonconsuming choice Operation_Cleanup : ContractId Timelock
+    with
+      actor : Party
+      target : ContractId Timelock
+    controller actor
+    do
+      requireExpired this
+      new <- exercise target Timelock_Drop with op = self
+      archive self
+      pure new
+
+-- | Fail with `eNotExecutor` unless `actor` may execute under the view.
+requireExecutor : Party -> OperationView -> Update ()
+requireExecutor actor v =
+  unless (optional True (actor `elem`) v.executors) (failWithStatus eNotExecutor)
+
+-- | Fail with `eNotCanceller` unless `actor` may cancel under the view.
+requireCanceller : Party -> OperationView -> Update ()
+requireCanceller actor v =
+  unless (actor `elem` v.cancellers) (failWithStatus eNotCanceller)
+
+-- Fail with `eOperationRetained` when the successor still lists the operation.
+requireDropped : ContractId Operation -> ContractId Timelock -> Update ()
+requireDropped op new = do
+  successor <- fetch new
+  when (toInterfaceContractId @Timelocked op `elem` (view successor).pending)
+    (failWithStatus eOperationRetained)
+
+-- Failure statuses. Each is a `FailureStatus` raised with `failWithStatus`, so
+-- a rejected submission reaches the Ledger API as `DAML_FAILURE` with the
+-- `errorId` below, and a client matches on the id rather than on the message
+-- text. In Daml Script, `trySubmit` returns it as `FailureStatusError`.
+--
+-- Categories follow Canton's error-category semantics for the request itself:
+-- `InvalidIndependentOfSystemState` for a request that fails on its own
+-- content (an invalid policy, a delay below the minimum), and
+-- `InvalidGivenCurrentSystemStateOther` for a request whose outcome depends
+-- on ledger time. Waiting turns `eNotReady` into success. `eExpired` and
+-- `eNotExpired` share the category because they are the same time comparison;
+-- a client treats `eExpired` as final.
+
+-- | Raised when `isValidConfig` rejects a policy: a negative `minDelay`, or a
+-- `gracePeriod` of zero or less.
+-- `errorId`: `openzeppelin.com/timelock-invalid-config`.
+eInvalidConfig : FailureStatus
+eInvalidConfig = timelockFailure "invalid-config" InvalidIndependentOfSystemState
+  "Timelock: the policy needs a minDelay of zero or greater and a positive gracePeriod"
+
+-- | Raised when an apply, cancel, or cleanup choice presents an operation that
+-- the protected contract's `Pending` list does not hold: an operation created
+-- outside the schedule choice, one already applied or cancelled, or one
+-- scheduled on another protected contract.
+-- `errorId`: `openzeppelin.com/timelock-not-pending`.
+eNotPending : FailureStatus
+eNotPending = timelockFailure "not-pending" InvalidGivenCurrentSystemStateOther
+  "Timelock: the operation is not pending on this contract"
+
+-- | Raised when `Operation_Execute`'s actor is outside the view's executors.
+-- `errorId`: `openzeppelin.com/timelock-not-executor`.
+eNotExecutor : FailureStatus
+eNotExecutor = timelockFailure "not-executor" InvalidIndependentOfSystemState
+  "Timelock: the actor is not an executor of this operation"
+
+-- | Raised when `Operation_Cancel`'s actor is outside the view's cancellers.
+-- `errorId`: `openzeppelin.com/timelock-not-canceller`.
+eNotCanceller : FailureStatus
+eNotCanceller = timelockFailure "not-canceller" InvalidIndependentOfSystemState
+  "Timelock: the actor is not a canceller of this operation"
+
+-- | Raised when `apply` or `unschedule` returns a successor whose pending list still
+-- holds the operation, which would let it execute twice.
+-- `errorId`: `openzeppelin.com/timelock-operation-retained`.
+eOperationRetained : FailureStatus
+eOperationRetained = timelockFailure "operation-retained" InvalidIndependentOfSystemState
+  "Timelock: the successor still lists the operation as pending"
+
+-- | Raised when a schedule requests a delay shorter than `minDelay`.
+-- `errorId`: `openzeppelin.com/timelock-delay-too-short`.
+eDelayTooShort : FailureStatus
+eDelayTooShort = timelockFailure "delay-too-short" InvalidIndependentOfSystemState
+  "Timelock: the delay is shorter than the minimum delay"
+
+-- | Raised when an operation executes before `readyAt`.
+-- `errorId`: `openzeppelin.com/timelock-not-ready`.
+eNotReady : FailureStatus
+eNotReady = timelockFailure "not-ready" InvalidGivenCurrentSystemStateOther
+  "Timelock: the operation is not ready"
+
+-- | Raised when an operation executes at or after `expiresAt`.
+-- `errorId`: `openzeppelin.com/timelock-expired`.
+eExpired : FailureStatus
+eExpired = timelockFailure "expired" InvalidGivenCurrentSystemStateOther
+  "Timelock: the operation has expired"
+
+-- | Raised when a cleanup runs before `expiresAt`, or on an operation without one.
+-- `errorId`: `openzeppelin.com/timelock-not-expired`.
+eNotExpired : FailureStatus
+eNotExpired = timelockFailure "not-expired" InvalidGivenCurrentSystemStateOther
+  "Timelock: the operation has not expired"
+
+timelockFailure : Text -> FailureCategory -> Text -> FailureStatus
+timelockFailure name category message = FailureStatus with
+  errorId = "openzeppelin.com/timelock-" <> name
+  category
+  message
+  meta = TextMap.empty

@@ -57,6 +57,13 @@ contract it supplies. Nothing therefore remains for an `openzeppelin-pausable-v1
 package to hold. The component is the frozen `-api-v1` package alone, and the
 implementing templates live in consuming packages.
 
+Timelock follows the same shape for a different reason. A scheduled operation
+is a contract of the consumer's own template, typed by its fields and signed by
+the protected contract's signatories, because a Daml choice applies typed
+contract data rather than forwarding an encoded call. The library contributes
+the interface that exposes the operation's schedule, the functions that compute
+it, and the guards that enforce it.
+
 An interface-only component is still one package and one DAR, and it still
 follows the `-api-vN` freeze rule: no templates, no SCU, and a breaking change
 ships as a sibling `-v2` package. The consumer's implementing template upgrades
