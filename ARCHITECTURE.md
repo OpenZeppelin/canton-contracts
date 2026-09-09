@@ -61,7 +61,10 @@ An interface-only component is still one package and one DAR, and it still
 follows the `-api-vN` freeze rule: no templates, no SCU, and a breaking change
 ships as a sibling `-v2` package. The consumer's implementing template upgrades
 through SCU independently, because the interface instance is declared on the
-template and the API package does not move.
+template and the API package does not move. SCU can only add an interface
+instance to that template, never remove one, so adopting a `-v2` package means
+the template implements both interfaces for life; dropping the `-v1` instance
+needs a new template version outside SCU and an offline contract migration.
 
 ## Dependency policy
 
