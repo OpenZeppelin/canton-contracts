@@ -119,6 +119,21 @@ test_flipArchivesThePredecessor = script do
   stale <- queryContractId admin vault
   stale === None
 
+-- | The consuming-choice obligation is not enforced. A nonconsuming flip
+-- choice that does not archive `self` leaves the unpaused predecessor active
+-- beside the paused successor, and nothing fails. This asserts a defect in
+-- consumer code, not a property of the library: the obligation is not
+-- checkable, so this test is its only executable statement.
+test_nonconsumingFlipLeavesTwoContracts : Script ()
+test_nonconsumingFlipLeavesTwoContracts = script do
+  admin <- allocateParty "admin"
+  leaky <- submit admin do createCmd LeakyVault with admin, paused = False
+  successor <- submit admin do exerciseCmd leaky LeakyVault_Pause
+  Some original <- queryContractId admin leaky
+  isPaused original === False
+  Some flipped <- queryContractId admin successor
+  isPaused flipped === True
+
 -- | Pausing while paused fails, matching `_pause`'s `whenNotPaused`.
 test_pauseWhenPausedFails : Script ()
 test_pauseWhenPausedFails = script do

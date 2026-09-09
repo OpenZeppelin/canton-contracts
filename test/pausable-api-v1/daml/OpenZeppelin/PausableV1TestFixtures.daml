@@ -144,6 +144,26 @@ template Rogue
         flipped <- pause p
         pure (isPaused flipped)
 
+-- | A consumer that flips from a nonconsuming choice and does not archive
+-- `self`. `pause` archives nothing, so the predecessor stays active beside the
+-- paused successor and no error reports it. The obligation to make the flip
+-- choice consuming is the consumer's, and nothing in the library enforces it.
+template LeakyVault
+  with
+    admin : Party
+    paused : Bool
+  where
+    signatory admin
+
+    interface instance Pausable for LeakyVault where
+      view = PausableView with paused
+      setPaused b = toInterface (this with paused = b)
+
+    nonconsuming choice LeakyVault_Pause : ContractId LeakyVault
+      controller admin
+      do
+        create =<< pause this
+
 -- Implementations that break the `setPaused` law
 -------------------------------------------------------
 
