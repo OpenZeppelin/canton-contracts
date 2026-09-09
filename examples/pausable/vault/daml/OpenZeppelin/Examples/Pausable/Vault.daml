@@ -7,7 +7,7 @@
 --
 -- Which choices are gated is a decision per choice, which is why the escape
 -- hatch and the paused-only recovery path both come at no extra cost.
-module MyApp.Vault where
+module OpenZeppelin.Examples.Pausable.Vault where
 
 import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)

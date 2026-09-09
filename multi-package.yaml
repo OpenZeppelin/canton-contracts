@@ -12,4 +12,6 @@ packages:
   - packages/security/pausable-api-v1
   - test/pausable-api-v1
   - examples/pausable/vault
+  - examples/pausable/vault-test
   - examples/pausable/registry
+  - examples/pausable/registry-test

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # CI-only orchestration for the consumer examples. Each example integrates a
-# production DAR through data-dependencies and carries a Daml Script that runs
-# its lifecycle, so running them proves the published API works from outside
-# the workspace.
+# production DAR through data-dependencies, and a sibling -test package carries
+# Daml Script tests for its lifecycle, so running them proves the published API
+# works from outside the workspace.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,7 +25,7 @@ while IFS= read -r manifest; do
 		fail "example $package_dir must data-depend on a production DAR"
 
 	printf 'examples: running %s\n' "$package_dir"
-	DAML_PACKAGE="$package_dir" dpm test
+	DAML_PACKAGE="$package_dir" dpm test --all
 	example_count=$((example_count + 1))
 done <<< "$manifests"
 

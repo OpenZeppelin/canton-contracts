@@ -7,7 +7,8 @@ flip.
 | Field | Value |
 |---|---|
 | Package | `pausable-registry-example` |
-| Modules | `MyApp.Registry`, `MyApp.RegistryDemo` |
+| Module | `OpenZeppelin.Examples.Pausable.Registry` |
+| Tests | `OpenZeppelin.Examples.Pausable.RegistryTest` in [`registry-test`](../registry-test) |
 | Consumes | `openzeppelin-pausable-api-v1` `0.1.0` |
 
 ## What it shows
@@ -23,9 +24,10 @@ flip.
 - One on-ledger contract answering the whole metadata response: the flag and the
   reason live on the same contract that the gated choices exercise.
 
-`MyApp.RegistryDemo` registers an entry, pauses with a reason and a deadline,
-shows the refused registration and the unchanged view, then unpauses and clears
-the recorded fields.
+`OpenZeppelin.Examples.Pausable.RegistryTest`, in the sibling `registry-test`
+package, covers the lifecycle with one script per property: a registration, a
+pause with a reason and a deadline, the refused registration and the unchanged
+view, then an unpause that clears the recorded fields.
 
 ## Authority model
 
@@ -48,5 +50,5 @@ From the repository root:
 
 ```sh
 DAML_PACKAGE=examples/pausable/registry dpm build
-DAML_PACKAGE=examples/pausable/registry dpm test
+DAML_PACKAGE=examples/pausable/registry-test dpm test --all
 ```

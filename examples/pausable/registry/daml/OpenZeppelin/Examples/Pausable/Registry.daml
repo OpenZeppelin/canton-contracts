@@ -10,7 +10,7 @@
 -- until}` from one on-ledger contract. If CIP-0112 extends `PauseInfo`, this
 -- template adds a field under Smart Contract Upgrade and the interface does not
 -- move.
-module MyApp.Registry where
+module OpenZeppelin.Examples.Pausable.Registry where
 
 import DA.Action (when)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)

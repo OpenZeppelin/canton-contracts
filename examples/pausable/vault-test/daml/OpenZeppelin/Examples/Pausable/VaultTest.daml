@@ -1,0 +1,134 @@
+-- | Tests for `Vault`: normal operation, an emergency stop, and the return to
+-- normal operation.
+module OpenZeppelin.Examples.Pausable.VaultTest where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import qualified OpenZeppelin.Api.PausableV1 as Pausable
+import OpenZeppelin.Examples.Pausable.Vault
+
+data Fixture = Fixture with
+  admin : Party
+  owner : Party
+  vault : ContractId Vault
+
+-- | An unpaused vault holding 100 for the owner.
+setup : Script Fixture
+setup = do
+  admin <- allocateParty "admin"
+  owner <- allocateParty "owner"
+  vault <- submit (actAs [admin, owner]) do
+    createCmd Vault with admin, owner, balance = 100.0, paused = False
+  pure Fixture with ..
+
+readOf : ContractId Vault -> ContractId Pausable.Pausable
+readOf = toInterfaceContractId
+
+-- | Unpaused, the gated choice runs.
+test_withdrawRunsWhileUnpaused : Script ()
+test_withdrawRunsWhileUnpaused = script do
+  Fixture{..} <- setup
+  vault <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
+  Some v <- queryContractId owner vault
+  v.balance === 60.0
+
+-- | A non-positive amount is refused by the vault's own check, which has
+-- nothing to do with pausing.
+test_withdrawRefusesNonPositiveAmount : Script ()
+test_withdrawRefusesNonPositiveAmount = script do
+  Fixture{..} <- setup
+  Left (FailureStatusError e) <- trySubmit owner do
+    exerciseCmd vault Vault_Withdraw with amount = -10.0
+  e === eNonPositiveAmount
+
+-- | An amount above the balance is refused by the vault's own check.
+test_withdrawRefusesAmountAboveBalance : Script ()
+test_withdrawRefusesAmountAboveBalance = script do
+  Fixture{..} <- setup
+  Left (FailureStatusError e) <- trySubmit owner do
+    exerciseCmd vault Vault_Withdraw with amount = 100.5
+  e === eInsufficientBalance
+
+-- | Off-ledger tooling reads the flag through the interface view, whatever
+-- template implements it. The pure form agrees with the view.
+test_pauseIsVisibleThroughTheView : Script ()
+test_pauseIsVisibleThroughTheView = script do
+  Fixture{..} <- setup
+  vault <- submit admin do exerciseCmd vault Vault_Pause
+  Some v <- queryInterfaceContractId owner (readOf vault)
+  v === Pausable.PausableView with paused = True
+  Some c <- queryContractId owner vault
+  Pausable.isPaused c === True
+
+-- | While paused, the gated choice refuses to start.
+test_withdrawRefusedWhilePaused : Script ()
+test_withdrawRefusedWhilePaused = script do
+  Fixture{..} <- setup
+  vault <- submit admin do exerciseCmd vault Vault_Pause
+  Left (FailureStatusError e) <- trySubmit owner do
+    exerciseCmd vault Vault_Withdraw with amount = 10.0
+  e === Pausable.eEnforcedPause
+
+-- | The escape hatch carries no guard, so it stays open: the owner takes the
+-- whole balance out while the vault is paused.
+test_redeemStaysOpenWhilePaused : Script ()
+test_redeemStaysOpenWhilePaused = script do
+  Fixture{..} <- setup
+  vault <- submit admin do exerciseCmd vault Vault_Pause
+  (vault, payout) <- submit owner do exerciseCmd vault Vault_Redeem
+  Some p <- queryContractId owner payout
+  p.amount === 100.0
+  p.recipient === owner
+  Some v <- queryContractId owner vault
+  v.balance === 0.0
+
+-- | Pausing twice fails with eEnforcedPause.
+test_pauseWhenPausedFails : Script ()
+test_pauseWhenPausedFails = script do
+  Fixture{..} <- setup
+  vault <- submit admin do exerciseCmd vault Vault_Pause
+  Left (FailureStatusError e) <- trySubmit admin do
+    exerciseCmd vault Vault_Pause
+  e === Pausable.eEnforcedPause
+
+-- | The recovery path runs only while paused, and moves the balance to the
+-- admin.
+test_emergencyDrainRunsWhilePaused : Script ()
+test_emergencyDrainRunsWhilePaused = script do
+  Fixture{..} <- setup
+  vault <- submit admin do exerciseCmd vault Vault_Pause
+  (vault, payout) <- submit admin do exerciseCmd vault Vault_EmergencyDrain
+  Some p <- queryContractId admin payout
+  p.amount === 100.0
+  p.recipient === admin
+  Some v <- queryContractId admin vault
+  v.balance === 0.0
+
+-- | While unpaused, the recovery path is closed.
+test_emergencyDrainRefusedWhileUnpaused : Script ()
+test_emergencyDrainRefusedWhileUnpaused = script do
+  Fixture{..} <- setup
+  Left (FailureStatusError e) <- trySubmit admin do
+    exerciseCmd vault Vault_EmergencyDrain
+  e === Pausable.eExpectedPause
+
+-- | Unpausing returns the vault to normal operation.
+test_unpauseRestoresOperation : Script ()
+test_unpauseRestoresOperation = script do
+  Fixture{..} <- setup
+  vault <- submit admin do exerciseCmd vault Vault_Pause
+  vault <- submit admin do exerciseCmd vault Vault_Unpause
+  Some c <- queryContractId admin vault
+  Pausable.isPaused c === False
+  vault <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
+  Some v <- queryContractId owner vault
+  v.balance === 60.0
+
+-- | Unpausing twice fails with eExpectedPause.
+test_unpauseWhenUnpausedFails : Script ()
+test_unpauseWhenUnpausedFails = script do
+  Fixture{..} <- setup
+  Left (FailureStatusError e) <- trySubmit admin do
+    exerciseCmd vault Vault_Unpause
+  e === Pausable.eExpectedPause

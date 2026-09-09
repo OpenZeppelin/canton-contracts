@@ -6,7 +6,8 @@ for one owner, with an emergency stop that the admin controls.
 | Field | Value |
 |---|---|
 | Package | `pausable-vault-example` |
-| Modules | `MyApp.Vault`, `MyApp.VaultDemo` |
+| Module | `OpenZeppelin.Examples.Pausable.Vault` |
+| Tests | `OpenZeppelin.Examples.Pausable.VaultTest` in [`vault-test`](../vault-test) |
 | Templates | `Vault`, `Payout` |
 | Consumes | `openzeppelin-pausable-api-v1` `0.1.0` |
 
@@ -26,9 +27,10 @@ for one owner, with an emergency stop that the admin controls.
 - An off-ledger read of `PausableView` through the interface, which works
   against every implementing template.
 
-`MyApp.VaultDemo` runs the whole lifecycle: a withdrawal, a pause, the refused
-withdrawal, the escape hatch, the recovery path, and the return to normal
-operation.
+`OpenZeppelin.Examples.Pausable.VaultTest`, in the sibling `vault-test`
+package, covers the lifecycle with one script per property: a withdrawal, a
+pause, the refused withdrawal, the escape hatch, the recovery path, and the
+return to normal operation.
 
 ## Authority model
 
@@ -50,5 +52,5 @@ From the repository root:
 
 ```sh
 DAML_PACKAGE=examples/pausable/vault dpm build
-DAML_PACKAGE=examples/pausable/vault dpm test
+DAML_PACKAGE=examples/pausable/vault-test dpm test --all
 ```
