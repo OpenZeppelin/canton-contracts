@@ -3,6 +3,8 @@
 module OpenZeppelin.Examples.Pausable.RegistryTest where
 
 import DA.Assert ((===))
+import DA.Fail (FailureStatus)
+import DA.Stack (HasCallStack)
 import DA.Time (addRelTime, hours)
 import Daml.Script
 
@@ -37,6 +39,15 @@ setup = do
 readOf : ContractId Registry -> ContractId Pausable.Pausable
 readOf = toInterfaceContractId
 
+-- | Run a submission and require the ledger to reject it with exactly this
+-- status. Any other outcome fails with what arrived instead.
+submitMustFailWith
+  : (HasCallStack, Show a)
+  => FailureStatus -> Script (Either SubmitError a) -> Script ()
+submitMustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  other -> fail ("expected " <> show expected <> ", got " <> show other)
+
 pauseWithReason : Fixture -> Script (ContractId Registry)
 pauseWithReason Fixture{..} = submit admin do
   exerciseCmd registry Registry_Pause with
@@ -57,9 +68,8 @@ test_registerAddsEntry = script do
 test_registerRefusesEmptyEntry : Script ()
 test_registerRefusesEmptyEntry = script do
   Fixture{..} <- setup
-  Left (FailureStatusError e) <- trySubmit admin do
+  submitMustFailWith eEmptyEntry $ trySubmit admin do
     exerciseCmd registry Registry_Register with entry = ""
-  e === eEmptyEntry
 
 -- | One transaction sets the flag and the metadata that reports it.
 test_pauseRecordsReasonAndDeadline : Script ()
@@ -85,9 +95,8 @@ test_registerRefusedWhilePaused : Script ()
 test_registerRefusedWhilePaused = script do
   f@Fixture{..} <- setup
   registry <- pauseWithReason f
-  Left (FailureStatusError e) <- trySubmit admin do
+  submitMustFailWith Pausable.eEnforcedPause $ trySubmit admin do
     exerciseCmd registry Registry_Register with entry = "second"
-  e === Pausable.eEnforcedPause
   Some r <- queryContractId admin registry
   r.entries === ["first"]
 

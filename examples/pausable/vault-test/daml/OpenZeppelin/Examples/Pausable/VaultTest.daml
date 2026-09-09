@@ -3,6 +3,8 @@
 module OpenZeppelin.Examples.Pausable.VaultTest where
 
 import DA.Assert ((===))
+import DA.Fail (FailureStatus)
+import DA.Stack (HasCallStack)
 import Daml.Script
 
 import qualified OpenZeppelin.Api.PausableV1 as Pausable
@@ -25,6 +27,15 @@ setup = do
 readOf : ContractId Vault -> ContractId Pausable.Pausable
 readOf = toInterfaceContractId
 
+-- | Run a submission and require the ledger to reject it with exactly this
+-- status. Any other outcome fails with what arrived instead.
+submitMustFailWith
+  : (HasCallStack, Show a)
+  => FailureStatus -> Script (Either SubmitError a) -> Script ()
+submitMustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  other -> fail ("expected " <> show expected <> ", got " <> show other)
+
 -- | Unpaused, the gated choice runs.
 test_withdrawRunsWhileUnpaused : Script ()
 test_withdrawRunsWhileUnpaused = script do
@@ -38,17 +49,15 @@ test_withdrawRunsWhileUnpaused = script do
 test_withdrawRefusesNonPositiveAmount : Script ()
 test_withdrawRefusesNonPositiveAmount = script do
   Fixture{..} <- setup
-  Left (FailureStatusError e) <- trySubmit owner do
+  submitMustFailWith eNonPositiveAmount $ trySubmit owner do
     exerciseCmd vault Vault_Withdraw with amount = -10.0
-  e === eNonPositiveAmount
 
 -- | An amount above the balance is refused by the vault's own check.
 test_withdrawRefusesAmountAboveBalance : Script ()
 test_withdrawRefusesAmountAboveBalance = script do
   Fixture{..} <- setup
-  Left (FailureStatusError e) <- trySubmit owner do
+  submitMustFailWith eInsufficientBalance $ trySubmit owner do
     exerciseCmd vault Vault_Withdraw with amount = 100.5
-  e === eInsufficientBalance
 
 -- | Off-ledger tooling reads the flag through the interface view, whatever
 -- template implements it. The pure form agrees with the view.
@@ -66,9 +75,8 @@ test_withdrawRefusedWhilePaused : Script ()
 test_withdrawRefusedWhilePaused = script do
   Fixture{..} <- setup
   vault <- submit admin do exerciseCmd vault Vault_Pause
-  Left (FailureStatusError e) <- trySubmit owner do
+  submitMustFailWith Pausable.eEnforcedPause $ trySubmit owner do
     exerciseCmd vault Vault_Withdraw with amount = 10.0
-  e === Pausable.eEnforcedPause
 
 -- | The escape hatch carries no guard, so it stays open: the owner takes the
 -- whole balance out while the vault is paused.
@@ -88,9 +96,8 @@ test_pauseWhenPausedFails : Script ()
 test_pauseWhenPausedFails = script do
   Fixture{..} <- setup
   vault <- submit admin do exerciseCmd vault Vault_Pause
-  Left (FailureStatusError e) <- trySubmit admin do
+  submitMustFailWith Pausable.eEnforcedPause $ trySubmit admin do
     exerciseCmd vault Vault_Pause
-  e === Pausable.eEnforcedPause
 
 -- | The recovery path runs only while paused, and moves the balance to the
 -- admin.
@@ -109,9 +116,8 @@ test_emergencyDrainRunsWhilePaused = script do
 test_emergencyDrainRefusedWhileUnpaused : Script ()
 test_emergencyDrainRefusedWhileUnpaused = script do
   Fixture{..} <- setup
-  Left (FailureStatusError e) <- trySubmit admin do
+  submitMustFailWith Pausable.eExpectedPause $ trySubmit admin do
     exerciseCmd vault Vault_EmergencyDrain
-  e === Pausable.eExpectedPause
 
 -- | Unpausing returns the vault to normal operation.
 test_unpauseRestoresOperation : Script ()
@@ -129,6 +135,5 @@ test_unpauseRestoresOperation = script do
 test_unpauseWhenUnpausedFails : Script ()
 test_unpauseWhenUnpausedFails = script do
   Fixture{..} <- setup
-  Left (FailureStatusError e) <- trySubmit admin do
+  submitMustFailWith Pausable.eExpectedPause $ trySubmit admin do
     exerciseCmd vault Vault_Unpause
-  e === Pausable.eExpectedPause
