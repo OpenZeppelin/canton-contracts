@@ -42,7 +42,7 @@ test_viewReadableByObserver = script do
   v === PausableView with paused = False
 
 -- | The flag is exactly as visible as the implementing contract: a party that
--- is not a stakeholder of the vault reads nothing through the interface. INV-8.
+-- is not a stakeholder of the vault reads nothing through the interface.
 test_viewHiddenFromStranger : Script ()
 test_viewHiddenFromStranger = script do
   Fixture{..} <- setup
@@ -111,7 +111,7 @@ test_pauseUnpauseRoundTrip = script do
   v2.balance === 100
 
 -- | The consuming flip choice archives the predecessor, so the flip leaves
--- exactly one contract behind and the stale id is gone. INV-11.
+-- exactly one contract behind and the stale id is gone.
 test_flipArchivesThePredecessor : Script ()
 test_flipArchivesThePredecessor = script do
   Fixture{..} <- setup
@@ -216,7 +216,7 @@ test_implementerIgnoringTheFlagFails = script do
   Left e <- trySubmit admin do exerciseCmd b BrokenIgnoresFlag_Pause
   assertMsg "expected FlagNotApplied" (isFailureWith eFlagNotApplied e)
 
--- | The same implementer is refused in the unpause direction. INV-5.
+-- | The same implementer is refused in the unpause direction.
 test_implementerIgnoringTheFlagFailsOnUnpause : Script ()
 test_implementerIgnoringTheFlagFailsOnUnpause = script do
   admin <- allocateParty "admin"
@@ -234,7 +234,7 @@ test_implementerReturningAnotherTemplateFails = script do
   assertMsg "expected ImplementerTypeMismatch"
     (isFailureWith eImplementerTypeMismatch e)
 
--- | The same implementer is refused in the unpause direction. INV-6.
+-- | The same implementer is refused in the unpause direction.
 test_implementerReturningAnotherTemplateFailsOnUnpause : Script ()
 test_implementerReturningAnotherTemplateFailsOnUnpause = script do
   admin <- allocateParty "admin"
