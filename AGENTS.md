@@ -28,9 +28,11 @@ workspace files exist.
 
 - One independently released unit equals one package and one DAR.
 - Package names use `openzeppelin-<component>-vN`; module names use
-  `OpenZeppelin.<Component>VN`.
+  `OpenZeppelin.<Component>VN`. API packages use
+  `openzeppelin-api-<component>-vN` and place their modules under
+  `OpenZeppelin.Api.<Component>VN`.
 - A component that defines Daml interfaces or exceptions uses a frozen
-  `-api-vN` package containing no templates. Template-only components do not get
+  `openzeppelin-api-<component>-vN` package containing no templates. Template-only components do not get
   empty API packages.
 - API packages may depend only on API packages. Implementation packages must not
   depend on other implementation packages without an accepted architecture
@@ -69,16 +71,22 @@ dpm build --all
 scripts/check.sh
 DAML_PACKAGE=experiments/access/access-control-v1 dpm damlc lint
 DAML_PACKAGE=experiments/access/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/security/pausable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/pausable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm damlc lint
+DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc lint
+DAML_PACKAGE=test/api-pausable-v1 dpm damlc lint
+DAML_PACKAGE=examples/pausable/vault dpm damlc lint
+DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
+DAML_PACKAGE=examples/pausable/registry dpm damlc lint
+DAML_PACKAGE=examples/pausable/registry-test dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/pausable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/api-pausable-v1 dpm test --all --show-coverage
+DAML_PACKAGE=examples/pausable/vault-test dpm test --all
+DAML_PACKAGE=examples/pausable/registry-test dpm test --all
 scripts/check-sandbox.sh
 ```
 
@@ -114,6 +122,7 @@ caveats.
 packages and their public APIs. Exclude repository organization, CI, tests,
 tooling, and documentation-only changes.
 
-The CI-only `scripts/check-lint.sh` and `scripts/check-coverage.sh` discover and
-validate workspace packages. Public and contributor documentation shows native
-DPM commands instead of presenting those helpers as the development interface.
+The CI-only `scripts/check-lint.sh`, `scripts/check-coverage.sh`, and
+`scripts/check-examples.sh` discover and validate workspace packages. Public
+and contributor documentation shows native DPM commands instead of presenting
+those helpers as the development interface.

@@ -9,6 +9,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## Unreleased
 
+### `openzeppelin-api-pausable-v1`
+
+#### Added
+
+- Added the frozen interface package `openzeppelin-api-pausable-v1` with public
+  module `OpenZeppelin.Api.PausableV1`.
+
 ### `openzeppelin-tokenCIP112-v1`
 
 #### Added
@@ -31,13 +38,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   without changing contract behavior.
 
 ### `openzeppelin-ownable-v1`
-
-#### Changed (Breaking)
-
-- Renamed the pre-release package and public module into the `v1` lineage
-  without changing contract behavior.
-
-### `openzeppelin-pausable-v1`
 
 #### Changed (Breaking)
 

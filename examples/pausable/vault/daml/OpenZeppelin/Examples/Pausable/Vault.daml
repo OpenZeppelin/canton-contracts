@@ -1,0 +1,105 @@
+-- | Minimal adoption of `OpenZeppelin.Api.PausableV1`.
+--
+-- A vault holding a balance for one owner, with an emergency stop that the
+-- admin controls. Adopting `Pausable` costs one template field, a three-line
+-- `interface instance`, one `whenNotPaused` call per gated choice, and the two
+-- choices that name the pause authority.
+--
+-- Which choices are gated is a decision per choice, which is why the escape
+-- hatch and the paused-only recovery path both come at no extra cost.
+module OpenZeppelin.Examples.Pausable.Vault where
+
+import DA.Action (unless)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import qualified DA.TextMap as TextMap
+import qualified OpenZeppelin.Api.PausableV1 as Pausable
+
+-- | What the vault pays out. The owner receives it on redemption, and the admin
+-- receives it on an emergency drain.
+template Payout
+  with
+    payer : Party
+    recipient : Party
+    amount : Decimal
+  where
+    signatory payer
+    observer recipient
+    ensure amount >= 0.0
+
+template Vault
+  with
+    admin : Party
+    owner : Party
+    balance : Decimal
+    paused : Bool
+  where
+    signatory admin, owner
+    ensure balance >= 0.0
+
+    -- The whole adoption cost. `paused` is a field of the contract that the
+    -- gated choices already exercise, so no separate switch contract exists for
+    -- a caller to substitute or omit.
+    interface instance Pausable.Pausable for Vault where
+      view = Pausable.PausableView with paused
+      setPaused b = toInterface (this with paused = b)
+
+    -- A gated operation. The guard is one line, and it reads the contract being
+    -- exercised rather than a contract id the caller supplies.
+    choice Vault_Withdraw : ContractId Vault
+      with
+        amount : Decimal
+      controller owner
+      do
+        Pausable.whenNotPaused this
+        unless (amount > 0.0) (failWithStatus eNonPositiveAmount)
+        unless (amount <= balance) (failWithStatus eInsufficientBalance)
+        create this with balance = balance - amount
+
+    -- An escape hatch: the owner can always redeem the whole balance, paused or
+    -- not, so a pause does not trap the owner's funds. No guard, by decision.
+    choice Vault_Redeem : (ContractId Vault, ContractId Payout)
+      controller owner
+      do
+        payout <- create Payout with payer = admin, recipient = owner, amount = balance
+        vault <- create this with balance = 0.0
+        pure (vault, payout)
+
+    -- The mirror image: a recovery path that runs only during an incident. The
+    -- admin moves the balance out of the vault to itself.
+    choice Vault_EmergencyDrain : (ContractId Vault, ContractId Payout)
+      controller admin
+      do
+        Pausable.whenPaused this
+        payout <- create Payout with payer = admin, recipient = admin, amount = balance
+        vault <- create this with balance = 0.0
+        pure (vault, payout)
+
+    -- The pause authority. The library supplies the guard and the flip; this
+    -- choice supplies the answer to "who may flip the switch". `pause`
+    -- returns the flipped value and archives nothing, so the consuming choice
+    -- archives the predecessor and creates the successor.
+    choice Vault_Pause : ContractId Vault
+      controller admin
+      do
+        create =<< Pausable.pause this
+
+    choice Vault_Unpause : ContractId Vault
+      controller admin
+      do
+        create =<< Pausable.unpause this
+
+-- | Raised when a withdrawal names a non-positive amount.
+eNonPositiveAmount : FailureStatus
+eNonPositiveAmount = FailureStatus with
+  errorId = "myapp.com/vault-non-positive-amount"
+  category = InvalidIndependentOfSystemState
+  message = "Vault: amount must be positive"
+  meta = TextMap.empty
+
+-- | Raised when a withdrawal names more than the balance.
+eInsufficientBalance : FailureStatus
+eInsufficientBalance = FailureStatus with
+  errorId = "myapp.com/vault-insufficient-balance"
+  category = InvalidGivenCurrentSystemStateOther
+  message = "Vault: amount exceeds balance"
+  meta = TextMap.empty

@@ -1,0 +1,320 @@
+-- | Tests for OpenZeppelin.Api.PausableV1.
+module OpenZeppelin.Api.PausableV1Test where
+
+import DA.Assert ((===))
+import DA.Fail (FailureStatus)
+import DA.Stack (HasCallStack)
+import Daml.Script
+
+import OpenZeppelin.Api.PausableV1
+import OpenZeppelin.Api.PausableV1TestFixtures
+
+data Fixture = Fixture with
+  admin : Party
+  holder : Party
+  vault : ContractId Vault
+
+setup : Script Fixture
+setup = do
+  admin <- allocateParty "admin"
+  holder <- allocateParty "holder"
+  vault <- submit admin do
+    createCmd Vault with admin, holder, paused = False, balance = 100
+  pure Fixture with ..
+
+readOf : ContractId Vault -> ContractId Pausable
+readOf = toInterfaceContractId
+
+-- | Run a submission and require the ledger to reject it with exactly this
+-- status. Any other outcome fails with what arrived instead.
+submitMustFailWith
+  : (HasCallStack, Show a)
+  => FailureStatus -> Script (Either SubmitError a) -> Script ()
+submitMustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  other -> fail ("expected " <> show expected <> ", got " <> show other)
+
+-- | Run a submission and require the ledger to reject it for missing
+-- authority, before any choice body runs. Any other outcome fails with what
+-- arrived instead.
+submitMustFailAuthorization
+  : (HasCallStack, Show a) => Script (Either SubmitError a) -> Script ()
+submitMustFailAuthorization action = action >>= \case
+  Left (AuthorizationError _) -> pure ()
+  other -> fail ("expected an authorization failure, got " <> show other)
+
+-- The read side
+-------------------------------------------------------
+
+-- | The view is readable off-ledger by a non-pauser who can see the contract.
+-- No choice is needed, and none exists: the interface declares none.
+test_viewReadableByObserver : Script ()
+test_viewReadableByObserver = script do
+  Fixture{..} <- setup
+  Some v <- queryInterfaceContractId holder (readOf vault)
+  v === PausableView with paused = False
+
+-- | The flag is exactly as visible as the implementing contract: a party that
+-- is not a stakeholder of the vault reads nothing through the interface.
+test_viewHiddenFromStranger : Script ()
+test_viewHiddenFromStranger = script do
+  Fixture{..} <- setup
+  stranger <- allocateParty "stranger"
+  hidden <- queryInterfaceContractId stranger (readOf vault)
+  hidden === None
+
+-- | The pure form agrees with the view.
+test_isPausedMatchesView : Script ()
+test_isPausedMatchesView = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  Some v <- queryContractId admin paused
+  isPaused v === True
+  Some pv <- queryInterfaceContractId admin (readOf paused)
+  pv.paused === True
+
+-- | The `setPaused` implementer method is pure: it yields a flipped value,
+-- preserves every other field, and touches no ledger state.
+test_setPausedIsPure : Script ()
+test_setPausedIsPure = script do
+  admin <- allocateParty "admin"
+  holder <- allocateParty "holder"
+  let v = Vault with admin, holder, paused = False, balance = 100
+  Some flipped <- pure (fromInterface @Vault (setPaused (toInterface @Pausable v) True))
+  isPaused flipped === True
+  flipped.balance === 100
+  isPaused v === False
+
+-- The guards
+-------------------------------------------------------
+
+-- | whenNotPaused lets a gated choice run, then blocks it.
+test_whenNotPausedGuardsOperation : Script ()
+test_whenNotPausedGuardsOperation = script do
+  Fixture{..} <- setup
+  vault' <- submit holder do exerciseCmd vault Vault_Withdraw with amount = 10
+  paused <- submit admin do exerciseCmd vault' Vault_Pause
+  submitMustFailWith eEnforcedPause $ trySubmit holder do
+    exerciseCmd paused Vault_Withdraw with amount = 10
+
+-- | whenPaused is the mirror: the recovery path runs only during an incident.
+test_whenPausedGuardsRecovery : Script ()
+test_whenPausedGuardsRecovery = script do
+  Fixture{..} <- setup
+  submitMustFailWith eExpectedPause $ trySubmit admin do
+    exerciseCmd vault Vault_EmergencyDrain
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  drained <- submit admin do exerciseCmd paused Vault_EmergencyDrain
+  Some v <- queryContractId admin drained
+  v.balance === 0
+
+-- pause and unpause, called from the consumer's own choice
+-------------------------------------------------------
+
+-- | Pause, then unpause. The view tracks the flag, and `setPaused` leaves
+-- every other field of the template untouched.
+test_pauseUnpauseRoundTrip : Script ()
+test_pauseUnpauseRoundTrip = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  Some v1 <- queryContractId admin paused
+  isPaused v1 === True
+  unpaused <- submit admin do exerciseCmd paused Vault_Unpause
+  Some v2 <- queryContractId admin unpaused
+  isPaused v2 === False
+  v2.balance === 100
+
+-- | The consuming flip choice archives the predecessor, so the flip leaves
+-- exactly one contract behind and the stale id is gone.
+test_flipArchivesThePredecessor : Script ()
+test_flipArchivesThePredecessor = script do
+  Fixture{..} <- setup
+  _ <- submit admin do exerciseCmd vault Vault_Pause
+  stale <- queryContractId admin vault
+  stale === None
+
+-- | The consuming-choice obligation is not enforced. A nonconsuming flip
+-- choice that does not archive `self` leaves the unpaused predecessor active
+-- beside the paused successor, and nothing fails. This asserts a defect in
+-- consumer code, not a property of the library: the obligation is not
+-- checkable, so this test is its only executable statement.
+test_nonconsumingFlipLeavesTwoContracts : Script ()
+test_nonconsumingFlipLeavesTwoContracts = script do
+  admin <- allocateParty "admin"
+  leaky <- submit admin do createCmd LeakyVault with admin, paused = False
+  successor <- submit admin do exerciseCmd leaky LeakyVault_Pause
+  Some original <- queryContractId admin leaky
+  isPaused original === False
+  Some flipped <- queryContractId admin successor
+  isPaused flipped === True
+
+-- | Pausing while paused fails, matching `_pause`'s `whenNotPaused`.
+test_pauseWhenPausedFails : Script ()
+test_pauseWhenPausedFails = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  submitMustFailWith eEnforcedPause $ trySubmit admin do
+    exerciseCmd paused Vault_Pause
+
+-- | Unpausing while unpaused fails, matching `_unpause`'s `whenPaused`.
+test_unpauseWhenUnpausedFails : Script ()
+test_unpauseWhenUnpausedFails = script do
+  Fixture{..} <- setup
+  submitMustFailWith eExpectedPause $ trySubmit admin do
+    exerciseCmd vault Vault_Unpause
+
+-- | The interface names no pause authority, so the consumer's controller is the
+-- only gate. A party that is not it cannot flip the flag.
+test_onlyTheConsumersControllerMayPause : Script ()
+test_onlyTheConsumersControllerMayPause = script do
+  Fixture{..} <- setup
+  submitMustFailAuthorization $ trySubmit holder do
+    exerciseCmd vault Vault_Pause
+
+-- | The two guard failures are distinct, as `EnforcedPause` and
+-- `ExpectedPause` are.
+test_pauseErrorsAreDistinct : Script ()
+test_pauseErrorsAreDistinct = script do
+  Fixture{..} <- setup
+  submitMustFailWith eExpectedPause $ trySubmit admin do
+    exerciseCmd vault Vault_Unpause
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  submitMustFailWith eEnforcedPause $ trySubmit admin do
+    exerciseCmd paused Vault_Pause
+
+-- | The protected contract is destroyed only by its signatory.
+test_archiveIsSignatoryOnly : Script ()
+test_archiveIsSignatoryOnly = script do
+  Fixture{..} <- setup
+  submitMustFailAuthorization $ trySubmit holder do archiveCmd vault
+  submit admin do archiveCmd vault
+  res <- queryContractId admin vault
+  res === None
+
+-- | `pause` is callable on an interface value, but it yields a value and there
+-- is no way to create from an interface value. A party holding a
+-- `ContractId Pausable` can compute a paused value and change nothing: the
+-- flag on the ledger is untouched.
+test_flipOnInterfaceValueChangesNothing : Script ()
+test_flipOnInterfaceValueChangesNothing = script do
+  Fixture{..} <- setup
+  rogue <- submit holder do createCmd Rogue with caller = holder
+  computed <- submit holder do
+    exerciseCmd rogue Rogue_TryPause with target = readOf vault
+  computed === True
+  Some v <- queryContractId admin vault
+  isPaused v === False
+
+-- Sibling fields, set in the same transaction as the flip
+-------------------------------------------------------
+
+-- | `pause` returns the flipped value without creating it, so the
+-- consumer sets its own fields on it and creates once. A registry serves
+-- CIP-0112's `pauseInfo` from one on-ledger contract without those fields
+-- being frozen into the view.
+test_pauseSetsSiblingFields : Script ()
+test_pauseSetsSiblingFields = script do
+  admin <- allocateParty "admin"
+  reg <- submit admin do
+    createCmd Registry with admin, paused = False, pauseReason = None
+  paused <- submit admin do
+    exerciseCmd reg Registry_Pause with reason = Some "sanctions review"
+  Some r <- queryContractId admin paused
+  isPaused r === True
+  r.pauseReason === Some "sanctions review"
+
+-- | `unpause` clears them on the way out.
+test_unpauseClearsSiblingFields : Script ()
+test_unpauseClearsSiblingFields = script do
+  admin <- allocateParty "admin"
+  reg <- submit admin do
+    createCmd Registry with admin, paused = False, pauseReason = None
+  paused <- submit admin do
+    exerciseCmd reg Registry_Pause with reason = Some "sanctions review"
+  unpaused <- submit admin do exerciseCmd paused Registry_Unpause
+  Some r <- queryContractId admin unpaused
+  isPaused r === False
+  r.pauseReason === None
+
+-- The flag-applied check
+-------------------------------------------------------
+
+-- | An implementation that ignores `setPaused`'s argument is refused. This
+-- is the fail-open wiring mistake the check exists to catch.
+test_implementerIgnoringTheFlagFails : Script ()
+test_implementerIgnoringTheFlagFails = script do
+  admin <- allocateParty "admin"
+  b <- submit admin do createCmd BrokenIgnoresFlag with admin, paused = False
+  submitMustFailWith eFlagNotApplied $ trySubmit admin do
+    exerciseCmd b BrokenIgnoresFlag_Pause
+
+-- | The same implementer is refused in the unpause direction.
+test_implementerIgnoringTheFlagFailsOnUnpause : Script ()
+test_implementerIgnoringTheFlagFailsOnUnpause = script do
+  admin <- allocateParty "admin"
+  b <- submit admin do createCmd BrokenIgnoresFlag with admin, paused = True
+  submitMustFailWith eFlagNotApplied $ trySubmit admin do
+    exerciseCmd b BrokenIgnoresFlag_Unpause
+
+-- | An implementation that returns a different implementer type checks, and is
+-- refused at runtime.
+test_implementerReturningAnotherTemplateFails : Script ()
+test_implementerReturningAnotherTemplateFails = script do
+  admin <- allocateParty "admin"
+  b <- submit admin do createCmd BrokenWrongTemplate with admin, paused = False
+  submitMustFailWith eImplementerTypeMismatch $ trySubmit admin do
+    exerciseCmd b BrokenWrongTemplate_Pause
+
+-- | The same implementer is refused in the unpause direction.
+test_implementerReturningAnotherTemplateFailsOnUnpause : Script ()
+test_implementerReturningAnotherTemplateFailsOnUnpause = script do
+  admin <- allocateParty "admin"
+  b <- submit admin do createCmd BrokenWrongTemplate with admin, paused = True
+  submitMustFailWith eImplementerTypeMismatch $ trySubmit admin do
+    exerciseCmd b BrokenWrongTemplate_Unpause
+
+-- The credential case: the consumer's own authority
+-------------------------------------------------------
+
+-- | A template whose pause authority is credential-based gets the guards, the
+-- flip, and the uniform read, and it authorizes the flip with a fetch that no
+-- controller expression could perform.
+test_customAuthorityGatesTheFlip : Script ()
+test_customAuthorityGatesTheFlip = script do
+  admin <- allocateParty "admin"
+  rogueAdmin <- allocateParty "rogueAdmin"
+  holder <- allocateParty "holder"
+  guardian <- allocateParty "guardian"
+  stranger <- allocateParty "stranger"
+
+  rv <- submit admin do createCmd RoleVault with admin, holder, paused = False
+  cred <- submit admin do createCmd PauseCredential with admin, account = guardian
+  rogueCred <- submit rogueAdmin do
+    createCmd PauseCredential with admin = rogueAdmin, account = stranger
+
+  -- the operation runs while unpaused
+  rv1 <- submit holder do exerciseCmd rv RoleVault_Transfer
+  Some d <- queryDisclosure @RoleVault admin rv1
+
+  -- a credential from the wrong issuer does not authorize the pause
+  submitMustFailWith eWrongCredentialIssuer $
+    trySubmit (actAs stranger <> disclose d) do
+      exerciseCmd rv1 RoleVault_Pause with caller = stranger, credCid = rogueCred
+
+  -- nor does someone else's credential from the right issuer
+  Some credDisclosure <- queryDisclosure @PauseCredential admin cred
+  submitMustFailWith eCredentialNotCallers $
+    trySubmit (actAs stranger <> disclose d <> disclose credDisclosure) do
+      exerciseCmd rv1 RoleVault_Pause with caller = stranger, credCid = cred
+
+  -- the real credential holder can pause
+  paused <- submit (actAs guardian <> disclose d) do
+    exerciseCmd rv1 RoleVault_Pause with caller = guardian, credCid = cred
+
+  -- and the shared guard now blocks the operation
+  submitMustFailWith eEnforcedPause $ trySubmit holder do
+    exerciseCmd paused RoleVault_Transfer
+
+  -- the uniform read reports it
+  Some pv <- queryInterfaceContractId holder (toInterfaceContractId @Pausable paused)
+  pv.paused === True

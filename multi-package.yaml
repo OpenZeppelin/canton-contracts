@@ -5,10 +5,13 @@ sdk-version: 3.4.11
 packages:
   - experiments/access/access-control-v1
   - experiments/access/ownable-v1
-  - experiments/security/pausable-v1
   - experiments/token/tokenCIP112-v1
   - experiments/test/access-control-v1
   - experiments/test/ownable-v1
-  - experiments/test/pausable-v1
   - experiments/test/tokenCIP112-v1
-  - test/placeholder
+  - packages/security/api-pausable-v1
+  - test/api-pausable-v1
+  - examples/pausable/vault
+  - examples/pausable/vault-test
+  - examples/pausable/registry
+  - examples/pausable/registry-test

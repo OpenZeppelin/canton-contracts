@@ -44,7 +44,8 @@ for file in \
 	SECURITY.md AGENTS.md LICENSE multi-package.yaml dars/README.md \
 	dars/manifest.yaml audits/README.md examples/README.md \
 	experiments/README.md \
-	scripts/check-coverage.sh scripts/check-lint.sh scripts/check-sandbox.sh; do
+	scripts/check-coverage.sh scripts/check-lint.sh scripts/check-examples.sh \
+	scripts/check-sandbox.sh; do
 	require_file "$file"
 done
 
@@ -111,7 +112,7 @@ while IFS= read -r manifest; do
 		fail "production package ${manifest#"$ROOT/"} depends on daml-script"
 	fi
 
-	if [[ "$package_name" == *-api-v* ]]; then
+	if [[ "$package_name" == openzeppelin-api-* ]]; then
 		if grep -R -n -E --include='*.daml' '^[[:space:]]*template[[:space:]]+' "$package_dir/daml"; then
 			fail "API package ${manifest#"$ROOT/"} defines templates"
 		fi
@@ -120,7 +121,7 @@ while IFS= read -r manifest; do
 		# allowed; only new interface or exception definitions are not.
 		if grep -R -n -E --include='*.daml' '^[[:space:]]*(interface|exception)[[:space:]]+' "$package_dir/daml" |
 			grep -v -E 'interface[[:space:]]+instance[[:space:]]'; then
-			fail "implementation package ${manifest#"$ROOT/"} defines interfaces or exceptions; create a frozen -api-vN package"
+			fail "implementation package ${manifest#"$ROOT/"} defines interfaces or exceptions; create a frozen openzeppelin-api-<component>-vN package"
 		fi
 	fi
 
