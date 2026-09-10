@@ -33,7 +33,7 @@ package`; test fixtures appear under `Modules internal to this package`. Daml
 reports template and choice coverage rather than source-line or branch coverage.
 CI validates every production package and requires each production template to
 be created and each production choice to be exercised. For an interface-only
-package such as `packages/security/pausable-api-v1`, that report shows zero
+package such as `packages/security/api-pausable-v1`, that report shows zero
 production templates and zero production choices, so it proves nothing about
 the package. The isolated test package is the whole evidence for such a
 package, and its fixtures appear under `Modules internal to this package`.
@@ -44,9 +44,9 @@ Every public module carries doc comments that `damlc docs` renders. Generate the
 reference for a package from the repository root, for example:
 
 ```sh
-DAML_PACKAGE=packages/security/pausable-api-v1 dpm damlc docs \
-  --output build/docs/pausable-api-v1 --format md --doc-ext md \
-  packages/security/pausable-api-v1/daml/OpenZeppelin/Api/PausableV1.daml
+DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc docs \
+  --output build/docs/api-pausable-v1 --format md --doc-ext md \
+  packages/security/api-pausable-v1/daml/OpenZeppelin/Api/PausableV1.daml
 ```
 
 Run it after changing a doc comment and read the output. The tool rejects a
@@ -65,8 +65,8 @@ upstream standards belong elsewhere until their promotion criteria are met.
 - Select one permanent component/SCU lineage per production package.
 - Place it under the most useful navigation category without putting the
   category in its package name or module namespace.
-- Use a frozen `-api-vN` package only when the component defines Daml interfaces
-  or exceptions.
+- Use a frozen `openzeppelin-api-<component>-vN` package only when the component
+  defines Daml interfaces or exceptions.
 - Keep implementation packages independent of other implementation packages.
 - Add an isolated package under `test/<component>-vN`, name it with a `-test`
   suffix, and give it no production release path.

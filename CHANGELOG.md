@@ -9,11 +9,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## Unreleased
 
-### `openzeppelin-pausable-api-v1`
+### `openzeppelin-api-pausable-v1`
 
 #### Added
 
-- Added the frozen interface package `openzeppelin-pausable-api-v1` with public
+- Added the frozen interface package `openzeppelin-api-pausable-v1` with public
   module `OpenZeppelin.Api.PausableV1`.
 
 ### `openzeppelin-tokenCIP112-v1`

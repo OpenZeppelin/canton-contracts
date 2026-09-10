@@ -21,7 +21,7 @@ builds and is tested in CI, but it has no release and no audit.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|
-| [Pausable](packages/security/pausable-api-v1/) | `openzeppelin-pausable-api-v1` | `OpenZeppelin.Api.PausableV1` | Pre-release; unaudited |
+| [Pausable](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` | Pre-release; unaudited |
 
 Two further components are early-stage candidates under
 [`experiments/`](experiments/). They will be redesigned before they move into
@@ -63,14 +63,14 @@ dpm build --all
 To build one component independently:
 
 ```sh
-cd packages/security/pausable-api-v1
+cd packages/security/api-pausable-v1
 dpm build
 ```
 
 The resulting DAR is written to:
 
 ```text
-packages/security/pausable-api-v1/.daml/dist/openzeppelin-pausable-api-v1-0.1.0.dar
+packages/security/api-pausable-v1/.daml/dist/openzeppelin-api-pausable-v1-0.1.0.dar
 ```
 
 ## Consume a local build
@@ -83,7 +83,7 @@ dependencies:
   - daml-prim
   - daml-stdlib
 data-dependencies:
-  - ../canton-contracts/packages/security/pausable-api-v1/.daml/dist/openzeppelin-pausable-api-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/api-pausable-v1/.daml/dist/openzeppelin-api-pausable-v1-0.1.0.dar
 ```
 
 ```daml

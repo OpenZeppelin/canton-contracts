@@ -1,6 +1,6 @@
 # Pausable Registry Example
 
-Adoption of `openzeppelin-pausable-api-v1` by a registry that serves CIP-0112
+Adoption of `openzeppelin-api-pausable-v1` by a registry that serves CIP-0112
 metadata. The pause records why it is in force, in the same transaction as the
 flip.
 
@@ -9,7 +9,7 @@ flip.
 | Package | `pausable-registry-example` |
 | Module | `OpenZeppelin.Examples.Pausable.Registry` |
 | Tests | `OpenZeppelin.Examples.Pausable.RegistryTest` in [`registry-test`](../registry-test) |
-| Consumes | `openzeppelin-pausable-api-v1` `0.1.0` |
+| Consumes | `openzeppelin-api-pausable-v1` `0.1.0` |
 
 ## What it shows
 

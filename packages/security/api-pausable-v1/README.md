@@ -4,7 +4,7 @@ A frozen Daml interface that gives a template an emergency-stop switch.
 
 | Field | Value |
 |---|---|
-| Package | `openzeppelin-pausable-api-v1` |
+| Package | `openzeppelin-api-pausable-v1` |
 | Public module | `OpenZeppelin.Api.PausableV1` |
 | Version | `0.1.0` |
 | Status | Pre-release; unaudited |
@@ -244,8 +244,8 @@ package could upload only without `Pausable`, which is the one thing it
 exists to provide, so no later version is published. The guards, the flips,
 and the failure statuses ship in the same DAR and run from the same package
 ID, so they are frozen with the interface. Any change, including a bug fix in
-`pause`, ships as a sibling `openzeppelin-pausable-api-v2` package with module
-`OpenZeppelin.PausableV2`, and the two coexist.
+`pause`, ships as a sibling `openzeppelin-api-pausable-v2` package with module
+`OpenZeppelin.Api.PausableV2`, and the two coexist.
 
 For a consumer this means:
 
@@ -274,14 +274,14 @@ release is the version this package keeps for life. See
 From the repository root:
 
 ```sh
-DAML_PACKAGE=packages/security/pausable-api-v1 dpm build
+DAML_PACKAGE=packages/security/api-pausable-v1 dpm build
 ```
 
 ## Consume a local build
 
 ```yaml
 data-dependencies:
-  - ../canton-contracts/packages/security/pausable-api-v1/.daml/dist/openzeppelin-pausable-api-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/api-pausable-v1/.daml/dist/openzeppelin-api-pausable-v1-0.1.0.dar
 ```
 
 ```daml

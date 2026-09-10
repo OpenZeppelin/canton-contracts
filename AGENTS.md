@@ -28,10 +28,11 @@ workspace files exist.
 
 - One independently released unit equals one package and one DAR.
 - Package names use `openzeppelin-<component>-vN`; module names use
-  `OpenZeppelin.<Component>VN`. API packages place their modules under
+  `OpenZeppelin.<Component>VN`. API packages use
+  `openzeppelin-api-<component>-vN` and place their modules under
   `OpenZeppelin.Api.<Component>VN`.
 - A component that defines Daml interfaces or exceptions uses a frozen
-  `-api-vN` package containing no templates. Template-only components do not get
+  `openzeppelin-api-<component>-vN` package containing no templates. Template-only components do not get
   empty API packages.
 - API packages may depend only on API packages. Implementation packages must not
   depend on other implementation packages without an accepted architecture
@@ -74,8 +75,8 @@ DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm damlc lint
-DAML_PACKAGE=packages/security/pausable-api-v1 dpm damlc lint
-DAML_PACKAGE=test/pausable-api-v1 dpm damlc lint
+DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc lint
+DAML_PACKAGE=test/api-pausable-v1 dpm damlc lint
 DAML_PACKAGE=examples/pausable/vault dpm damlc lint
 DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
 DAML_PACKAGE=examples/pausable/registry dpm damlc lint
@@ -83,7 +84,7 @@ DAML_PACKAGE=examples/pausable/registry-test dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm test --all --show-coverage
-DAML_PACKAGE=test/pausable-api-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/api-pausable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=examples/pausable/vault-test dpm test --all
 DAML_PACKAGE=examples/pausable/registry-test dpm test --all
 scripts/check-sandbox.sh

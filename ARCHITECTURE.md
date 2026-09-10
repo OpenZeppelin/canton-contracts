@@ -54,11 +54,11 @@ model: the pause flag is a field of the consumer's template, because a guard
 that reads the contract being exercised is sound and a guard that fetches a
 separate switch contract is not, since a caller can substitute or omit a
 contract it supplies. Nothing therefore remains for an `openzeppelin-pausable-v1`
-package to hold. The component is the frozen `-api-v1` package alone, and the
+package to hold. The component is the frozen `openzeppelin-api-pausable-v1` package alone, and the
 implementing templates live in consuming packages.
 
 An interface-only component is still one package and one DAR, and it still
-follows the `-api-vN` freeze rule: no templates, no SCU, and a breaking change
+follows the `openzeppelin-api-<component>-vN` freeze rule: no templates, no SCU, and a breaking change
 ships as a sibling `-v2` package. The consumer's implementing template upgrades
 through SCU independently, because the interface instance is declared on the
 template and the API package does not move. SCU can only add an interface
