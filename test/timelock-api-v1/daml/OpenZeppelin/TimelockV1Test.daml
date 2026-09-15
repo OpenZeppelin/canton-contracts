@@ -632,3 +632,205 @@ test_failureStatusesAreDistinct = script do
   eNotExecutor.errorId === "openzeppelin.com/timelock-not-executor"
   eNotCanceller.errorId === "openzeppelin.com/timelock-not-canceller"
   eOperationRetained.errorId === "openzeppelin.com/timelock-operation-retained"
+  eInvalidAuthority.errorId === "openzeppelin.com/timelock-invalid-authority"
+
+-- Direct calls enforce the same lifecycle as calls through Operation.
+-------------------------------------------------------
+
+-- | The authority needs executor permission to apply a pending operation.
+test_directApplyRequiresExecutor : Script ()
+test_directApplyRequiresExecutor = script do
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 999.0 (days 2)
+  passTime (days 2)
+  r <- trySubmit admin do
+    exerciseCmd (targetOf t1) Timelock_Apply with actor = admin, op = opOf op
+  expectFailure eNotExecutor r
+  Some t <- queryContractId admin t1
+  t.limit === 10.0
+  Some _ <- queryContractId admin op
+  pure ()
+
+-- | Naming an executor does not authorize a submission by another party.
+test_directApplyCannotImpersonateExecutor : Script ()
+test_directApplyCannotImpersonateExecutor = script do
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 999.0 (days 2)
+  passTime (days 2)
+  submitMustFail admin do
+    exerciseCmd (targetOf t1) Timelock_Apply with actor = executor, op = opOf op
+
+-- | Direct application must wait until readyAt, including when the admin is an executor.
+test_directApplyRequiresReady : Script ()
+test_directApplyRequiresReady = script do
+  f@Fixture{..} <- setup
+  Some original <- queryContractId admin treasury
+  withAdminExecutor <- submit admin do
+    createCmd original with executors = Some [admin, executor]
+  (t1, op) <- scheduleLimit (f with treasury = withAdminExecutor) 999.0 (days 2)
+  r <- trySubmit admin do
+    exerciseCmd (targetOf t1) Timelock_Apply with actor = admin, op = opOf op
+  expectFailure eNotReady r
+  Some unchanged <- queryContractId admin t1
+  unchanged.limit === 10.0
+  Some _ <- queryContractId admin op
+  pure ()
+
+-- | Direct application refuses an operation at its exclusive expiry bound.
+test_directApplyRefusesExpired : Script ()
+test_directApplyRefusesExpired = script do
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 999.0 (days 2)
+  passTime (days 9)
+  r <- trySubmit executor do
+    exerciseCmd (targetOf t1) Timelock_Apply with actor = executor, op = opOf op
+  expectFailure eExpired r
+
+-- | Direct application archives the operation and consumes its pending entry.
+test_directApplyCompletesLifecycle : Script ()
+test_directApplyCompletesLifecycle = script do
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  passTime (days 2)
+  new <- submit executor do
+    exerciseCmd (targetOf t1) Timelock_Apply with actor = executor, op = opOf op
+  Some t <- queryContractId admin (fromInterfaceContractId @Treasury new)
+  t.limit === 20.0
+  t.pending === []
+  gone <- queryContractId admin op
+  gone === None
+  submitMustFail executor do
+    exerciseCmd new Timelock_Apply with actor = executor, op = opOf op
+
+-- | A failed consumer method restores both the operation and the protected contract.
+test_directApplyFailureIsAtomic : Script ()
+test_directApplyFailureIsAtomic = script do
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f (-1.0) (days 2)
+  passTime (days 2)
+  submitMustFail executor do
+    exerciseCmd (targetOf t1) Timelock_Apply with actor = executor, op = opOf op
+  Some t <- queryContractId admin t1
+  t.limit === 10.0
+  t.pending === [asOp op]
+  Some _ <- queryContractId admin op
+  pure ()
+
+-- | A direct policy change waits under the current policy.
+test_directConfigChangeRequiresReady : Script ()
+test_directConfigChangeRequiresReady = script do
+  Fixture{..} <- setup
+  let immediate = TimelockConfig with minDelay = days 0, gracePeriod = None
+  (t1, op) <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleConfig with
+      newConfig = immediate, readyAt = addRelTime t0 (days 1)
+  r <- trySubmit executor do
+    exerciseCmd (targetOf t1) Timelock_Apply with actor = executor, op = opOf op
+  expectFailure eNotReady r
+  Some t <- queryContractId admin t1
+  t.config === oneDayWeekGrace
+
+-- | Direct cancellation requires the operation's canceller permission.
+test_directDropRequiresCanceller : Script ()
+test_directDropRequiresCanceller = script do
+  f@Fixture{..} <- setup
+  Some original <- queryContractId admin treasury
+  proposerOnly <- submit admin do createCmd original with cancellers = [proposer]
+  (t1, op) <- scheduleLimit (f with treasury = proposerOnly) 20.0 (days 2)
+  r <- trySubmit admin do
+    exerciseCmd (targetOf t1) Timelock_Drop with
+      actor = admin, op = opOf op, reason = CancelOperation
+  expectFailure eNotCanceller r
+  submitMustFail admin do
+    exerciseCmd (targetOf t1) Timelock_Drop with
+      actor = proposer, op = opOf op, reason = CancelOperation
+
+-- | Selecting cleanup cannot bypass cancellation permission before expiry.
+test_directDropRequiresExpiry : Script ()
+test_directDropRequiresExpiry = script do
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  r <- trySubmit executor do
+    exerciseCmd (targetOf t1) Timelock_Drop with
+      actor = executor, op = opOf op, reason = CleanupOperation
+  expectFailure eNotExpired r
+  Some _ <- queryContractId admin op
+  pure ()
+
+-- | An operation without an expiry cannot be cleaned up through a direct call.
+test_directDropRequiresAnExpiry : Script ()
+test_directDropRequiresAnExpiry = script do
+  f@Fixture{..} <- setupWith TimelockConfig with minDelay = days 1, gracePeriod = None
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  passTime (days 400)
+  r <- trySubmit executor do
+    exerciseCmd (targetOf t1) Timelock_Drop with
+      actor = executor, op = opOf op, reason = CleanupOperation
+  expectFailure eNotExpired r
+
+-- | Direct cancellation archives the operation and removes its pending entry.
+test_directCancellationCompletesLifecycle : Script ()
+test_directCancellationCompletesLifecycle = script do
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  new <- submit proposer do
+    exerciseCmd (targetOf t1) Timelock_Drop with
+      actor = proposer, op = opOf op, reason = CancelOperation
+  Some t <- queryContractId admin (fromInterfaceContractId @Treasury new)
+  t.pending === []
+  t.limit === 10.0
+  gone <- queryContractId admin op
+  gone === None
+
+-- | Direct cleanup archives an expired operation and removes its pending entry.
+test_directCleanupCompletesLifecycle : Script ()
+test_directCleanupCompletesLifecycle = script do
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  passTime (days 9)
+  new <- submit executor do
+    exerciseCmd (targetOf t1) Timelock_Drop with
+      actor = executor, op = opOf op, reason = CleanupOperation
+  Some t <- queryContractId admin (fromInterfaceContractId @Treasury new)
+  t.pending === []
+  t.limit === 10.0
+  gone <- queryContractId admin op
+  gone === None
+
+-- | A target cannot claim authority from an operation's signatory.
+test_falseTargetCannotUseOperationAuthority : Script ()
+test_falseTargetCannotUseOperationAuthority = script do
+  f@Fixture{..} <- setup
+  (t1, op) <- scheduleLimit f 20.0 (days 2)
+  falseTarget <- submit executor do
+    createCmd FalseTarget with
+      attacker = executor, reader = proposer, claimedAuthority = admin, pending = [asOp op]
+  passTime (days 2)
+  r <- tryExecute executor falseTarget op
+  expectFailure eInvalidAuthority r
+  r2 <- trySubmit proposer do
+    exerciseCmd (opOf op) Operation_Cancel with actor = proposer, target = targetOf falseTarget
+  expectFailure eInvalidAuthority r2
+  passTime (days 7)
+  r3 <- trySubmit executor do
+    exerciseCmd (opOf op) Operation_Cleanup with actor = executor, target = targetOf falseTarget
+  expectFailure eInvalidAuthority r3
+  effects <- query @UnauthorizedEffect admin
+  effects === []
+  Some t <- queryContractId admin t1
+  t.limit === 10.0
+  t.pending === [asOp op]
+  Some _ <- queryContractId admin op
+  pure ()
+
+-- | A target signed by another authority cannot take an operation from its treasury.
+test_falseTargetMustShareOperationAuthority : Script ()
+test_falseTargetMustShareOperationAuthority = script do
+  f@Fixture{..} <- setup
+  (_, op) <- scheduleLimit f 20.0 (days 2)
+  falseTarget <- submit executor do
+    createCmd FalseTarget with
+      attacker = executor, reader = proposer, claimedAuthority = executor, pending = [asOp op]
+  passTime (days 2)
+  r <- tryExecute executor falseTarget op
+  expectFailure eInvalidAuthority r

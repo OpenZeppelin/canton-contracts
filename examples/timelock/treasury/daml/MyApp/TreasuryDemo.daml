@@ -72,6 +72,13 @@ demo = script do
   submitMustFail executor do
     exerciseCmd (toInterfaceContractId @Timelock.Operation raise)
       Timelock.Operation_Execute with actor = executor, target = toInterfaceContractId treasury
+  -- Direct target calls enforce executor permission and the same delay.
+  submitMustFail admin do
+    exerciseCmd (toInterfaceContractId @Timelock.Timelock treasury)
+      Timelock.Timelock_Apply with actor = admin, op = toInterfaceContractId raise
+  submitMustFail executor do
+    exerciseCmd (toInterfaceContractId @Timelock.Timelock treasury)
+      Timelock.Timelock_Apply with actor = executor, op = toInterfaceContractId raise
   submitMustFail admin do
     exerciseCmd treasury Treasury_Pay with recipient = supplier, amount = 250.0
 

@@ -17,15 +17,14 @@ Three interfaces and the functions around them:
 - `Timelock`: the protected contract. Its view, `TimelockView`, carries the
   `authority` that applies operations, the `TimelockConfig` in force, and the
   `Pending` list of scheduled operations. Its choices, `Timelock_Apply` and
-  `Timelock_Drop`, verify the pending list and call the two methods the
-  consumer implements: `apply`, which dispatches on the operation's template
-  and creates the successor, and `unschedule`, which creates the successor
-  without applying.
+  `Timelock_Drop`, authenticate the actor and verify pending membership,
+  shared authority, permissions, and time bounds. They archive the operation
+  before calling the consumer's `apply` or `unschedule` method.
+  The method creates the successor with the reduced pending list.
 - `Operation`: a scheduled operation. Its view, `OperationView`, names the
   `executors` and `cancellers`. Its choices, `Operation_Execute`,
-  `Operation_Cancel`, and `Operation_Cleanup`, verify the actor and the
-  schedule, exercise the protected contract's choice, and archive the
-  operation. `Operation` requires `Timelocked`.
+  `Operation_Cancel`, and `Operation_Cleanup`, forward the authenticated actor
+  to the protected contract's lifecycle choice. `Operation` requires `Timelocked`.
 - `Timelocked`: the schedule of an operation, `readyAt` and `expiresAt`, for
   the guards and for off-ledger readers.
 - `TimelockConfig`, `isValidConfig`, and `requireValidConfig`: the delay
@@ -41,7 +40,9 @@ Three interfaces and the functions around them:
   the policy, and refuse a delay shorter than `minDelay`.
 - `requireReady`, `requireExpired`, `isReadyAt`, and `isExpiredAt`: the time
   guards and their pure forms, for a consumer that writes its own choices.
-- Nine failure statuses, each a `FailureStatus` with a stable `errorId` under
+- `DropReason`: `CancelOperation` requires canceller permission;
+  `CleanupOperation` requires expiry.
+- Ten failure statuses, each a `FailureStatus` with a stable `errorId` under
   `openzeppelin.com/timelock-`, so an off-ledger client matches the id in the
   `DAML_FAILURE` error and your tests compare the whole value.
 
@@ -139,24 +140,29 @@ pending:
 
 **4. Execute, cancel, and clean up through the library's choices.** An
 executor exercises `Operation_Execute` on the operation with the current
-protected contract as `target`. The choice verifies the actor and the
-schedule, exercises `Timelock_Apply`, which verifies the pending list and
-calls your `apply`, and archives the operation. `Operation_Cancel` and
-`Operation_Cleanup` go through `Timelock_Drop` and your `unschedule`:
+protected contract as `target`. `Timelock_Apply` authenticates the actor and
+checks pending membership, shared authority, executor permission, and readiness.
+It archives the operation before calling your `apply` method.
+`Operation_Cancel` and `Operation_Cleanup` call `Timelock_Drop` with the
+corresponding `DropReason`. That choice checks cancellation permission or expiry
+before archiving the operation and calling `unschedule`:
 
 ```daml
 exerciseCmd (toInterfaceContractId @Operation opCid)
   Operation_Execute with actor = executor, target = toInterfaceContractId treasuryCid
 ```
 
-The pending list is the binding, and it is unique by construction. An
-operation reaches an effect only through the protected contract whose pending
-list holds it, only the schedule choice adds to that list, and a contract id
-appears in one lineage's list. Two protected contracts of the same admin with
-the same policy are told apart by their lists alone, so `apply` reads
-parameters and needs no identity check. An operation the admin creates
-directly, an operation scheduled on another protected contract, and an
-operation already applied or cancelled all fail with `eNotPending`.
+Direct calls to `Timelock_Apply` and `Timelock_Drop` enforce the same checks.
+Both choices require the named `actor` as controller. Naming another party
+in the argument does not authorize a submission on that party's behalf.
+A failure restores the operation, target, and pending entry together.
+
+The pending list binds operations within the protected contract's lineage.
+Initialize it empty. Each schedule choice adds only the operation it creates.
+Each successor preserves the remaining entries. Separate treasuries then have
+separate operation lists, even when they share an admin and policy.
+An active operation outside the target's list fails with `eNotPending`.
+An archived operation fails when the ledger attempts to exercise or fetch it.
 
 The `target` argument of the lifecycle choices names the current protected
 contract. Its contract id changes on every schedule and every apply, so an
@@ -166,17 +172,24 @@ schedule.
 
 ## Authority and lifecycle
 
-Access control is the consumer's. The proposer is the controller of the
-schedule choice you write; executors and cancellers are the parties your
-operation template names in its `OperationView`; and the authority to apply
-comes from the protected contract's signatories, because the operation
-carries their signature and `Timelock_Apply` runs under it. The pending list
-binds the signatories themselves: a signatory who creates an operation
-contract directly holds a contract that `Timelock_Apply` refuses, because
-only the schedule choice adds to the list. A signatory can still replace the
-protected contract wholesale; guarding against that is the role of
-multi-party signatories or of an off-ledger canonical-instance check on the
-protected contract, and lies outside this package.
+The consumer selects the proposer, executors, and cancellers.
+The proposer controls the schedule choice. `OperationView` names the executors
+and cancellers. Each target choice uses its actor as controller and checks the
+operation's permission or expiry in its body. The target's signatories authorize
+the consumer method's effects.
+
+The declared `authority` must sign both the protected contract and the operation.
+The lifecycle choices check this requirement and fail with `eInvalidAuthority`
+when either signature is absent. An operation's signatories must be a subset
+of the target's signatories so the target can archive it.
+The target choice gets authority from its own signatories and its actor.
+This prevents a substituted target from using the operation's signatory authority.
+
+The pending list rejects operations created outside the schedule choices.
+Signatories can still archive or recreate contracts, including a target with a
+copied pending list. Applications must establish a canonical target lineage and
+review every choice that creates successors. Multiple signatories can protect
+against unilateral replacement when at least one signatory refuses it.
 
 - A role credential fits in the schedule choice: the choice takes the caller
   and the credential as arguments and verifies them in its body, as
@@ -200,36 +213,37 @@ The lifecycle of one operation:
 
 | State | Meaning | Ends when |
 |---|---|---|
-| Waiting | Listed as pending, and the ledger time is before `readyAt` | `readyAt` passes, or `Operation_Cancel` archives it |
-| Ready | Listed as pending, `readyAt <= ledger time`, and `ledger time < expiresAt` when set | `Operation_Execute` archives it, `Operation_Cancel` archives it, or `expiresAt` passes |
-| Expired | Listed as pending, `expiresAt` is set and has passed | `Operation_Cleanup` archives it |
-| Done | `Operation_Execute` archived it and the successor dropped it from the list | Final; the operation executed once |
+| Waiting | Pending, with ledger time before `readyAt` | `readyAt` passes or cancellation succeeds |
+| Ready | Pending, at or after `readyAt`, and before `expiresAt` if set | Execution, cancellation, or expiry |
+| Expired | Pending, with ledger time at or after `expiresAt` | Cleanup or cancellation succeeds |
+| Done | `Timelock_Apply` archives the operation and removes its pending entry | Final; the operation executes once |
 
-The record of execution is the `Operation_Execute` node in the transaction
-tree, with its actor and its ledger time, and the operation's create and
-archive bound the interval during which it was pending.
+The `Timelock_Apply` transaction node records execution, including direct calls.
+Its choice argument identifies the actor. The transaction records its ledger time.
+The operation's create and archive events bound its active lifetime.
 
 ## Time on Canton
 
-A transaction carries a ledger time that Canton checks against the record time
-within a tolerance the synchronizer configures, one minute by default. Two
-consequences follow:
+Canton checks ledger time against record time within a synchronizer-configured
+tolerance, one minute by default.
 
-- The guards use ledger-time bounds, `isLedgerTimeGE` and `isLedgerTimeLT`.
-  A bound constrains one side and leaves the ledger time free within it, so an
-  apply transaction prepared before `readyAt` stays valid once `readyAt`
-  passes, which matters for externally signed transactions that are prepared
-  well before submission. `scheduleAfter` reads `getTime`; use `scheduleAt`
-  when the proposer knows the target time.
-- A submitter chooses its ledger time anywhere inside the tolerance, so a
-  proposer using `scheduleAt` shortens the effective delay by up to the whole
-  tolerance. The enforceable minimum is `minDelay` minus the tolerance, so
-  choose a `minDelay` well above it: minutes at least, and days for
-  governance. `scheduleAfter` fixes the ledger time with `getTime` and keeps
-  the delay exact.
-- `Time` arithmetic near the maximum representable time aborts the
-  transaction. A `readyAt` that leaves no room for the grace period fails
-  before any operation is created.
+- The guards use `isLedgerTimeGE` and `isLedgerTimeLT` bounds.
+  These bounds support advance preparation when the complete transaction avoids
+  `getTime`. Preparation age, contract activity, and expiry still limit validity.
+- Both scheduling and execution can have clock skew. With tolerance `T`, the
+  guaranteed record-time delay is at least `max(0, minDelay - 2*T)`.
+  This bound assumes the same tolerance at both transactions.
+  A two-minute minimum can therefore provide no record-time reaction window
+  with a one-minute tolerance. Include both tolerances in the configured delay.
+- `scheduleAfter` computes `readyAt` from the scheduling transaction's ledger time.
+  Its `getTime` call fixes that timestamp during preparation.
+  It does not eliminate clock skew or guarantee an exact record-time delay.
+  Use `scheduleAt` for workflows that need a longer preparation window.
+- `Time` arithmetic near the representable bounds can abort the transaction.
+  A schedule that overflows fails before an operation is created.
+
+See [Time on Daml Ledgers](https://docs.digitalasset.com/overview/3.4/explanations/ledger-model/time.html)
+and [Implementing Time Constraints](https://docs.digitalasset.com/build/3.4/sdlc-howtos/smart-contracts/develop/patterns/implementing-time-constraints.html).
 
 Execution is a submission. Once an operation is ready, an executor submits the
 apply choice. An automation that watches pending operations and submits at
@@ -256,19 +270,21 @@ Some v <- queryInterfaceContractId executor (toInterfaceContractId @Timelocked o
 v.readyAt
 ```
 
-Visibility is the implementing template's. A party sees the pending operations
-it is a stakeholder of.
+Visibility follows the implementing template and Daml disclosure rules.
+An interface query can also return directly created operations that have no
+pending entry. Match results against the canonical target's `TimelockView.pending`
+before presenting them as scheduled operations. Reconcile archive events with
+that list when building an executor or dashboard.
 
 ## Scope and security caveats
 
 - The delay covers the privileged choices that demand a matured operation.
   Route every privileged choice through an operation; the library has no way
   to detect one that bypasses it.
-- `Timelock_Apply` verifies the pending list, the schedule, and that `apply`
-  dropped the operation. `apply` itself is the consumer's: an `apply` that
-  reads the wrong fields or skips an operation kind is a consumer defect the
-  library reports only as `eUnknownOperation`-style failures the consumer
-  defines.
+- `Timelock_Apply` verifies the actor, shared authority, pending list, and schedule.
+  It also checks that `apply` drops the operation.
+  The consumer implements `apply` and must dispatch each operation correctly.
+  Consumer methods define their own failures, such as `eUnknownOperation`.
 - Interface choices are frozen with the package. `Operation_Execute`,
   `Operation_Cancel`, `Operation_Cleanup`, `Timelock_Apply`, and
   `Timelock_Drop` keep their names, arguments, and bodies for the life of
@@ -288,20 +304,19 @@ it is a stakeholder of.
   A negative `minDelay` or a `gracePeriod` of zero or less fails every schedule
   with `eInvalidConfig`, because such a policy would produce operations that
   are born expired.
-- `Operation_Cleanup` is open to any actor after `expiresAt`, so expired
-  operations leave the ledger and the pending list.
+- Cleanup is open to any actor after `expiresAt`.
+  Signatories can also call the operation template's `Archive` choice directly.
+  Direct archival leaves a pending reference that operation-based cleanup cannot
+  remove. Consumers must define a recovery policy for these references.
 - A ledger-time check is honored within the synchronizer's tolerance.
 
 ## Compatibility
 
-The whole package is frozen at its first upload. Daml interfaces sit outside
-Smart Contract Upgrade, and a participant accepts exactly one version of a
-package name whose first version defines an interface, so the uploaded
-`openzeppelin-timelock-api-v1` is the only version. The guards and the failure
-statuses ship in the same DAR and run from the same package ID, so they are
-frozen with the interface. Any change ships as a sibling
-`openzeppelin-timelock-api-v2` package with module `OpenZeppelin.TimelockV2`,
-and the two coexist.
+The released API package is frozen. Daml interface definitions sit outside
+Smart Contract Upgrade (SCU). The guards, choices, and failure statuses share
+the interface's package ID and remain fixed with it.
+A different API generation uses a sibling `openzeppelin-timelock-api-v2` package
+with module `OpenZeppelin.TimelockV2`.
 
 For a consumer this means:
 
@@ -313,9 +328,12 @@ For a consumer this means:
   Upgrade of your package while this package stays fixed. `TimelockConfig`
   as a field of your template is safe under Smart Contract Upgrade because the
   record is frozen and keeps its shape.
-- A fix ships as the sibling package. Adopting it means importing that
-  package, rebuilding, and swapping the `interface instance` through a Smart
-  Contract Upgrade of your own package.
+- Adopting a sibling API requires an explicit migration plan.
+  SCU cannot remove an interface instance or replace a field's API-package type.
+  Adding v2 instances leaves v1 interface choices available.
+  Plan contract migration and retirement of vulnerable entry points before
+  claiming that an application uses only the corrected API.
+  See [SCU limitations](https://docs.canton.network/appdev/deep-dives/smart-contract-upgrade#limitations).
 
 `0.1.0` is a pre-release for local evaluation. A tagged release records the
 DAR in `dars/released/` and fixes its package ID; until then the package ID may

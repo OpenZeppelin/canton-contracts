@@ -7,9 +7,43 @@ module OpenZeppelin.TimelockV1TestFixtures where
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import DA.Optional (fromOptional)
 import qualified DA.TextMap as TextMap
-import DA.Time (RelTime)
+import DA.Time (RelTime, days)
 
 import OpenZeppelin.TimelockV1
+
+-- | An effect that requires the claimed authority's signature.
+template UnauthorizedEffect
+  with
+    authority : Party
+    recipient : Party
+  where
+    signatory authority
+    observer recipient
+
+-- | An untrusted target that attempts to use another contract's authority.
+template FalseTarget
+  with
+    attacker : Party
+    reader : Party
+    claimedAuthority : Party
+    pending : Pending
+  where
+    signatory attacker
+    observer reader
+
+    interface instance Timelock for FalseTarget where
+      view = TimelockView with
+        authority = claimedAuthority
+        config = TimelockConfig with minDelay = days 0; gracePeriod = None
+        pending
+
+      apply _ pending' = do
+        _ <- create UnauthorizedEffect with authority = claimedAuthority, recipient = attacker
+        toInterfaceContractId <$> create this with pending = pending'
+
+      unschedule pending' = do
+        _ <- create UnauthorizedEffect with authority = claimedAuthority, recipient = attacker
+        toInterfaceContractId <$> create this with pending = pending'
 
 -- | A treasury whose spending limit and delay policy change only through
 -- timelocked operations. `admin` signs and is the `authority` that applies

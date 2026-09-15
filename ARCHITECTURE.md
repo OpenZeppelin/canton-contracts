@@ -64,6 +64,12 @@ contract data rather than forwarding an encoded call. The library contributes
 the interface that exposes the operation's schedule, the functions that compute
 it, and the guards that enforce it.
 
+Timelock target choices authenticate the actor and enforce the lifecycle checks
+before calling consumer methods. Their authority consists of the target's
+signatories and the actor. Operation choices forward requests to those target
+choices. The target verifies shared signatory authority and archives the operation
+in the same transaction as the state change.
+
 An interface-only component is still one package and one DAR, and it still
 follows the `-api-vN` freeze rule: no templates, no SCU, and a breaking change
 ships as a sibling `-v2` package. The consumer's implementing template upgrades
