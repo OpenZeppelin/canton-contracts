@@ -9,23 +9,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## Unreleased
 
-### `openzeppelin-timelock-api-v1`
+### `openzeppelin-api-timelock-v1`
 
 #### Added
 
-- Added the frozen interface package `openzeppelin-timelock-api-v1` with public
-  module `OpenZeppelin.TimelockV1`.
+- Added the frozen interface package `openzeppelin-api-timelock-v1` with public
+  module `OpenZeppelin.Api.TimelockV1`.
 - Target lifecycle choices authenticate `actor` and enforce permissions, time
   bounds, pending membership, and shared signatory authority.
   `Timelock_Drop` takes a `DropReason` for cancellation or expiry cleanup.
   Both target choices archive the operation atomically with the state change.
 
-### `openzeppelin-pausable-api-v1`
+### `openzeppelin-api-pausable-v1`
 
 #### Added
 
-- Added the frozen interface package `openzeppelin-pausable-api-v1` with public
-  module `OpenZeppelin.PausableV1`.
+- Added the frozen interface package `openzeppelin-api-pausable-v1` with public
+  module `OpenZeppelin.Api.PausableV1`.
 
 ### `openzeppelin-tokenCIP112-v1`
 
