@@ -10,5 +10,7 @@ choices bind the actor and apply the guard.
   and a proposal–approval–execution workflow.
 
 Examples are reference implementations of library integration, rather than
-released library components. Their test packages live under [test/](test/); see
+released library components. Each example has a sibling `-test` package:
+[`licensing-app-v1-test`](licensing-app-v1-test/) and
+[`treasury-rbac-v1-test`](treasury-rbac-v1-test/). See
 [CONTRIBUTING.md](../CONTRIBUTING.md) for build and test commands.

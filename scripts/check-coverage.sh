@@ -10,7 +10,7 @@ mkdir -p "$REPORTS"
 
 # Trees under policy as "<source tree>:<test tree>" pairs; keep in sync with
 # scripts/check.sh.
-TREES=("packages:test" "experiments:experiments/test" "examples:examples/test")
+TREES=("packages:test" "experiments:experiments/test" "examples:examples")
 
 fail() {
 	printf 'coverage: %s\n' "$*" >&2
@@ -58,7 +58,11 @@ for tree_pair in "${TREES[@]}"; do
 	test_tree="${tree_pair##*:}"
 
 	[ -d "$source_tree" ] || continue
-	production_manifests="$(find "$source_tree" -type d -name .daml -prune -o -path "$test_tree" -prune -o -name daml.yaml -type f -print | sort)" ||
+	excluded_tree="$test_tree"
+	if [ "$source_tree" = "$test_tree" ]; then
+		excluded_tree="$source_tree/*-test"
+	fi
+	production_manifests="$(find "$source_tree" -type d -name .daml -prune -o -path "$excluded_tree" -prune -o -name daml.yaml -type f -print | sort)" ||
 		fail "failed to discover production package manifests under $source_tree"
 	[ -n "$production_manifests" ] || continue
 

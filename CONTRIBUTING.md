@@ -35,12 +35,12 @@ CI validates every production package and requires each production template to
 be created and each production choice to be exercised.
 
 `examples/` contains integration examples showing how to use the library.
-Each example builds separately and imports the library DAR. Its isolated tests
-live under `examples/test/<example>-vN-test`. Run the grant examples with:
+Each example builds separately and imports the library DAR. Its isolated test
+package lives beside it at `examples/<example>-vN-test`. Run the grant examples with:
 
 ```sh
-DAML_PACKAGE=examples/test/licensing-app-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=examples/test/treasury-rbac-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
 ```
 
 Coverage includes the dependency DARs and implicit Archive choices.

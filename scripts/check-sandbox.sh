@@ -50,11 +50,11 @@ authorization)
 	SCRIPTS=(OpenZeppelin.ScopedAuthorizationGrantV1SandboxTest:sandboxAuthorization)
 	;;
 licensing)
-	TEST_PKG="examples/test/licensing-app-v1-test"
+	TEST_PKG="examples/licensing-app-v1-test"
 	SCRIPTS=(Example.LicensingV1SandboxTest:sandboxLicensing)
 	;;
 treasury)
-	TEST_PKG="examples/test/treasury-rbac-v1-test"
+	TEST_PKG="examples/treasury-rbac-v1-test"
 	SCRIPTS=(Example.TreasuryRbacV1SandboxTest:sandboxTreasury)
 	;;
 *)

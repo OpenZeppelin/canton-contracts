@@ -9,9 +9,9 @@ packages:
 
   # Integration examples
   - examples/licensing-app-v1
-  - examples/test/licensing-app-v1-test
+  - examples/licensing-app-v1-test
   - examples/treasury-rbac-v1
-  - examples/test/treasury-rbac-v1-test
+  - examples/treasury-rbac-v1-test
 
   # Experiments
   - experiments/security/pausable-v1

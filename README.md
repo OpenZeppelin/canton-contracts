@@ -91,8 +91,7 @@ experiments/
 dars/
   released/               Immutable OpenZeppelin release baselines
   vendor/                 Verified third-party DAR inputs
-examples/                 Integration examples demonstrating library usage
-  test/                   Isolated integration-example test packages
+examples/                 Integration examples and sibling -test packages
 audits/                   Reports keyed to exact package releases
 scripts/                  Repository validation tooling
 ```

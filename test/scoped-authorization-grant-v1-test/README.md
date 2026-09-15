@@ -35,8 +35,8 @@ From the repository root:
 ```sh
 dpm build --all
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=examples/test/licensing-app-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=examples/test/treasury-rbac-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
 ```
 
 The sandbox suites run selected scenarios against a real local Canton Ledger

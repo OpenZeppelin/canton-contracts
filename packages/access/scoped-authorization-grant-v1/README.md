@@ -21,7 +21,7 @@ import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
 ```
 
 The [licensing implementation](../../../examples/licensing-app-v1/daml/Example/LicensingV1.daml)
-and [end-to-end script](../../../examples/test/licensing-app-v1-test/daml/Example/LicensingV1Test.daml)
+and [end-to-end script](../../../examples/licensing-app-v1-test/daml/Example/LicensingV1Test.daml)
 show the integration:
 
 1. The licensor creates a registry and calls `LicenseRegistry_AppointOperator`
