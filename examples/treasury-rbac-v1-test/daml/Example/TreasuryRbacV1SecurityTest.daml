@@ -1,0 +1,261 @@
+module Example.TreasuryRbacV1SecurityTest where
+
+import DA.Assert ((===))
+import DA.Date (Month(Jan), date)
+import DA.Foldable (forA_)
+import DA.Time (time)
+import qualified DA.Optional as Optional
+import Daml.Script
+
+import qualified Example.TreasuryRbacV1 as App
+import qualified Example.TreasuryRbacV1.RolePolicy as Policy
+import qualified Example.TreasuryRbacV1Test as F
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+data Setup = Setup with
+    owner : Party
+    operations : Party
+    approvals : Party
+    executions : Party
+    proposer : Party
+    approver : Party
+    executor : Party
+    beneficiary : Party
+    treasury : ContractId App.Treasury
+    disclosure : Disclosure
+    proposerGrant : ContractId SAG.AuthorizationGrant
+    approverGrant : ContractId SAG.AuthorizationGrant
+    executorGrant : ContractId SAG.AuthorizationGrant
+
+setup : Script Setup
+setup = do
+  owner <- allocateParty "owner"
+  operations <- allocateParty "operations"
+  approvals <- allocateParty "approvals"
+  executions <- allocateParty "executions"
+  proposer <- allocateParty "proposer"
+  approver <- allocateParty "approver"
+  executor <- allocateParty "executor"
+  beneficiary <- allocateParty "beneficiary"
+  treasury <- F.createTreasury owner operations approvals executions
+  disclosure <- F.discloseTo @App.Treasury owner treasury
+  proposerGrant <- F.grantRole owner treasury operations proposer Policy.PaymentProposer
+  approverGrant <- F.grantRole owner treasury approvals approver Policy.PaymentApprover
+  executorGrant <- F.grantRole owner treasury executions executor Policy.PaymentExecutor
+  pure Setup with
+    owner; operations; approvals; executions; proposer; approver; executor; beneficiary
+    treasury; disclosure; proposerGrant; approverGrant; executorGrant
+
+auth : Party -> ContractId SAG.AuthorizationGrant -> SAG.Authorization
+auth actor grantCid = SAG.Authorization with actor; grantCid
+
+propose : Setup -> Commands (ContractId App.PaymentProposal)
+propose s = exerciseCmd s.treasury App.Treasury_ProposePayment with
+  authorization = auth s.proposer s.proposerGrant
+  paymentId = "payment"; beneficiary = s.beneficiary; amount = 100.0; currency = "USD"
+
+createProposal : Setup -> Script (ContractId App.PaymentProposal, Disclosure)
+createProposal s = do
+  cid <- F.submitDisclosed s.proposer [s.disclosure] (propose s)
+  disclosure <- F.discloseTo @App.PaymentProposal s.owner cid
+  pure (cid, disclosure)
+
+approve : Setup -> ContractId App.PaymentProposal -> Commands (ContractId App.ApprovedPayment)
+approve s proposal = exerciseCmd proposal App.PaymentProposal_Approve with
+  authorization = auth s.approver s.approverGrant
+
+createApproval : Setup -> Script (ContractId App.ApprovedPayment, Disclosure)
+createApproval s = do
+  (proposal, proposalDisclosure) <- createProposal s
+  cid <- F.submitDisclosed s.approver [s.disclosure, proposalDisclosure] (approve s proposal)
+  disclosure <- F.discloseTo @App.ApprovedPayment s.owner cid
+  pure (cid, disclosure)
+
+execute : Setup -> ContractId App.ApprovedPayment -> Commands (ContractId App.PaymentReceipt)
+execute s approved = exerciseCmd approved App.ApprovedPayment_Execute with
+  authorization = auth s.executor s.executorGrant
+
+test_eachRoleGrantCanAuthorizeMultiplePayments : Script ()
+test_eachRoleGrantCanAuthorizeMultiplePayments = script do
+  s <- setup
+  forA_ ([1, 2] : [Int]) \_ -> do
+    (approved, disclosure) <- createApproval s
+    query @App.ApprovedPayment s.beneficiary >>= (=== [])
+    receipt <- F.submitDisclosed s.executor [s.disclosure, disclosure] (execute s approved)
+    submitMustFail s.owner do archiveCmd receipt
+    submit [s.owner, s.proposer, s.approver, s.executor] do archiveCmd receipt
+    queryContractId s.beneficiary receipt >>= (=== None)
+  forA_ [(s.proposer, s.proposerGrant), (s.approver, s.approverGrant), (s.executor, s.executorGrant)]
+    \(member, grant) -> do
+      active <- queryContractId member grant
+      assertMsg "workflow must preserve role membership" (Optional.isSome active)
+
+test_eachRoleHasItsOwnAdministrator : Script ()
+test_eachRoleHasItsOwnAdministrator = script do
+  s <- setup
+  forA_ [(Policy.PaymentProposer, s.operations), (Policy.PaymentApprover, s.approvals),
+         (Policy.PaymentExecutor, s.executions)] \(role, issuer) -> do
+    forA_ [s.owner, s.operations, s.approvals, s.executions, s.proposer] \caller ->
+      if caller == issuer then pure () else
+        F.submitDisclosedMustFail caller [s.disclosure] do
+          exerciseCmd s.treasury App.Treasury_GrantRole with
+            member = s.proposer; role; validFrom = None; validUntil = None
+
+test_revocationIsCheckedAtApprovalAndExecution : Script ()
+test_revocationIsCheckedAtApprovalAndExecution = script do
+  s <- setup
+  (proposal, proposalDisclosure) <- createProposal s
+  submit s.approvals do exerciseCmd s.approverGrant SAG.AuthorizationGrant_Revoke
+  F.submitDisclosedMustFail s.approver [s.disclosure, proposalDisclosure] (approve s proposal)
+  replacement <- F.grantRole s.owner s.treasury s.approvals s.approver Policy.PaymentApprover
+  let renewed = s with approverGrant = replacement
+  approved <- F.submitDisclosed s.approver [s.disclosure, proposalDisclosure] (approve renewed proposal)
+  disclosure <- F.discloseTo @App.ApprovedPayment s.owner approved
+  submit s.executor do exerciseCmd s.executorGrant SAG.AuthorizationGrant_Renounce
+  F.submitDisclosedMustFail s.executor [s.disclosure, disclosure] (execute s approved)
+  replacementExecutor <- F.grantRole s.owner s.treasury s.executions s.executor Policy.PaymentExecutor
+  _ <- F.submitDisclosed s.executor [s.disclosure, disclosure]
+    (execute (s with executorGrant = replacementExecutor) approved)
+  submit s.operations do archiveCmd s.proposerGrant
+  F.submitDisclosedMustFail s.proposer [s.disclosure] (propose s)
+
+test_executorMustDifferFromBothEarlierActors : Script ()
+test_executorMustDifferFromBothEarlierActors = script do
+  s <- setup
+  (approved, disclosure) <- createApproval s
+  forA_ [s.proposer, s.approver] \member -> do
+    grant <- F.grantRole s.owner s.treasury s.executions member Policy.PaymentExecutor
+    F.submitDisclosedMustFail member [s.disclosure, disclosure] do
+      exerciseCmd approved App.ApprovedPayment_Execute with authorization = auth member grant
+  active <- queryContractId s.owner approved
+  assertMsg "failed duty checks must preserve the approval" (Optional.isSome active)
+  _ <- F.submitDisclosed s.executor [s.disclosure, disclosure] (execute s approved)
+  pure ()
+
+test_stolenAndForgedActorsFailAtEveryStage : Script ()
+test_stolenAndForgedActorsFailAtEveryStage = script do
+  s <- setup
+  (proposal, proposalDisclosure) <- createProposal s
+  (approved, approvedDisclosure) <- createApproval s
+  proposerDisclosure <- F.discloseTo @SAG.AuthorizationGrant s.operations s.proposerGrant
+  approverDisclosure <- F.discloseTo @SAG.AuthorizationGrant s.approvals s.approverGrant
+  executorDisclosure <- F.discloseTo @SAG.AuthorizationGrant s.executions s.executorGrant
+  let options = actAs s.beneficiary <> discloseMany
+        [s.disclosure, proposalDisclosure, approvedDisclosure,
+         proposerDisclosure, approverDisclosure, executorDisclosure]
+  forA_ [True, False] \forgeActor -> do
+    let actor expected = if forgeActor then expected else s.beneficiary
+    let expect result = case result of
+          -- A stolen grant can fail fetch authorization before grantee matching.
+          AuthorizationError _ -> pure ()
+          FailureStatusError status | not forgeActor -> status.errorId === "OZ_SAG_GRANTEE_MISMATCH"
+          other -> fail $ "unexpected impersonation result: " <> show other
+    submitWithError options (exerciseCmd s.treasury App.Treasury_ProposePayment with
+      authorization = auth (actor s.proposer) s.proposerGrant
+      paymentId = "forged"; beneficiary = s.beneficiary; amount = 1.0; currency = "USD") >>= expect
+    submitWithError options (exerciseCmd proposal App.PaymentProposal_Approve with
+      authorization = auth (actor s.approver) s.approverGrant) >>= expect
+    submitWithError options (exerciseCmd approved App.ApprovedPayment_Execute with
+      authorization = auth (actor s.executor) s.executorGrant) >>= expect
+
+test_expiredGrantCannotExecuteApprovedPayment : Script ()
+test_expiredGrantCannotExecuteApprovedPayment = script do
+  let start = time (date 2026 Jan 1) 0 0 0
+  let end = time (date 2026 Jan 2) 0 0 0
+  setTime start
+  s <- setup
+  (approved, disclosure) <- createApproval s
+  grant <- F.submitDisclosed s.executions [s.disclosure] do
+    exerciseCmd s.treasury App.Treasury_GrantRole with
+      member = s.executor; role = Policy.PaymentExecutor
+      validFrom = Some start; validUntil = Some end
+  setTime end
+  result <- submitWithError (actAs s.executor <> discloseMany [s.disclosure, disclosure])
+    (execute (s with executorGrant = grant) approved)
+  case result of
+    FailureStatusError status -> status.errorId === "OZ_SAG_EXPIRED"
+    other -> fail $ "expected expiry failure, got " <> show other
+  query @App.PaymentReceipt s.beneficiary >>= (=== [])
+
+test_policyAdministrationAndPendingWorkflowCleanup : Script ()
+test_policyAdministrationAndPendingWorkflowCleanup = script do
+  s <- setup
+  F.submitDisclosedMustFail s.operations [s.disclosure] do
+    exerciseCmd s.treasury App.Treasury_RotatePolicyEpoch with newPolicyEpoch = 2
+  forA_ [1, 0, -1] \epoch -> submitMustFail s.owner do
+    exerciseCmd s.treasury App.Treasury_RotatePolicyEpoch with newPolicyEpoch = epoch
+  (proposal, _) <- createProposal s
+  (approved, disclosure) <- createApproval s
+  successor <- submit s.owner do
+    exerciseCmd s.treasury App.Treasury_RotatePolicyEpoch with newPolicyEpoch = 2
+  F.submitDisclosedMustFail s.executor [s.disclosure, disclosure] (execute s approved)
+  submitMustFail s.owner do archiveCmd proposal
+  submitMustFail s.owner do archiveCmd approved
+  submit [s.owner, s.proposer] do archiveCmd proposal
+  submit [s.owner, s.proposer, s.approver] do archiveCmd approved
+  submit s.owner do archiveCmd successor
+
+test_treasuryAndPaymentPreconditions : Script ()
+test_treasuryAndPaymentPreconditions = script do
+  s <- setup
+  let treasury = App.Treasury with
+        owner = s.owner; treasuryId = "treasury-001"; policyEpoch = 1
+        operationsAuthority = s.operations; approvalAuthority = s.approvals
+        executionAuthority = s.executions
+  forA_ [(treasury with policyEpoch = -1),
+         (treasury with approvalAuthority = s.operations),
+         (treasury with executionAuthority = s.operations),
+         (treasury with executionAuthority = s.approvals)] \invalid ->
+    submitMustFail s.owner do createCmd invalid
+  forA_ [0.0, -1.0] \amount ->
+    F.submitDisclosedMustFail s.proposer [s.disclosure] do
+      exerciseCmd s.treasury App.Treasury_ProposePayment with
+        authorization = auth s.proposer s.proposerGrant
+        paymentId = "invalid"; beneficiary = s.beneficiary; amount; currency = "USD"
+  query @App.PaymentProposal s.owner >>= (=== [])
+
+test_directCreationNeedsSignatoriesButDoesNotProveWorkflow : Script ()
+test_directCreationNeedsSignatoriesButDoesNotProveWorkflow = script do
+  s <- setup
+  let approval = App.ApprovedPayment with
+        owner = s.owner; treasuryCid = s.treasury; treasuryId = "treasury-001"; policyEpoch = 1
+        paymentId = "direct"; proposer = s.proposer; approver = s.approver
+        beneficiary = s.beneficiary; amount = 1.0; currency = "USD"
+  submitMustFail s.owner do createCmd approval
+  direct <- submit [s.owner, s.proposer, s.approver] do createCmd approval
+  submit [s.owner, s.proposer, s.approver] do archiveCmd direct
+  forA_ [(approval with amount = 0.0), (approval with approver = s.proposer)] \invalid ->
+    submitMustFail [s.owner, s.proposer, s.approver] do createCmd invalid
+  let receipt = App.PaymentReceipt with
+        owner = s.owner; treasuryCid = s.treasury; treasuryId = "treasury-001"; policyEpoch = 1
+        paymentId = "direct"; proposer = s.proposer; approver = s.approver; executor = s.executor
+        beneficiary = s.beneficiary; amount = 1.0; currency = "USD"
+  submitMustFail s.owner do createCmd receipt
+  _ <- submit [s.owner, s.proposer, s.approver, s.executor] do createCmd receipt
+  forA_ [(receipt with amount = 0.0), (receipt with proposer = s.approver),
+         (receipt with executor = s.proposer), (receipt with executor = s.approver)] \invalid ->
+    submitMustFail [s.owner, s.proposer, s.approver, s.executor] do createCmd invalid
+
+test_workflowStateMustMatchItsReferencedTreasury : Script ()
+test_workflowStateMustMatchItsReferencedTreasury = script do
+  s <- setup
+  otherOwner <- allocateParty "other-owner"
+  let proposal = App.PaymentProposal with
+        owner = s.owner; treasuryCid = s.treasury; treasuryId = "treasury-001"; policyEpoch = 1
+        paymentId = "direct"; proposer = s.proposer; beneficiary = s.beneficiary
+        amount = 1.0; currency = "USD"
+  submitMustFail [s.owner, s.proposer] do createCmd (proposal with amount = 0.0)
+  forA_ [(proposal with owner = otherOwner), (proposal with treasuryId = "other"),
+         (proposal with policyEpoch = 2)] \invalid -> do
+    cid <- submit [invalid.owner, s.proposer] do createCmd invalid
+    disclosure <- F.discloseTo @App.PaymentProposal invalid.owner cid
+    F.submitDisclosedMustFail s.approver [s.disclosure, disclosure] (approve s cid)
+  let approval = App.ApprovedPayment with
+        owner = s.owner; treasuryCid = s.treasury; treasuryId = "treasury-001"; policyEpoch = 1
+        paymentId = "direct"; proposer = s.proposer; approver = s.approver
+        beneficiary = s.beneficiary; amount = 1.0; currency = "USD"
+  forA_ [(approval with owner = otherOwner), (approval with treasuryId = "other"),
+         (approval with policyEpoch = 2)] \invalid -> do
+    cid <- submit [invalid.owner, s.proposer, s.approver] do createCmd invalid
+    disclosure <- F.discloseTo @App.ApprovedPayment invalid.owner cid
+    F.submitDisclosedMustFail s.executor [s.disclosure, disclosure] (execute s cid)

@@ -35,3 +35,25 @@ jobs:
 
       - name: Lint all packages
         run: scripts/check-lint.sh
+
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [token, authorization, licensing, treasury]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Daml
+        uses: ./.github/actions/setup-daml
+      - name: Validate against a Canton ledger
+        env:
+          OZ_SANDBOX_SUITE: ${{ matrix.suite }}
+        run: scripts/check-sandbox.sh
+      - name: Upload sandbox logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-${{ matrix.suite }}
+          path: .cache/sandbox-${{ matrix.suite }}/

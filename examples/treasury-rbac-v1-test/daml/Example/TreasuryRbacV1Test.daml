@@ -1,0 +1,248 @@
+module Example.TreasuryRbacV1Test where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import Example.TreasuryRbacV1
+import qualified Example.TreasuryRbacV1.RolePolicy as RolePolicy
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+discloseTo : forall t. Template t => Party -> ContractId t -> Script Disclosure
+discloseTo stakeholder cid = do
+  disclosure <- queryDisclosure @t stakeholder cid
+  case disclosure of
+    None -> fail $ "no disclosure for " <> show cid
+    Some value -> pure value
+
+submitDisclosed : Party -> [Disclosure] -> Commands a -> Script a
+submitDisclosed actor contractDisclosures =
+  submit (actAs actor <> discloseMany contractDisclosures)
+
+submitDisclosedMustFail : Party -> [Disclosure] -> Commands a -> Script ()
+submitDisclosedMustFail actor contractDisclosures =
+  submitMustFail (actAs actor <> discloseMany contractDisclosures)
+
+createTreasury
+  : Party -> Party -> Party -> Party -> Script (ContractId Treasury)
+createTreasury owner operationsAuthority approvalAuthority executionAuthority =
+  submit owner do
+    createCmd Treasury with
+      owner
+      treasuryId = "treasury-001"
+      operationsAuthority
+      approvalAuthority
+      executionAuthority
+      policyEpoch = 1
+
+grantRole
+  : Party
+  -> ContractId Treasury
+  -> Party
+  -> Party
+  -> RolePolicy.TreasuryRole
+  -> Script (ContractId SAG.AuthorizationGrant)
+grantRole owner treasury authority member role = do
+  treasuryDisclosure <- discloseTo @Treasury owner treasury
+  submitDisclosed authority [treasuryDisclosure] do
+    exerciseCmd treasury Treasury_GrantRole with
+      member
+      role
+      validFrom = None
+      validUntil = None
+
+test_distinctRolesCompletePaymentWorkflow : Script ()
+test_distinctRolesCompletePaymentWorkflow = script do
+  owner <- allocateParty "owner"
+  operationsAuthority <- allocateParty "operations-authority"
+  approvalAuthority <- allocateParty "approval-authority"
+  executionAuthority <- allocateParty "execution-authority"
+  proposer <- allocateParty "proposer"
+  approver <- allocateParty "approver"
+  executor <- allocateParty "executor"
+  beneficiary <- allocateParty "beneficiary"
+  treasury <- createTreasury owner operationsAuthority approvalAuthority executionAuthority
+  proposerGrant <- grantRole owner treasury operationsAuthority proposer RolePolicy.PaymentProposer
+  approverGrant <- grantRole owner treasury approvalAuthority approver RolePolicy.PaymentApprover
+  executorGrant <- grantRole owner treasury executionAuthority executor RolePolicy.PaymentExecutor
+  treasuryDisclosure <- discloseTo @Treasury owner treasury
+
+  proposal <- submitDisclosed proposer [treasuryDisclosure] do
+    exerciseCmd treasury Treasury_ProposePayment with
+      authorization = SAG.Authorization with actor = proposer; grantCid = proposerGrant
+      paymentId = "payment-001"
+      beneficiary
+      amount = 1000.0
+      currency = "USD"
+  proposalDisclosure <- discloseTo @PaymentProposal owner proposal
+
+  approved <- submitDisclosed approver [treasuryDisclosure, proposalDisclosure] do
+    exerciseCmd proposal PaymentProposal_Approve with
+      authorization = SAG.Authorization with actor = approver; grantCid = approverGrant
+  approvedDisclosure <- discloseTo @ApprovedPayment owner approved
+  submitDisclosedMustFail approver [treasuryDisclosure, proposalDisclosure] do
+    exerciseCmd proposal PaymentProposal_Approve with
+      authorization = SAG.Authorization with actor = approver; grantCid = approverGrant
+
+  receipt <- submitDisclosed executor [treasuryDisclosure, approvedDisclosure] do
+    exerciseCmd approved ApprovedPayment_Execute with
+      authorization = SAG.Authorization with actor = executor; grantCid = executorGrant
+  submitDisclosedMustFail executor [treasuryDisclosure, approvedDisclosure] do
+    exerciseCmd approved ApprovedPayment_Execute with
+      authorization = SAG.Authorization with actor = executor; grantCid = executorGrant
+
+  visibleReceipt <- queryContractId beneficiary receipt
+  case visibleReceipt of
+    None -> fail "beneficiary cannot see the payment receipt"
+    Some value -> do
+      value.paymentId === "payment-001"
+      value.proposer === proposer
+      value.approver === approver
+      value.executor === executor
+      value.policyEpoch === 1
+      value.amount === 1000.0
+
+  activeTreasury <- queryContractId owner treasury
+  case activeTreasury of
+    None -> fail "workflow choices consumed the treasury"
+    Some _ -> pure ()
+
+test_roleDeterminesGrantAuthority : Script ()
+test_roleDeterminesGrantAuthority = script do
+  owner <- allocateParty "owner"
+  operationsAuthority <- allocateParty "operations-authority"
+  approvalAuthority <- allocateParty "approval-authority"
+  executionAuthority <- allocateParty "execution-authority"
+  approver <- allocateParty "approver"
+  treasury <- createTreasury owner operationsAuthority approvalAuthority executionAuthority
+  treasuryDisclosure <- discloseTo @Treasury owner treasury
+
+  submitDisclosedMustFail operationsAuthority [treasuryDisclosure] do
+    exerciseCmd treasury Treasury_GrantRole with
+      member = approver
+      role = RolePolicy.PaymentApprover
+      validFrom = None
+      validUntil = None
+
+  _grant <- grantRole owner treasury approvalAuthority approver RolePolicy.PaymentApprover
+  pure ()
+
+test_wrongRoleCannotApprove : Script ()
+test_wrongRoleCannotApprove = script do
+  owner <- allocateParty "owner"
+  operationsAuthority <- allocateParty "operations-authority"
+  approvalAuthority <- allocateParty "approval-authority"
+  executionAuthority <- allocateParty "execution-authority"
+  proposer <- allocateParty "proposer"
+  beneficiary <- allocateParty "beneficiary"
+  treasury <- createTreasury owner operationsAuthority approvalAuthority executionAuthority
+  proposerGrant <- grantRole owner treasury operationsAuthority proposer RolePolicy.PaymentProposer
+  treasuryDisclosure <- discloseTo @Treasury owner treasury
+  proposal <- submitDisclosed proposer [treasuryDisclosure] do
+    exerciseCmd treasury Treasury_ProposePayment with
+      authorization = SAG.Authorization with actor = proposer; grantCid = proposerGrant
+      paymentId = "payment-001"
+      beneficiary
+      amount = 1000.0
+      currency = "USD"
+
+  submitDisclosedMustFail proposer [treasuryDisclosure] do
+    exerciseCmd proposal PaymentProposal_Approve with
+      authorization = SAG.Authorization with actor = proposer; grantCid = proposerGrant
+
+test_separationOfDutiesIsApplicationPolicy : Script ()
+test_separationOfDutiesIsApplicationPolicy = script do
+  owner <- allocateParty "owner"
+  operationsAuthority <- allocateParty "operations-authority"
+  approvalAuthority <- allocateParty "approval-authority"
+  executionAuthority <- allocateParty "execution-authority"
+  alice <- allocateParty "alice"
+  beneficiary <- allocateParty "beneficiary"
+  treasury <- createTreasury owner operationsAuthority approvalAuthority executionAuthority
+  proposerGrant <- grantRole owner treasury operationsAuthority alice RolePolicy.PaymentProposer
+  approverGrant <- grantRole owner treasury approvalAuthority alice RolePolicy.PaymentApprover
+  treasuryDisclosure <- discloseTo @Treasury owner treasury
+  proposal <- submitDisclosed alice [treasuryDisclosure] do
+    exerciseCmd treasury Treasury_ProposePayment with
+      authorization = SAG.Authorization with actor = alice; grantCid = proposerGrant
+      paymentId = "payment-001"
+      beneficiary
+      amount = 1000.0
+      currency = "USD"
+
+  submitDisclosedMustFail alice [treasuryDisclosure] do
+    exerciseCmd proposal PaymentProposal_Approve with
+      authorization = SAG.Authorization with actor = alice; grantCid = approverGrant
+
+test_roleGrantIsBoundToTreasuryContract : Script ()
+test_roleGrantIsBoundToTreasuryContract = script do
+  owner <- allocateParty "owner"
+  operationsAuthority <- allocateParty "operations-authority"
+  approvalAuthority <- allocateParty "approval-authority"
+  executionAuthority <- allocateParty "execution-authority"
+  proposer <- allocateParty "proposer"
+  approver <- allocateParty "approver"
+  beneficiary <- allocateParty "beneficiary"
+  treasuryA <- createTreasury owner operationsAuthority approvalAuthority executionAuthority
+  treasuryB <- createTreasury owner operationsAuthority approvalAuthority executionAuthority
+  proposerGrant <- grantRole owner treasuryA operationsAuthority proposer RolePolicy.PaymentProposer
+  approverGrant <- grantRole owner treasuryB approvalAuthority approver RolePolicy.PaymentApprover
+  treasuryADisclosure <- discloseTo @Treasury owner treasuryA
+  treasuryBDisclosure <- discloseTo @Treasury owner treasuryB
+  proposal <- submitDisclosed proposer [treasuryADisclosure] do
+    exerciseCmd treasuryA Treasury_ProposePayment with
+      authorization = SAG.Authorization with actor = proposer; grantCid = proposerGrant
+      paymentId = "payment-001"
+      beneficiary
+      amount = 1000.0
+      currency = "USD"
+  proposalDisclosure <- discloseTo @PaymentProposal owner proposal
+
+  submitDisclosedMustFail approver [treasuryADisclosure, treasuryBDisclosure, proposalDisclosure] do
+    exerciseCmd proposal PaymentProposal_Approve with
+      authorization = SAG.Authorization with actor = approver; grantCid = approverGrant
+
+test_policyEpochInvalidatesOldRoleGrant : Script ()
+test_policyEpochInvalidatesOldRoleGrant = script do
+  owner <- allocateParty "owner"
+  operationsAuthority <- allocateParty "operations-authority"
+  approvalAuthority <- allocateParty "approval-authority"
+  executionAuthority <- allocateParty "execution-authority"
+  proposer <- allocateParty "proposer"
+  approver <- allocateParty "approver"
+  beneficiary <- allocateParty "beneficiary"
+  treasury <- createTreasury owner operationsAuthority approvalAuthority executionAuthority
+  oldGrant <- grantRole owner treasury operationsAuthority proposer RolePolicy.PaymentProposer
+  treasuryDisclosure <- discloseTo @Treasury owner treasury
+  oldProposal <- submitDisclosed proposer [treasuryDisclosure] do
+    exerciseCmd treasury Treasury_ProposePayment with
+      authorization = SAG.Authorization with actor = proposer; grantCid = oldGrant
+      paymentId = "payment-old-policy"
+      beneficiary
+      amount = 1000.0
+      currency = "USD"
+  oldProposalDisclosure <- discloseTo @PaymentProposal owner oldProposal
+  treasuryV2 <- submit owner do
+    exerciseCmd treasury Treasury_RotatePolicyEpoch with newPolicyEpoch = 2
+  treasuryV2Disclosure <- discloseTo @Treasury owner treasuryV2
+
+  submitDisclosedMustFail proposer [treasuryV2Disclosure] do
+    exerciseCmd treasuryV2 Treasury_ProposePayment with
+      authorization = SAG.Authorization with actor = proposer; grantCid = oldGrant
+      paymentId = "payment-old-grant"
+      beneficiary
+      amount = 1000.0
+      currency = "USD"
+
+  newGrant <- grantRole owner treasuryV2 operationsAuthority proposer RolePolicy.PaymentProposer
+  newApproverGrant <- grantRole owner treasuryV2 approvalAuthority approver RolePolicy.PaymentApprover
+  submitDisclosedMustFail approver [treasuryV2Disclosure, oldProposalDisclosure] do
+    exerciseCmd oldProposal PaymentProposal_Approve with
+      authorization = SAG.Authorization with actor = approver; grantCid = newApproverGrant
+  _proposal <- submitDisclosed proposer [treasuryV2Disclosure] do
+    exerciseCmd treasuryV2 Treasury_ProposePayment with
+      authorization = SAG.Authorization with actor = proposer; grantCid = newGrant
+      paymentId = "payment-new-grant"
+      beneficiary
+      amount = 1000.0
+      currency = "USD"
+  pure ()

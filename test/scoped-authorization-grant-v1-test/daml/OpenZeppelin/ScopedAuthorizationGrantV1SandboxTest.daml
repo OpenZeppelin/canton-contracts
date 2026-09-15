@@ -1,0 +1,17 @@
+module OpenZeppelin.ScopedAuthorizationGrantV1SandboxTest where
+
+import Daml.Script (Script, script)
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as Core
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1UseTest as Use
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1BoundaryTest as Boundary
+
+-- One runner preserves fresh party allocation across the shared ledger.
+sandboxAuthorization : Script ()
+sandboxAuthorization = script do
+  Core.test_wrongAuthorityFails
+  Core.test_wrongScopeFails
+  Use.test_guardRecordsNestedUseAndPreservesGrant
+  Use.test_nestedUseDoesNotLeakIssuerAuthority
+  Use.test_businessFailureAfterUseRollsBackEffects
+  Boundary.test_implicitArchiveAndStaleDisclosure
+  Boundary.test_revocationOrderingIsAtomic

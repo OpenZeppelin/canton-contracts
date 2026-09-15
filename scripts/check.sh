@@ -5,10 +5,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Trees under policy, as "<source tree>:<test tree>" pairs. Candidates live in
-# experiments/ and move to packages/ one component at a time, so both trees are
-# checked identically and a tree holding no packages is skipped.
-TREES=("packages:test" "experiments:experiments/test")
+# Source/test tree pairs. Shared trees distinguish tests by their -test directories.
+TREES=("packages:test" "experiments:experiments/test" "examples:examples")
 
 fail() {
 	printf 'check: %s\n' "$*" >&2
@@ -65,14 +63,23 @@ for tree_pair in "${TREES[@]}"; do
 	source_tree="${tree_pair%%:*}"
 	test_tree="${tree_pair##*:}"
 
-	production_manifests+="$(find_manifests "$source_tree" "$test_tree")"$'\n'
-	test_manifests+="$(find_manifests "$test_tree")"$'\n'
+	if [ "$source_tree" = "$test_tree" ]; then
+		while IFS= read -r manifest; do
+			case "$(basename "$(dirname "$manifest")")" in
+			*-test) test_manifests+="$manifest"$'\n' ;;
+			*) production_manifests+="$manifest"$'\n' ;;
+			esac
+		done <<< "$(find_manifests "$source_tree")"
+	else
+		production_manifests+="$(find_manifests "$source_tree" "$test_tree")"$'\n'
+		test_manifests+="$(find_manifests "$test_tree")"$'\n'
+	fi
 done
 
 production_manifests="$(printf '%s' "$production_manifests" | sed '/^$/d' | sort)"
 [ -n "$production_manifests" ] || fail "no production package manifests found"
 
-test_manifests="$(printf '%s' "$test_manifests" | sed '/^$/d' | sort)"
+test_manifests="$(printf '%s' "$test_manifests" | sed '/^$/d' | sort -u)"
 [ -n "$test_manifests" ] || fail "no test package manifests found"
 
 for manifest_list in "$production_manifests" "$test_manifests"; do
@@ -103,7 +110,7 @@ while IFS= read -r manifest; do
 
 	case "$package_name" in
 	*-test)
-		fail "test package ${manifest#"$ROOT/"} must live under a test tree"
+		fail "test package ${manifest#"$ROOT/"} must use a supported test-package location"
 		;;
 	esac
 
@@ -131,11 +138,19 @@ while IFS= read -r manifest; do
 	package_name="$(sed -n 's/^name:[[:space:]]*//p' "$manifest")"
 	package_version="$(sed -n 's/^version:[[:space:]]*//p' "$manifest")"
 
+	case "$(basename "$(dirname "$manifest")")" in
+	*-test)
+		;;
+	*)
+		fail "test package ${manifest#"$ROOT/"} must use a -test directory name"
+		;;
+	esac
+
 	case "$package_name" in
 	*-test)
 		;;
 	*)
-		fail "package ${manifest#"$ROOT/"} under a test tree must use a -test name"
+		fail "test package ${manifest#"$ROOT/"} must use a -test name"
 		;;
 	esac
 
@@ -145,7 +160,7 @@ while IFS= read -r manifest; do
 	grep -Eq '(^|[[:space:]-])daml-script($|[[:space:]])' "$manifest" ||
 		fail "test package ${manifest#"$ROOT/"} must depend on daml-script"
 
-	grep -Eq '^[[:space:]]*-[[:space:]]*\.\./\.\./.+\.dar$' "$manifest" ||
+	grep -Eq '^[[:space:]]*-[[:space:]]*(\.\./)+.+\.dar$' "$manifest" ||
 		fail "test package ${manifest#"$ROOT/"} must data-depend on a production DAR"
 done <<< "$test_manifests"
 

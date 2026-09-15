@@ -1,0 +1,14 @@
+module Example.TreasuryRbacV1SandboxTest where
+
+import Daml.Script (Script, script)
+import qualified Example.TreasuryRbacV1Test as App
+import qualified Example.TreasuryRbacV1SecurityTest as Security
+
+sandboxTreasury : Script ()
+sandboxTreasury = script do
+  App.test_distinctRolesCompletePaymentWorkflow
+  Security.test_revocationIsCheckedAtApprovalAndExecution
+  Security.test_executorMustDifferFromBothEarlierActors
+  Security.test_stolenAndForgedActorsFailAtEveryStage
+  Security.test_policyAdministrationAndPendingWorkflowCleanup
+  Security.test_expiredGrantCannotExecuteApprovedPayment

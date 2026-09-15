@@ -1,18 +1,15 @@
 sdk-version: 3.5.8
-name: openzeppelin-tokenCIP112-v1
+name: openzeppelin-tokenCIP112-v1-test
 source: daml
-version: 0.1.0
+version: 0.0.0
 dependencies:
   - daml-prim
   - daml-stdlib
+  - daml-script
 data-dependencies:
-  # Vendored Token Standard V2 (CIP-0112) DARs; see dars/manifest.yaml.
-  # The V2 interfaces are NOT part of any Daml SDK: they are plain Daml packages
-  # from the splice repo, compiled with dpm-sdk 3.5.1. They are consumed here
-  # cross-SDK from the repo's 3.5.8 baseline, which works because both sides
-  # target Daml-LF 2.1.
-  # Paths are relative to this daml.yaml (repo convention): builds have no
-  # repo-root anchor, and env-var interpolation would require per-machine setup.
+  # The package under test, plus the vendored Token Standard V2 DARs its
+  # interfaces come from. Paths are relative to this daml.yaml.
+  - ../../token/tokenCIP112-v1/.daml/dist/openzeppelin-tokenCIP112-v1-0.1.0.dar
   - ../../../dars/vendor/splice-api-token-metadata-v1-1.0.0.dar
   - ../../../dars/vendor/splice-api-token-holding-v1-1.0.0.dar
   - ../../../dars/vendor/splice-api-token-holding-v2-1.0.0.dar
@@ -27,5 +24,5 @@ data-dependencies:
   - ../../../dars/vendor/splice-api-token-allocation-request-v2-1.0.0.dar
   - ../../../dars/vendor/splice-token-standard-utils-2.0.0.dar
 build-options:
-  # Match the LF 2.1 vendored APIs; this package does not use contract keys.
+  # Match the package under test and the vendored API DARs.
   - --target=2.1

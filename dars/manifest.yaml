@@ -17,9 +17,9 @@
 #
 # Entry shape:
 # - kind: release
-#   package: openzeppelin-ownable-v1
+#   package: openzeppelin-scoped-authorization-grant-v1
 #   version: 1.0.0
-#   file: dars/released/openzeppelin-ownable-v1/1.0.0/openzeppelin-ownable-v1-1.0.0.dar
+#   file: dars/released/openzeppelin-scoped-authorization-grant-v1/1.0.0/openzeppelin-scoped-authorization-grant-v1-1.0.0.dar
 #   main-package-id: <package-id>
 #   package-ids:
 #     - <main-package-id>
@@ -594,4 +594,3 @@ artifacts:
     sha256: 2985466cd8f55460ecc4cb6486e018017818d745273fe398a9b68a5acc8a34fc
     source: https://github.com/hyperledger-labs/splice/tree/69b43eb761e38695052c983715aa855c8cb207fc/token-standard/splice-token-standard-utils
     license: Apache-2.0
-

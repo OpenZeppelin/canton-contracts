@@ -1,0 +1,152 @@
+module Example.LicensingV1SecurityTest where
+
+import DA.Assert ((===))
+import DA.Date (Month(Jan), date)
+import DA.Foldable (forA_)
+import DA.Time (time)
+import qualified DA.Optional as Optional
+import Daml.Script
+
+import qualified Example.LicensingV1 as App
+import qualified Example.LicensingV1.Policy as Policy
+import qualified Example.LicensingV1Test as F
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+data Setup = Setup with
+    licensor : Party
+    operator : Party
+    licensee : Party
+    registry : ContractId App.LicenseRegistry
+    disclosure : Disclosure
+    grant : ContractId SAG.AuthorizationGrant
+
+setup : Script Setup
+setup = do
+  licensor <- allocateParty "licensor"
+  operator <- allocateParty "operator"
+  licensee <- allocateParty "licensee"
+  registry <- submit licensor do
+    createCmd App.LicenseRegistry with licensor; registryId = "registry"; policyEpoch = 0
+  disclosure <- F.discloseTo @App.LicenseRegistry licensor registry
+  grant <- submit licensor do
+    exerciseCmd registry App.LicenseRegistry_AppointOperator with
+      operator; validFrom = None; validUntil = None
+  pure Setup with licensor; operator; licensee; registry; disclosure; grant
+
+authorization : Setup -> SAG.Authorization
+authorization s = SAG.Authorization with actor = s.operator; grantCid = s.grant
+
+issue : Setup -> SAG.Authorization -> Commands (ContractId App.SoftwareLicense)
+issue s auth = exerciseCmd s.registry App.LicenseRegistry_Issue with
+  authorization = auth; licenseId = "license"; licensee = s.licensee; productId = "product"
+
+test_issuanceIsReusableAndLicenseRevocationIsIndependent : Script ()
+test_issuanceIsReusableAndLicenseRevocationIsIndependent = script do
+  s <- setup
+  first <- F.submitDisclosed s.operator [s.disclosure] (issue s (authorization s))
+  second <- F.submitDisclosed s.operator [s.disclosure] (issue s (authorization s))
+  submitMustFail s.licensee do exerciseCmd first App.SoftwareLicense_Revoke
+  submit s.licensor do exerciseCmd first App.SoftwareLicense_Revoke
+  queryContractId s.licensee first >>= (=== None)
+  remaining <- queryContractId s.licensee second
+  assertMsg "revoking one license must preserve others" (Optional.isSome remaining)
+  grant <- queryContractId s.operator s.grant
+  assertMsg "issuing licenses must preserve the grant" (Optional.isSome grant)
+  submit s.licensor do archiveCmd second
+  submit s.licensor do archiveCmd s.registry
+
+test_administrationRequiresLicensor : Script ()
+test_administrationRequiresLicensor = script do
+  s <- setup
+  F.submitDisclosedMustFail s.operator [s.disclosure] do
+    exerciseCmd s.registry App.LicenseRegistry_AppointOperator with
+      operator = s.operator; validFrom = None; validUntil = None
+  F.submitDisclosedMustFail s.operator [s.disclosure] do
+    exerciseCmd s.registry App.LicenseRegistry_RotatePolicyEpoch with newPolicyEpoch = 1
+  forA_ [0, -1] \epoch -> submitMustFail s.licensor do
+    exerciseCmd s.registry App.LicenseRegistry_RotatePolicyEpoch with newPolicyEpoch = epoch
+  submitMustFail s.licensor do
+    createCmd App.LicenseRegistry with licensor = s.licensor; registryId = "bad"; policyEpoch = -1
+  submitMustFail s.operator do
+    createCmd App.LicenseRegistry with licensor = s.licensor; registryId = "forged"; policyEpoch = 0
+
+test_forgedAndStolenCredentialsCannotIssue : Script ()
+test_forgedAndStolenCredentialsCannotIssue = script do
+  s <- setup
+  outsider <- allocateParty "outsider"
+  grantDisclosure <- F.discloseTo @SAG.AuthorizationGrant s.licensor s.grant
+  result <- submitWithError (actAs outsider <> discloseMany [s.disclosure, grantDisclosure])
+    (issue s (SAG.Authorization with actor = outsider; grantCid = s.grant))
+  case result of
+    FailureStatusError status -> status.errorId === "OZ_SAG_GRANTEE_MISMATCH"
+    other -> fail $ "expected grantee mismatch, got " <> show other
+  result <- submitWithError (actAs outsider <> discloseMany [s.disclosure, grantDisclosure])
+    (issue s (authorization s))
+  case result of
+    AuthorizationError _ -> pure ()
+    other -> fail $ "expected controller rejection, got " <> show other
+  forged <- submit outsider do
+    createCmd SAG.AuthorizationGrant with
+      authority = outsider; grantee = s.operator
+      scope = Policy.issueLicenseScope (coerceContractId s.registry) "registry" 0
+      validFrom = None; validUntil = None
+  result <- submitWithError (actAs s.operator <> disclose s.disclosure)
+    (issue s ((authorization s) with grantCid = forged))
+  case result of
+    FailureStatusError status -> status.errorId === "OZ_SAG_AUTHORITY_MISMATCH"
+    other -> fail $ "expected issuer mismatch, got " <> show other
+  query @App.SoftwareLicense s.licensor >>= (=== [])
+
+test_revokeRenounceAndArchivePreventFurtherIssuance : Script ()
+test_revokeRenounceAndArchivePreventFurtherIssuance = script do
+  s <- setup
+  forA_ ([0, 1, 2] : [Int]) \mode -> do
+    grant <- submit s.licensor do
+      exerciseCmd s.registry App.LicenseRegistry_AppointOperator with
+        operator = s.operator; validFrom = None; validUntil = None
+    let auth = (authorization s) with grantCid = grant
+    _ <- F.submitDisclosed s.operator [s.disclosure] (issue s auth)
+    case mode of
+      0 -> submit s.licensor do exerciseCmd grant SAG.AuthorizationGrant_Revoke
+      1 -> submit s.operator do exerciseCmd grant SAG.AuthorizationGrant_Renounce
+      _ -> submit s.licensor do archiveCmd grant
+    F.submitDisclosedMustFail s.operator [s.disclosure] (issue s auth)
+
+test_validityBoundsPropagateThroughTheApp : Script ()
+test_validityBoundsPropagateThroughTheApp = script do
+  let start = time (date 2026 Jan 2) 0 0 0
+  let end = time (date 2026 Jan 3) 0 0 0
+  setTime (time (date 2026 Jan 1) 0 0 0)
+  s <- setup
+  submitMustFail s.licensor do
+    exerciseCmd s.registry App.LicenseRegistry_AppointOperator with
+      operator = s.operator; validFrom = Some end; validUntil = Some start
+  grant <- submit s.licensor do
+    exerciseCmd s.registry App.LicenseRegistry_AppointOperator with
+      operator = s.operator; validFrom = Some start; validUntil = Some end
+  let auth = (authorization s) with grantCid = grant
+  result <- submitWithError (actAs s.operator <> disclose s.disclosure) (issue s auth)
+  case result of
+    FailureStatusError status -> status.errorId === "OZ_SAG_NOT_YET_VALID"
+    other -> fail $ "expected lower-bound failure, got " <> show other
+  setTime start
+  _ <- F.submitDisclosed s.operator [s.disclosure] (issue s auth)
+  setTime end
+  result <- submitWithError (actAs s.operator <> disclose s.disclosure) (issue s auth)
+  case result of
+    FailureStatusError status -> status.errorId === "OZ_SAG_EXPIRED"
+    other -> fail $ "expected expiry failure, got " <> show other
+
+test_licensePayloadDoesNotProveIssuanceThroughRegistry : Script ()
+test_licensePayloadDoesNotProveIssuanceThroughRegistry = script do
+  s <- setup
+  submitMustFail s.operator do
+    createCmd App.SoftwareLicense with
+      licensor = s.licensor; licensee = s.licensee
+      registryId = "registry"; licenseId = "direct"; productId = "product"
+  direct <- submit s.licensor do
+    createCmd App.SoftwareLicense with
+      licensor = s.licensor; licensee = s.licensee
+      registryId = "registry"; licenseId = "direct"; productId = "product"
+  visible <- queryContractId s.licensee direct
+  assertMsg "a licensor can issue directly with its own authority" (Optional.isSome visible)

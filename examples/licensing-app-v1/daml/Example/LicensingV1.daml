@@ -1,0 +1,85 @@
+-- | Integration example for OpenZeppelin.ScopedAuthorizationGrantV1.
+-- Example-only 0.x contracts; no upgrade compatibility is promised.
+module Example.LicensingV1 where
+
+import qualified Example.LicensingV1.Policy as Policy
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+-- | Registry signed by the licensor, with no observers.
+-- The licensor appoints operators or rotates policy; the guarded actor issues licenses.
+-- Operators need disclosure. Rotation consumes the registry and requires new grants.
+-- Invalid grants or non-increasing epochs fail; template creation rejects negative epochs.
+template LicenseRegistry
+  with
+    licensor : Party
+    registryId : Text
+      -- ^ Stable application ID; not this contract's ledger `ContractId`.
+    policyEpoch : Int
+  where
+    ensure policyEpoch >= 0
+    signatory licensor
+
+    -- | Derive the grant scope from trusted registry state.
+    nonconsuming choice LicenseRegistry_AppointOperator : ContractId SAG.AuthorizationGrant
+      with
+        operator : Party
+        validFrom : Optional Time
+        validUntil : Optional Time
+      controller licensor
+      do
+        create SAG.AuthorizationGrant with
+          authority = licensor
+          grantee = operator
+          scope = Policy.issueLicenseScope (coerceContractId self) registryId policyEpoch
+          validFrom
+          validUntil
+
+    nonconsuming choice LicenseRegistry_Issue : ContractId SoftwareLicense
+      with
+        authorization : SAG.Authorization
+        licenseId : Text
+        licensee : Party
+        productId : Text
+      controller authorization.actor
+      do
+        Policy.requireIssueLicense
+          authorization
+          licensor
+          (coerceContractId self)
+          registryId
+          policyEpoch
+        create SoftwareLicense with
+          licensor
+          licensee
+          registryId
+          licenseId
+          productId
+
+    -- | Advance the epoch so earlier grants no longer match.
+    choice LicenseRegistry_RotatePolicyEpoch : ContractId LicenseRegistry
+      with newPolicyEpoch : Int
+      controller licensor
+      do
+        assertMsg ePolicyEpochMustIncrease (newPolicyEpoch > policyEpoch)
+        create this with policyEpoch = newPolicyEpoch
+
+-- | License signed by the licensor and observed by the licensee.
+-- The licensor revokes or archives it, and can also create it directly.
+-- The application owns license-ID uniqueness; other readers need disclosure.
+template SoftwareLicense
+  with
+    licensor : Party
+    licensee : Party
+    registryId : Text
+    licenseId : Text
+    productId : Text
+  where
+    signatory licensor
+    observer licensee
+
+    choice SoftwareLicense_Revoke : ()
+      controller licensor
+      do pure ()
+
+ePolicyEpochMustIncrease : Text
+ePolicyEpochMustIncrease = "Licensing: policy epoch must increase"

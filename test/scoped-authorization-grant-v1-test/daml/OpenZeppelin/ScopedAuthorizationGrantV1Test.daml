@@ -1,0 +1,346 @@
+module OpenZeppelin.ScopedAuthorizationGrantV1Test where
+
+import DA.Date (Month(Jan), date)
+import qualified DA.Fail as Fail
+import DA.Foldable (forA_)
+import qualified DA.TextMap as TextMap
+import DA.Time (time)
+import Daml.Script
+
+import OpenZeppelin.ScopedAuthorizationGrantV1
+
+-- Minimal protected consumer for core tests.
+template AuthorizationCheck
+  with
+    authority : Party
+    requiredScope : AuthorizationScope
+  where
+    signatory authority
+
+    nonconsuming choice AuthorizationCheck_Run : ()
+      with authorization : Authorization
+      controller authorization.actor
+      do
+        let requirement = AuthorizationRequirement with
+              expectedAuthority = authority
+              expectedScope = requiredScope
+        requireAuthorization authorization requirement
+
+template ScopeAnchor
+  with authority : Party
+  where
+    signatory authority
+
+discloseTo : forall t. Template t => Party -> ContractId t -> Script Disclosure
+discloseTo stakeholder cid = do
+  disclosure <- queryDisclosure @t stakeholder cid
+  case disclosure of
+    None -> fail $ "no disclosure for " <> show cid
+    Some value -> pure value
+
+submitDisclosed : Party -> [Disclosure] -> Commands a -> Script a
+submitDisclosed actor contractDisclosures =
+  submit (actAs actor <> discloseMany contractDisclosures)
+
+submitDisclosedMustFail : Party -> [Disclosure] -> Commands a -> Script ()
+submitDisclosedMustFail actor contractDisclosures =
+  submitMustFail (actAs actor <> discloseMany contractDisclosures)
+
+submitDisclosedMustFailWith
+  : Text -> [(Text, Text)] -> Party -> [Disclosure] -> Commands a -> Script ()
+submitDisclosedMustFailWith expectedId expectedMetadata actor contractDisclosures commands = do
+  result <- submitWithError (actAs actor <> discloseMany contractDisclosures) commands
+  case result of
+    FailureStatusError status -> do
+      assertMsg ("unexpected failure ID: " <> show status)
+        (status.errorId == expectedId)
+      assertMsg ("unexpected failure category: " <> show status)
+        (status.category == Fail.failedPrecondition)
+      assertMsg ("unexpected failure metadata: " <> show status)
+        (status.meta == TextMap.fromList expectedMetadata)
+    other -> fail $ "expected FailureStatusError, got " <> show other
+
+treasuryScope : Int -> AuthorizationScope
+treasuryScope epoch = AuthorizationScope with
+  namespace = "com.example.treasury"
+  resourceType = "treasury"
+  resourceId = "treasury-001"
+  resourceInstanceCid = None
+  permission = "rebalance"
+  policyEpoch = epoch
+
+t0 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+
+t1 : Time
+t1 = time (date 2026 Jan 2) 0 0 0
+
+test_exactGrantAuthorizes : Script ()
+test_exactGrantAuthorizes = script do
+  setTime t0
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  grant <- submit authority do
+    createCmd AuthorizationGrant with
+      authority
+      grantee = actor
+      scope = treasuryScope 1
+      validFrom = None
+      validUntil = None
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
+  checkDisclosure <- discloseTo @AuthorizationCheck authority check
+  submitDisclosed actor [checkDisclosure] do
+    exerciseCmd check AuthorizationCheck_Run with
+      authorization = Authorization with actor; grantCid = grant
+
+test_grantIssuanceAndRevocationRequireAuthority : Script ()
+test_grantIssuanceAndRevocationRequireAuthority = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  attacker <- allocateParty "attacker"
+  submitMustFail attacker do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = treasuryScope 1
+      validFrom = None; validUntil = None
+  grant <- submit authority do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = treasuryScope 1
+      validFrom = None; validUntil = None
+  submitMustFail actor do exerciseCmd grant AuthorizationGrant_Revoke
+  submit authority do exerciseCmd grant AuthorizationGrant_Revoke
+
+test_renunciationRequiresGrantee : Script ()
+test_renunciationRequiresGrantee = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  grant <- submit authority do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = treasuryScope 1
+      validFrom = None; validUntil = None
+  submitMustFail authority do exerciseCmd grant AuthorizationGrant_Renounce
+  submit actor do exerciseCmd grant AuthorizationGrant_Renounce
+
+test_wrongAuthorityFails : Script ()
+test_wrongAuthorityFails = script do
+  setTime t0
+  authority <- allocateParty "authority"
+  otherAuthority <- allocateParty "other-authority"
+  actor <- allocateParty "actor"
+  grant <- submit otherAuthority do
+    createCmd AuthorizationGrant with
+      authority = otherAuthority
+      grantee = actor
+      scope = treasuryScope 1
+      validFrom = None
+      validUntil = None
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
+  checkDisclosure <- discloseTo @AuthorizationCheck authority check
+  submitDisclosedMustFailWith "OZ_SAG_AUTHORITY_MISMATCH"
+    [("expected", partyToText authority), ("actual", partyToText otherAuthority)]
+    actor [checkDisclosure] do
+      exerciseCmd check AuthorizationCheck_Run with
+        authorization = Authorization with actor; grantCid = grant
+
+test_wrongScopeFails : Script ()
+test_wrongScopeFails = script do
+  setTime t0
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  expectedAnchor <- submit authority do
+    createCmd ScopeAnchor with authority
+  otherAnchor <- submit authority do
+    createCmd ScopeAnchor with authority
+  let expectedScope = (treasuryScope 1) with
+        resourceInstanceCid = Some (coerceContractId expectedAnchor)
+  let wrongScopes =
+        [ ("namespace", (expectedScope with namespace = "com.example.other"))
+        , ("resourceType", (expectedScope with resourceType = "vault"))
+        , ("resourceId", (expectedScope with resourceId = "treasury-002"))
+        , ("resourceInstanceCid", (expectedScope with resourceInstanceCid = None))
+        , ("resourceInstanceCid", (expectedScope with
+            resourceInstanceCid = Some (coerceContractId otherAnchor)))
+        , ("permission", (expectedScope with permission = "withdraw"))
+        , ("policyEpoch", (expectedScope with policyEpoch = 2))
+        , ("namespace,resourceType,resourceId,permission,policyEpoch,resourceInstanceCid",
+            (expectedScope with
+              namespace = "com.example.other"
+              resourceType = "vault"
+              resourceId = "treasury-002"
+              permission = "withdraw"
+              policyEpoch = 2
+              resourceInstanceCid = None))
+        ]
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = expectedScope
+  checkDisclosure <- discloseTo @AuthorizationCheck authority check
+  forA_ wrongScopes \(fields, wrongScope) -> do
+    grant <- submit authority do
+      createCmd AuthorizationGrant with
+        authority; grantee = actor; scope = wrongScope
+        validFrom = None; validUntil = None
+    submitDisclosedMustFailWith "OZ_SAG_SCOPE_MISMATCH" [("fields", fields)]
+      actor [checkDisclosure] do
+        exerciseCmd check AuthorizationCheck_Run with
+          authorization = Authorization with actor; grantCid = grant
+  exactGrant <- submit authority do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = expectedScope
+      validFrom = None; validUntil = None
+  submitDisclosed actor [checkDisclosure] do
+    exerciseCmd check AuthorizationCheck_Run with
+      authorization = Authorization with actor; grantCid = exactGrant
+  logicalCheck <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
+  logicalCheckDisclosure <- discloseTo @AuthorizationCheck authority logicalCheck
+  submitDisclosedMustFailWith "OZ_SAG_SCOPE_MISMATCH" [("fields", "resourceInstanceCid")]
+    actor [logicalCheckDisclosure] do
+      exerciseCmd logicalCheck AuthorizationCheck_Run with
+        authorization = Authorization with actor; grantCid = exactGrant
+
+test_granteeBindingRejectsStolenGrant : Script ()
+test_granteeBindingRejectsStolenGrant = script do
+  setTime t0
+  authority <- allocateParty "authority"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  grant <- submit authority do
+    createCmd AuthorizationGrant with
+      authority
+      grantee = alice
+      scope = treasuryScope 1
+      validFrom = None
+      validUntil = None
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
+  checkDisclosure <- discloseTo @AuthorizationCheck authority check
+  grantDisclosure <- discloseTo @AuthorizationGrant authority grant
+  submitDisclosedMustFailWith "OZ_SAG_GRANTEE_MISMATCH"
+    [("expected", partyToText bob), ("actual", partyToText alice)]
+    bob [checkDisclosure, grantDisclosure] do
+      exerciseCmd check AuthorizationCheck_Run with
+        authorization = Authorization with actor = bob; grantCid = grant
+
+test_controllerRejectsForgedActor : Script ()
+test_controllerRejectsForgedActor = script do
+  setTime t0
+  authority <- allocateParty "authority"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  grant <- submit authority do
+    createCmd AuthorizationGrant with
+      authority
+      grantee = alice
+      scope = treasuryScope 1
+      validFrom = None
+      validUntil = None
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
+  checkDisclosure <- discloseTo @AuthorizationCheck authority check
+  grantDisclosure <- discloseTo @AuthorizationGrant authority grant
+  submitDisclosedMustFail bob [checkDisclosure, grantDisclosure] do
+    exerciseCmd check AuthorizationCheck_Run with
+      authorization = Authorization with actor = alice; grantCid = grant
+
+test_notYetValidThenValidAtLowerBound : Script ()
+test_notYetValidThenValidAtLowerBound = script do
+  setTime t0
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  grant <- submit authority do
+    createCmd AuthorizationGrant with
+      authority
+      grantee = actor
+      scope = treasuryScope 1
+      validFrom = Some t1
+      validUntil = None
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
+  checkDisclosure <- discloseTo @AuthorizationCheck authority check
+  submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show t1)]
+    actor [checkDisclosure] do
+      exerciseCmd check AuthorizationCheck_Run with
+        authorization = Authorization with actor; grantCid = grant
+  setTime t1
+  submitDisclosed actor [checkDisclosure] do
+    exerciseCmd check AuthorizationCheck_Run with
+      authorization = Authorization with actor; grantCid = grant
+
+test_validThenExpiredAtUpperBound : Script ()
+test_validThenExpiredAtUpperBound = script do
+  setTime t0
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  grant <- submit authority do
+    createCmd AuthorizationGrant with
+      authority
+      grantee = actor
+      scope = treasuryScope 1
+      validFrom = None
+      validUntil = Some t1
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
+  checkDisclosure <- discloseTo @AuthorizationCheck authority check
+  submitDisclosed actor [checkDisclosure] do
+    exerciseCmd check AuthorizationCheck_Run with
+      authorization = Authorization with actor; grantCid = grant
+  setTime t1
+  submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show t1)]
+    actor [checkDisclosure] do
+      exerciseCmd check AuthorizationCheck_Run with
+        authorization = Authorization with actor; grantCid = grant
+
+test_revocationAndDuplicates : Script ()
+test_revocationAndDuplicates = script do
+  setTime t0
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  first <- submit authority do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = treasuryScope 1
+      validFrom = None; validUntil = None
+  second <- submit authority do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = treasuryScope 1
+      validFrom = None; validUntil = None
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
+  checkDisclosure <- discloseTo @AuthorizationCheck authority check
+  submit authority do exerciseCmd first AuthorizationGrant_Revoke
+  submitDisclosedMustFail actor [checkDisclosure] do
+    exerciseCmd check AuthorizationCheck_Run with
+      authorization = Authorization with actor; grantCid = first
+  submitDisclosed actor [checkDisclosure] do
+    exerciseCmd check AuthorizationCheck_Run with
+      authorization = Authorization with actor; grantCid = second
+
+test_renounceArchivesGrant : Script ()
+test_renounceArchivesGrant = script do
+  setTime t0
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  grant <- submit authority do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = treasuryScope 1
+      validFrom = None; validUntil = None
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
+  checkDisclosure <- discloseTo @AuthorizationCheck authority check
+  submit actor do exerciseCmd grant AuthorizationGrant_Renounce
+  submitDisclosedMustFail actor [checkDisclosure] do
+    exerciseCmd check AuthorizationCheck_Run with
+      authorization = Authorization with actor; grantCid = grant
+
+test_malformedWindowFailsCreation : Script ()
+test_malformedWindowFailsCreation = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  submitMustFail authority do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = treasuryScope 1
+      validFrom = Some t1; validUntil = Some t0
+  submitMustFail authority do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = treasuryScope 1
+      validFrom = Some t0; validUntil = Some t0

@@ -1,0 +1,221 @@
+-- | Application-specific treasury RBAC built from scoped authorization grants.
+-- Example-only 0.x contracts; migration and payment-ID uniqueness belong to the application.
+module Example.TreasuryRbacV1 where
+
+import qualified Example.TreasuryRbacV1.RolePolicy as RolePolicy
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+treasuryRolePolicy : Treasury -> RolePolicy.TreasuryRolePolicy
+treasuryRolePolicy treasury = RolePolicy.TreasuryRolePolicy with
+  treasuryId = treasury.treasuryId
+  operationsAuthority = treasury.operationsAuthority
+  approvalAuthority = treasury.approvalAuthority
+  executionAuthority = treasury.executionAuthority
+  policyEpoch = treasury.policyEpoch
+
+-- | Treasury signed by the owner; role authorities and members need disclosure.
+-- Each role authority grants its role; guarded proposers start payments.
+-- Owner-controlled rotation consumes the treasury, invalidating instance-bound grants.
+-- Creation requires distinct role authorities and a nonnegative epoch.
+template Treasury
+  with
+    owner : Party
+    treasuryId : Text
+      -- ^ Stable application ID; workflow state separately stores `treasuryCid`.
+    operationsAuthority : Party
+    approvalAuthority : Party
+    executionAuthority : Party
+    policyEpoch : Int
+  where
+    ensure policyEpoch >= 0
+      && operationsAuthority /= approvalAuthority
+      && operationsAuthority /= executionAuthority
+      && approvalAuthority /= executionAuthority
+    signatory owner
+
+    -- | The selected role determines both the controller and grant authority.
+    nonconsuming choice Treasury_GrantRole : ContractId SAG.AuthorizationGrant
+      with
+        member : Party
+        role : RolePolicy.TreasuryRole
+        validFrom : Optional Time
+        validUntil : Optional Time
+      controller RolePolicy.roleAuthority (treasuryRolePolicy this) role
+      do
+        create SAG.AuthorizationGrant with
+          authority = RolePolicy.roleAuthority (treasuryRolePolicy this) role
+          grantee = member
+          scope = RolePolicy.roleScope
+            (treasuryRolePolicy this)
+            (coerceContractId self)
+            role
+          validFrom
+          validUntil
+
+    nonconsuming choice Treasury_ProposePayment : ContractId PaymentProposal
+      with
+        authorization : SAG.Authorization
+        paymentId : Text
+        beneficiary : Party
+        amount : Decimal
+        currency : Text
+      controller authorization.actor
+      do
+        RolePolicy.requireRole
+          authorization
+          (treasuryRolePolicy this)
+          (coerceContractId self)
+          RolePolicy.PaymentProposer
+        assertMsg eAmountMustBePositive (amount > 0.0)
+        create PaymentProposal with
+          owner
+          treasuryCid = self
+          treasuryId
+          policyEpoch
+          paymentId
+          proposer = authorization.actor
+          beneficiary
+          amount
+          currency
+
+    choice Treasury_RotatePolicyEpoch : ContractId Treasury
+      with newPolicyEpoch : Int
+      controller owner
+      do
+        assertMsg ePolicyEpochMustIncrease (newPolicyEpoch > policyEpoch)
+        create this with policyEpoch = newPolicyEpoch
+
+-- | Proposal signed by the owner and proposer, with no additional observers.
+-- An approver needs disclosure, a matching grant, and separation from the proposer.
+-- Approval consumes it; Archive needs both signatories. Amounts must be positive.
+template PaymentProposal
+  with
+    owner : Party
+    treasuryCid : ContractId Treasury
+    treasuryId : Text
+    policyEpoch : Int
+    paymentId : Text
+    proposer : Party
+    beneficiary : Party
+    amount : Decimal
+    currency : Text
+  where
+    ensure amount > 0.0
+    signatory owner, proposer
+
+    choice PaymentProposal_Approve : ContractId ApprovedPayment
+      with authorization : SAG.Authorization
+      controller authorization.actor
+      do
+        treasury <- fetch treasuryCid
+        assertMsg eWrongTreasury
+          (treasury.owner == owner
+            && treasury.treasuryId == treasuryId
+            && treasury.policyEpoch == policyEpoch)
+        RolePolicy.requireRole
+          authorization
+          (treasuryRolePolicy treasury)
+          (coerceContractId treasuryCid)
+          RolePolicy.PaymentApprover
+        assertMsg eProposerCannotApprove
+          (proposer /= authorization.actor)
+        create ApprovedPayment with
+          owner
+          treasuryCid
+          treasuryId
+          policyEpoch
+          paymentId
+          proposer
+          approver = authorization.actor
+          beneficiary
+          amount
+          currency
+
+-- | Approval signed by the owner, proposer, and approver; no additional observers.
+-- A disclosed executor needs a matching grant and independence from earlier actors.
+-- Execution consumes it; Archive needs all signatories. The live treasury must match.
+template ApprovedPayment
+  with
+    owner : Party
+    treasuryCid : ContractId Treasury
+    treasuryId : Text
+    policyEpoch : Int
+    paymentId : Text
+    proposer : Party
+    approver : Party
+    beneficiary : Party
+    amount : Decimal
+    currency : Text
+  where
+    ensure amount > 0.0 && proposer /= approver
+    signatory owner, proposer, approver
+
+    choice ApprovedPayment_Execute : ContractId PaymentReceipt
+      with authorization : SAG.Authorization
+      controller authorization.actor
+      do
+        treasury <- fetch treasuryCid
+        assertMsg eWrongTreasury
+          (treasury.owner == owner
+            && treasury.treasuryId == treasuryId
+            && treasury.policyEpoch == policyEpoch)
+        RolePolicy.requireRole
+          authorization
+          (treasuryRolePolicy treasury)
+          (coerceContractId treasuryCid)
+          RolePolicy.PaymentExecutor
+        assertMsg eExecutorMustBeIndependent
+          (authorization.actor /= proposer
+            && authorization.actor /= approver)
+        create PaymentReceipt with
+          owner
+          treasuryCid
+          treasuryId
+          policyEpoch
+          paymentId
+          proposer
+          approver
+          executor = authorization.actor
+          beneficiary
+          amount
+          currency
+
+-- | Workflow record signed by all four actors and observed by the beneficiary.
+-- Archive requires all signatories. Amounts and duty separation are enforced.
+-- Signatories can also create this directly: the payload alone is not workflow proof.
+-- This example records an instruction; it does not transfer an asset.
+template PaymentReceipt
+  with
+    owner : Party
+    treasuryCid : ContractId Treasury
+    treasuryId : Text
+    policyEpoch : Int
+    paymentId : Text
+    proposer : Party
+    approver : Party
+    executor : Party
+    beneficiary : Party
+    amount : Decimal
+    currency : Text
+  where
+    ensure amount > 0.0
+      && proposer /= approver
+      && executor /= proposer
+      && executor /= approver
+    signatory owner, proposer, approver, executor
+    observer beneficiary
+
+eAmountMustBePositive : Text
+eAmountMustBePositive = "Treasury: payment amount must be positive"
+
+eWrongTreasury : Text
+eWrongTreasury = "Treasury: workflow state belongs to another treasury policy"
+
+eProposerCannotApprove : Text
+eProposerCannotApprove = "Treasury: proposer cannot approve the same payment"
+
+eExecutorMustBeIndependent : Text
+eExecutorMustBeIndependent = "Treasury: executor must differ from proposer and approver"
+
+ePolicyEpochMustIncrease : Text
+ePolicyEpochMustIncrease = "Treasury: policy epoch must increase"

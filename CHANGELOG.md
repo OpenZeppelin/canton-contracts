@@ -9,6 +9,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## Unreleased
 
+### `openzeppelin-scoped-authorization-grant-v1`
+
+#### Added
+
+- Added an unaudited library candidate for authority-signed, resource-scoped
+  permissions with optional contract-instance binding and ledger-time bounds.
+- Added atomic grant-use records, revocation and renunciation choices, and
+  stable machine-readable guard failures.
+
 ### `openzeppelin-tokenCIP112-v1`
 
 #### Added
@@ -25,17 +34,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ### `openzeppelin-access-control-v1`
 
-#### Changed (Breaking)
+#### Removed (Breaking)
 
-- Renamed the pre-release package and public module into the `v1` lineage
-  without changing contract behavior.
+- Removed the experimental Access Control package. Scoped Authorization Grant
+  provides the permission-checking foundation; it is not an API-compatible
+  replacement for the experimental role-management choices.
 
 ### `openzeppelin-ownable-v1`
 
-#### Changed (Breaking)
+#### Removed (Breaking)
 
-- Renamed the pre-release package and public module into the `v1` lineage
-  without changing contract behavior.
+- Removed the experimental Ownable package.
 
 ### `openzeppelin-pausable-v1`
 

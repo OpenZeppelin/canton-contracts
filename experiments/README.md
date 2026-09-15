@@ -15,8 +15,6 @@ must satisfy.
 
 | Component | Package | Public module | Solidity analogue |
 |---|---|---|---|
-| [Access Control](access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | `AccessControl`, `AccessControlDefaultAdminRules` |
-| [Ownable](access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | `Ownable2Step` |
 | [Pausable](security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | `Pausable` |
 | [Token CIP-0112](token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | `ERC20` (partial) |
 
@@ -31,14 +29,14 @@ tests keep running as the repository changes. From the repository root:
 
 ```sh
 dpm build --all
-DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
+DAML_PACKAGE=experiments/test/pausable-v1-test dpm test --all --show-coverage
 ```
 
 Each component's isolated test package lives under [`test/`](test/) and
 data-depends on the built DAR. Build one component on its own with:
 
 ```sh
-DAML_PACKAGE=experiments/access/ownable-v1 dpm build
+DAML_PACKAGE=experiments/security/pausable-v1 dpm build
 ```
 
 ## What to use them for
@@ -48,6 +46,6 @@ design before it is rebuilt. Open an issue or discussion if a shape here is
 wrong or a Canton constraint is being modeled the hard way. That feedback is
 worth more now than after the redesign.
 
-No component has graduated to `packages/` yet, so there is nothing here you can
-safely build an application on. The [repository README.md](../README.md) covers
-the package and compatibility model a component must satisfy before it does.
+Library candidates live under [packages/](../packages/). The
+[repository README.md](../README.md) describes their status, package boundaries,
+and compatibility model.
