@@ -11,7 +11,11 @@ packages:
   - experiments/test/tokenCIP112-v1
   - packages/security/api-pausable-v1
   - test/api-pausable-v1
+  - packages/security/api-timelock-v1
+  - test/api-timelock-v1
   - examples/pausable/vault
   - examples/pausable/vault-test
   - examples/pausable/registry
   - examples/pausable/registry-test
+  - examples/timelock/treasury
+  - examples/timelock/treasury-test

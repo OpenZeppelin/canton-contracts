@@ -57,6 +57,19 @@ contract it supplies. Nothing therefore remains for an `openzeppelin-pausable-v1
 package to hold. The component is the frozen `openzeppelin-api-pausable-v1` package alone, and the
 implementing templates live in consuming packages.
 
+Timelock follows the same shape for a different reason. A scheduled operation
+is a contract of the consumer's own template, typed by its fields and signed by
+the protected contract's signatories, because a Daml choice applies typed
+contract data rather than forwarding an encoded call. The library contributes
+the interface that exposes the operation's schedule, the functions that compute
+it, and the guards that enforce it.
+
+Timelock target choices authenticate the actor and enforce the lifecycle checks
+before calling consumer methods. Their authority consists of the target's
+signatories and the actor. Operation choices forward requests to those target
+choices. The target verifies shared signatory authority and archives the operation
+in the same transaction as the state change.
+
 An interface-only component is still one package and one DAR, and it still
 follows the `openzeppelin-api-<component>-vN` freeze rule: no templates, no SCU, and a breaking change
 ships as a sibling `-v2` package. The consumer's implementing template upgrades
