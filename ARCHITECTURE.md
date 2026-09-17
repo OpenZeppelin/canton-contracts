@@ -44,8 +44,27 @@ API packages may depend only on other API packages. A template-only component
 ships one implementation package; empty API packages add ceremony without an
 upgrade or interoperability benefit.
 
-The current three components define templates and functions but no Daml
-interfaces, so each presently has one production package.
+The three components under `experiments/` define templates and functions but no
+Daml interfaces, so each has one production package.
+
+### Interface-only components
+
+Some components have no implementation package of their own. Pausable is the
+model: the pause flag is a field of the consumer's template, because a guard
+that reads the contract being exercised is sound and a guard that fetches a
+separate switch contract is not, since a caller can substitute or omit a
+contract it supplies. Nothing therefore remains for an `openzeppelin-pausable-v1`
+package to hold. The component is the frozen `openzeppelin-api-pausable-v1` package alone, and the
+implementing templates live in consuming packages.
+
+An interface-only component is still one package and one DAR, and it still
+follows the `openzeppelin-api-<component>-vN` freeze rule: no templates, no SCU, and a breaking change
+ships as a sibling `-v2` package. The consumer's implementing template upgrades
+through SCU independently, because the interface instance is declared on the
+template and the API package does not move. SCU can only add an interface
+instance to that template, never remove one, so adopting a `-v2` package means
+the template implements both interfaces for life; dropping the `-v1` instance
+needs a new template version outside SCU and an offline contract migration.
 
 ## Dependency policy
 
@@ -75,9 +94,15 @@ Public modules use matching major-version namespaces:
 
 ```daml
 OpenZeppelin.OwnableV1
+OpenZeppelin.Api.RbacV1
 OpenZeppelin.RbacV1
 OpenZeppelin.RbacV1.Internal
 ```
+
+An API package places its modules under `OpenZeppelin.Api`, the same way the
+Splice token standard places its interface modules under `Splice.Api`. The
+namespace tells a consumer that the module holds only frozen interface and
+exception definitions.
 
 Compatible SCU releases keep the same package name and increment the package
 version. A breaking change creates a sibling `-v2` package and a `V2` module

@@ -1,0 +1,77 @@
+-- | Adoption of `OpenZeppelin.Api.PausableV1` with sibling fields set in the
+-- same transaction as the flip.
+--
+-- A registry that serves CIP-0112 metadata records why a pause is in force and
+-- when it is expected to end. Those fields belong to the registry, not to the
+-- frozen interface: `pause` guards, sets the flag, and returns the value,
+-- and the choice sets the sibling fields on it before the create.
+--
+-- The metadata endpoint therefore serves `paused` and `pauseInfo{reason,
+-- until}` from one on-ledger contract. If CIP-0112 extends `PauseInfo`, this
+-- template adds a field under Smart Contract Upgrade and the interface does not
+-- move.
+module OpenZeppelin.Examples.Pausable.Registry where
+
+import DA.Action (when)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import qualified DA.TextMap as TextMap
+import qualified OpenZeppelin.Api.PausableV1 as Pausable
+
+template Registry
+  with
+    admin : Party
+    auditor : Party
+      -- ^ Reads the registry and its pause state; changes nothing.
+    paused : Bool
+    pauseReason : Optional Text
+      -- ^ CIP-0112 `pauseInfo.reason`.
+    pauseUntil : Optional Time
+      -- ^ CIP-0112 `pauseInfo.until`. Published for reporting; nothing in this
+      --   example enforces it. An expiring pause is the consumer's own choice
+      --   to write.
+    entries : [Text]
+      -- ^ What the registry holds; the state that a pause stops changing.
+  where
+    signatory admin
+    observer auditor
+
+    interface instance Pausable.Pausable for Registry where
+      view = Pausable.PausableView with paused
+      setPaused b = toInterface (this with paused = b)
+
+    -- The flag and the reason change together, in one transaction, through the
+    -- library rather than around it. `pause` returns the value and this
+    -- consuming choice owns the create.
+    choice Registry_Pause : ContractId Registry
+      with
+        reason : Optional Text
+        until : Optional Time
+      controller admin
+      do
+        r <- Pausable.pause this
+        create r with pauseReason = reason, pauseUntil = until
+
+    -- Unpausing clears what the pause recorded.
+    choice Registry_Unpause : ContractId Registry
+      controller admin
+      do
+        r <- Pausable.unpause this
+        create r with pauseReason = None, pauseUntil = None
+
+    -- A gated operation, guarded the same way as in any other adopter.
+    choice Registry_Register : ContractId Registry
+      with
+        entry : Text
+      controller admin
+      do
+        Pausable.whenNotPaused this
+        when (entry == "") (failWithStatus eEmptyEntry)
+        create this with entries = entry :: entries
+
+-- | Raised when a registration names an empty entry.
+eEmptyEntry : FailureStatus
+eEmptyEntry = FailureStatus with
+  errorId = "myapp.com/registry-empty-entry"
+  category = InvalidIndependentOfSystemState
+  message = "Registry: entry must not be empty"
+  meta = TextMap.empty
