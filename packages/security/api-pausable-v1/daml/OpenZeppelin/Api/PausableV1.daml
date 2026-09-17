@@ -184,7 +184,8 @@ isPaused x = (view (toInterface @Pausable x)).paused
 --
 -- Fails with `eEnforcedPause` if already paused, `eFlagNotApplied` if the
 -- implementation did not set the flag, or `eImplementerTypeMismatch` if
--- `setPaused` returned another template.
+-- `setPaused` returned another template, including the same template from a
+-- different package version.
 pause : (HasToInterface t Pausable, HasFromInterface t Pausable)
       => t -> Update t
 pause x = do
@@ -210,7 +211,8 @@ pause x = do
 --
 -- Fails with `eExpectedPause` if not paused, `eFlagNotApplied` if the
 -- implementation did not clear the flag, or `eImplementerTypeMismatch` if
--- `setPaused` returned another template.
+-- `setPaused` returned another template, including the same template from a
+-- different package version.
 unpause : (HasToInterface t Pausable, HasFromInterface t Pausable)
         => t -> Update t
 unpause x = do
