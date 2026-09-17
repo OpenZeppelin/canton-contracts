@@ -223,8 +223,9 @@ unpause x = do
   when (isPaused y) (failWithStatus eFlagNotApplied)
   pure y
 
--- Failure statuses: the two that a guard raises, plus the two that report an
--- implementation breaking the `setPaused` law. Each is a `FailureStatus`
+-- Failure statuses: the two that report a pause state the operation does not
+-- accept, plus the two that report an implementation breaking the flip law.
+-- Each is a `FailureStatus`
 -- raised with `failWithStatus`, so a rejected submission reaches the Ledger
 -- API as `DAML_FAILURE` with the `errorId` below, and a client matches on the
 -- id rather than on the message text. In Daml Script, `trySubmit` returns it
@@ -243,17 +244,17 @@ eExpectedPause = Internal.pausableFailure "expected-pause" InvalidGivenCurrentSy
   "Pausable: the contract is not paused"
 
 -- | Raised when a flip did not leave the flag in the state it asked for,
--- because `setPaused` ignored its argument or set a field the view does not
--- read. It exists so that a mis-wired implementation
--- fails loudly instead of yielding a pause that silently does not pause, which
--- is the fail-open direction. It cannot fire against a correct implementation.
+-- because the implementation ignored the requested value or set a field the
+-- view does not read. It exists so that a mis-wired implementation fails
+-- loudly instead of yielding a pause that silently does not pause, which is
+-- the fail-open direction. It cannot fire against a correct implementation.
 -- `errorId`: `openzeppelin.com/pausable-flag-not-applied`.
 eFlagNotApplied : FailureStatus
 eFlagNotApplied = Internal.pausableFailure "flag-not-applied" InvalidIndependentOfSystemState
   "Pausable: the flip did not change the paused flag"
 
--- | Raised when `setPaused` returned an implementing template other than
--- its own.
+-- | Raised when a flip produced an implementing template other than the one
+-- it started from.
 -- `errorId`: `openzeppelin.com/pausable-implementer-type-mismatch`.
 eImplementerTypeMismatch : FailureStatus
 eImplementerTypeMismatch = Internal.pausableFailure "implementer-type-mismatch"
