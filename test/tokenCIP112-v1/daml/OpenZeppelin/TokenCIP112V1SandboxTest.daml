@@ -15,7 +15,7 @@ import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils (basicAccount)
 
 import OpenZeppelin.TokenCIP112V1.Registry
-import OpenZeppelin.TokenCIP112V1Test
+import OpenZeppelin.TokenCIP112V1TestFixtures
 
 -- | Token creation and querying: holdings appear in owner queries, and the
 -- balance view is projection-scoped, so one owner cannot read another

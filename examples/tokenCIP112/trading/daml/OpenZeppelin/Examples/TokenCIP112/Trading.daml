@@ -7,7 +7,7 @@
 -- delivery-versus-payment trade; `demoIteratedSettlement` runs the
 -- exchange-deposit flow of CIP-0112 iterated settlement. Each includes its
 -- failing paths.
-module MyApp.TradingDemo where
+module OpenZeppelin.Examples.TokenCIP112.Trading where
 
 import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
@@ -220,16 +220,6 @@ demoDvpSettlement = do
   -- net debits are locked: alice's 5 TOK change returns immediately.
   aliceAllocCid <- requestAcceptAndAllocate app alice aliceSpec [aliceTok]
   bobAllocCid <- requestAcceptAndAllocate app bob bobSpec [bobUsd]
-
-  -- FAILING: without the factory's admin-signed proof even the settle
-  -- choice's own default controllers cannot settle an allocation directly,
-  -- so the exact-cover check cannot be bypassed.
-  submitMustFail (actAs [admin, exchange]) do
-    exerciseCmd aliceAllocCid AllocationV2.Allocation_Settle with
-      actors = [admin, exchange]
-      extraTransferLegSides = []
-      nextIterationFunding = None
-      extraArgs = emptyExtraArgs
 
   -- FAILING: a batch whose legs are not exactly covered by the presented
   -- allocations is refused (bob's authorization is missing here).

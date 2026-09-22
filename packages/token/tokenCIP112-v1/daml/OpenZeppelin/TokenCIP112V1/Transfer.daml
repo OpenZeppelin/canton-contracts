@@ -120,7 +120,7 @@ transferImpl admin maxTTL lockGrace arg = do
       senders = dedupSort (senderParties arg.transfer)
       bothSides = dedupSort (senderParties arg.transfer <> receiverParties arg.transfer)
       actors = dedupSort arg.actors
-  checkActors arg.actors [senders, bothSides]
+  checkActors arg.actors [senders, bothSides] -- QUESTION - Does this check the correct actors, based on the transfer type we are doing? 
   executeTransfer admin maxTTL lockGrace (all (`elem` actors) receivers) arg.transfer
 
 -- | Validate, debit the sender's inputs, and either complete in one step
@@ -164,9 +164,11 @@ executeTransfer admin maxTTL lockGrace oneStep transfer = do
         pure [toInterfaceContractId @HoldingV2.Holding cid]
       else pure []
 
+  -- QUESTION - How can we make configurable if the transfer observers should be the sender parties, or also the receiver parties? 
   -- Single-step whenever the caller has receiver-side authority, including a
   -- self-transfer, where the receiver's parties are the sender's.
-  if oneStep
+  -- INFO - By this point, we archived the input holdings and created a holding for change. 
+  if oneStep -- INFO - If we have the receiver authority, we should just execute the transfer, no two step transfer.
     then do
       receiverHoldingCids <- payReceiver transfer transfer.inputHoldingCids senderChangeCids
       pure TransferInstructionV2.TransferInstructionResult with
@@ -178,15 +180,15 @@ executeTransfer admin maxTTL lockGrace oneStep transfer = do
       -- locked funding when accepting or rejecting (mirrors executors on
       -- allocation locks). The lock outlives the instruction's own expiry, so
       -- the admin's expiry path always runs before the funding is re-spendable.
-      let instructionExpiresAt = transfer.executeBefore
-          lockExpiresAt = instructionExpiresAt `addRelTime` lockGrace
-          lock = HoldingV2.Lock with
+      let instructionExpiresAt = transfer.executeBefore -- REVISIT
+          lockExpiresAt = instructionExpiresAt `addRelTime` lockGrace -- INFO - This is a grace period in which the funds are still locked.
+          lock = HoldingV2.Lock with -- INFO - Locks the holding, in order to be accepted by the receiver
             holders = dedupSort (admin :: receiverParties transfer)
             expiresAt = Some lockExpiresAt
             expiresAfter = None
             context = Some ("pending transfer to " <> show transfer.receiver.owner)
-      lockedCid <- createTokenHolding admin transfer.sender transfer.instrumentId.id transfer.amount (Some lock)
-      instructionCid <- create TokenTransferInstruction with
+      lockedCid <- createTokenHolding admin transfer.sender transfer.instrumentId.id transfer.amount (Some lock) -- INFO - Create the locked holding
+      instructionCid <- create TokenTransferInstruction with -- REVISIT
         transfer = transfer with
           inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding lockedCid]
         originalInputHoldingCids = transfer.inputHoldingCids

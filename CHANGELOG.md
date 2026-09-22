@@ -23,7 +23,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 #### Added
 
-- Added the experimental CIP-0112-compliant token package
+- Added the CIP-0112-compliant token package
   `openzeppelin-tokenCIP112-v1` with public module namespace
   `OpenZeppelin.TokenCIP112V1`. It implements the Token Standard V2 interfaces
   and builds against the 13 vendored Token Standard V2 DARs under

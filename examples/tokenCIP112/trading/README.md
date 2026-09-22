@@ -8,7 +8,7 @@ wallet or settlement app drives any compliant registry.
 | Field | Value |
 |---|---|
 | Package | `tokenCIP112-trading-example` |
-| Modules | `MyApp.TradingDemo` |
+| Modules | `OpenZeppelin.Examples.TokenCIP112.Trading` |
 | Consumes | `openzeppelin-tokenCIP112-v1` `0.1.0`, `openzeppelin-allocation-request-v1` `0.1.0` |
 
 ## What it shows
@@ -22,17 +22,15 @@ wallet or settlement app drives any compliant registry.
 - The exchange requesting one `TokenAllocationRequest` per trader, and each
   trader accepting the request and funding the allocation in a single
   transaction; only the trader's net debit is locked.
-- Atomic DvP through `SettlementFactory_SettleBatch`, and why it is the only
-  settlement path: a direct `Allocation_Settle` by the choice's own default
-  controllers is refused without the factory's admin-signed proof, and a batch
-  whose legs are not exactly covered by the presented allocations is refused.
+- Atomic DvP through `SettlementFactory_SettleBatch`: a batch whose legs are
+  not exactly covered by the presented allocations is refused.
 - The iterated-settlement deposit flow: traders deposit by reserving funding
   with no transfer legs, the exchange specifies fills per iteration up to the
   reserve, proceeds roll into successor deposits, and a settle with no
   reservation releases everything unlocked. Reserving more than the
   settlement proceeds is refused.
 
-`MyApp.TradingDemo` carries three scripts: `demoCreateToken` launches a token,
+`OpenZeppelin.Examples.TokenCIP112.Trading` carries three scripts: `demoCreateToken` launches a token,
 `demoDvpSettlement` runs the OTC trade lifecycle, and `demoIteratedSettlement`
 runs the deposit flow across two fills.
 
@@ -40,9 +38,10 @@ runs the deposit flow across two fills.
 
 The registry `admin` co-signs every holding and allocation; traders act
 through their account parties; the `exchange` is the settlement executor named
-in the `SettlementInfo`. Settlement runs on executor authority against
-factory-minted, admin-signed batch authorizations, so no trader sees the other
-allocations in a batch.
+in the `SettlementInfo`. Settlement runs on executor authority through the
+settlement factory, whose exact-cover check validates the batch and whose
+per-allocation settles reveal nothing about sibling allocations to the other
+traders in a batch.
 
 ## Build and run
 

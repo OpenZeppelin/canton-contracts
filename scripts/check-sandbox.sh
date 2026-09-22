@@ -35,7 +35,7 @@ java_version="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9][0-9]*\).*/\1/
 	exit 1
 }
 
-TEST_PKG="experiments/test/tokenCIP112-v1"
+TEST_PKG="test/tokenCIP112-v1"
 DAR="$ROOT/$TEST_PKG/.daml/dist/openzeppelin-tokenCIP112-v1-test-0.0.0.dar"
 LEDGER_HOST="${OZ_LEDGER_HOST:-localhost}"
 LEDGER_PORT="${OZ_LEDGER_PORT:-6865}"

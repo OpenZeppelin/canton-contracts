@@ -19,31 +19,6 @@ import Splice.TokenStandard.Utils
 import OpenZeppelin.TokenCIP112V1.Base
 import OpenZeppelin.TokenCIP112V1.Holding
 
--- | Per-allocation proof that the settlement factory ran its exact-cover
--- validation for this settlement and this authorizer's leg set.
---
--- `Allocation_Settle` is a plain interface choice whose actor set is admin plus
--- executors — the same parties who drive a batch — so without this proof they
--- could settle allocations one at a time, bypassing the cover check and
--- thereby minting or burning value. The factory mints one of these per
--- allocation and hands it over through the choice context; the settle body
--- consumes it.
---
--- It carries only data the allocation's own stakeholders already have, so
--- fetching it does not divulge sibling allocations.
-template BatchSettlementAuthorization with
-    admin : Party
-    settlement : AllocationV2.SettlementInfo
-    authorizer : HoldingV2.Account
-    transferLegSides : [AllocationV2.TransferLegSide]
-      -- ^ The effective leg set for this iteration: the allocation's own legs
-      -- plus the executor-supplied extra legs the cover check validated.
-    nextIterationFunding : Optional (TextMap.TextMap Decimal)
-      -- ^ The next-iteration reservation the factory validated, `None` when
-      -- this settlement ends the iteration chain.
-  where
-    signatory admin
-
 -- | A ready-to-settle allocation backed by locked holdings. When
 -- `allocation.nextIterationFunding` is set, iterated settlement is enabled:
 -- each settle may carry executor-supplied extra transfer legs and reserve
@@ -114,10 +89,11 @@ template TokenAllocation with
         archiveAndCheckActors self arg.actors [allocation.admin :: settlement.executors]
         -- Re-checked here even when driven by the settlement factory: this
         -- choice is also directly callable by admin plus executors.
+        --
+        -- CAUTION: with no batch-authorization proof required, a direct settle
+        -- by admin plus executors bypasses the factory's exact-cover check;
+        -- see `ideas.md` on reintroducing the guard.
         forA_ allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
-        -- The factory's cover check is only enforceable if this choice refuses
-        -- to run without the factory's proof.
-        _ <- requireBatchAuthorization this arg
         validateNextIterationArgs "Allocation_Settle" (isSome allocation.nextIterationFunding)
           arg.extraTransferLegSides arg.nextIterationFunding
         settleAllocation self this arg.extraTransferLegSides arg.nextIterationFunding
@@ -170,35 +146,6 @@ allocationAvailableActions this = Map.fromList $
 
 -- Settlement internals
 -----------------------
-
--- | Read and consume the factory's per-allocation authorization, checking it
--- covers exactly this allocation's settlement, authorizer, effective leg set
--- (the allocation's own legs plus the settle call's extra legs), and
--- next-iteration reservation. Binding the extra legs and the reservation to
--- the admin-signed proof means a settle can only ever run with the exact
--- iteration arguments the factory's cover check validated.
-requireBatchAuthorization
-  : TokenAllocation -> AllocationV2.Allocation_Settle -> Update BatchSettlementAuthorization
-requireBatchAuthorization this arg = do
-  authCid <- case TextMap.lookup batchAuthorizationContextKey arg.extraArgs.context.values of
-    Some (AV_ContractId anyCid) ->
-      pure (fromAnyContractId anyCid : ContractId BatchSettlementAuthorization)
-    Some _ -> fail "batch authorization context value must be a contract id"
-    None -> fail
-      "Allocation_Settle requires the settlement factory's batch authorization; \
-      \settle through SettlementFactory_SettleBatch"
-  auth <- fetch authCid
-  archive authCid
-  require' ("authorization.admin", auth.admin) isEqualR ("allocation.admin", this.allocation.admin)
-  require' ("authorization.settlement", auth.settlement) isEqualR ("allocation.settlement", this.settlement)
-  require' ("authorization.authorizer", auth.authorizer)
-    isEqualR ("allocation.authorizer", this.allocation.authorizer)
-  require' ("authorization.transferLegSides", dedupSort auth.transferLegSides)
-    isEqualR ("allocation effective transferLegSides",
-      dedupSort (this.allocation.transferLegSides <> arg.extraTransferLegSides))
-  require' ("authorization.nextIterationFunding", auth.nextIterationFunding)
-    isEqualR ("Allocation_Settle.nextIterationFunding", arg.nextIterationFunding)
-  pure auth
 
 -- | Net settlement of one allocation: consume the locked funds, add the
 -- authorizer's net credit per instrument across the effective legs (the

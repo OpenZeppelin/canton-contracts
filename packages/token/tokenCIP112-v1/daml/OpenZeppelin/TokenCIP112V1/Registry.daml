@@ -52,28 +52,14 @@ template TokenRules with
         checkActors arg.actors [arg.settlement.executors]
         require "a settlement batch must cover at least one transfer leg"
           (not (null arg.transferLegs))
-        -- Each per-allocation settle is handed a freshly minted, admin-signed
-        -- proof that this batch's cover check ran. `Allocation_Settle` refuses
-        -- to run without it, which is what makes the cover check unavoidable
-        -- rather than merely conventional.
-        --
-        -- The batch context is redacted from what the authorizers witness; the
-        -- proof carries only their own leg set and reservation. The view
-        -- handed in here is the adjusted one, so its leg set already includes
-        -- the executor-supplied extra legs the cover check validated.
-        let authorizeAllocation allocView settleArg = do
-              authCid <- create BatchSettlementAuthorization with
-                admin
-                settlement = arg.settlement
-                authorizer = allocView.allocation.authorizer
-                transferLegSides = allocView.allocation.transferLegSides
-                nextIterationFunding = settleArg.nextIterationFunding
-              pure ExtraArgs with
-                context = ChoiceContext with
-                  values = TextMap.fromList
-                    [(batchAuthorizationContextKey, AV_ContractId (toAnyContractId authCid))]
-                meta = arg.extraArgs.meta
-        settlementFactoryV2_settleBatchDefaultImpl authorizeAllocation admin self arg
+        -- The batch's choice context is redacted from what the authorizers
+        -- witness: each per-allocation settle receives only the batch
+        -- metadata, not sibling-allocation data a caller may have put in the
+        -- context.
+        let perAllocationExtraArgs _allocView _settleArg = pure ExtraArgs with
+              context = emptyChoiceContext
+              meta = arg.extraArgs.meta
+        settlementFactoryV2_settleBatchDefaultImpl perAllocationExtraArgs admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for TokenRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin; meta = emptyMetadata
@@ -224,7 +210,7 @@ allocateImpl rules arg = do
   -- with no reserve locks nothing.
   let expiresAt = computeStorageExpiry rules.maxTTL now allocation.settlementDeadline
       lockExpiresAt = expiresAt `addRelTime` rules.lockGrace
-      netAmounts = netAllocationCreditAmounts authorizer allocation.transferLegSides
+      netAmounts = netAllocationCreditAmounts authorizer allocation.transferLegSides -- REVISIT
       reserveAmounts = fromOptional TextMap.empty allocation.nextIterationFunding
       requiredAmounts = textMapUnionWith (+)
         (fmap (\net -> max 0.0 (negate net)) netAmounts)

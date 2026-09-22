@@ -9,7 +9,7 @@ registry rules, and event logging.
 | Package | `openzeppelin-tokenCIP112-v1` |
 | Public module | `OpenZeppelin.TokenCIP112V1` |
 | Version | `0.1.0` |
-| Status | Experimental; unaudited |
+| Status | Pre-release; unaudited |
 | Standard | [CIP-0112](https://github.com/global-synchronizer-foundation/cips) / Token Standard V2 |
 
 > [!WARNING]
@@ -24,9 +24,9 @@ registry rules, and event logging.
   instrument admin and the account parties, with optional locks.
 - `TokenTransferInstruction` (`Transfer`): the TSv2 transfer-instruction
   lifecycle, including accept, reject, withdraw, and expiry paths.
-- `TokenAllocation` and `BatchSettlementAuthorization` (`Allocation`): ready-to-
-  settle allocations backed by locked holdings, with exact-cover batch
-  settlement and CIP-0112 iterated settlement.
+- `TokenAllocation` (`Allocation`): ready-to-settle allocations backed by
+  locked holdings, with exact-cover batch settlement and CIP-0112 iterated
+  settlement.
 - `TokenRules` (`Registry`): the registry rules contract implementing the TSv2
   transfer, allocation, and settlement factories.
 - `TokenEventLog` (`Base`): the holdings-change event-log host.
@@ -51,6 +51,11 @@ it ships as a single implementation package.
   successor like any other allocation.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
+- The exact-cover check runs only inside `SettlementFactory_SettleBatch`. A
+  direct `Allocation_Settle` by the admin plus the executors bypasses it and
+  can create or destroy value, so the admin's authority must never co-sign a
+  settle outside the factory. See `ideas.md` on reintroducing the on-ledger
+  guard that removed this trust assumption.
 
 ## Standards conformance
 
@@ -68,7 +73,7 @@ the same templates: the V1 DARs are vendored under
 From the repository root:
 
 ```sh
-DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm build
+DAML_PACKAGE=packages/token/tokenCIP112-v1 dpm build
 ```
 
 ## Sandbox validation
@@ -99,7 +104,7 @@ forward.
 
 ```yaml
 data-dependencies:
-  - ../canton-contracts/experiments/token/tokenCIP112-v1/.daml/dist/openzeppelin-tokenCIP112-v1-0.1.0.dar
+  - ../canton-contracts/packages/token/tokenCIP112-v1/.daml/dist/openzeppelin-tokenCIP112-v1-0.1.0.dar
 ```
 
 ```daml

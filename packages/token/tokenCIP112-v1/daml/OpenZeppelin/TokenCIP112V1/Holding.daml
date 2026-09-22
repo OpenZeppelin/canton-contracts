@@ -15,11 +15,11 @@ import Splice.TokenStandard.Utils
 -- locked funds. Regular accounts only: special (ownerless) accounts never hold.
 template TokenHolding with
     holding : HoldingV2.HoldingView
-  where
+  where -- INFO - accountParties returns the party responsible for the account, which is the owner, or the registry admin when the account is a special instrument admin-managed account such as mint or burn. If the account also has a provider that is a different party, include it as well.
     signatory holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
-    observer lockHolders holding.lock
-    ensure holding.amount > 0.0
-      && isSome holding.account.owner
+    observer lockHolders holding.lock -- INFO - lockHolders returns the holders of the lock, if the lock exists. 
+    ensure holding.amount > 0.0 -- INFO - Can't create empty holding.
+      && isSome holding.account.owner -- INFO - The TokenHolding must have at least an owner. This means the special mint and burn account can not have holdings, since they do not have owners. 
       -- `expiresAfter` would make the effective lock expiry the earlier of the
       -- two bounds (HoldingV2.Lock), which this package's expiry checks do not
       -- model. Reject it at creation rather than mis-handle it later.

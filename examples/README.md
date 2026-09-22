@@ -16,7 +16,7 @@ Consumers of `openzeppelin-tokenCIP112-v1` and
 
 | Example | Shows |
 |---|---|
-| [`trading`](tokenCIP112/trading) | Launching a token from the DAR, allocation requests accepted and funded through the standard interfaces, exact-cover DvP batch settlement, and the iterated-settlement deposit flow |
+| [`trading`](tokenCIP112/trading/) | Launching a token from the DAR, allocation requests accepted and funded through the standard interfaces, exact-cover DvP batch settlement, and the iterated-settlement deposit flow |
 
 ## Build and run
 
