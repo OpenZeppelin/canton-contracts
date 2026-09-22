@@ -13,7 +13,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 #### Added
 
-- Added the experimental allocation-request package
+- Added the allocation-request package
   `openzeppelin-allocation-request-v1` with public module
   `OpenZeppelin.AllocationRequestV1`: the `TokenAllocationRequest` template
   implements the Token Standard V2 `AllocationRequest` interface with accept,

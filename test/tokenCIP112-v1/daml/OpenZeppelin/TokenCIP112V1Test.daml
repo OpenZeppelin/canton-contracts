@@ -645,6 +645,34 @@ testSelfTransferConsolidates = do
   aliceAfter === [10.0]
   assertNoLocks alice
 
+-- | A special (ownerless) account cannot author an allocation: its leg sides
+-- net to zero, so it would lock nothing and settle as an unevented supply
+-- change (delivery-vs-mint). Refused at the factory until that path is
+-- deliberately supported.
+testSpecialAuthorizerRefused : Script ()
+testSpecialAuthorizerRefused = do
+  Scenario{..} <- setup
+  let specialAccount = HoldingV2.Account with owner = None; provider = None; id = "mint"
+      spec = AllocationV2.AllocationSpecification with
+        admin
+        authorizer = specialAccount
+        transferLegSides = [senderSide legAliceToBob]
+        settlementDeadline = Some t2
+        nextIterationFunding = None
+        committed = False
+        meta = emptyMetadata
+  -- `accountParties` resolves a special account to the admin, so the admin is
+  -- the only plausible actor — and even the admin is refused.
+  submitMustFail (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = spec
+        requestedAt = t0
+        inputHoldingCids = []
+        extraArgs = emptyExtraArgs
+        actors = [admin]
+
 -- | An empty batch is refused rather than succeeding as a no-op.
 testEmptyBatchRefused : Script ()
 testEmptyBatchRefused = do
@@ -725,7 +753,7 @@ testRulesConfigValidated = do
 -- visible to standard history parsers instead of appearing as bare creates.
 testMintAndBurnEmitEvents : Script ()
 testMintAndBurnEmitEvents = do
-  Scenario{..} <- setup
+  s@Scenario{..} <- setup
   holdingCid <- submit (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_Mint with
       account = basicAccount alice
@@ -754,3 +782,14 @@ testMintAndBurnEmitEvents = do
       reason = "redeem"
   aliceFinal <- holdingAmounts alice
   aliceFinal === []
+  -- A locked holding cannot be burned: the lock reserves it for a workflow.
+  aliceInput <- mint admin alice 10.0
+  _ <- instructTransfer s [alice] (mkTransfer s alice bob 4.0 [aliceInput])
+  lockedHoldings <- query @TokenHolding alice
+  let lockedCids = [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock]
+  forA_ lockedCids $ \lockedCid ->
+    submitMustFail (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+      exerciseCmd rulesCid TokenRules_Burn with
+        holdingCid = lockedCid
+        account = basicAccount alice
+        reason = "burn locked"

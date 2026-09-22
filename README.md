@@ -15,12 +15,13 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-No component has been released yet. Token CIP-0112 has passed its
-implementation phase and lives under [`packages/`](packages/); it builds and is
-tested in CI, but it is unaudited and has no release.
+No component has been released yet. The components under
+[`packages/`](packages/) have passed their implementation phase; they build and
+are tested in CI, but they are unaudited and have no release.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|
+| [Allocation Request](packages/token/allocation-request-v1/) | `openzeppelin-allocation-request-v1` | `OpenZeppelin.AllocationRequestV1` | Pre-release; unaudited |
 | [Token CIP-0112](packages/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | Pre-release; unaudited |
 
 The components below are early-stage candidates under
@@ -33,7 +34,6 @@ them.
 | Component | Package | Public module | Status |
 |---|---|---|---|
 | [Access Control](experiments/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | Experimental; unaudited |
-| [Allocation Request](experiments/token/allocation-request-v1/) | `openzeppelin-allocation-request-v1` | `OpenZeppelin.AllocationRequestV1` | Experimental; unaudited |
 | [Ownable](experiments/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | Experimental; unaudited |
 | [Pausable](experiments/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Experimental; unaudited |
 
@@ -96,12 +96,11 @@ import OpenZeppelin.OwnableV1
 
 ```text
 packages/
-  token/                  Category for token standard components
+  token/                  Category for token standard and settlement components
 test/                     Isolated component test packages
 experiments/
   access/                 Category for authorization and ownership components
   security/               Category for operational security components
-  token/                  Category for token workflow components
   test/                   Isolated component test packages
 dars/
   released/               Immutable OpenZeppelin release baselines

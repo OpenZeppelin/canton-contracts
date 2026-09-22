@@ -11,7 +11,7 @@ token registry, which wallets may batch into the accepting transaction.
 | Package | `openzeppelin-allocation-request-v1` |
 | Public module | `OpenZeppelin.AllocationRequestV1` |
 | Version | `0.1.0` |
-| Status | Experimental; unaudited |
+| Status | Pre-release; unaudited |
 | Standard | [CIP-0112](https://github.com/global-synchronizer-foundation/cips) / Token Standard V2 |
 
 > [!WARNING]
@@ -48,14 +48,14 @@ token registry, which wallets may batch into the accepting transaction.
 From the repository root:
 
 ```sh
-DAML_PACKAGE=experiments/token/allocation-request-v1 dpm build
+DAML_PACKAGE=packages/token/allocation-request-v1 dpm build
 ```
 
 ## Consume a local build
 
 ```yaml
 data-dependencies:
-  - ../canton-contracts/experiments/token/allocation-request-v1/.daml/dist/openzeppelin-allocation-request-v1-0.1.0.dar
+  - ../canton-contracts/packages/token/allocation-request-v1/.daml/dist/openzeppelin-allocation-request-v1-0.1.0.dar
 ```
 
 ```daml

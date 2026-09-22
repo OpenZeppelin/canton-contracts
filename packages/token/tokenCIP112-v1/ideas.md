@@ -50,7 +50,9 @@ legs, so stablecoin/fund subscription and redemption become atomic settlement
 legs (DvM/DvB). Supporting this needs a dedicated path in `allocateImpl` and
 `settleAllocation` — a mint-side leg has no holdings to lock, so the admin's
 authority must stand in for funding, and the cover check must treat the
-special-account side as admin-authorized.
+special-account side as admin-authorized. Note: `allocateImpl` now rejects
+special-account authorizers outright (`testSpecialAuthorizerRefused`), so the
+dedicated path must deliberately lift that guard.
 
 ## 3. Pause support
 

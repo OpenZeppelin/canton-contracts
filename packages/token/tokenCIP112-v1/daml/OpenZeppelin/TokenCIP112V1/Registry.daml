@@ -36,8 +36,8 @@ template TokenRules with
       -- instant the deadline passed and leave an unremovable shell behind.
   where
     signatory admin
-    ensure maxTTL > noTime
-      && lockGrace > noTime
+    ensure maxTTL > convertMicrosecondsToRelTime 0
+      && lockGrace > convertMicrosecondsToRelTime 0
 
     interface instance AllocationV2.SettlementFactory for TokenRules where
       view = AllocationV2.SettlementFactoryView with admin; meta = emptyMetadata
@@ -156,10 +156,6 @@ template TokenRules with
           _ <- exercise cid TokenTransferInstruction_Expire
           pure ()
 
-noTime : RelTime
-noTime = convertMicrosecondsToRelTime 0
-
-
 -- Allocation creation
 ----------------------
 
@@ -177,14 +173,17 @@ allocateImpl rules arg = do
       authorizer = allocation.authorizer
   checkActors arg.actors [accountParties admin authorizer]
   requireMatchExpected ("allocation.admin", allocation.admin) admin
+  -- Special (mint/burn) accounts cannot author allocations. The netting helper
+  -- zeroes their leg sides, so a special-account allocation would lock nothing
+  -- and settle as an unevented supply change (delivery-vs-mint/burn). Rejected
+  -- until that path is deliberately designed; see `ideas.md`.
+  require "allocation authorizer must be a regular account" (isRegularAccount authorizer)
   require "allocation must authorize at least one transfer-leg side or enable iterated settlement"
     (not (null allocation.transferLegSides) || isSome allocation.nextIterationFunding)
-  -- Iterated settlement: the reserve draws on a regular account's holdings,
-  -- and every reserved amount must be positive — enabling iterated settlement
-  -- with no reserve is `Some TextMap.empty`, not a zero entry.
-  forA_ allocation.nextIterationFunding $ \reserve -> do
-    require "iterated settlement requires a regular authorizer account"
-      (isRegularAccount authorizer)
+  -- Iterated settlement: every reserved amount must be positive — enabling
+  -- iterated settlement with no reserve is `Some TextMap.empty`, not a zero
+  -- entry.
+  forA_ allocation.nextIterationFunding $ \reserve ->
     forA_ (TextMap.toList reserve) $ \(instrumentId, amount) ->
       require' ("allocation.nextIterationFunding for " <> instrumentId, amount)
         isGreaterR ("zero", 0.0)

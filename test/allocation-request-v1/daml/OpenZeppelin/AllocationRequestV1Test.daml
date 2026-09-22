@@ -1,5 +1,5 @@
 -- | Tests for the allocation-request package
--- (experiments/token/allocation-request-v1), driven through the standard
+-- (packages/token/allocation-request-v1), driven through the standard
 -- `AllocationRequestV2.AllocationRequest` interface.
 module OpenZeppelin.AllocationRequestV1Test where
 

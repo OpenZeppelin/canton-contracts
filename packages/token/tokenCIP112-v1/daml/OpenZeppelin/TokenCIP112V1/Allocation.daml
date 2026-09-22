@@ -139,6 +139,9 @@ allocationAvailableActions this = Map.fromList $
   [ (AllocationV2.AA_Cancel, [dedupSort this.settlement.executors])
   , (AllocationV2.AA_Settle, [dedupSort (this.allocation.admin :: this.settlement.executors)])
   ] <>
+  -- Withdraw is advertised statically: for a committed allocation the choice
+  -- body still refuses it until the settlement deadline has passed, so wallets
+  -- may see a withdraw action that is not yet exercisable.
   [ (AllocationV2.AA_Withdraw, [accountParties this.allocation.admin this.allocation.authorizer])
   | not this.allocation.committed || isSome this.allocation.settlementDeadline
   ]
