@@ -1,6 +1,6 @@
 # Pausable Vault Example
 
-Minimal adoption of `openzeppelin-api-pausable-v1`: a vault that holds a balance
+Minimal adoption of `Pausable`: a vault that holds a balance
 for one owner, with an emergency stop that the admin controls.
 
 | Field | Value |
@@ -9,11 +9,11 @@ for one owner, with an emergency stop that the admin controls.
 | Module | `OpenZeppelin.Examples.Pausable.Vault` |
 | Tests | `OpenZeppelin.Examples.Pausable.VaultTest` in [`vault-test`](../vault-test) |
 | Templates | `Vault`, `Payout` |
-| Consumes | `openzeppelin-api-pausable-v1` `0.1.0` |
+| Consumes | `openzeppelin-api-pausable-v1` `0.1.0`, `openzeppelin-pausable-v1` `0.1.0` |
 
 ## What it shows
 
-- The three lines of `interface instance Pausable.Pausable for Vault` that adopt the
+- The three lines of `interface instance Pausable for Vault` that adopt the
   switch: the view, and `setPaused`.
 - `whenNotPaused this` in a gated choice. The guard reads the contract that the
   choice exercises, so no caller supplies the pause state.

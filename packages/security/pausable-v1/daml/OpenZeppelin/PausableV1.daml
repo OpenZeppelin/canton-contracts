@@ -1,0 +1,134 @@
+-- | OpenZeppelin Pausable - the guards, flips, and failure statuses for the
+-- `Pausable` interface in `OpenZeppelin.Api.PausableV1`.
+--
+-- Gated choices call `whenNotPaused this`. The consumer's own choices call
+-- `pause` and `unpause` to flip the flag and create the successor contract.
+--
+-- ```
+-- choice TokenRules_Pause : ContractId TokenRules
+--   with caller : Party; grantCid : ContractId RoleGrant
+--   controller caller
+--   do
+--     grant <- fetch grantCid
+--     requireRole caller "PAUSER_ROLE" admin grant
+--     create =<< pause this
+-- ```
+--
+-- This package holds no interface and no template, so a fix to a function
+-- here ships as a new version of this package while the interface package
+-- stays frozen.
+module OpenZeppelin.PausableV1 where
+
+import DA.Action (unless, when)
+import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
+import OpenZeppelin.Api.PausableV1 (Pausable, setPaused)
+import OpenZeppelin.PausableV1.Internal as Internal
+
+-- | Fail with `eEnforcedPause` unless the contract is unpaused. Call it first
+-- in every gated choice:
+--
+-- ```
+-- choice Vault_Withdraw : ContractId Vault
+--   with amount : Int
+--   controller holder
+--   do
+--     whenNotPaused this
+--     create this with balance = balance - amount
+-- ```
+whenNotPaused : HasToInterface t Pausable => t -> Update ()
+whenNotPaused x = when (isPaused x) (failWithStatus eEnforcedPause)
+
+-- | Fail with `eExpectedPause` unless the contract is paused. Use it on
+-- recovery choices that run only during an incident.
+whenPaused : HasToInterface t Pausable => t -> Update ()
+whenPaused x = unless (isPaused x) (failWithStatus eExpectedPause)
+
+-- | Read the flag as a pure function.
+isPaused : HasToInterface t Pausable => t -> Bool
+isPaused x = (view (toInterface @Pausable x)).paused
+
+-- | Pause the contract and return the template value for the calling choice
+-- to create:
+--
+-- ```
+-- choice Vault_Pause : ContractId Vault
+--   controller admin
+--   do create =<< pause this
+-- ```
+--
+-- The calling choice supplies the pause authority through its controller and
+-- body. To change other fields in the same transaction, update the returned
+-- value and create once:
+--
+-- ```
+-- choice Registry_Pause : ContractId Registry
+--   with reason : Optional Text
+--   controller admin
+--   do
+--     r <- pause this
+--     create r with pauseReason = reason
+-- ```
+--
+-- Keep `paused` and the fields that determine signatories and observers
+-- unchanged in that update.
+--
+-- Fails with `eEnforcedPause` if already paused, `eFlagNotApplied` if
+-- `setPaused` left the flag unchanged, or `eImplementerTypeMismatch` if
+-- `setPaused` returned another template.
+pause : Implements t Pausable => t -> Update t
+pause x = do
+  whenNotPaused x
+  y <- case fromInterface (setPaused (toInterface @Pausable x) True) of
+    Some y -> pure y
+    None -> failWithStatus eImplementerTypeMismatch
+  unless (isPaused y) (failWithStatus eFlagNotApplied)
+  pure y
+
+-- | Unpause the contract and return the template value for the calling
+-- choice to create, as `pause` does:
+--
+-- ```
+-- choice Vault_Unpause : ContractId Vault
+--   controller admin
+--   do create =<< unpause this
+-- ```
+--
+-- Fails with `eExpectedPause` if not paused, `eFlagNotApplied` if `setPaused`
+-- left the flag unchanged, or `eImplementerTypeMismatch` if `setPaused`
+-- returned another template.
+unpause : Implements t Pausable => t -> Update t
+unpause x = do
+  whenPaused x
+  y <- case fromInterface (setPaused (toInterface @Pausable x) False) of
+    Some y -> pure y
+    None -> failWithStatus eImplementerTypeMismatch
+  when (isPaused y) (failWithStatus eFlagNotApplied)
+  pure y
+
+-- Failure statuses. Each reaches the Ledger API as a `DAML_FAILURE` error
+-- carrying the `errorId` below, so a client matches on the id.
+
+-- | Raised when an operation requires the contract to be unpaused.
+-- `errorId`: `openzeppelin.com/pausable-enforced-pause`.
+eEnforcedPause : FailureStatus
+eEnforcedPause = Internal.pausableFailure "enforced-pause" InvalidGivenCurrentSystemStateOther
+  "Pausable: the contract is paused"
+
+-- | Raised when an operation requires the contract to be paused.
+-- `errorId`: `openzeppelin.com/pausable-expected-pause`.
+eExpectedPause : FailureStatus
+eExpectedPause = Internal.pausableFailure "expected-pause" InvalidGivenCurrentSystemStateOther
+  "Pausable: the contract is not paused"
+
+-- | Raised when `setPaused` left the flag unchanged.
+-- `errorId`: `openzeppelin.com/pausable-flag-not-applied`.
+eFlagNotApplied : FailureStatus
+eFlagNotApplied = Internal.pausableFailure "flag-not-applied" InvalidIndependentOfSystemState
+  "Pausable: the flip did not change the paused flag"
+
+-- | Raised when `setPaused` returned a template other than its own.
+-- `errorId`: `openzeppelin.com/pausable-implementer-type-mismatch`.
+eImplementerTypeMismatch : FailureStatus
+eImplementerTypeMismatch = Internal.pausableFailure "implementer-type-mismatch"
+  InvalidIndependentOfSystemState
+  "Pausable: setPaused did not return the implementing template"

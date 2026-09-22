@@ -10,7 +10,9 @@ packages:
   - experiments/test/ownable-v1
   - experiments/test/tokenCIP112-v1
   - packages/security/api-pausable-v1
+  - packages/security/pausable-v1
   - test/api-pausable-v1
+  - test/pausable-v1
   - examples/pausable/vault
   - examples/pausable/vault-test
   - examples/pausable/registry

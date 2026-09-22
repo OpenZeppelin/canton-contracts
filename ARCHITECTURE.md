@@ -47,24 +47,31 @@ upgrade or interoperability benefit.
 The three components under `experiments/` define templates and functions but no
 Daml interfaces, so each has one production package.
 
-### Interface-only components
+### Components without templates
 
-Some components have no implementation package of their own. Pausable is the
-model: the pause flag is a field of the consumer's template, because a guard
-that reads the contract being exercised is sound and a guard that fetches a
-separate switch contract is not, since a caller can substitute or omit a
-contract it supplies. Nothing therefore remains for an `openzeppelin-pausable-v1`
-package to hold. The component is the frozen `openzeppelin-api-pausable-v1` package alone, and the
-implementing templates live in consuming packages.
+Some components ship no template of their own. Pausable is the model: the
+pause flag is a field of the consumer's template, because a guard that reads
+the contract being exercised is sound and a guard that fetches a separate
+switch contract is not, since a caller can substitute or omit a contract it
+supplies. The implementing templates live in consuming packages.
 
-An interface-only component is still one package and one DAR, and it still
-follows the `openzeppelin-api-<component>-vN` freeze rule: no templates, no SCU, and a breaking change
-ships as a sibling `-v2` package. The consumer's implementing template upgrades
-through SCU independently, because the interface instance is declared on the
-template and the API package does not move. SCU can only add an interface
-instance to that template, never remove one, so adopting a `-v2` package means
-the template implements both interfaces for life; dropping the `-v1` instance
-needs a new template version outside SCU and an offline contract migration.
+The component is still two packages. `openzeppelin-api-pausable-v1` holds the
+interface and its view and nothing else, because that is the one part Daml
+cannot upgrade. `openzeppelin-pausable-v1` holds the guards, the flips, and the
+failure statuses. A bug fix in `pause` is a new version of the function
+package, and the frozen interface package does not move. The Splice token
+standard follows the same split, keeping its helper functions in
+`splice-token-standard-utils` beside its frozen interface packages.
+
+The API package follows the `openzeppelin-api-<component>-vN` freeze rule: no
+templates, no SCU, and a breaking change ships as a sibling `-v2` package. The
+function package depends on the API package alone, and a consumer data-depends
+on both DARs. The consumer's implementing template upgrades through SCU
+independently, because the interface instance is declared on the template and
+the API package does not move. SCU can only add an interface instance to that
+template, never remove one, so adopting an API `-v2` package means the template
+implements both interfaces for life; dropping the `-v1` instance needs a new
+template version outside SCU and an offline contract migration.
 
 ## Dependency policy
 

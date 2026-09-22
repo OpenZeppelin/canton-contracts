@@ -16,12 +16,14 @@ upload, and vet only the DARs they need.
 ## Packages
 
 No component has been released yet. One component has completed its design
-review and lives under [`packages/`](packages/); its interface is frozen and it
-builds and is tested in CI, but it has no release and no audit.
+review and lives under [`packages/`](packages/) as two packages: a frozen
+interface package and an upgradeable package of guard and flip functions. Both
+build and are tested in CI, but neither has a release or an audit.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|
-| [Pausable](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` | Pre-release; unaudited |
+| [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` | Pre-release; unaudited |
+| [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Pre-release; unaudited |
 
 Two further components are early-stage candidates under
 [`experiments/`](experiments/). They will be redesigned before they move into
@@ -84,10 +86,12 @@ dependencies:
   - daml-stdlib
 data-dependencies:
   - ../canton-contracts/packages/security/api-pausable-v1/.daml/dist/openzeppelin-api-pausable-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
 ```
 
 ```daml
-import OpenZeppelin.Api.PausableV1
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
 ```
 
 Each package README shows the consumer code for that component, and
@@ -119,8 +123,8 @@ release lineage.
 
 - One independently released unit is one Daml package and one DAR.
 - Components defining Daml interfaces use a frozen `-api-vN` package and a
-  separate upgradeable implementation package. Template-only components use one
-  implementation package.
+  separate upgradeable package for templates or helper functions. Template-only
+  components use one implementation package.
 - Breaking changes create a sibling `-v2` package and `V2` module suffix;
   compatible SCU releases retain the existing package name.
 - Composition between implementations happens through interfaces or in the

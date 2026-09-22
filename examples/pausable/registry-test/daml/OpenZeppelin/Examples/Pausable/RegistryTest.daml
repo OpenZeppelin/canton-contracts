@@ -8,7 +8,8 @@ import DA.Stack (HasCallStack)
 import DA.Time (addRelTime, hours)
 import Daml.Script
 
-import qualified OpenZeppelin.Api.PausableV1 as Pausable
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
 import OpenZeppelin.Examples.Pausable.Registry
 
 data Fixture = Fixture with
@@ -36,7 +37,7 @@ setup = do
     exerciseCmd registry Registry_Register with entry = "first"
   pure Fixture with ..
 
-readOf : ContractId Registry -> ContractId Pausable.Pausable
+readOf : ContractId Registry -> ContractId Pausable
 readOf = toInterfaceContractId
 
 -- | Run a submission and require the ledger to reject it with exactly this
@@ -86,7 +87,7 @@ test_auditorReadsTheView = script do
   f@Fixture{..} <- setup
   registry <- pauseWithReason f
   Some v <- queryInterfaceContractId auditor (readOf registry)
-  v === Pausable.PausableView with paused = True
+  v === PausableView with paused = True
 
 -- | While paused, a registration fails with `eEnforcedPause`.
 test_registerRefusedWhilePaused : Script ()

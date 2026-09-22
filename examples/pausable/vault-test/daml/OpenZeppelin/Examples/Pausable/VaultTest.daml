@@ -7,7 +7,8 @@ import DA.Fail (FailureStatus)
 import DA.Stack (HasCallStack)
 import Daml.Script
 
-import qualified OpenZeppelin.Api.PausableV1 as Pausable
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
 import OpenZeppelin.Examples.Pausable.Vault
 
 data Fixture = Fixture with
@@ -24,7 +25,7 @@ setup = do
     createCmd Vault with admin, owner, balance = 100.0, paused = False
   pure Fixture with ..
 
-readOf : ContractId Vault -> ContractId Pausable.Pausable
+readOf : ContractId Vault -> ContractId Pausable
 readOf = toInterfaceContractId
 
 -- | Run a submission and require the ledger to reject it with exactly this
@@ -64,7 +65,7 @@ test_pauseIsVisibleThroughTheView = script do
   Fixture{..} <- setup
   vault <- submit admin do exerciseCmd vault Vault_Pause
   Some v <- queryInterfaceContractId owner (readOf vault)
-  v === Pausable.PausableView with paused = True
+  v === PausableView with paused = True
   Some c <- queryContractId owner vault
   Pausable.isPaused c === True
 

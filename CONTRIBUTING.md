@@ -32,11 +32,12 @@ Production templates and choices appear under `Modules external to this
 package`; test fixtures appear under `Modules internal to this package`. Daml
 reports template and choice coverage rather than source-line or branch coverage.
 CI validates every production package and requires each production template to
-be created and each production choice to be exercised. For an interface-only
-package such as `packages/security/api-pausable-v1`, that report shows zero
-production templates and zero production choices, so it proves nothing about
-the package. The isolated test package is the whole evidence for such a
-package, and its fixtures appear under `Modules internal to this package`.
+be created and each production choice to be exercised. For a package without
+templates, such as `packages/security/api-pausable-v1` or
+`packages/security/pausable-v1`, that report shows zero production templates
+and zero production choices, so it proves nothing about the package. The
+isolated test package is the whole evidence for such a package, and its
+fixtures appear under `Modules internal to this package`.
 
 ## API documentation
 

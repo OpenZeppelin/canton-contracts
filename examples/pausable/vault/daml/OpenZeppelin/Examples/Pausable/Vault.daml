@@ -1,4 +1,4 @@
--- | Minimal adoption of `OpenZeppelin.Api.PausableV1`: a vault holding a
+-- | Minimal adoption of `Pausable`: a vault holding a
 -- balance for one owner, with an emergency stop that the admin controls.
 --
 -- Adopting `Pausable` takes one template field, an `interface instance`, one
@@ -10,7 +10,8 @@ module OpenZeppelin.Examples.Pausable.Vault where
 import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import qualified DA.TextMap as TextMap
-import qualified OpenZeppelin.Api.PausableV1 as Pausable
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
 
 -- | What the vault pays out. The owner receives it on redemption, and the admin
 -- receives it on an emergency drain.
@@ -36,8 +37,8 @@ template Vault
 
     -- Adopts the switch. The flag is a field of this contract, so the guards
     -- read it directly.
-    interface instance Pausable.Pausable for Vault where
-      view = Pausable.PausableView with paused
+    interface instance Pausable for Vault where
+      view = PausableView with paused
       setPaused b = toInterface (this with paused = b)
 
     -- A gated operation.

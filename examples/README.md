@@ -13,7 +13,7 @@ Directories group examples by component and never appear in a package name.
 
 ## `pausable`
 
-Consumers of `openzeppelin-api-pausable-v1`.
+Consumers of `openzeppelin-api-pausable-v1` and `openzeppelin-pausable-v1`.
 
 | Example | Tests | Shows |
 |---|---|---|
