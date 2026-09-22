@@ -61,16 +61,16 @@ interface Pausable where
 --     whenNotPaused this
 --     create this with balance = balance - amount
 -- ```
-whenNotPaused : (HasToInterface t Pausable) => t -> Update ()
+whenNotPaused : HasToInterface t Pausable => t -> Update ()
 whenNotPaused x = when (isPaused x) (failWithStatus eEnforcedPause)
 
 -- | Fail with `eExpectedPause` unless the contract is paused. Use it on
 -- recovery choices that run only during an incident.
-whenPaused : (HasToInterface t Pausable) => t -> Update ()
+whenPaused : HasToInterface t Pausable => t -> Update ()
 whenPaused x = unless (isPaused x) (failWithStatus eExpectedPause)
 
 -- | Read the flag as a pure function.
-isPaused : (HasToInterface t Pausable) => t -> Bool
+isPaused : HasToInterface t Pausable => t -> Bool
 isPaused x = (view (toInterface @Pausable x)).paused
 
 -- | Pause the contract and return the template value for the calling choice
@@ -101,8 +101,7 @@ isPaused x = (view (toInterface @Pausable x)).paused
 -- Fails with `eEnforcedPause` if already paused, `eFlagNotApplied` if
 -- `setPaused` left the flag unchanged, or `eImplementerTypeMismatch` if
 -- `setPaused` returned another template.
-pause : (HasToInterface t Pausable, HasFromInterface t Pausable)
-      => t -> Update t
+pause : Implements t Pausable => t -> Update t
 pause x = do
   whenNotPaused x
   y <- case fromInterface (setPaused (toInterface @Pausable x) True) of
@@ -123,8 +122,7 @@ pause x = do
 -- Fails with `eExpectedPause` if not paused, `eFlagNotApplied` if `setPaused`
 -- left the flag unchanged, or `eImplementerTypeMismatch` if `setPaused`
 -- returned another template.
-unpause : (HasToInterface t Pausable, HasFromInterface t Pausable)
-        => t -> Update t
+unpause : Implements t Pausable => t -> Update t
 unpause x = do
   whenPaused x
   y <- case fromInterface (setPaused (toInterface @Pausable x) False) of
