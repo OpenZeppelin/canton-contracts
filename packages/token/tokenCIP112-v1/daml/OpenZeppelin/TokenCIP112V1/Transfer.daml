@@ -19,6 +19,14 @@ import Splice.TokenStandard.Utils
 import OpenZeppelin.TokenCIP112V1.Base
 import OpenZeppelin.TokenCIP112V1.Holding
 
+-- | A funded transfer offer awaiting the receiver's decision.
+--
+-- The admin and the sender's account parties sign; the receiver's account
+-- parties observe so their wallet can render and answer the offer, and they
+-- also hold the funding lock so they can read the locked holding backing it.
+-- Disclosure: those parties see the contract and its view; every terminal
+-- choice is witnessed by the receiver parties even when they are not the
+-- actor.
 template TokenTransferInstruction with
     transfer : TransferInstructionV2.Transfer
       -- ^ The transfer as instructed, with `inputHoldingCids` rewritten to the
@@ -87,23 +95,24 @@ template TokenTransferInstruction with
         archiveAndCheckActors self arg.actors [senderParties transfer]
         returnFundsToSender this "transfer withdrawn"
 
-    -- Admin expiry of a stale instruction, mirroring allocation expiry: the
-    -- storage bound has passed and the locked funds return to the sender. Runs
-    -- in the window between `expiresAt` and `lockExpiresAt`, where the funding
-    -- is guaranteed to still be locked.
     choice TokenTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
+      -- ^ Admin expiry of a stale instruction, mirroring allocation expiry:
+      -- the storage bound has passed and the locked funds return to the
+      -- sender. Runs in the window between `expiresAt` and `lockExpiresAt`,
+      -- where the funding is guaranteed to still be locked.
       controller transfer.instrumentId.admin
       do
         assertDeadlineExceeded "expiresAt" expiresAt
         returnFundsToSender this "transfer instruction expired"
 
-    -- | Last-resort admin cleanup for an instruction whose funding was already
-    -- reclaimed (re-spent as an expired-lock input, or self-unlocked), which
-    -- makes every fund-returning path fail on the archived holding. Only
-    -- available once the lock has expired, by which point the sender can always
-    -- recover the holding via `TokenHolding_OwnerUnlock`, so it cannot strand
-    -- funds.
     choice TokenTransferInstruction_AdminGC : ()
+      -- ^ Last-resort admin cleanup for an instruction whose funding was
+      -- already reclaimed (re-spent as an expired-lock input, or
+      -- self-unlocked), which makes every fund-returning path fail on the
+      -- archived holding. Archives the instruction and creates nothing. Only
+      -- available once the lock has expired, by which point the sender can
+      -- always recover the holding via `TokenHolding_OwnerUnlock`, so it
+      -- cannot strand funds.
       controller transfer.instrumentId.admin
       do assertDeadlineExceeded "lockExpiresAt" lockExpiresAt
 

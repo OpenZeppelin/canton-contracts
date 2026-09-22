@@ -1,5 +1,20 @@
 -- | Allocation template implementing the Token Standard V2 `Allocation`
 -- interface.
+--
+-- An allocation is born ready to settle: its funding is already locked when
+-- the contract is created (see `allocateImpl` in the Registry module), so no
+-- pending-approval state exists. Settlement consumes the locked holdings and
+-- nets the authorizer's credit per instrument across the effective transfer
+-- legs; every per-instrument total must be non-negative and must cover any
+-- requested next-iteration reserve, so a settle can never create or strand
+-- value within the allocation.
+--
+-- With `nextIterationFunding` set, settlement iterates: each settle may carry
+-- executor-supplied extra legs, reserves funding as freshly locked holdings,
+-- and creates a successor allocation in the same transaction. Every exit path
+-- — settle, withdraw, cancel, admin expiry, admin GC — either returns value to
+-- the authorizer or runs after the point where `TokenHolding_OwnerUnlock`
+-- already guarantees the authorizer's own recovery.
 module OpenZeppelin.TokenCIP112V1.Allocation where
 
 import DA.Assert (assertDeadlineExceeded, assertWithinDeadline)
@@ -23,6 +38,12 @@ import OpenZeppelin.TokenCIP112V1.Holding
 -- `allocation.nextIterationFunding` is set, iterated settlement is enabled:
 -- each settle may carry executor-supplied extra transfer legs and reserve
 -- funding for a successor allocation, created in the same transaction.
+--
+-- The admin and the authorizer's account parties sign so that neither side
+-- can create or drop an allocation alone; the settlement executors observe so
+-- they can drive settlement. Disclosure: the contract and its view — including
+-- the leg sides and locked-holding references — are visible to exactly those
+-- parties.
 template TokenAllocation with
     originalAllocationCid : Optional (ContractId AllocationV2.Allocation)
     settlement : AllocationV2.SettlementInfo
@@ -114,13 +135,15 @@ template TokenAllocation with
           holdings <- unlockAndLog this "allocation cancelled"
           pure (holdings, emptyMetadata)
 
-    -- | Last-resort admin cleanup for an allocation whose funding was already
-    -- reclaimed elsewhere (the authorizer re-spent it as an expired-lock input,
-    -- or self-unlocked it), which makes every fund-returning path fail on the
-    -- archived holding. Only available once the funding lock has expired, by
-    -- which time the authorizer can always recover the holding themselves via
-    -- `TokenHolding_OwnerUnlock`, so this can never strand funds.
     choice TokenAllocation_AdminGC : ()
+      -- ^ Last-resort admin cleanup for an allocation whose funding was
+      -- already reclaimed elsewhere (the authorizer re-spent it as an
+      -- expired-lock input, or self-unlocked it), which makes every
+      -- fund-returning path fail on the archived holding. Archives the
+      -- allocation and creates nothing. Only available once the funding lock
+      -- has expired, by which time the authorizer can always recover the
+      -- holding themselves via `TokenHolding_OwnerUnlock`, so this can never
+      -- strand funds.
       controller allocation.admin
       do assertDeadlineExceeded "allocation lockExpiresAt" lockExpiresAt
 

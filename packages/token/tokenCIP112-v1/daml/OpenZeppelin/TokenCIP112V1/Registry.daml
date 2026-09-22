@@ -1,6 +1,13 @@
 -- | The registry rules contract: transfer factory, allocation factory, and
--- settlement factory on a single long-lived admin contract, plus admin expiry
--- of stale allocations.
+-- settlement factory on a single long-lived admin contract, plus admin supply
+-- (mint, burn) and cleanup (expiry, GC) operations.
+--
+-- `TokenRules` is the contract wallets discover and exercise; every workflow
+-- in the package starts from one of its factory choices. The factory choices
+-- are nonconsuming, so concurrent workflows never contend on the registry
+-- contract, and each workflow's own contracts carry everything later stages
+-- need — a `TokenAllocation` snapshots `maxTTL` and `lockGrace` at creation,
+-- so archiving or replacing the rules contract never breaks live workflows.
 module OpenZeppelin.TokenCIP112V1.Registry where
 
 import DA.Assert (assertDeadlineExceeded, assertWithinDeadline)
@@ -22,6 +29,13 @@ import OpenZeppelin.TokenCIP112V1.Holding
 import OpenZeppelin.TokenCIP112V1.Allocation
 import OpenZeppelin.TokenCIP112V1.Transfer
 
+-- | The registry's policy and entry-point contract, signed by the admin alone.
+--
+-- Disclosure: consumers obtain the contract by explicit disclosure and any
+-- party can read the factory views through the standard `_PublicFetch`
+-- choices; the payload holds only the admin and the two policy knobs.
+-- Creation requires only the admin's authority; the ensure clause rejects
+-- non-positive `maxTTL` or `lockGrace`.
 template TokenRules with
     admin : Party
     maxTTL : RelTime
@@ -59,6 +73,11 @@ template TokenRules with
         let perAllocationExtraArgs _allocView _settleArg = pure ExtraArgs with
               context = emptyChoiceContext
               meta = arg.extraArgs.meta
+        -- The vendored default validates each `FinalizedAllocation`'s extra
+        -- legs but not its `nextIterationFunding` (it re-checks the
+        -- allocation's own reserve instead). The `validateNextIterationArgs`
+        -- call in `allocation_settleImpl` is the effective guard for that
+        -- field; do not remove it as redundant.
         settlementFactoryV2_settleBatchDefaultImpl perAllocationExtraArgs admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for TokenRules where
@@ -75,11 +94,11 @@ template TokenRules with
       transferFactory_transferExtraObservers = transferFactoryV2_privateAsset_transferExtraObserversDefaultImpl
       transferFactory_transferImpl _self arg = transferImpl admin maxTTL lockGrace arg
 
-    -- Batched admin expiry of stale allocations through the standard cancel
-    -- choice. Actors, admin, and expiry are re-verified per allocation here,
-    -- independently of the cancel implementation, so this entry point cannot
-    -- be turned into cancellation of live allocations.
     nonconsuming choice TokenRules_ExpireAllocations : ()
+      -- ^ Batched admin expiry of stale allocations through the standard
+      -- cancel choice. Actors, admin, and expiry are re-verified per
+      -- allocation here, independently of the cancel implementation, so this
+      -- entry point cannot be turned into cancellation of live allocations.
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
         observers : [Party]
@@ -99,11 +118,11 @@ template TokenRules with
           _ <- exercise allocCid cancelArg
           pure ()
 
-    -- | Issue holdings into an account, emitting the standard mint event so
-    -- supply changes are visible to token-standard history parsers. Without an
-    -- evented path, holdings could only appear via a raw `create TokenHolding`,
-    -- which explains no balance change to any wallet.
     nonconsuming choice TokenRules_Mint : ContractId TokenHolding
+      -- ^ Issue holdings into an account, emitting the standard mint event so
+      -- supply changes are visible to token-standard history parsers. Without
+      -- an evented path, holdings could only appear via a raw
+      -- `create TokenHolding`, which explains no balance change to any wallet.
       with
         account : HoldingV2.Account
         instrumentId : Text
@@ -121,10 +140,11 @@ template TokenRules with
             [toInterfaceContractId @HoldingV2.Holding holdingCid]
         pure holdingCid
 
-    -- | Burn a holding, emitting the standard burn event. The account is a
-    -- choice argument because the controller set has to be known before the
-    -- holding can be fetched; it is then checked against the holding itself.
     nonconsuming choice TokenRules_Burn : ()
+      -- ^ Burn a holding, emitting the standard burn event. Archives the
+      -- holding; locked holdings are refused. The account is a choice argument
+      -- because the controller set has to be known before the holding can be
+      -- fetched; it is then checked against the holding itself.
       with
         holdingCid : ContractId TokenHolding
         account : HoldingV2.Account
@@ -141,9 +161,9 @@ template TokenRules with
             (reasonToMeta reason emptyMetadata)
             [toInterfaceContractId @HoldingV2.Holding holdingCid]
 
-    -- Batched admin expiry of stale transfer instructions, the transfer-side
-    -- counterpart of TokenRules_ExpireAllocations.
     nonconsuming choice TokenRules_ExpireTransferInstructions : ()
+      -- ^ Batched admin expiry of stale transfer instructions, the
+      -- transfer-side counterpart of `TokenRules_ExpireAllocations`.
       with
         instructionCids : [ContractId TokenTransferInstruction]
         observers : [Party]

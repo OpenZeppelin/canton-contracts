@@ -51,11 +51,13 @@ it ships as a single implementation package.
   successor like any other allocation.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
-- The exact-cover check runs only inside `SettlementFactory_SettleBatch`. A
-  direct `Allocation_Settle` by the admin plus the executors bypasses it and
-  can create or destroy value, so the admin's authority must never co-sign a
-  settle outside the factory. See `ideas.md` on reintroducing the on-ledger
-  guard that removed this trust assumption.
+- Only regular (owned) accounts author allocations and hold balances. The
+  special mint and burn accounts appear in events as the other side of supply
+  changes and nowhere else; supply changes go through `TokenRules_Mint` and
+  `TokenRules_Burn`.
+
+For multi-participant deployment, disclosure, and wallet integration, see
+[`integration-guide.md`](integration-guide.md).
 
 ## Standards conformance
 
@@ -68,6 +70,14 @@ the same templates: the V1 DARs are vendored under
 [`dars/vendor/`](../../../dars/vendor/), and the vendored utils ship
 `...V1...DefaultImplUsingV2` helpers for exactly this pattern.
 
+## Compatibility
+
+The package builds with the workspace SDK declared in
+[`multi-package.yaml`](../../../multi-package.yaml) and targets Daml-LF 2.1.
+It is the first release of the `openzeppelin-tokenCIP112-v1` SCU lineage:
+templates upgrade in place, and the vendored interface DARs are pinned until
+upstream cuts a release (see the warning above).
+
 ## Build
 
 From the repository root:
@@ -75,6 +85,30 @@ From the repository root:
 ```sh
 DAML_PACKAGE=packages/token/tokenCIP112-v1 dpm build
 ```
+
+## Security caveats
+
+- The exact-cover check runs only inside `SettlementFactory_SettleBatch`. A
+  direct `Allocation_Settle` by the admin plus the executors bypasses it and
+  can create or destroy value, so the admin's authority must never co-sign a
+  settle outside the factory. Operate the admin party so that it signs settles
+  only through the settlement factory. See `ideas.md` on reintroducing the
+  on-ledger guard that removes this trust assumption.
+- The vendored settlement-factory default does not validate a
+  `FinalizedAllocation.nextIterationFunding`; the check in
+  `allocation_settleImpl` is the effective guard. Registry forks that replace
+  that choice body must keep an equivalent check.
+- `maxTTL` and `lockGrace` are only required to be positive. A `lockGrace` too
+  short for the admin's cleanup automation to act in leaves expiry to the
+  owner-recovery path; size it to the automation's reaction time (minutes to
+  hours), and size `maxTTL` to the longest workflow the registry accepts.
+- Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
+  every account party. On accounts with a distinct provider, an unresponsive
+  provider blocks recovery until it cooperates; single-party accounts avoid
+  this.
+- An allocation's view advertises the withdraw action statically. For a
+  committed allocation the choice still fails until the settlement deadline
+  passes; wallets should treat the advertised action as "who", not "when".
 
 ## Sandbox validation
 

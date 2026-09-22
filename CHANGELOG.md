@@ -32,6 +32,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   `nextIterationFunding` accept executor-supplied extra transfer legs per
   settlement iteration, bounded by the locked reserve, and can roll proceeds
   into a successor allocation returned as `nextIterationAllocationCid`.
+- `AllocationFactory_Allocate` rejects allocations whose authorizer is not a
+  regular (owned) account; the special mint and burn accounts cannot author
+  allocations.
 
 ### `openzeppelin-access-control-v1`
 

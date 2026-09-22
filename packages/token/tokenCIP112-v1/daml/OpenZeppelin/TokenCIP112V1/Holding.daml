@@ -1,4 +1,18 @@
--- | Holding template for the CIP-0112 settlement package.
+-- | The asset contract of the package and the helpers every value-moving
+-- module builds on.
+--
+-- Holdings are immutable: every balance change archives input holdings and
+-- creates output holdings, so an account's balance is the sum of its active
+-- `TokenHolding` contracts. A lock is a reservation recorded on the holding
+-- itself; the workflow contract that reserved the funds only references the
+-- locked holding by contract id. Package code enforces the lock uniformly:
+-- spending free balance goes through `fetchAndArchiveUnlockedHolding`,
+-- consuming a reservation goes through `fetchAndArchiveLockedHolding`, and
+-- releasing one goes through `unlockHoldings`.
+--
+-- Every lock carries a finite absolute expiry. After it passes, the account
+-- parties recover the funds through `TokenHolding_OwnerUnlock` or spend the
+-- holding directly, so no reservation can strand value.
 module OpenZeppelin.TokenCIP112V1.Holding where
 
 import DA.Assert (assertDeadlineExceeded)
@@ -13,6 +27,11 @@ import Splice.TokenStandard.Utils
 -- | A holding is maintained jointly by the instrument admin and the account
 -- parties. Lock holders observe the contract so they can settle or release the
 -- locked funds. Regular accounts only: special (ownerless) accounts never hold.
+--
+-- Disclosure: the contract and its `HoldingV2.Holding` view are visible to the
+-- admin, the account parties, and the current lock holders; nobody else sees a
+-- balance. Creating a holding requires the admin's and every account party's
+-- authority, so holdings only ever appear through this package's choices.
 template TokenHolding with
     holding : HoldingV2.HoldingView
   where -- INFO - accountParties returns the party responsible for the account, which is the owner, or the registry admin when the account is a special instrument admin-managed account such as mint or burn. If the account also has a provider that is a different party, include it as well.
@@ -25,11 +44,13 @@ template TokenHolding with
       -- model. Reject it at creation rather than mis-handle it later.
       && optional True (isNone . (.expiresAfter)) holding.lock
 
-    -- | Reclaim a holding whose lock has expired, without routing it through a
-    -- transfer or allocation. Without this, a locked holding whose referencing
-    -- workflow contract was garbage-collected would be unrecoverable, since
-    -- nothing else can clear a lock.
     choice TokenHolding_OwnerUnlock : ContractId TokenHolding
+      -- ^ Reclaim a holding whose lock has expired, without routing it through
+      -- a transfer or allocation. Archives this holding and recreates it
+      -- unlocked. Fails while the lock is live or indefinite. Without this, a
+      -- locked holding whose referencing workflow contract was
+      -- garbage-collected would be unrecoverable, since nothing else can clear
+      -- a lock.
       controller accountParties holding.instrumentId.admin holding.account
       do
         lock <- case holding.lock of
