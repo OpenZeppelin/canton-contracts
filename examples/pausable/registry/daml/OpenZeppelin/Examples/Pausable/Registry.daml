@@ -1,15 +1,10 @@
--- | Adoption of `OpenZeppelin.Api.PausableV1` with sibling fields set in the
--- same transaction as the flip.
+-- | Adoption of `OpenZeppelin.Api.PausableV1` by a registry that serves
+-- CIP-0112 metadata.
 --
--- A registry that serves CIP-0112 metadata records why a pause is in force and
--- when it is expected to end. Those fields belong to the registry, not to the
--- frozen interface: `pause` guards, sets the flag, and returns the value,
--- and the choice sets the sibling fields on it before the create.
---
--- The metadata endpoint therefore serves `paused` and `pauseInfo{reason,
--- until}` from one on-ledger contract. If CIP-0112 extends `PauseInfo`, this
--- template adds a field under Smart Contract Upgrade and the interface does not
--- move.
+-- `pauseReason` and `pauseUntil` are fields of the registry. The flip choices
+-- set them on the value that `pause` returns and create once, so the flag and
+-- its metadata change in one transaction. If CIP-0112 extends `PauseInfo`,
+-- the registry adds a field under Smart Contract Upgrade.
 module OpenZeppelin.Examples.Pausable.Registry where
 
 import DA.Action (when)
@@ -21,16 +16,14 @@ template Registry
   with
     admin : Party
     auditor : Party
-      -- ^ Reads the registry and its pause state; changes nothing.
+      -- ^ Reads the registry and its pause state.
     paused : Bool
     pauseReason : Optional Text
       -- ^ CIP-0112 `pauseInfo.reason`.
     pauseUntil : Optional Time
-      -- ^ CIP-0112 `pauseInfo.until`. Published for reporting; nothing in this
-      --   example enforces it. An expiring pause is the consumer's own choice
-      --   to write.
+      -- ^ CIP-0112 `pauseInfo.until`, published for reporting.
     entries : [Text]
-      -- ^ What the registry holds; the state that a pause stops changing.
+      -- ^ The state that a pause protects.
   where
     signatory admin
     observer auditor
@@ -39,9 +32,7 @@ template Registry
       view = Pausable.PausableView with paused
       setPaused b = toInterface (this with paused = b)
 
-    -- The flag and the reason change together, in one transaction, through the
-    -- library rather than around it. `pause` returns the value and this
-    -- consuming choice owns the create.
+    -- Sets the flag and its metadata in one transaction.
     choice Registry_Pause : ContractId Registry
       with
         reason : Optional Text
@@ -51,14 +42,14 @@ template Registry
         r <- Pausable.pause this
         create r with pauseReason = reason, pauseUntil = until
 
-    -- Unpausing clears what the pause recorded.
+    -- Clears the pause metadata.
     choice Registry_Unpause : ContractId Registry
       controller admin
       do
         r <- Pausable.unpause this
         create r with pauseReason = None, pauseUntil = None
 
-    -- A gated operation, guarded the same way as in any other adopter.
+    -- A gated operation.
     choice Registry_Register : ContractId Registry
       with
         entry : Text

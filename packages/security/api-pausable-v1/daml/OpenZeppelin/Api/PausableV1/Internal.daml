@@ -1,5 +1,4 @@
--- | Implementation details of `OpenZeppelin.Api.PausableV1`. Not public API;
--- the contents may change in any release.
+-- | Internal helpers for `OpenZeppelin.Api.PausableV1`.
 module OpenZeppelin.Api.PausableV1.Internal where
 
 import DA.Fail (FailureCategory, FailureStatus (..))

@@ -1,5 +1,5 @@
--- | Consumer fixtures: the authority models a template author can wire, the
--- sibling-field case, and implementations that break the `setPaused` law.
+-- | Consumer fixtures: single-party and credential-based pause authority, the
+-- sibling-field case, and implementations that break the `setPaused` rule.
 module OpenZeppelin.Api.PausableV1TestFixtures where
 
 import DA.Action (unless)
@@ -8,9 +8,8 @@ import qualified DA.TextMap as TextMap
 
 import OpenZeppelin.Api.PausableV1
 
--- Consumer-side failures, raised with `failWithStatus` so that a client matches
--- on a stable `errorId` rather than on message text. This is the convention the
--- production module follows, and the one a consumer should copy.
+-- Consumer-side failures, raised with `failWithStatus` so tests match on a
+-- stable `errorId`.
 fixtureFailure : Text -> Text -> FailureStatus
 fixtureFailure name message = FailureStatus with
   errorId = "example.com/pausable-test-" <> name
@@ -32,9 +31,8 @@ eCredentialNotCallers : FailureStatus
 eCredentialNotCallers = fixtureFailure "credential-not-callers"
   "RoleVault: credential is not the caller's"
 
--- | The single-party case. The pause authority is one party, so the consumer's
--- choice names it as the controller and creates what `pause` returns. The
--- flip choices are consuming, so the choice archives the predecessor.
+-- | The single-party case: the admin is the pause authority, and the consuming
+-- flip choices create what `pause` and `unpause` return.
 template Vault
   with
     admin : Party
@@ -62,7 +60,7 @@ template Vault
       do
         create =<< unpause this
 
-    -- Gated in normal operation.
+    -- A gated operation.
     choice Vault_Withdraw : ContractId Vault
       with amount : Int
       controller holder
@@ -72,15 +70,14 @@ template Vault
         unless (amount <= balance) (failWithStatus eInsufficientBalance)
         create this with balance = balance - amount
 
-    -- The mirror image: a recovery path that runs only during an incident.
+    -- A recovery path that runs only while paused.
     choice Vault_EmergencyDrain : ContractId Vault
       controller admin
       do
         whenPaused this
         create this with balance = 0
 
--- | A credential standing in for an AccessControl `RoleGrant`. Authorization
--- that depends on a contract, which a controller expression cannot read.
+-- | A credential standing in for an AccessControl `RoleGrant`.
 template PauseCredential
   with
     admin : Party
@@ -89,9 +86,8 @@ template PauseCredential
     signatory admin
     observer account
 
--- | The credential case. Its pause authority is "whoever holds a credential",
--- which no single `Party` expresses, so the choice takes the caller and the
--- credential as arguments and checks them before calling `pause`.
+-- | The credential case: the flip choice takes the caller and a credential,
+-- checks them in the body, then calls `pause`.
 template RoleVault
   with
     admin : Party
@@ -122,10 +118,8 @@ template RoleVault
         whenNotPaused this
         create this
 
--- | The sibling-field case: a registry that records why a pause is in force in
--- the same transaction as the flip, and clears it on the way out. `paused`
--- stays the only field in the frozen view. The consuming choice sets the
--- sibling field on the value that `pause` returns and creates once.
+-- | The sibling-field case: the flip choice records the pause reason on the
+-- value that `pause` returns and creates once.
 template Registry
   with
     admin : Party
@@ -152,10 +146,9 @@ template Registry
         r <- unpause this
         create r with pauseReason = None
 
--- | An unrelated template holding a `ContractId Pausable`. `pause` type checks
--- on the interface value, guards it, and returns a `Pausable` with the flag
--- set - but there is no way to create from an interface value, so the caller
--- cannot flip anything.
+-- | An unrelated template holding a `ContractId Pausable`. `pause` returns a
+-- value, and only the implementing template's signatories can create the
+-- successor, so the ledger stays unchanged.
 template Rogue
   with
     caller : Party
@@ -168,14 +161,13 @@ template Rogue
       controller caller
       do
         p <- fetch target
-        -- Yields a value with the flag set, and changes nothing on the ledger.
+        -- Yields a value with the flag set. The ledger stays unchanged.
         flipped <- pause p
         pure (isPaused flipped)
 
--- | A consumer that flips from a nonconsuming choice and does not archive
--- `self`. `pause` archives nothing, so the predecessor stays active beside the
--- paused successor and no error reports it. The obligation to make the flip
--- choice consuming is the consumer's, and nothing in the library enforces it.
+-- | Flips from a nonconsuming choice without archiving `self`, so the
+-- predecessor stays active beside the successor. The choice kind is the
+-- consumer's responsibility.
 template LeakyVault
   with
     admin : Party
@@ -192,11 +184,11 @@ template LeakyVault
       do
         create =<< pause this
 
--- Implementations that break the `setPaused` law
+-- Implementations that break the `setPaused` rule
 -------------------------------------------------------
 
--- | Ignores the argument, so the flag never changes. The commonest way to wire
--- the interface wrongly, and the reason `eFlagNotApplied` exists.
+-- | Ignores the argument, so the flag never changes. `eFlagNotApplied`
+-- catches it.
 template BrokenIgnoresFlag
   with
     admin : Party
@@ -230,8 +222,8 @@ template Decoy
       view = PausableView with paused
       setPaused b = toInterface (this with paused = b)
 
--- | Returns someone else's template. The type checks, because `setPaused`
--- returns `Pausable` and any implementer satisfies that.
+-- | Returns another implementer's template. `eImplementerTypeMismatch`
+-- catches it.
 template BrokenWrongTemplate
   with
     admin : Party

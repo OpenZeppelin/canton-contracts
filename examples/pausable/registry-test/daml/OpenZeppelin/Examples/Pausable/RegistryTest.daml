@@ -63,8 +63,7 @@ test_registerAddsEntry = script do
   Some r <- queryContractId admin registry
   r.entries === ["second", "first"]
 
--- | An empty entry is refused by the registry's own check, which has nothing
--- to do with pausing.
+-- | An empty entry fails the registry's own check.
 test_registerRefusesEmptyEntry : Script ()
 test_registerRefusesEmptyEntry = script do
   Fixture{..} <- setup
@@ -81,8 +80,7 @@ test_pauseRecordsReasonAndDeadline = script do
   r.pauseReason === Some "incident 42"
   r.pauseUntil === Some until
 
--- | The frozen view carries the flag alone, and an observer reads it without
--- any choice.
+-- | An observer reads the flag through the view.
 test_auditorReadsTheView : Script ()
 test_auditorReadsTheView = script do
   f@Fixture{..} <- setup
@@ -90,7 +88,7 @@ test_auditorReadsTheView = script do
   Some v <- queryInterfaceContractId auditor (readOf registry)
   v === Pausable.PausableView with paused = True
 
--- | While paused, a registration is refused and changes nothing.
+-- | While paused, a registration fails with `eEnforcedPause`.
 test_registerRefusedWhilePaused : Script ()
 test_registerRefusedWhilePaused = script do
   f@Fixture{..} <- setup
