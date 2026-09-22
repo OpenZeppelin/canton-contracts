@@ -35,9 +35,9 @@ them beside templates prevents those templates from benefiting from SCU.
 When a component defines an interface, use two production packages:
 
 ```text
-<component>-api-v1     Frozen interfaces, exceptions, and API types; no templates
-<component>-v1         Templates implementing the API
-<component>-test       Daml Script tests; never released
+openzeppelin-api-<component>-v1    Frozen interfaces, exceptions, API types
+openzeppelin-<component>-v1        Templates or functions implementing the API
+openzeppelin-<component>-v1-test   Daml Script tests; never released
 ```
 
 API packages may depend only on other API packages. A template-only component
@@ -93,7 +93,7 @@ contract-model generation:
 
 ```text
 openzeppelin-ownable-v1
-openzeppelin-rbac-api-v1
+openzeppelin-api-rbac-v1
 openzeppelin-rbac-v1
 ```
 

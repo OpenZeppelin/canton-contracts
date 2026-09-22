@@ -1,22 +1,23 @@
 -- | OpenZeppelin Pausable - the guards, flips, and failure statuses for the
 -- `Pausable` interface in `OpenZeppelin.Api.PausableV1`.
 --
--- Gated choices call `whenNotPaused this`. The consumer's own choices call
--- `pause` and `unpause` to flip the flag and create the successor contract.
+-- Gated choices call `whenNotPaused this`. The consumer's own flip choices
+-- call `pause` and `unpause`, which return the template value with the flag
+-- flipped, and create it. The controller and body of the flip choice carry
+-- the pause authority:
 --
 -- ```
--- choice TokenRules_Pause : ContractId TokenRules
---   with caller : Party; grantCid : ContractId RoleGrant
+-- choice RoleVault_Pause : ContractId RoleVault
+--   with
+--     caller : Party
+--     credCid : ContractId PauseCredential
 --   controller caller
 --   do
---     grant <- fetch grantCid
---     requireRole caller "PAUSER_ROLE" admin grant
+--     cred <- fetch credCid
+--     unless (cred.admin == admin) (failWithStatus eWrongCredentialIssuer)
+--     unless (cred.account == caller) (failWithStatus eCredentialNotCallers)
 --     create =<< pause this
 -- ```
---
--- This package holds no interface and no template, so a fix to a function
--- here ships as a new version of this package while the interface package
--- stays frozen.
 module OpenZeppelin.PausableV1 where
 
 import DA.Action (unless, when)
@@ -58,19 +59,8 @@ isPaused x = (view (toInterface @Pausable x)).paused
 --
 -- The calling choice supplies the pause authority through its controller and
 -- body. To change other fields in the same transaction, update the returned
--- value and create once:
---
--- ```
--- choice Registry_Pause : ContractId Registry
---   with reason : Optional Text
---   controller admin
---   do
---     r <- pause this
---     create r with pauseReason = reason
--- ```
---
--- Keep `paused` and the fields that determine signatories and observers
--- unchanged in that update.
+-- value and create once. Keep `paused` and the fields that determine
+-- signatories and observers unchanged in that update.
 --
 -- Fails with `eEnforcedPause` if already paused, `eFlagNotApplied` if
 -- `setPaused` left the flag unchanged, or `eImplementerTypeMismatch` if

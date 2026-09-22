@@ -50,10 +50,11 @@ DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc docs \
   packages/security/api-pausable-v1/daml/OpenZeppelin/Api/PausableV1.daml
 ```
 
-Run it after changing a doc comment and read the output. The tool rejects a
-leading `-- |` comment on an interface method; document a method with a
-trailing `-- ^` comment under its signature instead. A parse error there
-produces no output for the whole module.
+Pass every source file of the package, because a file renders only its own
+module. Run it after changing a doc comment and read the output. The tool
+rejects a leading `-- |` comment on an interface method; document a method
+with a trailing `-- ^` comment under its signature instead. A parse error
+there produces no output for the whole module.
 
 ## Choosing the right repository
 

@@ -1,29 +1,29 @@
 -- | OpenZeppelin Pausable - the interface for an emergency-stop switch on a
 -- Daml template.
 --
--- The implementing template holds a `paused` flag and implements `Pausable`.
--- The guards, the flips, and the failure statuses live in the separate
--- `openzeppelin-pausable-v1` package, module `OpenZeppelin.PausableV1`, so
--- that a fix to them ships without touching this frozen interface.
+-- The implementing template holds a `paused` flag and declares an
+-- `interface instance Pausable`. The guards, the flips, and the failure
+-- statuses live in the `openzeppelin-pausable-v1` package, module
+-- `OpenZeppelin.PausableV1`.
 --
 -- The flag is a field of the contract being exercised, so a guard reads it
--- with no extra fetch, no extra disclosure, and no extra authority.
---
--- The consumer decides who may pause. Authorization lives in the controller
--- and body of the consumer's flip choice, so any model fits: a single party,
--- a role grant, an M-of-N approval, or a timelock.
+-- from the contract it runs on. The consumer decides who may pause:
+-- authorization lives in the controller and body of the consumer's flip
+-- choice, so any model fits, from a single party to a role grant, an M-of-N
+-- approval, or a timelock.
 --
 -- The switch is per contract and applies to new transactions: a gated choice
 -- refuses to start while the flag is set.
 module OpenZeppelin.Api.PausableV1 where
 
--- | Whether an implementing contract is currently paused.
+-- | The view of a `Pausable` contract.
 data PausableView = PausableView with
     paused : Bool
-      -- ^ Whether the contract is currently paused.
+      -- ^ `True` while the contract is paused.
   deriving (Eq, Show)
 
--- | The switch. Implement it on any template that holds a pause flag.
+-- | The emergency-stop switch, implemented by any template that holds a
+-- `paused` flag.
 interface Pausable where
   viewtype PausableView
 
@@ -35,6 +35,5 @@ interface Pausable where
     --   setPaused b = toInterface (this with paused = b)
     --   ```
     --
-    --   `pause` and `unpause` in `OpenZeppelin.PausableV1` call this method
-    --   and verify the result. Call those from choice bodies instead of
-    --   `setPaused` directly.
+    --   Call `pause` and `unpause` in `OpenZeppelin.PausableV1` from choice
+    --   bodies instead of `setPaused` directly.

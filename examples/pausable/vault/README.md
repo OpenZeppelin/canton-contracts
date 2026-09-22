@@ -19,11 +19,11 @@ for one owner, with an emergency stop that the admin controls.
   choice exercises, so no caller supplies the pause state.
 - `whenPaused this` on `Vault_EmergencyDrain`, a recovery path that runs only
   during an incident and moves the balance to the admin as a `Payout`.
-- `Vault_Redeem`, an escape hatch that carries no guard, so a pause does not
-  trap the owner's funds: the owner takes the whole balance as a `Payout` at
-  any time. Gating is a decision per choice.
-- `Vault_Pause` and `Vault_Unpause`, the choices that name the pause authority.
-  The library ships none.
+- `Vault_Redeem`, the ungated escape hatch: the owner takes the whole balance
+  as a `Payout` at any time, paused or not, so the owner's funds stay
+  reachable through a pause. Gating is a decision per choice.
+- `Vault_Pause` and `Vault_Unpause`, the consumer-written choices that name
+  the pause authority.
 - An off-ledger read of `PausableView` through the interface, which works
   against every implementing template.
 
@@ -38,13 +38,8 @@ return to normal operation.
 authority. The flip creates the successor contract, which preserves the
 signatory set, so the choice already carries the authority the create needs.
 
-The pause authority does not have to be a signatory. Any party a controller
-expression can name works. A non-stakeholder controller sees the template
-payload at flip time, because a controller is an informee of the exercise node.
-
-The flip choices are consuming. `pause` and `unpause` return the
-flipped value and archive nothing, so the choice archives the predecessor and
-creates the successor.
+The flip choices are consuming and create the value that `pause` and
+`unpause` return.
 
 ## Build and run
 

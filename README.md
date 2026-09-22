@@ -15,10 +15,9 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-No component has been released yet. One component has completed its design
-review and lives under [`packages/`](packages/) as two packages: a frozen
-interface package and an upgradeable package of guard and flip functions. Both
-build and are tested in CI, but neither has a release or an audit.
+The Pausable component lives under [`packages/`](packages/) as two packages:
+a frozen interface package and an upgradeable package of guard and flip
+functions. Neither has a release or an audit.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|

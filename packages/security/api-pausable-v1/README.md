@@ -11,31 +11,20 @@ A frozen Daml interface that gives a template an emergency-stop switch.
 
 ## What it provides
 
-One interface, `Pausable`, which names no pause authority and declares no
-choice:
+- `Pausable`: the interface your template declares an instance of.
+- `PausableView`: the flag, readable through the interface by every party
+  that sees the contract.
+- `setPaused`: the method your template writes; `pause` and `unpause` in
+  [`openzeppelin-pausable-v1`](../pausable-v1/) call it.
 
-- `PausableView`: the flag, and the whole frozen data surface.
-- `setPaused`: the implementer's one obligation. A pure method that returns the
-  template value with the flag set and every other field unchanged.
-
-The guards, the flips, and the failure statuses live in the separate
-[`openzeppelin-pausable-v1`](../pausable-v1/) package. That split keeps this
-package down to the one thing Daml cannot upgrade, the interface, so a fix to a
-function ships without a new interface generation.
-
-The package defines no templates, so it carries no ledger state of its own. The
-flag lives on the implementing template, which is what binds the switch to the
-resource it protects.
-
-The interface declares no choice, because a choice needs a controller
-expression and the view names no party. Reading the flag needs no choice
-either: an on-ledger guard reads the field of the contract it runs on, and an
-off-ledger reader queries the interface view.
+The guards, the flips, and the failure statuses live in
+[`openzeppelin-pausable-v1`](../pausable-v1/). The flag lives on your
+template, which binds the switch to the resource it protects.
 
 ## Usage
 
 Add a `paused : Bool` field to the template you protect, and give it an
-interface instance. `setPaused` must return your own template with the flag set
+interface instance. `setPaused` returns your own template with the flag set
 and nothing else changed:
 
 ```daml
@@ -55,89 +44,84 @@ template Vault
       setPaused b = toInterface (this with paused = b)
 ```
 
-Never call `setPaused` yourself. It is the hook that `pause` and `unpause` in
-`openzeppelin-pausable-v1` call; it runs no guard and creates nothing. The
+Call `pause` and `unpause` from `openzeppelin-pausable-v1` in your flip
+choices rather than `setPaused`. The
 [`openzeppelin-pausable-v1` README](../pausable-v1/README.md) covers the
 guards, the flip choices, and the failure statuses to assert on in tests.
 
 ## Reading the flag off-ledger
 
-`PausableView` is the whole data surface of the interface:
-
-| Field | Type | Meaning |
-|---|---|---|
-| `paused` | `Bool` | `True` while the contract refuses its gated choices |
-
-A wallet, a registry's metadata endpoint, or an auditor reads it without knowing
-the implementing template. Query the Active Contract Service or the update
-stream with an interface filter on `OpenZeppelin.Api.PausableV1:Pausable` and
-request the interface view; every implementing contract visible to the querying
-party returns a `PausableView`. On the Ledger API this is a `CumulativeFilter`
-with an `InterfaceFilter` that sets `include_interface_view`, and the JSON
-Ledger API accepts the same filter shape. In Daml Script the equivalent is:
+A wallet, a registry's metadata endpoint, or an auditor reads `PausableView`
+without knowing the implementing template. Query the Active Contract Service
+or the update stream with an `InterfaceFilter` for `Pausable` that requests
+the interface view; every implementing contract visible to the querying party
+returns a `PausableView`. The JSON Ledger API accepts the same filter shape.
+In Daml Script:
 
 ```daml
 Some v <- queryInterfaceContractId reader (toInterfaceContractId @Pausable cid)
 v.paused === True
 ```
 
-A flip archives one contract and creates another, so an Active Contract Service
-delta subscriber sees the state change as an archive event followed by a create
-event carrying the new view. There is no event template: the consumer's flip
-choice is a node in the transaction tree, recorded with its actor and its ledger time.
+The flip is the consumer's exercise node in the transaction tree, recorded
+with its actor and its ledger time. The interval during which a pause was in
+force is the lifetime of a contract whose view reads `paused = True`.
 
-The interval during which a pause was in force is the lifetime of a contract
-whose view reads `paused = True`. Refused operations write nothing to the
-ledger, so the record shows when the pause held, not which attempts it blocked.
+## Authority and lifecycle
+
+The interface carries the view and the `setPaused` method. Pause authority is
+the controller and body of the consumer's flip choice, and the `create` in
+that choice carries the implementing template's signatories. A flip archives
+the contract and creates its successor, so a reader holds the view of one
+contract at a time and re-queries after a flip.
 
 ## Scope and security caveats
 
-- This is a switch per contract. Pausing several templates at once means one
-  flag on each, or a single contract that all the protected operations are
-  exercised on.
-- The interface does not restrict who may exercise any choice, and nothing
-  forces a choice to call a guard at all.
-- `setPaused` must preserve every field other than the flag. `pause` and
-  `unpause` check the flag, but nothing checks the other fields, so a wrong
-  implementation silently rewrites contract state on every pause.
-- CIP-0112's `pauseInfo` fields are deliberately absent. A registry that must
-  serve `reason` and `until` on its metadata endpoint carries them as its own
-  template fields beside `paused`, so the whole response still comes from one
-  on-ledger contract without freezing those fields into a frozen interface.
+- The switch is per contract. To pause several templates at once, put a flag
+  on each, or exercise every protected operation on one contract that holds
+  the flag.
+- Pause authority is whatever the controller and body of your flip choice
+  check. Review that choice as a privileged choice, and test that other
+  parties are refused.
+- `setPaused` must return your template with only the flag changed. `pause`
+  and `unpause` verify the flag alone, so a `setPaused` that also rewrites
+  another field rewrites contract state on every flip. Test one pause round
+  trip and compare every other field.
+- `PausableView` carries `paused` alone. A registry that serves CIP-0112
+  `reason` and `until` holds them as its own template fields beside `paused`,
+  as [`examples/pausable/registry`](../../../examples/pausable/registry)
+  shows.
+- A refused choice writes nothing to the ledger. The ledger records when a
+  pause held; an off-ledger client that needs the attempts a pause blocked
+  logs its own rejected submissions.
 
 ## Compatibility
 
-The whole package is frozen at its first upload. Daml interfaces are not
-upgradeable through Smart Contract Upgrade: an interface defined in one version
-of a package must be absent from every later version. A later version of this
-package could upload only without `Pausable`, which is the one thing it
-exists to provide, so no later version is published. Any change to the
-interface or its view ships as a sibling `openzeppelin-api-pausable-v2` package
-with module `OpenZeppelin.Api.PausableV2`, and the two coexist. A change to a
-guard, a flip, or a failure status is a new version of `openzeppelin-pausable-v1`
-and does not touch this package.
+Daml-LF `2.1`, built with the SDK that
+[`multi-package.yaml`](../../../multi-package.yaml) declares.
+
+The package is frozen. A change to `Pausable` or `PausableView` ships as a
+sibling `openzeppelin-api-pausable-v2` package with module
+`OpenZeppelin.Api.PausableV2`, and the two coexist. A change to a guard, a
+flip, or a failure status is a new version of `openzeppelin-pausable-v1`.
 
 For a consumer this means:
 
 - Pin the exact DAR. Your `interface instance` binds your template to one
-  package ID, and every participant that runs your gated choices must have
-  vetted that package ID.
+  package ID, and every participant that runs your gated choices vets that
+  package ID.
 - Your own template stays upgradeable. The interface instance is declared on
-  your template, so you add fields, such as CIP-0112 `pauseInfo`, through Smart
-  Contract Upgrade of your package while this package does not move.
-- There is no patch release. Adopting an interface change means importing the
-  sibling package and either of two paths. Under Smart Contract Upgrade of your
-  own package, you add a second `interface instance` for its interface; Smart
-  Contract Upgrade cannot remove an interface instance, so your template
-  keeps the V1 instance for life and implements both. To drop V1 you instead
-  create a new template version outside Smart Contract Upgrade, and migrate
-  existing contracts to it offline.
+  your template, so you add fields, such as CIP-0112 `pauseInfo`, through
+  Smart Contract Upgrade (SCU) of your package while this package stays at
+  its frozen version.
+- Adopting `openzeppelin-api-pausable-v2` takes one of two paths. Under SCU
+  of your own package, you add a second `interface instance`; an interface
+  instance stays through every SCU version, so your template implements both
+  for life. To drop V1, you create a new template version outside SCU and
+  migrate existing contracts to it offline.
 
-`0.1.0` is a pre-release and is not for upload to a shared ledger. Until a
-tagged release records the DAR in `dars/released/`, the package ID may change
-between commits, and no audit has been performed. The version in that first
-release is the version this package keeps for life. See
-[`RELEASING.md`](../../../RELEASING.md).
+`0.1.0` is a pre-release: the package ID may change between commits, and no
+audit has been performed. See [`RELEASING.md`](../../../RELEASING.md).
 
 ## Build
 
@@ -158,14 +142,4 @@ data-dependencies:
 import OpenZeppelin.Api.PausableV1
 ```
 
-## Examples
-
-Two runnable consumer projects, each building against this DAR and the
-`openzeppelin-pausable-v1` DAR through `data-dependencies`:
-
-- [`examples/pausable/vault`](../../../examples/pausable/vault): minimal
-  adoption, the guards, an escape hatch that stays open while paused, and a
-  recovery path that runs only while paused.
-- [`examples/pausable/registry`](../../../examples/pausable/registry):
-  `pause` and `unpause` recording CIP-0112 `pauseInfo` fields in the
-  same transaction as the flip.
+Runnable consumer projects live under [`examples/pausable/`](../../../examples/pausable/).

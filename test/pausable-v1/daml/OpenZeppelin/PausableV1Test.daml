@@ -119,7 +119,8 @@ test_nonconsumingFlipLeavesTwoContracts = script do
   Some flipped <- queryContractId admin successor
   isPaused flipped === True
 
--- | Pausing while paused fails, matching `_pause`'s `whenNotPaused`.
+-- | Pausing while paused fails with `eEnforcedPause`: `pause` runs
+-- `whenNotPaused` first.
 test_pauseWhenPausedFails : Script ()
 test_pauseWhenPausedFails = script do
   Fixture{..} <- setup
@@ -127,7 +128,8 @@ test_pauseWhenPausedFails = script do
   submitMustFailWith eEnforcedPause $ trySubmit admin do
     exerciseCmd paused Vault_Pause
 
--- | Unpausing while unpaused fails, matching `_unpause`'s `whenPaused`.
+-- | Unpausing while unpaused fails with `eExpectedPause`: `unpause` runs
+-- `whenPaused` first.
 test_unpauseWhenUnpausedFails : Script ()
 test_unpauseWhenUnpausedFails = script do
   Fixture{..} <- setup
@@ -142,8 +144,7 @@ test_onlyTheConsumersControllerMayPause = script do
   submitMustFailAuthorization $ trySubmit holder do
     exerciseCmd vault Vault_Pause
 
--- | The two guard failures are distinct, as `EnforcedPause` and
--- `ExpectedPause` are.
+-- | The two guard failures are distinct statuses.
 test_pauseErrorsAreDistinct : Script ()
 test_pauseErrorsAreDistinct = script do
   Fixture{..} <- setup
