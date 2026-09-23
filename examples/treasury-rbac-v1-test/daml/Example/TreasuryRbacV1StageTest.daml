@@ -1,0 +1,129 @@
+module Example.TreasuryRbacV1StageTest where
+
+import DA.Assert ((===))
+import DA.Date (Month(Jan), date)
+import DA.Time (time)
+import Daml.Script
+
+import Example.TreasuryRbacV1
+import qualified Example.TreasuryRbacV1.RolePolicy as RolePolicy
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+import Example.TreasuryRbacV1Test (createTreasury, discloseTo, grantRole, submitDisclosed)
+
+data Setup = Setup with
+  owner : Party
+  operationsAuthority : Party
+  approvalAuthority : Party
+  executionAuthority : Party
+  proposer : Party
+  approver : Party
+  executor : Party
+  beneficiary : Party
+  treasury : ContractId Treasury
+  treasuryDisclosure : Disclosure
+
+setup : Script Setup
+setup = do
+  owner <- allocateParty "owner"
+  operationsAuthority <- allocateParty "operations-authority"
+  approvalAuthority <- allocateParty "approval-authority"
+  executionAuthority <- allocateParty "execution-authority"
+  proposer <- allocateParty "proposer"
+  approver <- allocateParty "approver"
+  executor <- allocateParty "executor"
+  beneficiary <- allocateParty "beneficiary"
+  treasury <- createTreasury owner operationsAuthority approvalAuthority executionAuthority
+  treasuryDisclosure <- discloseTo @Treasury owner treasury
+  pure Setup with ..
+
+propose : Setup -> ContractId SAG.AuthorizationGrant -> Script (ContractId PaymentProposal)
+propose Setup{..} grant = submitDisclosed proposer [treasuryDisclosure] do
+  exerciseCmd treasury Treasury_ProposePayment with
+    authorization = SAG.Authorization with actor = proposer; grantCid = grant
+    paymentId = "payment-001"
+    beneficiary
+    amount = 100.0
+    currency = "USD"
+
+failsWithId : Text -> Party -> [Disclosure] -> Commands a -> Script ()
+failsWithId expectedId actor disclosures commands = do
+  result <- submitWithError (actAs actor <> discloseMany disclosures) commands
+  case result of
+    FailureStatusError status -> status.errorId === expectedId
+    other -> fail $ "expected " <> expectedId <> ", got " <> show other
+
+-- Each stage checks only its own actor's role. Revoking the proposer's grant
+-- after the proposal does not stop the approval.
+test_revokedProposerGrantDoesNotStopPendingApproval : Script ()
+test_revokedProposerGrantDoesNotStopPendingApproval = script do
+  s@Setup{..} <- setup
+  proposerGrant <- grantRole owner treasury operationsAuthority proposer RolePolicy.PaymentProposer
+  approverGrant <- grantRole owner treasury approvalAuthority approver RolePolicy.PaymentApprover
+  proposal <- propose s proposerGrant
+  submit operationsAuthority do exerciseCmd proposerGrant SAG.AuthorizationGrant_Revoke
+  proposalDisclosure <- discloseTo @PaymentProposal owner proposal
+  _ <- submitDisclosed approver [treasuryDisclosure, proposalDisclosure] do
+    exerciseCmd proposal PaymentProposal_Approve with
+      authorization = SAG.Authorization with actor = approver; grantCid = approverGrant
+  pure ()
+
+-- Revoking the approver's grant after the approval does not stop the execution.
+test_revokedApproverGrantDoesNotStopPendingExecution : Script ()
+test_revokedApproverGrantDoesNotStopPendingExecution = script do
+  s@Setup{..} <- setup
+  proposerGrant <- grantRole owner treasury operationsAuthority proposer RolePolicy.PaymentProposer
+  approverGrant <- grantRole owner treasury approvalAuthority approver RolePolicy.PaymentApprover
+  executorGrant <- grantRole owner treasury executionAuthority executor RolePolicy.PaymentExecutor
+  proposal <- propose s proposerGrant
+  proposalDisclosure <- discloseTo @PaymentProposal owner proposal
+  approved <- submitDisclosed approver [treasuryDisclosure, proposalDisclosure] do
+    exerciseCmd proposal PaymentProposal_Approve with
+      authorization = SAG.Authorization with actor = approver; grantCid = approverGrant
+  submit approvalAuthority do exerciseCmd approverGrant SAG.AuthorizationGrant_Revoke
+  approvedDisclosure <- discloseTo @ApprovedPayment owner approved
+  _ <- submitDisclosed executor [treasuryDisclosure, approvedDisclosure] do
+    exerciseCmd approved ApprovedPayment_Execute with
+      authorization = SAG.Authorization with actor = executor; grantCid = executorGrant
+  pure ()
+
+-- A grant from the approval authority with the proposer permission has the
+-- right authority for approval and the wrong scope, so approval fails with
+-- `OZ_SAG_SCOPE_MISMATCH`.
+test_wrongPermissionWithCorrectAuthorityFails : Script ()
+test_wrongPermissionWithCorrectAuthorityFails = script do
+  s@Setup{..} <- setup
+  proposerGrant <- grantRole owner treasury operationsAuthority proposer RolePolicy.PaymentProposer
+  proposal <- propose s proposerGrant
+  Some proposerPayload <- queryContractId operationsAuthority proposerGrant
+  wrongPermission <- submit approvalAuthority do
+    createCmd proposerPayload with authority = approvalAuthority; grantee = approver
+  proposalDisclosure <- discloseTo @PaymentProposal owner proposal
+  failsWithId "OZ_SAG_SCOPE_MISMATCH" approver [treasuryDisclosure, proposalDisclosure] do
+    exerciseCmd proposal PaymentProposal_Approve with
+      authorization = SAG.Authorization with actor = approver; grantCid = wrongPermission
+
+-- A role grant outside its window fails at the proposal: before `validFrom`
+-- with `OZ_SAG_NOT_YET_VALID`, and at `validUntil` with `OZ_SAG_EXPIRED`.
+test_grantOutsideItsWindowFailsAtProposal : Script ()
+test_grantOutsideItsWindowFailsAtProposal = script do
+  let start = time (date 2026 Jan 2) 0 0 0
+      end = time (date 2026 Jan 3) 0 0 0
+  setTime (time (date 2026 Jan 1) 0 0 0)
+  s@Setup{..} <- setup
+  grant <- submitDisclosed operationsAuthority [treasuryDisclosure] do
+    exerciseCmd treasury Treasury_GrantRole with
+      member = proposer
+      role = RolePolicy.PaymentProposer
+      validFrom = Some start
+      validUntil = Some end
+  let proposeCmd = exerciseCmd treasury Treasury_ProposePayment with
+        authorization = SAG.Authorization with actor = proposer; grantCid = grant
+        paymentId = "payment-001"
+        beneficiary
+        amount = 100.0
+        currency = "USD"
+  failsWithId "OZ_SAG_NOT_YET_VALID" proposer [treasuryDisclosure] proposeCmd
+  setTime start
+  _ <- propose s grant
+  setTime end
+  failsWithId "OZ_SAG_EXPIRED" proposer [treasuryDisclosure] proposeCmd

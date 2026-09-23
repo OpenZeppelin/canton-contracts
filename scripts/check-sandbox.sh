@@ -4,8 +4,9 @@
 # against a real local Canton ledger over the Ledger API gRPC endpoint,
 # instead of the in-memory ledger that `dpm test` uses.
 #
-# Static time supports the suites' explicit validity-boundary checks. Each
-# suite allocates fresh parties and advances the shared clock monotonically.
+# Static time lets the licensing and treasury suites check validity bounds.
+# The authorization suite runs no time-bound script. Each suite allocates fresh
+# parties and advances the shared clock monotonically.
 #
 # To target an already-running ledger instead of the script-managed sandbox,
 # set OZ_USE_EXTERNAL_LEDGER=1 together with OZ_LEDGER_HOST / OZ_LEDGER_PORT.

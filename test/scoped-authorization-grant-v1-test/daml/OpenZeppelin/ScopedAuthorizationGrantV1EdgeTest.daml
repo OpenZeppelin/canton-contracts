@@ -1,0 +1,219 @@
+module OpenZeppelin.ScopedAuthorizationGrantV1EdgeTest where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.Time (addRelTime, microseconds)
+import Daml.Script
+
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as F
+
+-- A consumer that tries to catch a guard failure. It uses the deprecated
+-- exception API on purpose, so the build reports deprecation warnings here.
+template CatchingConsumer
+  with
+    authority : Party
+    requiredScope : SAG.AuthorizationScope
+  where
+    signatory authority
+
+    nonconsuming choice CatchingConsumer_Run : ()
+      with authorization : SAG.Authorization
+      controller authorization.actor
+      do
+        try do
+          SAG.requireAuthorization authorization SAG.AuthorizationRequirement with
+            expectedAuthority = authority
+            expectedScope = requiredScope
+        catch
+          (_ : AnyException) -> pure ()
+
+-- A consumer that names another party as controller. The grantee signs the
+-- consumer, so the grantee's authority reaches `AuthorizationGrant_Use` without
+-- the grantee as controller.
+template ControllerlessConsumer
+  with
+    grantee : Party
+    operator : Party
+    authority : Party
+    requiredScope : SAG.AuthorizationScope
+  where
+    signatory grantee
+    observer operator
+
+    nonconsuming choice ControllerlessConsumer_Run : ()
+      with grantCid : ContractId SAG.AuthorizationGrant
+      controller operator
+      do
+        SAG.requireAuthorization (SAG.Authorization with actor = grantee; grantCid)
+          SAG.AuthorizationRequirement with
+            expectedAuthority = authority
+            expectedScope = requiredScope
+
+-- A consumer whose signatory is not a grant stakeholder.
+template OutsideConsumer
+  with
+    consumer : Party
+    authority : Party
+    requiredScope : SAG.AuthorizationScope
+  where
+    signatory consumer
+
+    nonconsuming choice OutsideConsumer_Run : ()
+      with authorization : SAG.Authorization
+      controller authorization.actor
+      do
+        SAG.requireAuthorization authorization SAG.AuthorizationRequirement with
+          expectedAuthority = authority
+          expectedScope = requiredScope
+
+grantWith
+  : Party -> Party -> SAG.AuthorizationScope -> Optional Time -> Optional Time
+  -> Script (ContractId SAG.AuthorizationGrant)
+grantWith authority grantee scope validFrom validUntil = submit authority do
+  createCmd SAG.AuthorizationGrant with authority; grantee; scope; validFrom; validUntil
+
+mustFailWithId : Text -> Party -> [Disclosure] -> Commands a -> Script ()
+mustFailWithId expectedId actor disclosures commands = do
+  result <- submitWithError (actAs actor <> discloseMany disclosures) commands
+  case result of
+    FailureStatusError status -> status.errorId === expectedId
+    other -> fail $ "expected " <> expectedId <> ", got " <> show other
+
+runCheck : Party -> ContractId F.AuthorizationCheck -> ContractId SAG.AuthorizationGrant -> Commands ()
+runCheck actor check grant = exerciseCmd check F.AuthorizationCheck_Run with
+  authorization = SAG.Authorization with actor; grantCid = grant
+
+-- A consumer `try/catch` does not catch a guard failure: each of the five
+-- checks still aborts the transaction with its own error ID.
+test_caughtGuardFailuresStillAbort : Script ()
+test_caughtGuardFailuresStillAbort = script do
+  setTime F.t0
+  authority <- allocateParty "authority"
+  other <- allocateParty "other"
+  actor <- allocateParty "actor"
+  consumer <- submit authority do
+    createCmd CatchingConsumer with authority; requiredScope = F.treasuryScope 1
+  disclosure <- F.discloseTo @CatchingConsumer authority consumer
+  wrongAuthority <- grantWith other actor (F.treasuryScope 1) None None
+  wrongGrantee <- grantWith authority other (F.treasuryScope 1) None None
+  wrongScope <- grantWith authority actor (F.treasuryScope 2) None None
+  notYet <- grantWith authority actor (F.treasuryScope 1) (Some F.t1) None
+  expired <- grantWith authority actor (F.treasuryScope 1) None (Some F.t0)
+  otherDisclosure <- F.discloseTo @SAG.AuthorizationGrant authority wrongGrantee
+  forA_
+    [ ("OZ_SAG_AUTHORITY_MISMATCH", wrongAuthority, [disclosure])
+    , ("OZ_SAG_GRANTEE_MISMATCH", wrongGrantee, [disclosure, otherDisclosure])
+    , ("OZ_SAG_SCOPE_MISMATCH", wrongScope, [disclosure])
+    , ("OZ_SAG_NOT_YET_VALID", notYet, [disclosure])
+    , ("OZ_SAG_EXPIRED", expired, [disclosure])
+    ] \(errorId, grant, disclosures) ->
+      mustFailWithId errorId actor disclosures do
+        exerciseCmd consumer CatchingConsumer_Run with
+          authorization = SAG.Authorization with actor; grantCid = grant
+
+-- When no consumer signatory is a grant stakeholder, a non-grantee actor fails
+-- at the fetch with a Canton-native error, not with `OZ_SAG_GRANTEE_MISMATCH`.
+test_nonGranteeActorGetsNativeError : Script ()
+test_nonGranteeActorGetsNativeError = script do
+  authority <- allocateParty "authority"
+  grantee <- allocateParty "grantee"
+  consumer <- allocateParty "consumer"
+  stranger <- allocateParty "stranger"
+  grant <- grantWith authority grantee (F.treasuryScope 1) None None
+  outside <- submit consumer do
+    createCmd OutsideConsumer with consumer; authority; requiredScope = F.treasuryScope 1
+  outsideDisclosure <- F.discloseTo @OutsideConsumer consumer outside
+  grantDisclosure <- F.discloseTo @SAG.AuthorizationGrant authority grant
+  result <- submitWithError (actAs stranger <> discloseMany [outsideDisclosure, grantDisclosure]) do
+    exerciseCmd outside OutsideConsumer_Run with
+      authorization = SAG.Authorization with actor = stranger; grantCid = grant
+  case result of
+    FailureStatusError status -> fail $ "expected a native error, got " <> show status
+    _ -> pure ()
+
+-- The window edges hold at microsecond precision: `validFrom` is inclusive and
+-- `validUntil` is exclusive. A one-microsecond window admits one instant.
+test_windowEdgesAtMicrosecondPrecision : Script ()
+test_windowEdgesAtMicrosecondPrecision = script do
+  let tick = microseconds 1
+      start = F.t0
+      end = F.t1
+  setTime (addRelTime start (negate tick))
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  grant <- grantWith authority actor (F.treasuryScope 1) (Some start) (Some end)
+  narrow <- grantWith authority actor (F.treasuryScope 1) (Some start) (Some (addRelTime start tick))
+  check <- submit authority do
+    createCmd F.AuthorizationCheck with authority; requiredScope = F.treasuryScope 1
+  disclosure <- F.discloseTo @F.AuthorizationCheck authority check
+  mustFailWithId "OZ_SAG_NOT_YET_VALID" actor [disclosure] (runCheck actor check grant)
+  -- A direct Use does not check the window.
+  submit actor do exerciseCmd grant SAG.AuthorizationGrant_Use
+  setTime start
+  F.submitDisclosed actor [disclosure] (runCheck actor check grant)
+  F.submitDisclosed actor [disclosure] (runCheck actor check narrow)
+  setTime (addRelTime start tick)
+  mustFailWithId "OZ_SAG_EXPIRED" actor [disclosure] (runCheck actor check narrow)
+  setTime (addRelTime end (negate tick))
+  F.submitDisclosed actor [disclosure] (runCheck actor check grant)
+  setTime end
+  mustFailWithId "OZ_SAG_EXPIRED" actor [disclosure] (runCheck actor check grant)
+  -- A grant created after its window closes is accepted, and fails at use.
+  late <- grantWith authority actor (F.treasuryScope 1) None (Some start)
+  mustFailWithId "OZ_SAG_EXPIRED" actor [disclosure] (runCheck actor check late)
+
+-- The guard compares epochs for equality. A reused epoch accepts the earlier
+-- grants again, and a grant for a future epoch passes once the policy reaches
+-- that epoch.
+test_epochReuseAndFutureEpoch : Script ()
+test_epochReuseAndFutureEpoch = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  epochOne <- grantWith authority actor (F.treasuryScope 1) None None
+  epochThree <- grantWith authority actor (F.treasuryScope 3) None None
+  let checkAt epoch = do
+        check <- submit authority do
+          createCmd F.AuthorizationCheck with authority; requiredScope = F.treasuryScope epoch
+        disclosure <- F.discloseTo @F.AuthorizationCheck authority check
+        pure (check, disclosure)
+  (checkTwo, twoDisclosure) <- checkAt 2
+  mustFailWithId "OZ_SAG_SCOPE_MISMATCH" actor [twoDisclosure] (runCheck actor checkTwo epochOne)
+  mustFailWithId "OZ_SAG_SCOPE_MISMATCH" actor [twoDisclosure] (runCheck actor checkTwo epochThree)
+  (checkOneAgain, oneDisclosure) <- checkAt 1
+  F.submitDisclosed actor [oneDisclosure] (runCheck actor checkOneAgain epochOne)
+  (checkThree, threeDisclosure) <- checkAt 3
+  F.submitDisclosed actor [threeDisclosure] (runCheck actor checkThree epochThree)
+
+-- A consumer that names another party as controller still passes the guard
+-- when a consumer signatory supplies the grantee's authority. This is why a
+-- protected choice must use `controller authorization.actor`.
+test_consumerSignatorySuppliesGranteeAuthority : Script ()
+test_consumerSignatorySuppliesGranteeAuthority = script do
+  authority <- allocateParty "authority"
+  grantee <- allocateParty "grantee"
+  operator <- allocateParty "operator"
+  grant <- grantWith authority grantee (F.treasuryScope 1) None None
+  consumer <- submit grantee do
+    createCmd ControllerlessConsumer with
+      grantee; operator; authority; requiredScope = F.treasuryScope 1
+  grantDisclosure <- F.discloseTo @SAG.AuthorizationGrant authority grant
+  F.submitDisclosed operator [grantDisclosure] do
+    exerciseCmd consumer ControllerlessConsumer_Run with grantCid = grant
+
+-- A cached grant disclosure does not authorize after `Revoke` or `Renounce`.
+test_cachedDisclosureAfterRevokeAndRenounce : Script ()
+test_cachedDisclosureAfterRevokeAndRenounce = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  check <- submit authority do
+    createCmd F.AuthorizationCheck with authority; requiredScope = F.treasuryScope 1
+  checkDisclosure <- F.discloseTo @F.AuthorizationCheck authority check
+  revoked <- grantWith authority actor (F.treasuryScope 1) None None
+  renounced <- grantWith authority actor (F.treasuryScope 1) None None
+  revokedDisclosure <- F.discloseTo @SAG.AuthorizationGrant authority revoked
+  renouncedDisclosure <- F.discloseTo @SAG.AuthorizationGrant authority renounced
+  submit authority do exerciseCmd revoked SAG.AuthorizationGrant_Revoke
+  submit actor do exerciseCmd renounced SAG.AuthorizationGrant_Renounce
+  F.submitDisclosedMustFail actor [checkDisclosure, revokedDisclosure] (runCheck actor check revoked)
+  F.submitDisclosedMustFail actor [checkDisclosure, renouncedDisclosure] (runCheck actor check renounced)

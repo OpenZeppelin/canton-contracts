@@ -53,7 +53,10 @@ only from caller-controlled arguments would let the caller choose the policy
 being checked.
 
 `Authorization` is input, not proof by itself. The guard fetches the grant and
-matches its grantee to the authorized actor. Keep the guard on the committed
+compares its grantee with `authorization.actor`. It does not check who
+authorized the choice: `AuthorizationGrant_Use` needs the grantee's authority
+from any source, such as a consumer signatory. `controller authorization.actor`
+is therefore required. Keep the guard on the committed
 execution path of the protected operation. If a caught exception rolls back a
 successful check, call the guard again before continuing with protected work.
 
@@ -77,6 +80,13 @@ Every scope field must match: `None` does not match `Some`, and two different
 contract IDs do not match. Increasing the expected `policyEpoch` in a resource's
 trusted policy rejects grants for earlier epochs. Other resources that still
 accept the old scope remain unaffected.
+
+The guard compares epochs for equality. The epoch of each logical resource
+must therefore only increase, and an application must never reuse an epoch. A
+resource that is recreated with an earlier epoch accepts the old grants for that
+epoch again. The authority can also issue a grant for a future epoch, which
+becomes valid when the policy reaches that epoch. When an application cannot
+keep the epochs increasing, use an instance-bound scope.
 
 An instance-bound grant remains active if its resource is archived, but it does
 not match a successor contract ID. Applications that frequently recreate a
@@ -114,7 +124,17 @@ so the grant does not introduce an unrelated confirming participant.
 `validFrom` is inclusive and `validUntil` is exclusive. When both bounds are
 present, creation requires `validFrom < validUntil`. Validation uses ledger-time
 predicates rather than reading `getTime`, so the check remains compatible with
-externally prepared and signed transactions.
+externally prepared and signed transactions. No test in this repository covers
+external signing yet.
+
+The bounds apply to ledger time, not to record time. The synchronizer accepts a
+ledger time within its configured tolerance of the record time, and the
+submitter chooses the ledger time within that tolerance. A use can therefore
+commit with a record time up to the tolerance after `validUntil` or before
+`validFrom`. When an exact cutoff matters, set the bounds with a margin, or
+revoke the grant. A transaction prepared inside the window and submitted after
+the tolerance fails with the Canton error `LEDGER_TIME_OUTSIDE_BOUNDS`, not with
+`OZ_SAG_EXPIRED`.
 
 Expiration does not archive a grant. An active grant may be outside its validity
 window or fail the current policy, so discovery alone does not establish permission.
@@ -156,6 +176,10 @@ with these stable IDs and metadata:
 | `OZ_SAG_NOT_YET_VALID` | `validFrom`: inclusive lower bound |
 | `OZ_SAG_EXPIRED` | `validUntil`: exclusive upper bound |
 
+The guard checks, in order, the authority, the grantee, the scope, `validFrom`,
+and `validUntil`, and reports only the first failure. The order is part of the
+behavior that the tests fix.
+
 All use `failedPrecondition` (`FAILED_PRECONDITION`). Match the Ledger API's
 `ErrorInfo.reason = DAML_FAILURE` and `metadata.error_id`, rather than parsing
 the human-readable message. These failures abort the transaction and cannot be
@@ -166,6 +190,13 @@ fields instead of copying arbitrary-length scope values.
 Unavailable or archived contracts, missing controller authority, and malformed
 windows rejected by `ensure` retain Canton-native errors. Those failures can
 occur before the guard's checks run.
+
+The guard fetches the grant first. A fetch needs one authorizer that is a
+stakeholder of the grant. `OZ_SAG_GRANTEE_MISMATCH` and the later checks
+therefore run only when a signatory or controller of the consumer choice is
+the grant's authority or grantee. Otherwise, an actor that is not the grantee
+gets a Canton-native authorization error from the fetch. Authorization holds
+in both cases; clients that branch on `error_id` must handle both.
 
 ## Authority rotation
 
@@ -206,7 +237,9 @@ grant administration, transferability, counters, or an interface.
   exercises `AuthorizationGrant_Use` to record usage.
 
 `OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contains unsupported
-implementation details and is not part of the consumer API.
+implementation details and is not part of the consumer API. The error ID
+strings in [Guard failures](#guard-failures) are the stable contract, so match
+on those strings rather than on the `Internal` constants.
 
 ## Build and compatibility
 
@@ -216,5 +249,8 @@ See [Consume a local build](../../../README.md#consume-a-local-build) for the
 `data-dependencies` configuration.
 
 The package depends only on `daml-prim` and `daml-stdlib`, builds with SDK 3.5.8,
-and targets LF 2.1. The tested runtime is Canton 3.5; there is no released SCU
-baseline yet. Pin the built DAR and review package vetting for your deployment.
+and targets LF 2.1. The source uses `deriving Serializable`, which needs SDK
+3.5. The supported and tested runtime is Canton 3.5. The DAR depends on the
+`daml-stdlib` and `daml-prim` package IDs of SDK 3.5.8, so every participant
+that vets it also vets those package IDs. There is no released SCU baseline
+yet. Pin the built DAR and review package vetting for your deployment.

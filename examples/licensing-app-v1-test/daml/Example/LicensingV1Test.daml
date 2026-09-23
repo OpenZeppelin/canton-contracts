@@ -107,3 +107,35 @@ test_policyEpochRotation = script do
       licensee
       productId = "product-pro"
   pure ()
+
+-- Revoking the operator stops further issuance and leaves the licenses that
+-- the operator issued active.
+test_revokingTheOperatorKeepsIssuedLicenses : Script ()
+test_revokingTheOperatorKeepsIssuedLicenses = script do
+  licensor <- allocateParty "licensor"
+  operator <- allocateParty "operator"
+  licensee <- allocateParty "licensee"
+  registry <- submit licensor do
+    createCmd LicenseRegistry with
+      licensor; registryId = "registry-001"; policyEpoch = 1
+  grant <- submit licensor do
+    exerciseCmd registry LicenseRegistry_AppointOperator with
+      operator; validFrom = None; validUntil = None
+  registryDisclosure <- discloseTo @LicenseRegistry licensor registry
+  license <- submitDisclosed operator [registryDisclosure] do
+    exerciseCmd registry LicenseRegistry_Issue with
+      authorization = SAG.Authorization with actor = operator; grantCid = grant
+      licenseId = "license-001"
+      licensee
+      productId = "product-pro"
+  submit licensor do exerciseCmd grant SAG.AuthorizationGrant_Revoke
+  submitDisclosedMustFail operator [registryDisclosure] do
+    exerciseCmd registry LicenseRegistry_Issue with
+      authorization = SAG.Authorization with actor = operator; grantCid = grant
+      licenseId = "license-002"
+      licensee
+      productId = "product-pro"
+  active <- queryContractId licensee license
+  case active of
+    None -> fail "revoking the operator archived an issued license"
+    Some _ -> pure ()

@@ -6,7 +6,8 @@ import qualified OpenZeppelin.ScopedAuthorizationGrantV1.Internal as Internal
 
 -- | The resource and permission a grant covers. Every field matches exactly.
 -- `resourceInstanceCid` can bind one contract instance; advancing the expected
--- `policyEpoch` rejects grants issued for earlier epochs.
+-- `policyEpoch` rejects grants issued for earlier epochs. Epochs must only
+-- increase: a reused epoch accepts the earlier grants for it again.
 data AuthorizationScope = AuthorizationScope with
     namespace : Text
     resourceType : Text
@@ -35,9 +36,11 @@ template AuthorizationGrant
     grantee : Party
     scope : AuthorizationScope
     validFrom : Optional Time
-      -- ^ Inclusive lower ledger-time bound, or unbounded when `None`.
+      -- ^ Inclusive lower ledger-time bound, or unbounded when `None`. The
+      --   record time can differ by up to the synchronizer's tolerance.
     validUntil : Optional Time
-      -- ^ Exclusive upper ledger-time bound, or unbounded when `None`.
+      -- ^ Exclusive upper ledger-time bound, or unbounded when `None`. The
+      --   record time can differ by up to the synchronizer's tolerance.
   where
     ensure Internal.validityWindowIsWellFormed validFrom validUntil
     signatory authority

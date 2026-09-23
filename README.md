@@ -38,7 +38,7 @@ package IDs.
 The workspace declares its Daml SDK in
 [`multi-package.yaml`](multi-package.yaml). Package manifests mirror that value
 for standalone builds, and repository checks keep them synchronized. The SDK is
-3.5.8; packages target LF 2.1.
+3.5.8; packages target LF 2.1. The supported and tested runtime is Canton 3.5.
 
 The [Canton building and packaging guide](https://docs.canton.network/appdev/modules/m3-building-packaging)
 explains DPM workspaces, DARs, and `data-dependencies`.

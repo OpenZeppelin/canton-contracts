@@ -47,6 +47,14 @@ boundary. After rotation, a pending proposal or approval can be archived only
 with all its signatories' authority; an authorized proposer can submit
 a replacement under the successor treasury.
 
+Each stage checks only the role of the actor for that stage.
+`PaymentProposal_Approve` checks the approver's grant, and
+`ApprovedPayment_Execute` checks the executor's grant. A revoked or expired
+proposer grant therefore does not stop the approval of a proposal that already
+exists, and a revoked or expired approver grant does not stop the execution of
+an approval that already exists. To stop a pending stage, archive it with all
+its signatories' authority, or rotate the epoch.
+
 `treasuryId` is a stable application-defined `Text` identifier used in grant
 scopes. `treasuryCid` is the unique `ContractId Treasury` that binds both role
 grants and payment stages to one exact policy contract.
@@ -56,6 +64,13 @@ application backend discloses the treasury to an authority issuing a role and to
 a member performing protected work, and discloses each pending workflow contract
 to the next actor. An actor becomes a workflow stakeholder after authorizing a
 stage.
+
+Each stage exercises `AuthorizationGrant_Use` on a grant that its role
+authority signs, and the role authorities are not treasury signatories. The
+participant of each role authority must therefore confirm every stage that
+uses that role's grants, and each role authority sees the `Use` node of those
+stages. The library README recommends an authority that is already a
+signatory; this example uses separate role authorities on purpose.
 
 ## Trust and application responsibilities
 
