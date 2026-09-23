@@ -25,7 +25,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 #### Added
 
 - Added the frozen interface package `openzeppelin-api-pausable-v1` with public
-  module `OpenZeppelin.Api.PausableV1`.
+  module `OpenZeppelin.Api.PausableV1`, holding the `Pausable` interface and
+  `PausableView`.
+
+### `openzeppelin-pausable-v1`
+
+#### Added
+
+- Added the function package `openzeppelin-pausable-v1` with public module
+  `OpenZeppelin.PausableV1`, holding the guards `whenNotPaused` and
+  `whenPaused`, `isPaused`, and the failure statuses `eEnforcedPause` and
+  `eExpectedPause`. It depends on `openzeppelin-api-pausable-v1`.
 
 ### `openzeppelin-tokenCIP112-v1`
 

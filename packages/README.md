@@ -8,7 +8,8 @@ are navigation only and never appear in a package name or module namespace.
 
 | Category | Component | Package | Public module |
 |---|---|---|---|
-| `security/` | [Pausable](security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
+| `security/` | [Pausable API](security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
+| `security/` | [Pausable](security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` |
 | `security/` | [Timelock](security/api-timelock-v1/) | `openzeppelin-api-timelock-v1` | `OpenZeppelin.Api.TimelockV1` |
 
 Each package `README.md` documents the public module, the authority and

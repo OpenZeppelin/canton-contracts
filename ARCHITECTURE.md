@@ -35,9 +35,9 @@ them beside templates prevents those templates from benefiting from SCU.
 When a component defines an interface, use two production packages:
 
 ```text
-<component>-api-v1     Frozen interfaces, exceptions, and API types; no templates
-<component>-v1         Templates implementing the API
-<component>-test       Daml Script tests; never released
+openzeppelin-api-<component>-v1    Frozen interfaces, exceptions, API types
+openzeppelin-<component>-v1        Templates or functions implementing the API
+openzeppelin-<component>-v1-test   Daml Script tests; never released
 ```
 
 API packages may depend only on other API packages. A template-only component
@@ -47,22 +47,29 @@ upgrade or interoperability benefit.
 The three components under `experiments/` define templates and functions but no
 Daml interfaces, so each has one production package.
 
-### Interface-only components
+### Components without templates
 
-Some components have no implementation package of their own. Pausable is the
-model: the pause flag is a field of the consumer's template, because a guard
-that reads the contract being exercised is sound and a guard that fetches a
-separate switch contract is not, since a caller can substitute or omit a
-contract it supplies. Nothing therefore remains for an `openzeppelin-pausable-v1`
-package to hold. The component is the frozen `openzeppelin-api-pausable-v1` package alone, and the
-implementing templates live in consuming packages.
+Some components ship no template of their own. Pausable is the model: the
+pause flag is a field of the consumer's template, because a guard that reads
+the contract being exercised is sound and a guard that fetches a separate
+switch contract is not, since a caller can substitute or omit a contract it
+supplies. The implementing templates live in consuming packages.
 
-Timelock follows the same shape for a different reason. A scheduled operation
-is a contract of the consumer's own template, typed by its fields and signed by
-the protected contract's signatories, because a Daml choice applies typed
-contract data rather than forwarding an encoded call. The library contributes
-the interface that exposes the operation's schedule, the functions that compute
-it, and the guards that enforce it.
+The Pausable component is two packages. `openzeppelin-api-pausable-v1` holds the
+interface and its view and nothing else, because that is the one part Daml
+cannot upgrade. `openzeppelin-pausable-v1` holds the guards and the failure
+statuses. A bug fix in `whenNotPaused` is a new version of the function
+package, and the frozen interface package does not move. The Splice token
+standard follows the same split, keeping its helper functions in
+`splice-token-standard-utils` beside its frozen interface packages.
+
+Timelock ships no template for a different reason. A scheduled operation is a
+contract of the consumer's own template, typed by its fields and signed by the
+protected contract's signatories, because a Daml choice applies typed contract
+data rather than forwarding an encoded call. The library contributes the
+interfaces that expose the operation's schedule and lifecycle, the functions
+that compute the schedule, and the guards that enforce it. The component is
+the frozen `openzeppelin-api-timelock-v1` package.
 
 Timelock target choices authenticate the actor and enforce the lifecycle checks
 before calling consumer methods. Their authority consists of the target's
@@ -70,14 +77,15 @@ signatories and the actor. Operation choices forward requests to those target
 choices. The target verifies shared signatory authority and archives the operation
 in the same transaction as the state change.
 
-An interface-only component is still one package and one DAR, and it still
-follows the `openzeppelin-api-<component>-vN` freeze rule: no templates, no SCU, and a breaking change
-ships as a sibling `-v2` package. The consumer's implementing template upgrades
-through SCU independently, because the interface instance is declared on the
-template and the API package does not move. SCU can only add an interface
-instance to that template, never remove one, so adopting a `-v2` package means
-the template implements both interfaces for life; dropping the `-v1` instance
-needs a new template version outside SCU and an offline contract migration.
+The API package follows the `openzeppelin-api-<component>-vN` freeze rule: no
+templates, no SCU, and a breaking change ships as a sibling `-v2` package. The
+function package depends on the API package alone, and a consumer data-depends
+on both DARs. The consumer's implementing template upgrades through SCU
+independently, because the interface instance is declared on the template and
+the API package does not move. SCU can only add an interface instance to that
+template, never remove one, so adopting an API `-v2` package means the template
+implements both interfaces for life; dropping the `-v1` instance needs a new
+template version outside SCU and an offline contract migration.
 
 ## Dependency policy
 
@@ -99,7 +107,7 @@ contract-model generation:
 
 ```text
 openzeppelin-ownable-v1
-openzeppelin-rbac-api-v1
+openzeppelin-api-rbac-v1
 openzeppelin-rbac-v1
 ```
 

@@ -1,6 +1,6 @@
 # Pausable Registry Example
 
-Adoption of `openzeppelin-api-pausable-v1` by a registry that serves CIP-0112
+Adoption of `Pausable` by a registry that serves CIP-0112
 metadata. The pause records why it is in force, in the same transaction as the
 flip.
 
@@ -9,18 +9,16 @@ flip.
 | Package | `pausable-registry-example` |
 | Module | `OpenZeppelin.Examples.Pausable.Registry` |
 | Tests | `OpenZeppelin.Examples.Pausable.RegistryTest` in [`registry-test`](../registry-test) |
-| Consumes | `openzeppelin-api-pausable-v1` `0.1.0` |
+| Consumes | `openzeppelin-api-pausable-v1` `0.1.0`, `openzeppelin-pausable-v1` `0.1.0` |
 
 ## What it shows
 
-- `pause` and `unpause`. The library guards, sets the flag, and
-  returns the value; the consuming choice sets `pauseReason` and
-  `pauseUntil` on the value and creates once, through the library rather than
-  around it.
-- `pauseInfo.reason` and `pauseInfo.until` as fields of the registry rather than
-  of the frozen interface. `PausableView` carries `paused` alone, so the
-  interface does not move when CIP-0112 extends `PauseInfo`; the registry adds a
-  field under Smart Contract Upgrade instead.
+- Flip choices that set `paused`, `pauseReason`, and `pauseUntil` in one
+  create, after the library guard.
+- `pauseInfo.reason` and `pauseInfo.until` as fields of the registry.
+  `PausableView` carries `paused` alone, so when CIP-0112 extends `PauseInfo`
+  the registry adds a field under Smart Contract Upgrade and the interface
+  stays frozen.
 - One on-ledger contract answering the whole metadata response: the flag and the
   reason live on the same contract that the gated choices exercise.
 
@@ -32,17 +30,16 @@ view, then an unpause that clears the recorded fields.
 ## Authority model
 
 `admin` is the sole signatory of `Registry` and the pause authority. The flip
-choices are consuming: `pause` and `unpause` return a value and
-archive nothing, so the choice archives the predecessor and creates once.
-`auditor` is an observer. It reads the registry and its `PausableView` and
-controls no choice.
+choices are consuming: each guards, then creates the successor with the flag
+and its metadata changed. `auditor` is an observer that reads the registry
+and its `PausableView`.
 
-## Reporting, not enforcement
+## The deadline
 
-`pauseUntil` is published for reporting. Nothing in this example enforces it,
-and the library keeps ledger time out of the guard. A pause that expires on its
-own is a feature the consumer writes, and it raises questions this example does
-not answer, such as who may extend a pause.
+`pauseUntil` is published for reporting. The guard reads `paused` alone, so
+the pause ends when `admin` exercises `Registry_Unpause`. A pause that expires
+on its own is a feature the consumer writes, with its own rule for who may
+extend it.
 
 ## Build and run
 

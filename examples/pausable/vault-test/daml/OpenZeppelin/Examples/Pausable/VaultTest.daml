@@ -7,7 +7,8 @@ import DA.Fail (FailureStatus)
 import DA.Stack (HasCallStack)
 import Daml.Script
 
-import qualified OpenZeppelin.Api.PausableV1 as Pausable
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
 import OpenZeppelin.Examples.Pausable.Vault
 
 data Fixture = Fixture with
@@ -24,7 +25,7 @@ setup = do
     createCmd Vault with admin, owner, balance = 100.0, paused = False
   pure Fixture with ..
 
-readOf : ContractId Vault -> ContractId Pausable.Pausable
+readOf : ContractId Vault -> ContractId Pausable
 readOf = toInterfaceContractId
 
 -- | Run a submission and require the ledger to reject it with exactly this
@@ -44,29 +45,27 @@ test_withdrawRunsWhileUnpaused = script do
   Some v <- queryContractId owner vault
   v.balance === 60.0
 
--- | A non-positive amount is refused by the vault's own check, which has
--- nothing to do with pausing.
+-- | A non-positive amount fails the vault's own check.
 test_withdrawRefusesNonPositiveAmount : Script ()
 test_withdrawRefusesNonPositiveAmount = script do
   Fixture{..} <- setup
   submitMustFailWith eNonPositiveAmount $ trySubmit owner do
     exerciseCmd vault Vault_Withdraw with amount = -10.0
 
--- | An amount above the balance is refused by the vault's own check.
+-- | An amount above the balance fails the vault's own check.
 test_withdrawRefusesAmountAboveBalance : Script ()
 test_withdrawRefusesAmountAboveBalance = script do
   Fixture{..} <- setup
   submitMustFailWith eInsufficientBalance $ trySubmit owner do
     exerciseCmd vault Vault_Withdraw with amount = 100.5
 
--- | Off-ledger tooling reads the flag through the interface view, whatever
--- template implements it. The pure form agrees with the view.
+-- | The interface view and `isPaused` report the same flag.
 test_pauseIsVisibleThroughTheView : Script ()
 test_pauseIsVisibleThroughTheView = script do
   Fixture{..} <- setup
   vault <- submit admin do exerciseCmd vault Vault_Pause
   Some v <- queryInterfaceContractId owner (readOf vault)
-  v === Pausable.PausableView with paused = True
+  v === PausableView with paused = True
   Some c <- queryContractId owner vault
   Pausable.isPaused c === True
 
@@ -78,8 +77,8 @@ test_withdrawRefusedWhilePaused = script do
   submitMustFailWith Pausable.eEnforcedPause $ trySubmit owner do
     exerciseCmd vault Vault_Withdraw with amount = 10.0
 
--- | The escape hatch carries no guard, so it stays open: the owner takes the
--- whole balance out while the vault is paused.
+-- | The escape hatch stays open while paused: the owner takes the whole
+-- balance out.
 test_redeemStaysOpenWhilePaused : Script ()
 test_redeemStaysOpenWhilePaused = script do
   Fixture{..} <- setup

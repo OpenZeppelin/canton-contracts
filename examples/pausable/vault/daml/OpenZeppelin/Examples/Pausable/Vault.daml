@@ -1,18 +1,17 @@
--- | Minimal adoption of `OpenZeppelin.Api.PausableV1`.
+-- | Minimal adoption of `Pausable`: a vault holding a
+-- balance for one owner, with an emergency stop that the admin controls.
 --
--- A vault holding a balance for one owner, with an emergency stop that the
--- admin controls. Adopting `Pausable` costs one template field, a three-line
--- `interface instance`, one `whenNotPaused` call per gated choice, and the two
--- choices that name the pause authority.
---
--- Which choices are gated is a decision per choice, which is why the escape
--- hatch and the paused-only recovery path both come at no extra cost.
+-- Adopting `Pausable` takes one template field, an `interface instance`, one
+-- `whenNotPaused` call per gated choice, and the two flip choices that name
+-- the pause authority. Gating is a decision per choice: `Vault_Redeem` stays
+-- open while paused, and `Vault_EmergencyDrain` runs only while paused.
 module OpenZeppelin.Examples.Pausable.Vault where
 
 import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import qualified DA.TextMap as TextMap
-import qualified OpenZeppelin.Api.PausableV1 as Pausable
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
 
 -- | What the vault pays out. The owner receives it on redemption, and the admin
 -- receives it on an emergency drain.
@@ -36,15 +35,12 @@ template Vault
     signatory admin, owner
     ensure balance >= 0.0
 
-    -- The whole adoption cost. `paused` is a field of the contract that the
-    -- gated choices already exercise, so no separate switch contract exists for
-    -- a caller to substitute or omit.
-    interface instance Pausable.Pausable for Vault where
-      view = Pausable.PausableView with paused
-      setPaused b = toInterface (this with paused = b)
+    -- Adopts the switch. The flag is a field of this contract, so the guards
+    -- read it directly.
+    interface instance Pausable for Vault where
+      view = PausableView with paused
 
-    -- A gated operation. The guard is one line, and it reads the contract being
-    -- exercised rather than a contract id the caller supplies.
+    -- A gated operation.
     choice Vault_Withdraw : ContractId Vault
       with
         amount : Decimal
@@ -55,8 +51,8 @@ template Vault
         unless (amount <= balance) (failWithStatus eInsufficientBalance)
         create this with balance = balance - amount
 
-    -- An escape hatch: the owner can always redeem the whole balance, paused or
-    -- not, so a pause does not trap the owner's funds. No guard, by decision.
+    -- An escape hatch: the owner redeems the whole balance at any time, paused
+    -- or not.
     choice Vault_Redeem : (ContractId Vault, ContractId Payout)
       controller owner
       do
@@ -64,8 +60,8 @@ template Vault
         vault <- create this with balance = 0.0
         pure (vault, payout)
 
-    -- The mirror image: a recovery path that runs only during an incident. The
-    -- admin moves the balance out of the vault to itself.
+    -- A recovery path that runs only while paused. The admin moves the balance
+    -- to itself.
     choice Vault_EmergencyDrain : (ContractId Vault, ContractId Payout)
       controller admin
       do
@@ -74,19 +70,19 @@ template Vault
         vault <- create this with balance = 0.0
         pure (vault, payout)
 
-    -- The pause authority. The library supplies the guard and the flip; this
-    -- choice supplies the answer to "who may flip the switch". `pause`
-    -- returns the flipped value and archives nothing, so the consuming choice
-    -- archives the predecessor and creates the successor.
+    -- The pause authority. Each consuming choice guards, then creates the
+    -- successor with the flag changed.
     choice Vault_Pause : ContractId Vault
       controller admin
       do
-        create =<< Pausable.pause this
+        Pausable.whenNotPaused this
+        create this with paused = True
 
     choice Vault_Unpause : ContractId Vault
       controller admin
       do
-        create =<< Pausable.unpause this
+        Pausable.whenPaused this
+        create this with paused = False
 
 -- | Raised when a withdrawal names a non-positive amount.
 eNonPositiveAmount : FailureStatus
