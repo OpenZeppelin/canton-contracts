@@ -23,6 +23,25 @@ the component was split into `openzeppelin-api-pausable-v1` and
 removed, and all failures moved to `failWithStatus`. Every previous finding
 is re-evaluated under "Previous Findings" below.
 
+## Revision Log
+
+- **2026-09-23, MED-1 and MED-2 applied** in the working tree on `f73c79d`.
+  MED-1: one sentence on the `whenNotPaused` doc comment, one caveat bullet
+  in the `pausable-v1` README, the `SwitchedVault` fixture, and
+  `test_guardOnSuppliedSwitchIsBypassed`. MED-2: a retrofit paragraph in the
+  API README, the `UpgradedVault` fixture, `test_optionalFlagReadsNoneAsUnpaused`,
+  and a v1/v2 package pair built under `upgrades:` in the session scratchpad.
+  The pair fails by default with `template-has-new-interface-instance` and
+  builds with `-Wtemplate-has-new-interface-instance`; the README names the
+  flag.
+- **Three commits landed after the review was written:** `806224a`,
+  `328db18`, `f73c79d`. `artifacts/05-tests.md` now exists with its own
+  INV-1 to INV-10 numbering, `test/pausable-v1` grew from 14 to 22 scripts
+  before this revision's two, and both package READMEs lost the caveats this
+  report cited for INV-9, INV-10, INV-12, and the privacy row. Those rows
+  and findings are restated against `f73c79d`; other line numbers refer to
+  `2fc2ddf`.
+
 ## Summary
 
 | Severity | Count |
@@ -44,8 +63,7 @@ makes its upgrade path simpler than the READMEs claim.
 Both Medium findings are consumer-facing documentation gaps on the two risks
 the research ranked highest: a guard over a caller-supplied switch (MED-1)
 and the path for adopting the interface on a template that already has live
-contracts (MED-2). Neither blocks a merge; MED-1 should land before the first
-tagged release because it closes the one misuse the type signature permits.
+contracts (MED-2). Both are applied in this revision, see the Revision Log.
 
 Verified on 2026-09-23 with SDK 3.4.11, `--target=2.1`:
 
@@ -55,9 +73,11 @@ Verified on 2026-09-23 with SDK 3.4.11, `--target=2.1`:
 | `scripts/check.sh` | OK |
 | `dpm damlc lint` on the 8 Pausable packages | No hints |
 | `test/api-pausable-v1` | 3 scripts pass |
-| `test/pausable-v1` | 14 scripts pass |
+| `test/pausable-v1` | 24 scripts pass (22 at `f73c79d` plus 2 from MED-1 and MED-2) |
 | `examples/pausable/vault-test` | 11 scripts pass |
 | `examples/pausable/registry-test` | 7 scripts pass |
+| `dpm damlc docs` on `openzeppelin-pausable-v1` | Renders both modules with the MED-1 sentence |
+| Scratchpad v1/v2 pair under `upgrades:` (MED-2) | Rejected by default; builds with `-Wtemplate-has-new-interface-instance` |
 
 Reviewed inputs: `artifacts/06-docs.md`; `artifacts/01-research.md` and
 `artifacts/02-design.md` as recovered from commit `1e0f754^`; the previous
@@ -82,15 +102,16 @@ unless stated. `README` means `packages/security/pausable-v1/README.md`.
 | INV-4 Each failure status has a stable, unique, DNS-prefixed `errorId` and a retry-after-state-change category | ✅ Yes | line 71-79; `Internal.daml` line 9-14 | `openzeppelin.com/pausable-enforced-pause` and `-expected-pause`, both `InvalidGivenCurrentSystemStateOther`; matches the `FailureStatus` convention in the Daml standard library reference; `test_pauseErrorsAreDistinct` |
 | INV-5 The API package defines no template, choice, method, or party; the view is one `Bool` | ✅ Yes | `Api/PausableV1.daml` line 21-34 | `viewtype PausableView` and nothing else; `scripts/check.sh` rejects templates in `openzeppelin-api-*` packages; the coverage report lists 0 interface choices |
 | INV-6 Visibility of the flag equals visibility of the implementing contract; no guard fetches | ✅ Yes | line 45-64 | All three functions are pure over the value; `test_viewReadableByObserver`, `test_viewHiddenFromStranger` |
-| INV-7 No guard accepts a `ContractId`; each takes the value the choice runs on | ✅ Yes | signatures line 45, 59, 63 | `HasToInterface t Pausable => t`. `t = Pausable` is admissible, so a consumer can still `fetch` a caller-supplied `ContractId Pausable` and pass the result; the type system cannot exclude it, see MED-1 |
+| INV-7 No guard accepts a `ContractId`; each takes the value the choice runs on | ✅ Yes | signatures line 45, 59, 63 | `HasToInterface t Pausable => t`. `t = Pausable` is admissible, so a consumer can still `fetch` a caller-supplied `ContractId Pausable` and pass the result; the type system cannot exclude it. MED-1 (fixed) documents it and `test_guardOnSuppliedSwitchIsBypassed` demonstrates it |
 | INV-8 A flip needs the implementing template's signatory authority; the interface offers no path | ✅ Yes | ledger model | No interface choice exists to exercise; `test_onlyTheConsumersControllerMayPause`, `test_customAuthorityGatesTheFlip` |
-| INV-9 A flip leaves exactly one active contract | ⚠️ Partial | consumer code; README line 82-83 | Consuming choice or `archive self`; documented, and `test_nonconsumingFlipLeavesTwoContracts` shows the failure mode. Fail-open by design since the `self`-taking flips were removed in `2fc2ddf`, see INFO-1 |
-| INV-10 A pause flip creates the successor with `paused = True`, an unpause with `paused = False`, and the view reports the field | ⚠️ Partial | consumer code; README line 138-141 | The consumer's own `create` and `view`; nothing in the library checks either. `test_pauseUnpauseRoundTrip` covers the fixtures. See INFO-1 |
+| INV-9 A flip leaves exactly one active contract | ⚠️ Partial | consumer code | Consuming choice or `archive self`. The README sentence stating it was removed in `f73c79d`; Usage step 2 shows consuming flips by example, and `test_nonconsumingFlipLeavesTwoContracts` shows the failure mode. Fail-open by design since `2fc2ddf`, see INFO-1 |
+| INV-10 A pause flip creates the successor with `paused = True`, an unpause with `paused = False`, and the view reports the field | ⚠️ Partial | consumer code | The consumer's own `create` and `view`; nothing in the library checks either. The README caveat and its round-trip advice were removed in `f73c79d`; `test_pauseUnpauseRoundTrip` covers the fixtures. See INFO-1 |
 | INV-11 Every gated choice calls a guard | ⚠️ Partial | consumer code; README line 135-137 | Unenforceable in Daml; documented. Examples gate deliberately per choice (`Vault_Redeem` is open by design) |
-| INV-12 A flip keeps the fields that determine signatories and observers | ⚠️ Partial | consumer code; README line 142-144 | Documented; untested, see INFO-5 |
+| INV-12 A flip keeps the fields that determine signatories and observers | ⚠️ Partial | consumer code | The README caveat and the Usage sentence were removed in `f73c79d`, so it is neither documented nor tested, see INFO-5 |
 | INV-13 Guards evaluate no ledger time | ✅ Yes | line 45-64 | No `getTime`; `pauseUntil` in the registry example is reporting only and its README says so |
 | INV-14 Origination-only semantics: committed work stands, a flip rejects in-flight readers | ✅ Yes | ledger model; README line 133-134 | A consuming exercise on the implementing contract |
 | INV-15 The interface package is frozen, the function package is versionable, and the consumer's template keeps SCU with its instance retained | ✅ Yes | `daml.yaml` of both packages; `ARCHITECTURE.md` "Components without templates" | Matches the Canton SCU reference: interface definitions are non-upgradeable, instances may be added and never removed, instance bodies may change. See INFO-6 for the utility-package refinement |
+| INV-16 A template that adopts the interface under SCU holds `paused : Optional Bool` and its view reads `None` as unpaused | ✅ Yes | `UpgradedVault` fixture; API README Usage | Added with MED-2. `test_optionalFlagReadsNoneAsUnpaused`; the v1/v2 pair builds under `upgrades:` with `-Wtemplate-has-new-interface-instance` |
 
 For INV-9 to INV-12 the design accepts documentation and the consumer's tests
 as the mechanism. The dev removed the fail-closed alternative for INV-9 in
@@ -150,7 +171,13 @@ Optionally, a fixture in `test/pausable-v1` whose gated choice takes a
 `switchCid` and a script in which the caller presents a second, unpaused
 contract; the passing exercise is the executable statement of the caveat.
 
-**Status:** Open
+**Applied:** the sentence on `whenNotPaused` (line 28-31), the caveat
+bullet in the README, the `SwitchedVault` fixture, and
+`test_guardOnSuppliedSwitchIsBypassed`, which shows the same paused contract
+refusing the caller who presents it and serving the caller who presents an
+unpaused decoy.
+
+**Status:** Fixed
 
 #### MED-2: The SCU retrofit path for a template with live contracts is undocumented
 
@@ -197,13 +224,27 @@ with the snippet above, and verify it with a v1/v2 package pair built under
 `upgrades:` before publishing the text. The guards need no change because
 they read the view.
 
-**Status:** Open
+**Applied:** the paragraph and snippet in the API README Usage section,
+mirrored by the `UpgradedVault` fixture and
+`test_optionalFlagReadsNoneAsUnpaused`. The v1/v2 pair in the session
+scratchpad (`retrofit-vault` 1.0.0 without the interface, 2.0.0 with
+`paused : Optional Bool`, the instance, and the guards, built with
+`upgrades:` pointing at 1.0.0) is rejected by the Daml-LF typechecker:
+"Implementation of interface Pausable by template UpgradedVault is defined
+in this package, but not in the package that is being upgraded", gated by
+`template-has-new-interface-instance`. With
+`-Wtemplate-has-new-interface-instance` in `build-options` the pair builds
+and the check reports the instance as a warning. The README states the flag
+and that an interface read of an older contract resolves through the
+package preference. The pair is not in the repository; see Open Questions.
+
+**Status:** Fixed
 
 ### Informational
 
 #### INFO-1: The consuming-flip and flag obligations are fail-open after the flip helpers were removed
 
-**Location:** `packages/security/pausable-v1/README.md` line 82-83 and 138-141; `test/pausable-v1/daml/OpenZeppelin/PausableV1TestFixtures.daml` line 150-167
+**Location:** `packages/security/pausable-v1/README.md` Usage step 2; `test/pausable-v1/daml/OpenZeppelin/PausableV1TestFixtures.daml` line 150-167
 **Invariant:** INV-9, INV-10
 
 **Issue:** Commit `5675734` made `pause` and `unpause` archive `self`, so a
@@ -211,17 +252,21 @@ they read the view.
 entirely, and the consumer now writes the archive and the create. A
 `nonconsuming` flip without `archive self` leaves two active contracts, and
 a flip that creates with the wrong flag is a pause that does not pause.
-Both are documented and the first is demonstrated by `LeakyVault`. The
-previous report's MED-1 asked for a fail-closed shape; the dev chose the
-smaller surface. This entry records the residual for the audit trail.
+The first is demonstrated by `LeakyVault`. The previous report's MED-1
+asked for a fail-closed shape; the dev chose the smaller surface. Commit
+`f73c79d` then removed the README sentences that stated both obligations
+(the `archive self` sentence in Usage step 2 and the "pause that does not
+pause" caveat), so the tests are now the only statement of them.
 
-**Recommendation:** Extend the caveat's test advice so the consumer's
-round-trip test states both properties: after a pause, the predecessor id
-returns `None` from `queryContractId` and the successor's view reads
+**Recommendation:** One sentence in Usage step 2 that the flip choice is
+consuming or calls `archive self`, and one that the consumer's round-trip
+test checks both properties: after a pause, the predecessor id returns
+`None` from `queryContractId` and the successor's view reads
 `paused = True`; after an unpause, the mirror. `test_flipArchivesThePredecessor`
 and `test_pauseUnpauseRoundTrip` are the shape to point at.
 
-**Status:** Acknowledged (design decision in `2fc2ddf`)
+**Status:** Acknowledged for the design (`2fc2ddf`); Open for the
+documentation removed in `f73c79d`
 
 #### INFO-2: The module header example names fixture symbols as if the package exported them
 
@@ -274,8 +319,9 @@ surface and the version it ships under.
 
 **Location:** `test/pausable-v1/daml/OpenZeppelin/PausableV1Test.daml`
 
-- **INV-12.** The README caveat that a flip which drops an observer
-  silently narrows visibility has no executable statement. A
+- **INV-12.** A flip that drops an observer silently narrows visibility.
+  The README caveat saying so was removed in `f73c79d`, and there is no
+  executable statement. A
   `Registry_Pause` fixture that sets `observer = []` and a script showing
   the auditor's `queryInterfaceContractId` returning `None` afterwards
   would state it.
@@ -335,28 +381,28 @@ Status of every finding in the 2026-09-08 report against the current tree.
 | MED-2 the whole package is single-version, helpers included | Resolved | `d8bec22` split the function package out; `ARCHITECTURE.md` and both READMEs state the freeze correctly; see INFO-6 for the utility-package refinement |
 | MED-3 `assertMsg` text instead of stable error ids | Resolved | `dbb12a6`; `failWithStatus` with `openzeppelin.com/pausable-*` ids, tests compare the whole status |
 | MED-4 vault examples accept non-positive amounts | Resolved | `c5b7a18`; `Vault_Withdraw` checks `amount > 0` and `amount <= balance`, `Vault` and `Payout` carry `ensure` |
-| INFO-1 README overstates why a stranger cannot flip | Resolved | README line 123-125 now names signatory authority and the absence of an interface choice |
+| INFO-1 README overstates why a stranger cannot flip | Resolved | The README Authority section now says the interface exposes no choice, so a `ContractId Pausable` alone grants no flip |
 | INFO-2 privacy negative, unpause failure routes, credential-holder branch, vacuous coverage | Resolved / Superseded | `test_viewHiddenFromStranger`; unpause routes gone with the helpers; `eCredentialNotCallers` branch tested; `CONTRIBUTING.md` documents the 0/0 report |
 | INFO-3 registry example stores nothing | Resolved | `668430e`; `entries` field |
 | INFO-4 `test/placeholder` | Resolved | `230ceee` |
-| INFO-5 record update after `markPaused` can change stakeholder fields | Resolved | README line 142-144; the helper itself is gone |
+| INFO-5 record update after `markPaused` can change stakeholder fields | Resolved, then the caveat was removed again in `f73c79d` | The helper itself is gone; the stakeholder-field caveat is INV-12 and INFO-5 of this report |
 
 ## Security Checklist Results
 
 | Category | Result | Notes |
 |---|---|---|
 | 3.1 Authorization | Pass | No templates, choices, or controller expressions in either production package. Fixtures and examples: controllers are the named principals, flips are consuming, `Payout` is signed by `admin` whose authority every `Vault` choice carries. Non-stakeholder flip authority works through the choice body (`RoleVault_Pause`) and is tested with disclosure. No propose-accept, no stuck-contract path; the implementing template's `Archive` stays with its signatories. |
-| 3.2 Privacy and disclosure | Pass | The view is one `Bool`, so cross-implementer divulgence is bounded to the flag. No guard fetches, so no party joins the read path. A non-stakeholder flip controller sees the payload at flip time; README line 126-127 says so. Disclosures held for the predecessor go stale on a flip; documented. Negative privacy test present. |
+| 3.2 Privacy and disclosure | Pass | The view is one `Bool`, so cross-implementer divulgence is bounded to the flag. No guard fetches, so no party joins the read path. A non-stakeholder flip controller sees the payload at flip time; the README bullet saying so was removed in `f73c79d`, and `test_nonStakeholderFlipNeedsDisclosure` demonstrates the disclosure requirement. Disclosures held for the predecessor go stale on a flip; documented. Negative privacy test present. |
 | 3.3 Integrity and runtime checks | Pass | No templates, so no `ensure`. Both checks raise `failWithStatus` with DNS-prefixed ids in the documented convention and the category a retrying client expects. No `assertMsg`, `error`, or `abort` on any consumer-reachable path in production code. No `agreement`, no user-defined exceptions. `Decimal` appears only in the vault example, guarded by `ensure balance >= 0.0` and two amount checks. |
 | 3.4 Contract keys | n/a | LF 2.1; no key anywhere in the changeset. |
-| 3.4a Admin layer (Pausable) | Pass with MED-1 | The flag is a field of the contract that is `self` of every gated choice, so no separate state contract exists to omit; the type signature still admits a fetched interface value, which is a documentation gap (MED-1). Guard-at-every-chokepoint is the consumer's duty (INV-11); both examples gate deliberately and leave one escape hatch open on purpose. Unpause is reachable in every fixture and example. Ownership transfer and role capabilities are out of scope by design; composition is by reference in the consumer's choice body. |
+| 3.4a Admin layer (Pausable) | Pass with MED-1 | The flag is a field of the contract that is `self` of every gated choice, so no separate state contract exists to omit; the type signature still admits a fetched interface value, which MED-1 (fixed) documents and tests. Guard-at-every-chokepoint is the consumer's duty (INV-11); both examples gate deliberately and leave one escape hatch open on purpose. Unpause is reachable in every fixture and example. Ownership transfer and role capabilities are out of scope by design; composition is by reference in the consumer's choice body. |
 | 3.5 Composability and contention | Pass | Guards are pure over `this`, so no assumption about the surrounding submission. A flip is a consuming exercise on the implementing contract and rejects concurrent readers; that is the committed origination-only semantics. No authority is assumed from the calling context. Adopting the interface changes no signatory set, so reassignment is unaffected. |
 | 3.6 Economic security | Pass for the packages; INFO-3 for the example | The packages move no value. The vault example conserves value on withdraw and redeem; the drain pays the admin from itself, which is a modelling choice rather than a leak. |
-| 3.7 Upgrade safety | Pass with INFO-6 | LF 2.1 supports SCU. The interface lives alone in `openzeppelin-api-pausable-v1`, as the SCU deep-dive requires. The function package is a utility package and is exempt from the dependency-retention rule; the READMEs understate this. No `daml.lock` exists because every dependency is a path-pinned DAR; package ids are deterministic per build. The breaking-change path (sibling `-v2` API package, both instances for life, offline migration to drop `-v1`) is stated in the API README and matches the reference. The retrofit path for live contracts is missing (MED-2). |
+| 3.7 Upgrade safety | Pass with INFO-6 | LF 2.1 supports SCU. The interface lives alone in `openzeppelin-api-pausable-v1`, as the SCU deep-dive requires. The function package is a utility package and is exempt from the dependency-retention rule; the READMEs understate this. No `daml.lock` exists because every dependency is a path-pinned DAR; package ids are deterministic per build. The breaking-change path (sibling `-v2` API package, both instances for life, offline migration to drop `-v1`) is stated in the API README and matches the reference. The retrofit path for live contracts is documented (MED-2, fixed); the compiler gates the added instance behind `-Wtemplate-has-new-interface-instance`. |
 
 ## Test Coverage Assessment
 
-35 scripts pass across the four test packages. Every ✅ invariant has a
+45 scripts pass across the four test packages: 3, 24, 11, and 7. Every ✅ invariant has a
 positive test and, where a failure exists, a negative test that compares the
 whole `FailureStatus`. Authorization failures use `AuthorizationError`
 matching, which distinguishes them from body failures. The credential
@@ -371,9 +417,10 @@ of the example templates.
 
 Gaps relative to findings:
 
-- MED-1: the decoy-switch fixture and script.
-- MED-2: a v1/v2 pair under `upgrades:` that adds `paused : Optional Bool`
-  and the instance.
+- MED-1: done, `test_guardOnSuppliedSwitchIsBypassed`.
+- MED-2: `test_optionalFlagReadsNoneAsUnpaused` covers the view; the SCU
+  validity of the shape is proven only by the scratchpad pair, which is not
+  in the repository.
 - INFO-5: the observer-narrowing flip.
 
 ## Artifact Drift
@@ -417,6 +464,30 @@ commit `2fc2ddf` removed `setPaused` and the flip helpers.
   mismatch persists under the new name → **Suggested update:** rename in
   the note, or align the README block with the fixture.
 
+Items in `artifacts/05-tests.md`, added in `328db18`:
+
+- **Artifact:** `artifacts/05-tests.md` Test Plan, `test/api-pausable-v1`
+  table → **Stale:** `test_interfaceIdGrantsNoAuthority`, marked "new" →
+  **Current:** the package has three scripts and no such test; the coverage
+  report lists no interface choice → **Suggested update:** drop the row and
+  the INV-6 matrix reference, or add the test.
+- **Artifact:** same file, Test Notes → **Stale:** "The API test package
+  covers the interface `Archive` path on its own fixture" → **Current:** no
+  test does → **Suggested update:** drop the sentence.
+- **Artifact:** same file, INV-8 source → **Stale:** "`pausable-v1` README,
+  Usage step 2" for the `archive self` rule → **Current:** the sentence was
+  removed in `f73c79d` → **Suggested update:** cite
+  `test_nonconsumingFlipLeavesTwoContracts` as the statement.
+- **Artifact:** same file, INV-5 and INV-7 sources → **Stale:**
+  "`pausable-v1` README, Authority" bullets on stale ids and on disclosure
+  → **Current:** both bullets were removed in `f73c79d` → **Suggested
+  update:** cite the tests.
+- **Artifact:** same file, Out of Scope → **Stale:** SCU of an implementing
+  template "not exercised here" → **Current:** `test_optionalFlagReadsNoneAsUnpaused`
+  covers the `Optional` flag; the upgrade check itself ran only in the
+  session scratchpad → **Suggested update:** narrow the item to the
+  `upgrades:` build.
+
 `artifacts/01-research.md` and `artifacts/02-design.md` are not in the tree,
 so their drift is not listed. Both were read from git history for context.
 
@@ -432,14 +503,13 @@ package.
 
 ## Recommendation
 
-- **Overall verdict:** Ready for publishing as a pre-release. Two
-  documentation fixes recommended before the first tagged release.
-- **Blocking issues:** None for merging this branch. MED-1 before the first
-  tagged release, because it closes the one misuse the type signature
-  permits and the research ranked it highest.
-- **Suggested improvements:** MED-2 with a compiled retrofit pair; INFO-1
-  to INFO-7; the INFO-5 tests; update `artifacts/06-docs.md` per Artifact
-  Drift or re-run the docs stage.
+- **Overall verdict:** Ready for publishing as a pre-release. MED-1 and
+  MED-2 are applied in the working tree.
+- **Blocking issues:** None.
+- **Suggested improvements:** INFO-1 to INFO-7, with INFO-1 now covering
+  the sentences `f73c79d` removed; the INFO-5 tests; a repository home for
+  the v1/v2 retrofit pair; update `artifacts/06-docs.md` and
+  `artifacts/05-tests.md` per Artifact Drift or re-run those stages.
 
 ## Out of Scope
 
@@ -475,15 +545,20 @@ package.
      ledger before the first tagged release.
   If any of these has shifted, say so and the affected findings will be
   re-evaluated.
-- **No `03-invariants`, `04-code`, or `05-tests` artifact exists.** INV-1
-  to INV-15 above can seed `artifacts/03-invariants.md`.
+- **`artifacts/05-tests.md` was added in `328db18`** with its own INV-1 to
+  INV-10, which differ from INV-1 to INV-16 here. No `03-invariants` or
+  `04-code` artifact exists; the two lists together can seed
+  `artifacts/03-invariants.md`.
 - **Docs consulted:** Canton SCU deep-dive "Upgrading Interfaces" and
   "Separate Interfaces/Exceptions from Templates"; the upgrading reference
   "Packages" (utility package definition), "Dependencies", and "Interface
   Instances"; the `DA.Fail` reference for `FailureStatus.errorId`; the
   `UpdateVettedPackages` force flags.
 - **Coverage note:** the `test/api-pausable-v1` package has 3 scripts, not
-  the 4 that `artifacts/06-docs.md` records; the fourth left with `setPaused`.
+  the 4 that `artifacts/06-docs.md` records or the 4 that
+  `artifacts/05-tests.md` lists; the fourth left with `setPaused`. After
+  this revision the `test/pausable-v1` coverage report shows 7 fixture
+  templates all created and 6 unexercised choices, all implicit `Archive`.
 
 ## Open Questions
 
@@ -495,3 +570,10 @@ package.
    written, or `ARCHITECTURE.md` now (INFO-4)?
 4. Should `artifacts/06-docs.md` be corrected in place per Artifact Drift,
    or should the docs stage re-run in revision mode against `2fc2ddf`?
+5. Should the v1/v2 retrofit pair become a repository package pair so the
+   README block and the `-Wtemplate-has-new-interface-instance` flag are
+   exercised in CI? `scripts/check-examples.sh` requires every example to
+   data-depend on a production DAR, which the v1 package would not.
+6. `f73c79d` removed the README statements of the consuming-flip, flag, and
+   stakeholder-field obligations (INV-9, INV-10, INV-12). Are the tests the
+   intended sole home for them?

@@ -45,6 +45,32 @@ then creates the successor with `paused` changed. The
 [`openzeppelin-pausable-v1` README](../pausable-v1/README.md) covers the
 guards, the flip choices, and the failure statuses to assert on in tests.
 
+A template that already has active contracts adopts the interface in its
+next Smart Contract Upgrade (SCU) version. SCU accepts a new field only as
+an `Optional` at the end of the record, so the flag is
+`paused : Optional Bool`, `None` on every contract created before the
+upgrade, and the view reads `None` as unpaused:
+
+```daml
+import DA.Optional (fromOptional)
+
+template UpgradedVault
+  with
+    admin : Party
+    holder : Party
+    paused : Optional Bool
+  where
+    signatory admin
+    observer holder
+
+    interface instance Pausable for UpgradedVault where
+      view = PausableView with paused = fromOptional False paused
+```
+
+The flip choices create with `paused = Some True` and `paused = Some False`.
+The guards read the view, so the gated choices call `whenNotPaused this` as
+before.
+
 ## Reading the flag off-ledger
 
 A wallet, a registry's metadata endpoint, or an auditor reads `PausableView`
