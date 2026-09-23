@@ -1,0 +1,14 @@
+sdk-version: 3.4.11
+name: pausable-retrofit-example
+source: daml
+version: 1.0.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+# The example check requires a production DAR; version 1.0.0 predates the
+# adoption and does not use it.
+data-dependencies:
+  - ../../../packages/security/api-pausable-v1/.daml/dist/openzeppelin-api-pausable-v1-0.1.0.dar
+build-options:
+  - --target=2.1
+  - -Wno-unused-dependency

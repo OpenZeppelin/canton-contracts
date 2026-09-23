@@ -71,6 +71,18 @@ The flip choices create with `paused = Some True` and `paused = Some False`.
 The guards read the view, so the gated choices call `whenNotPaused this` as
 before.
 
+The SCU check of `damlc` refuses a new interface instance on an existing
+template by default, with `template-has-new-interface-instance`. The check
+exists because contracts created under the old version gain the instance,
+and clients that still use the old version do not know it. Build the new
+version with `-Wno-template-has-new-interface-instance` after you review the
+old-version behavior that the next section describes.
+[`examples/pausable/retrofit-v1-0`](../../../examples/pausable/retrofit-v1-0)
+and [`examples/pausable/retrofit-v1-1`](../../../examples/pausable/retrofit-v1-1)
+show the two versions, and
+[`examples/pausable/retrofit-test`](../../../examples/pausable/retrofit-test)
+exercises both.
+
 ## Reading the flag off-ledger
 
 A wallet, a registry's metadata endpoint, or an auditor reads `PausableView`
@@ -135,7 +147,8 @@ For a consumer this means:
 - Adopting `openzeppelin-api-pausable-v2` takes one of two paths. Under SCU
   of your own package, you add a second `interface instance`; an interface
   instance stays through every SCU version, so your template implements both
-  for life. To drop V1, you create a new template version outside SCU and
+  for life. The new instance needs `-Wno-template-has-new-interface-instance`,
+  as in the SCU retrofit above. To drop V1, you create a new template version outside SCU and
   migrate existing contracts to it offline.
 
 `0.1.0` is a pre-release: the package ID may change between commits, and no
