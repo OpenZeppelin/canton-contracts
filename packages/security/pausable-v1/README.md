@@ -135,13 +135,6 @@ flip:
 - A choice is gated only by its own guard call, and the guard checks the flag
   alone. Call `whenNotPaused` first in every choice a pause must stop, and
   keep each choice's controller as its access control.
-- The flip is your own `create`, and nothing checks it. A flip choice that
-  guards with `whenNotPaused` and then creates with `paused = False` is a
-  pause that does not pause, with no error. Test one pause round trip and
-  compare the flag and every other field.
-- The same `create` must keep the fields that determine the signatories and
-  the observers: a changed signatory field fails the create, and a dropped
-  observer silently narrows who sees the paused contract.
 
 ## Compatibility
 
