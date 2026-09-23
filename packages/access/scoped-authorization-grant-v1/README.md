@@ -175,6 +175,10 @@ with these stable IDs and metadata:
 | `OZ_SAG_NOT_YET_VALID` | `validFrom`: inclusive lower bound |
 | `OZ_SAG_EXPIRED` | `validUntil`: exclusive upper bound |
 
+The guard checks, in order, the authority, the grantee, the scope, `validFrom`,
+and `validUntil`, and reports only the first failure. The order is part of the
+behavior that the tests fix.
+
 All use `failedPrecondition` (`FAILED_PRECONDITION`). Match the Ledger API's
 `ErrorInfo.reason = DAML_FAILURE` and `metadata.error_id`, rather than parsing
 the human-readable message. These failures abort the transaction and cannot be

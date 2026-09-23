@@ -344,3 +344,38 @@ test_malformedWindowFailsCreation = script do
     createCmd AuthorizationGrant with
       authority; grantee = actor; scope = treasuryScope 1
       validFrom = Some t0; validUntil = Some t0
+
+test_firstFailureWinsInCheckOrder : Script ()
+test_firstFailureWinsInCheckOrder = script do
+  setTime t1
+  authority <- allocateParty "authority"
+  other <- allocateParty "other"
+  actor <- allocateParty "actor"
+  wrongScope <- submit other do
+    createCmd AuthorizationGrant with
+      authority = other
+      grantee = actor
+      scope = treasuryScope 2
+      validFrom = None
+      validUntil = Some t1
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
+  checkDisclosure <- discloseTo @AuthorizationCheck authority check
+  -- Wrong authority, wrong scope, and expired: only the authority is reported.
+  submitDisclosedMustFailWith "OZ_SAG_AUTHORITY_MISMATCH"
+    [("expected", partyToText authority), ("actual", partyToText other)]
+    actor [checkDisclosure] do
+      exerciseCmd check AuthorizationCheck_Run with
+        authorization = Authorization with actor; grantCid = wrongScope
+  expiredWrongScope <- submit authority do
+    createCmd AuthorizationGrant with
+      authority
+      grantee = actor
+      scope = treasuryScope 2
+      validFrom = None
+      validUntil = Some t1
+  -- Wrong scope and expired: only the scope is reported.
+  submitDisclosedMustFailWith "OZ_SAG_SCOPE_MISMATCH" [("fields", "policyEpoch")]
+    actor [checkDisclosure] do
+      exerciseCmd check AuthorizationCheck_Run with
+        authorization = Authorization with actor; grantCid = expiredWrongScope
