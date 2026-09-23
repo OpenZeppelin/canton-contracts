@@ -44,6 +44,11 @@ demo = script do
     exerciseCmd treasury Treasury_ScheduleLimit with
       newLimit = 500.0, readyAt = addRelTime t0 (hours 1)
 
+  -- A negative limit is refused at scheduling time.
+  submitMustFail proposer do
+    exerciseCmd treasury Treasury_ScheduleLimit with
+      newLimit = -1.0, readyAt = addRelTime t0 (days 3)
+
   -- The proposer schedules a limit raise that becomes ready in three days. The
   -- treasury records it as pending, so the treasury's contract id changes.
   (treasury, raise) <- submit proposer do

@@ -79,15 +79,17 @@ template Treasury
         assertMsg "Treasury: amount exceeds the spending limit" (amount <= limit)
         create Payout with payer = admin, recipient, amount
 
-    -- Schedule a limit change. `scheduleAt` refuses a `readyAt` closer than
-    -- `config.minDelay` and derives `expiresAt` from `config.gracePeriod`. The
-    -- successor treasury records the operation as pending.
+    -- Schedule a limit change. The new limit is validated at proposal time.
+    -- `scheduleAt` refuses a `readyAt` closer than `config.minDelay` and
+    -- derives `expiresAt` from `config.gracePeriod`. The successor treasury
+    -- records the operation as pending.
     choice Treasury_ScheduleLimit : (ContractId Treasury, ContractId LimitChange)
       with
         newLimit : Decimal
         readyAt : Time
       controller proposer
       do
+        assertMsg "Treasury: the limit must be zero or greater" (newLimit >= 0.0)
         s <- Timelock.scheduleAt config readyAt
         op <- create LimitChange with
           admin; proposer; executor; newLimit
