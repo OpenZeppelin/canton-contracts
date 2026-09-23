@@ -66,10 +66,7 @@ force is the lifetime of a contract whose view reads `paused = True`.
 ## Authority and lifecycle
 
 The interface carries the view alone. Pause authority is the controller and
-body of the consumer's flip choice, and the `create` in that choice carries
-the implementing template's signatories. A flip archives
-the contract and creates its successor, so a reader holds the view of one
-contract at a time and re-queries after a flip.
+body of the consumer's flip choice.
 
 ## Scope and security caveats
 
@@ -83,9 +80,8 @@ contract at a time and re-queries after a flip.
   `reason` and `until` holds them as its own template fields beside `paused`,
   as [`examples/pausable/registry`](../../../examples/pausable/registry)
   shows.
-- A refused choice writes nothing to the ledger. The ledger records when a
-  pause held; an off-ledger client that needs the attempts a pause blocked
-  logs its own rejected submissions.
+- The ledger records when a pause held, not the attempts it blocked. An
+  off-ledger client that needs those logs its own rejected submissions.
 
 ## Compatibility
 

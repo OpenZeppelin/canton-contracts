@@ -35,11 +35,8 @@ return to normal operation.
 ## Authority model
 
 `admin` and `owner` are signatories of `Vault`, and `admin` is the pause
-authority. The flip creates the successor contract, which preserves the
-signatory set, so the choice already carries the authority the create needs.
-
-The flip choices are consuming. Each guards with `whenNotPaused` or
-`whenPaused`, then creates the successor with the flag changed.
+authority. The flip choices are consuming. Each guards with `whenNotPaused`
+or `whenPaused`, then creates the successor with the flag changed.
 
 ## Build and run
 

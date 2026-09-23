@@ -68,7 +68,6 @@ then creates the successor with `paused` changed:
 ```
 
 To change other fields in the same transaction, set them in the same create.
-Keep the fields that determine the signatories and the observers unchanged.
 
 ```daml
     choice Registry_Pause : ContractId Registry
@@ -78,9 +77,6 @@ Keep the fields that determine the signatories and the observers unchanged.
         Pausable.whenNotPaused this
         create this with paused = True, pauseReason = reason
 ```
-
-A consuming choice archives the predecessor before the body runs. A
-nonconsuming flip choice calls `archive self` beside the create.
 
 **3. Assert on the failure statuses in your tests.** A gated choice that runs
 while paused fails with `eEnforcedPause`; a paused-only choice that runs while
@@ -120,13 +116,8 @@ flip:
         create this with paused = True
 ```
 
-- Creating the successor needs the implementing template's signatory
-  authority. The interface exposes no choice, so a party that holds only a
-  `ContractId Pausable` cannot flip the flag.
-- A flip controller who is not a stakeholder receives the contract through
-  disclosure and sees its whole payload.
-- A flip archives the contract, so contract IDs and disclosures held for it
-  go stale. Callers re-read the contract after a pause or an unpause.
+The interface exposes no choice, so a party that holds only a
+`ContractId Pausable` cannot flip the flag.
 
 ## Scope and security caveats
 
