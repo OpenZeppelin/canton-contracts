@@ -49,8 +49,8 @@ template FalseTarget
 -- timelocked operations. `admin` signs and is the `authority` that applies
 -- operations; `proposer` schedules; `executors` and `cancellers` are recorded
 -- on each operation. `pending` lists the operations the schedule choices
--- created, and membership in that list is what binds an operation to this
--- treasury.
+-- created. Membership in that list binds an operation to the treasury lineage
+-- whose successors carry the list forward.
 template Treasury
   with
     admin : Party

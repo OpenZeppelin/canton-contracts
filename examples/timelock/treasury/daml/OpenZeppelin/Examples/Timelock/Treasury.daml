@@ -34,9 +34,11 @@ template Payout
 -- operations, so every operation created in one of its choices carries
 -- `admin`'s signature. `pending` lists the operations the schedule choices
 -- created; the library's lifecycle choices accept only those, which binds the
--- delay on `admin` as well and binds each operation to this treasury and no
--- other. `proposer` schedules; `executor` executes; the proposer and the admin
--- cancel.
+-- delay on `admin` as well. Membership binds each operation to the treasury
+-- lineage whose successors carry the list forward. `admin` can still create a
+-- second treasury with a copied list, so the application identifies the
+-- canonical treasury. `proposer` schedules; `executor` executes; the proposer
+-- and the admin cancel.
 template Treasury
   with
     admin : Party
