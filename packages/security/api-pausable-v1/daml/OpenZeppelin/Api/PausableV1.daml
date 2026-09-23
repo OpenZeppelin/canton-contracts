@@ -35,5 +35,18 @@ data PausableView = PausableView with
 -- interface instance Pausable for Vault where
 --   view = PausableView with paused
 -- ```
+--
+-- * Signatories and observers: those of the implementing template. The
+--   interface adds none.
+-- * Controllers and choices: the interface defines no choice. The implicit
+--   `Archive` choice is reachable through `ContractId Pausable`, and the
+--   template's signatories control it.
+-- * Disclosure and privacy: every party that sees the contract reads the
+--   view.
+-- * Failure modes: reading the view does not fail. The guards in
+--   `OpenZeppelin.PausableV1` raise the failure statuses.
+-- * Upgrade and migration: frozen for the life of the package. A change
+--   ships as a sibling `-v2` package, and the implementing template upgrades
+--   independently.
 interface Pausable where
   viewtype PausableView

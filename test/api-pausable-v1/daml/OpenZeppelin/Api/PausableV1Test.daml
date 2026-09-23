@@ -46,3 +46,13 @@ test_viewTracksTheFlag = script do
   paused <- submit admin do exerciseCmd vault Vault_SetPaused with flag = True
   Some v <- queryInterfaceContractId holder (readOf paused)
   v === PausableView with paused = True
+
+-- | The implicit `Archive` choice is reachable through the interface, and
+-- only the template's signatories can exercise it.
+test_archiveThroughTheInterfaceIsSignatoryOnly : Script ()
+test_archiveThroughTheInterfaceIsSignatoryOnly = script do
+  Fixture{..} <- setup
+  submitMustFail holder do exerciseCmd (readOf vault) Archive
+  submit admin do exerciseCmd (readOf vault) Archive
+  gone <- queryContractId admin vault
+  gone === None

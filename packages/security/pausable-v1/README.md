@@ -123,8 +123,9 @@ flip:
         create this with paused = True
 ```
 
-The interface exposes no choice, so a party that holds only a
-`ContractId Pausable` cannot flip the flag.
+The interface has only the implicit `Archive` choice, which the template's
+signatories control. A party that holds only a `ContractId Pausable`
+therefore cannot flip the flag.
 
 ## Scope and security caveats
 
