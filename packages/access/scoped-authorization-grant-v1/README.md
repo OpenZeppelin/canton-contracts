@@ -236,7 +236,9 @@ grant administration, transferability, counters, or an interface.
   exercises `AuthorizationGrant_Use` to record usage.
 
 `OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contains unsupported
-implementation details and is not part of the consumer API.
+implementation details and is not part of the consumer API. The error ID
+strings in [Guard failures](#guard-failures) are the stable contract, so match
+on those strings rather than on the `Internal` constants.
 
 ## Build and compatibility
 
