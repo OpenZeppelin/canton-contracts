@@ -10,12 +10,13 @@ package boundary used by an integrator.
 |---|---|
 | Issuance and authority | Issuer-only creation and revocation; grantee-only use and renunciation; implicit Archive; authority/grantee equality |
 | Actor binding | Forged actors, stolen grants, disclosed contracts, and read access without controller authority |
-| Scope | Every field independently; combined mismatch metadata; exact CID, logical-only, and shared logical scopes |
-| Time | Unbounded and bounded windows; inclusive start, exclusive end; malformed and empty intervals |
-| Lifecycle | Reuse, independent duplicate grants, revocation, renunciation, stale disclosures, atomic command ordering |
+| Scope | Every field independently; combined mismatch metadata; exact CID, logical-only, and shared logical scopes; epoch reuse and future epochs |
+| Time | Unbounded and bounded windows; inclusive start, exclusive end at microsecond precision; one-microsecond windows; grants created after their window; malformed and empty intervals |
+| Lifecycle | Reuse, independent duplicate grants, revocation, renunciation, stale disclosures after Archive, Revoke, and Renounce, atomic command ordering |
 | Use event | Nested exercise, direct-use limits, rollback after business failure, no issuer authority leaking into sibling effects |
 | Licensing | Issuance, visibility, administration, duplicate registry IDs, policy rotation, grant lifecycle, time bounds, license revocation |
 | Treasury | Role-to-authority mapping, multi-payment role reuse, every stage's actor check, duty separation, stage revocation/expiry, policy binding and cleanup |
+| Guard behavior | Check order; failures that a consumer `try/catch` cannot catch; native fetch errors when no consumer signatory is a grant stakeholder; a consumer signatory that supplies the grantee's authority |
 | Trust limits | Direct creation by full signatory sets; receipt payloads are not proof of prior choices; scope CIDs do not prove liveness |
 
 The CI coverage gate requires every library and example template and choice,
