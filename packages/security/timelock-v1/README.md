@@ -67,6 +67,14 @@ tolerance, one minute by default.
   This bound assumes the same tolerance at both transactions.
   A two-minute minimum can therefore provide no record-time reaction window
   with a one-minute tolerance. Include both tolerances in the configured delay.
+- The expiry side has the same skew. A party that cleans up can choose a
+  ledger time at `expiresAt` while the record time is up to `T` earlier. The
+  record-time window between `readyAt` and the earliest cleanup is therefore
+  at least `gracePeriod - T`. Cleanup is open to any party, so a
+  `gracePeriod` of `T` or less can let another party remove an operation
+  before an executor can run it. `isValidConfig` accepts any positive
+  `gracePeriod`; choose one well above `T` plus the executor's submission
+  latency.
 - `scheduleAfter` computes `readyAt` from the scheduling transaction's ledger time.
   Its `getTime` call fixes that timestamp during preparation.
   It does not eliminate clock skew or guarantee an exact record-time delay.

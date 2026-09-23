@@ -87,7 +87,8 @@ data TimelockConfig = TimelockConfig with
     gracePeriod : Optional RelTime
       -- ^ How long after `readyAt` an operation stays executable, positive
       --   when set. `None` keeps an operation executable until it is
-      --   archived.
+      --   archived. Any party can clean up an expired operation, so choose a
+      --   value well above the synchronizer's ledger-time tolerance.
   deriving (Eq, Show)
 
 -- | The state of a timelock that the lifecycle choices read.

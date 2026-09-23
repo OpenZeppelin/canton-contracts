@@ -338,7 +338,8 @@ have no pending entry. Match the results against the canonical timelock's
   signatories control and that removes such entries, as
   `TreasuryTimelock_Prune` in the example does.
 - The time bounds hold within the synchronizer's ledger-time tolerance, so the
-  effective delay can be shorter than `minDelay`. Size the delay as
+  effective delay can be shorter than `minDelay`, and the execution window
+  can be shorter than `gracePeriod`. Size both as
   [Time on Canton](../timelock-v1/README.md#time-on-canton) describes.
 
 ## Compatibility
