@@ -13,8 +13,8 @@ import qualified DA.TextMap as TextMap
 import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
 import qualified OpenZeppelin.PausableV1 as Pausable
 
--- | What the vault pays out. The owner receives it on redemption, and the admin
--- receives it on an emergency drain.
+-- | What the vault pays out. The owner receives it on redemption and on an
+-- emergency drain.
 template Payout
   with
     payer : Party
@@ -60,13 +60,13 @@ template Vault
         vault <- create this with balance = 0.0
         pure (vault, payout)
 
-    -- A recovery path that runs only while paused. The admin moves the balance
-    -- to itself.
+    -- A recovery path that runs only while paused. The admin returns the
+    -- balance to the owner.
     choice Vault_EmergencyDrain : (ContractId Vault, ContractId Payout)
       controller admin
       do
         Pausable.whenPaused this
-        payout <- create Payout with payer = admin, recipient = admin, amount = balance
+        payout <- create Payout with payer = admin, recipient = owner, amount = balance
         vault <- create this with balance = 0.0
         pure (vault, payout)
 

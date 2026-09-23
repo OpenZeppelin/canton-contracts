@@ -18,7 +18,7 @@ for one owner, with an emergency stop that the admin controls.
 - `whenNotPaused this` in a gated choice. The guard reads the contract that the
   choice exercises, so no caller supplies the pause state.
 - `whenPaused this` on `Vault_EmergencyDrain`, a recovery path that runs only
-  during an incident and moves the balance to the admin as a `Payout`.
+  during an incident and returns the balance to the owner as a `Payout`.
 - `Vault_Redeem`, the ungated escape hatch: the owner takes the whole balance
   as a `Payout` at any time, paused or not, so the owner's funds stay
   reachable through a pause. Gating is a decision per choice.
