@@ -514,38 +514,60 @@ test_configChangeCleanupAfterExpiry = script do
 -- Policy validation
 -------------------------------------------------------
 
+-- | Create a probe for calling the schedule functions on any policy.
+setupProbe : Script (Party, ContractId Probe, Time)
+setupProbe = do
+  caller <- allocateParty "caller"
+  probe <- submit caller do createCmd Probe with caller
+  t0 <- getTime
+  pure (caller, probe, t0)
+
 -- | A zero grace period leaves no ledger time at which an operation is ready,
 -- so the schedule refuses the policy instead of creating a stillborn
 -- operation. INV-7.
 test_zeroGracePeriodRejected : Script ()
 test_zeroGracePeriodRejected = script do
-  Fixture{..} <- setupWith TimelockConfig with minDelay = days 1, gracePeriod = Some (hours 0)
-  r <- trySubmit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (days 1)
+  (caller, probe, t0) <- setupProbe
+  let config = TimelockConfig with minDelay = days 1, gracePeriod = Some (hours 0)
+  r <- trySubmit caller do
+    exerciseCmd probe Probe_ScheduleAt with config, readyAt = addRelTime t0 (days 1)
   expectFailure eInvalidConfig r
-  r2 <- trySubmit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimitAfter with newLimit = 20.0, delay = days 1
+  r2 <- trySubmit caller do
+    exerciseCmd probe Probe_ScheduleAfter with config, delay = days 1
   expectFailure eInvalidConfig r2
 
 -- | A negative minimum delay would widen the acceptance window instead of
 -- disabling the delay, so it is refused. INV-7.
 test_negativeMinDelayRejected : Script ()
 test_negativeMinDelayRejected = script do
-  Fixture{..} <- setupWith TimelockConfig with minDelay = negate (hours 1), gracePeriod = None
-  r <- trySubmit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt = t0
+  (caller, probe, t0) <- setupProbe
+  let config = TimelockConfig with minDelay = negate (hours 1), gracePeriod = None
+  r <- trySubmit caller do
+    exerciseCmd probe Probe_ScheduleAt with config, readyAt = t0
   expectFailure eInvalidConfig r
 
 -- | Both fields at zero is the most extreme misconfiguration. INV-7.
 test_bothZeroRejected : Script ()
 test_bothZeroRejected = script do
-  Fixture{..} <- setupWith TimelockConfig with minDelay = hours 0, gracePeriod = Some (hours 0)
-  r <- trySubmit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt = t0
+  (caller, probe, t0) <- setupProbe
+  let config = TimelockConfig with minDelay = hours 0, gracePeriod = Some (hours 0)
+  r <- trySubmit caller do
+    exerciseCmd probe Probe_ScheduleAt with config, readyAt = t0
   expectFailure eInvalidConfig r
   isValidConfig (TimelockConfig with minDelay = hours 0, gracePeriod = Some (microseconds 1)) === True
   isValidConfig (TimelockConfig with minDelay = hours 0, gracePeriod = None) === True
+
+-- | The protected template refuses an invalid policy at creation, through
+-- `isValidConfig` in its `ensure` clause. INV-7.
+test_treasuryWithInvalidPolicyIsRefused : Script ()
+test_treasuryWithInvalidPolicyIsRefused = script do
+  admin <- allocateParty "admin"
+  proposer <- allocateParty "proposer"
+  submitMustFail admin do
+    createCmd Treasury with
+      admin; proposer; executors = None; cancellers = [proposer]
+      limit = 10.0; pending = []
+      config = TimelockConfig with minDelay = days 1, gracePeriod = Some (hours 0)
 
 -- | A config change to a stillborn policy is refused when it is scheduled,
 -- because the consumer's schedule choice validates the new policy. INV-7.

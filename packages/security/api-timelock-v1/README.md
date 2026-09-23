@@ -60,8 +60,10 @@ and cleanup choices; you supply the templates, the schedule choice, and the
 `apply` method.
 
 **1. Implement `Timelock` on the protected template.** Add a `TimelockConfig`
-field and a `Pending` field. The view names the signatory that applies
-operations. `apply` dispatches on the operation's template with
+field and a `Pending` field. Check the policy with `isValidConfig` in the
+`ensure` clause, so that the template refuses a policy that cannot schedule
+operations. The view names the signatory that applies operations. `apply`
+dispatches on the operation's template with
 `fromInterface`, reads its parameters, and creates the successor with the
 reduced pending list the library passes in. `unschedule` creates the successor
 with the reduced list alone:
@@ -78,6 +80,7 @@ template Treasury
   where
     signatory admin
     observer proposer, executor
+    ensure limit >= 0.0 && isValidConfig config
 
     interface instance Timelock for Treasury where
       view = TimelockView with authority = admin; config; pending

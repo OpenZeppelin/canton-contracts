@@ -150,7 +150,9 @@ data TimelockConfig = TimelockConfig with
 -- | Whether a policy produces executable operations: `minDelay` is zero or
 -- greater, and `gracePeriod`, when set, is positive. The schedule functions
 -- check it, which keeps a protected template able to schedule operations
--- after its policy changes through a timelocked operation.
+-- after its policy changes through a timelocked operation. Call it in the
+-- protected template's `ensure` clause, so that the template refuses an
+-- invalid policy at creation.
 isValidConfig : TimelockConfig -> Bool
 isValidConfig config =
   config.minDelay >= aeternity && optional True (> aeternity) config.gracePeriod

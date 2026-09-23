@@ -48,7 +48,7 @@ template Treasury
   where
     signatory admin
     observer proposer, executor
-    ensure limit >= 0.0
+    ensure limit >= 0.0 && Timelock.isValidConfig config
 
     -- The `Timelock` instance: the view the lifecycle choices read, and the
     -- two methods that create the successor. `apply` dispatches on the
