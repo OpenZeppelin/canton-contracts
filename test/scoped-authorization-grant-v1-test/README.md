@@ -50,5 +50,7 @@ OZ_SANDBOX_SUITE=treasury scripts/check-sandbox.sh
 ```
 
 Each invocation starts a fresh static-time ledger and stops it on exit. Use
-`OZ_LEDGER_PORT` to select another port. These are single-participant integration
+`OZ_LEDGER_PORT` to select another Ledger API port. The sandbox keeps its
+default ports for its other APIs, so two local runs at the same time still
+conflict. These are single-participant integration
 tests, not Global Synchronizer deployment tests.
