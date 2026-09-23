@@ -167,8 +167,11 @@ For a consumer this means:
   of your own package, you add a second `interface instance`; an interface
   instance stays through every SCU version, so your template implements both
   for life. The new instance needs `-Wno-template-has-new-interface-instance`,
-  as in the SCU retrofit above. To drop V1, you create a new template version outside SCU and
-  migrate existing contracts to it offline.
+  as in the SCU retrofit above. To drop V1, you create a new template version
+  outside SCU and migrate existing contracts to it offline. The migration
+  copies the flag, so a paused contract stays paused in the new template. It
+  changes no business state, so let it run while paused, and do not clear the
+  flag in it.
 
 `0.1.0` is a pre-release: the package ID may change between commits, and no
 audit has been performed. See [`RELEASING.md`](../../../RELEASING.md).

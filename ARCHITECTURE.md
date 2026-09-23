@@ -70,9 +70,10 @@ on both DARs. The consumer's implementing template upgrades through SCU
 independently, because the interface instance is declared on the template and
 the API package does not move. SCU can only add an interface instance to that
 template, never remove one, and adding one needs the `damlc` option
-`-Wno-template-has-new-interface-instance`, so adopting an API `-v2` package means the template
-implements both interfaces for life; dropping the `-v1` instance needs a new
-template version outside SCU and an offline contract migration.
+`-Wno-template-has-new-interface-instance`. So adopting an API `-v2` package
+means the template implements both interfaces for life; dropping the `-v1`
+instance needs a new template version outside SCU and an offline contract
+migration that copies the flag.
 
 ## Dependency policy
 
