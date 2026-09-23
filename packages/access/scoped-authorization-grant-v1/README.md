@@ -176,6 +176,13 @@ Unavailable or archived contracts, missing controller authority, and malformed
 windows rejected by `ensure` retain Canton-native errors. Those failures can
 occur before the guard's checks run.
 
+The guard fetches the grant first. A fetch needs one authorizer that is a
+stakeholder of the grant. `OZ_SAG_GRANTEE_MISMATCH` and the later checks
+therefore run only when a signatory or controller of the consumer choice is
+the grant's authority or grantee. Otherwise, an actor that is not the grantee
+gets a Canton-native authorization error from the fetch. Authorization holds
+in both cases; clients that branch on `error_id` must handle both.
+
 ## Authority rotation
 
 The application's resource policy determines which authority it trusts. To rotate
