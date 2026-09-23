@@ -124,7 +124,8 @@ so the grant does not introduce an unrelated confirming participant.
 `validFrom` is inclusive and `validUntil` is exclusive. When both bounds are
 present, creation requires `validFrom < validUntil`. Validation uses ledger-time
 predicates rather than reading `getTime`, so the check remains compatible with
-externally prepared and signed transactions.
+externally prepared and signed transactions. No test in this repository covers
+external signing yet.
 
 The bounds apply to ledger time, not to record time. The synchronizer accepts a
 ledger time within its configured tolerance of the record time, and the

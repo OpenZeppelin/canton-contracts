@@ -76,10 +76,19 @@ DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm damlc lint
 DAML_PACKAGE=experiments/test/pausable-v1-test dpm damlc lint
 DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm damlc lint
+DAML_PACKAGE=examples/licensing-app-v1 dpm damlc lint
+DAML_PACKAGE=examples/licensing-app-v1-test dpm damlc lint
+DAML_PACKAGE=examples/treasury-rbac-v1 dpm damlc lint
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/pausable-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
 scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=authorization scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=licensing scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=treasury scripts/check-sandbox.sh
 ```
 
 `scripts/check.sh` enforces package boundaries. Component tests and production
