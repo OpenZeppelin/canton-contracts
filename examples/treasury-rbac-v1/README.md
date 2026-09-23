@@ -47,6 +47,14 @@ boundary. After rotation, a pending proposal or approval can be archived only
 with all its signatories' authority; an authorized proposer can submit
 a replacement under the successor treasury.
 
+Each stage checks only the role of the actor for that stage.
+`PaymentProposal_Approve` checks the approver's grant, and
+`ApprovedPayment_Execute` checks the executor's grant. A revoked or expired
+proposer grant therefore does not stop the approval of a proposal that already
+exists, and a revoked or expired approver grant does not stop the execution of
+an approval that already exists. To stop a pending stage, archive it with all
+its signatories' authority, or rotate the epoch.
+
 `treasuryId` is a stable application-defined `Text` identifier used in grant
 scopes. `treasuryCid` is the unique `ContractId Treasury` that binds both role
 grants and payment stages to one exact policy contract.
