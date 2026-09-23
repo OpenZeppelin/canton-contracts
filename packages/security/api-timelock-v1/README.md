@@ -31,8 +31,8 @@ Three interfaces, their views, and the failure statuses their choices raise:
   `gracePeriod`.
 - `Pending`: the list of scheduled operations. The schedule choice adds to
   it; `Timelock_Apply` and `Timelock_Drop` take from it, so only operations
-  the schedule choice created reach an effect. This binds the delay on the
-  timelock's own signatories, whose direct creations stay outside the list.
+  the schedule choice created reach an effect. An operation that a signatory
+  creates directly stays outside the list and has no effect.
 - `DropReason`: `CancelOperation` requires canceller permission;
   `CleanupOperation` requires expiry.
 - Eight failure statuses, each a `FailureStatus` with a stable `errorId` under
@@ -172,7 +172,8 @@ successor records the operation as pending:
 ```
 
 **5. Read the governed config in the business choices.** Take the config id
-as a choice argument, fetch it, and check its signatory:
+as a choice argument, fetch it, and check that its signatories are the
+business contract's signatories:
 
 ```daml
     choice Treasury_Pay : (ContractId Treasury, ContractId Payout)
@@ -183,7 +184,7 @@ as a choice argument, fetch it, and check its signatory:
       controller admin
       do
         cfg <- fetch configCid
-        assertMsg "the config belongs to another admin" (cfg.admin == admin)
+        assertMsg "the config has other signatories" (signatory cfg == signatory this)
         assertMsg "amount exceeds the spending limit" (amount <= cfg.limit)
         payout <- create Payout with payer = admin, recipient, amount
         t <- create this with balance = balance - amount
@@ -233,12 +234,21 @@ from the timelock's signatories and the actor only, so a substituted timelock
 cannot use the operation's signatory authority.
 
 The pending list rejects operations created outside the schedule choices.
-Signatories can still archive or recreate contracts, including a timelock with
-a copied pending list and a governed config with other settings. A business
-choice that checks only the config's signatory accepts such a config.
+It does not bind the governed config. The signatories, acting together, can
+still create a config with other settings, or a second timelock with its own
+config and policy. The signatory check in step 5 accepts both. The delay
+therefore binds a party only when that party cannot create such contracts
+alone:
+
+- With one signatory, as in the example, the timelock shows the mechanics
+  and binds the proposer and the executors, but it does not bind the
+  signatory.
+- With several signatories, a config or timelock outside the canonical
+  lineage needs every signatory's authorization, so one signatory that
+  refuses blocks it.
+
 Applications must establish a canonical timelock and config lineage and review
-every choice that creates successors. Multiple signatories can protect against
-unilateral replacement when at least one signatory refuses it.
+every choice that creates successors.
 
 - A role credential fits in the schedule choice: the choice takes the caller
   and the credential as arguments and verifies them in its body, as

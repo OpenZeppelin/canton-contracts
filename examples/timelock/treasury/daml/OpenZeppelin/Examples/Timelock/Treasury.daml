@@ -10,14 +10,20 @@
 --
 -- * `TreasuryTimelock` holds the delay policy and the pending operations, and
 --   implements `Timelock`.
--- * `TreasuryConfig` holds the spending limit. Only a matured operation
---   replaces it.
+-- * `TreasuryConfig` holds the spending limit. Its only choice-based
+--   successor path is the timelock's `apply`.
 -- * `Treasury` holds the balance. Each payment reads the current
 --   `TreasuryConfig`.
 --
 -- Scheduling consumes only the timelock, and applying a limit change consumes
 -- the timelock and the config. Payments consume only the treasury, so they do
 -- not contend with governance.
+--
+-- `admin` is the sole signatory of all three contracts, so `admin` can create
+-- a config or a timelock outside this lineage. The example shows the
+-- mechanics, and binds the proposer and the executor. To bind the delay on
+-- the signatories as well, use several signatories, so that one signatory
+-- that refuses blocks such a contract.
 module OpenZeppelin.Examples.Timelock.Treasury where
 
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
@@ -52,9 +58,9 @@ template TreasuryConfig
     ensure limit >= 0.0
 
 -- | The business state. `Treasury_Pay` reads the spending limit from the
--- `TreasuryConfig` that the caller passes, and refuses a config that `admin`
--- does not sign. `admin` is the sole signatory of both contracts, so the
--- application identifies the canonical config, as it identifies the canonical
+-- `TreasuryConfig` that the caller passes, and refuses a config whose
+-- signatories differ from the treasury's. The check does not identify the
+-- canonical config: the application does, as it identifies the canonical
 -- treasury.
 template Treasury
   with
@@ -72,7 +78,7 @@ template Treasury
       controller admin
       do
         cfg <- fetch configCid
-        assertMsg "Treasury: the config belongs to another admin" (cfg.admin == admin)
+        assertMsg "Treasury: the config has other signatories" (signatory cfg == signatory this)
         assertMsg "Treasury: amount exceeds the spending limit" (amount <= cfg.limit)
         payout <- create Payout with payer = admin, recipient, amount
         t <- create this with balance = balance - amount
@@ -81,9 +87,10 @@ template Treasury
 -- | The timelock. `admin` signs it and is the authority that applies
 -- operations, so every operation created in one of its choices carries
 -- `admin`'s signature. `pending` lists the operations the schedule choices
--- created; the library's lifecycle choices accept only those, which binds the
--- delay on `admin` as well. `target` is the current `TreasuryConfig`: only
--- `apply` replaces the config, and it records the successor's id.
+-- created; the library's lifecycle choices accept only those, so an operation
+-- that `admin` creates directly has no effect. `target` is the current
+-- `TreasuryConfig`: `apply` replaces the config and records the successor's
+-- id.
 -- `proposer` schedules; `executor` executes; the proposer and the admin cancel.
 template TreasuryTimelock
   with

@@ -242,9 +242,8 @@ test_onlyTheConsumersProposerMaySchedule = script do
 -- The pending list
 -------------------------------------------------------
 
--- | The signatory itself is bound by the delay. An operation the admin creates
--- directly, ready at once, is absent from the pending list and is refused
--- with `eNotPending`. INV-8.
+-- | An operation that the admin creates directly, ready at once, is absent
+-- from the pending list and is refused with `eNotPending`. INV-8.
 test_directlyCreatedOperationRefused : Script ()
 test_directlyCreatedOperationRefused = script do
   Fixture{..} <- setup

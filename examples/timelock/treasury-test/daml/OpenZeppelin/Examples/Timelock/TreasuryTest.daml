@@ -49,12 +49,23 @@ demo = script do
   submitMustFail admin do
     exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 250.0
 
-  -- A config that another admin signs is refused.
+  -- A config that another party signs is refused.
   other <- allocateParty "other"
   foreign <- submit other do
     createCmd TreasuryConfig with admin = other; executor = other; limit = 1000.0
   submitMustFail admin do
     exerciseCmd treasury Treasury_Pay with configCid = foreign, recipient = supplier, amount = 250.0
+
+  -- The sole signatory is not bound: a config that `admin` creates directly
+  -- passes the signatory check. The application identifies the canonical
+  -- config, which is the one the timelock records.
+  direct <- submit admin do
+    createCmd TreasuryConfig with admin; executor; limit = 1000.0
+  (treasury, _) <- submit admin do
+    exerciseCmd treasury Treasury_Pay with configCid = direct, recipient = supplier, amount = 250.0
+  canonical <- currentConfig admin timelock
+  canonical === cfg
+  submit admin do archiveCmd direct
 
   -- A delay shorter than the policy is refused at scheduling time.
   submitMustFail proposer do
@@ -77,8 +88,8 @@ demo = script do
   (treasury, _) <- submit admin do
     exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 50.0
 
-  -- The admin is bound by the delay too. An operation created directly, ready
-  -- at once, is absent from the pending list and is refused.
+  -- An operation that the admin creates directly, ready at once, is absent
+  -- from the pending list and is refused.
   forged <- submit admin do
     createCmd LimitChange with
       admin; proposer; executor; newLimit = 500.0; readyAt = t0; expiresAt = None
