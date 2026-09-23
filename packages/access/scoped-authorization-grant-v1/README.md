@@ -225,5 +225,8 @@ See [Consume a local build](../../../README.md#consume-a-local-build) for the
 `data-dependencies` configuration.
 
 The package depends only on `daml-prim` and `daml-stdlib`, builds with SDK 3.5.8,
-and targets LF 2.1. The tested runtime is Canton 3.5; there is no released SCU
-baseline yet. Pin the built DAR and review package vetting for your deployment.
+and targets LF 2.1. The source uses `deriving Serializable`, which needs SDK
+3.5. The supported and tested runtime is Canton 3.5. The DAR depends on the
+`daml-stdlib` and `daml-prim` package IDs of SDK 3.5.8, so every participant
+that vets it also vets those package IDs. There is no released SCU baseline
+yet. Pin the built DAR and review package vetting for your deployment.
