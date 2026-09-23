@@ -99,6 +99,24 @@ test_registerRefusedWhilePaused = script do
   Some r <- queryContractId admin registry
   r.entries === ["first"]
 
+-- | While paused, the admin changes the reason and the deadline, and the
+-- registry stays paused. The update is refused while unpaused.
+test_updatePauseInfoWhilePaused : Script ()
+test_updatePauseInfoWhilePaused = script do
+  f@Fixture{..} <- setup
+  submitMustFailWith Pausable.eExpectedPause $ trySubmit admin do
+    exerciseCmd registry Registry_UpdatePauseInfo with reason = Some "early", until = None
+  registry <- pauseWithReason f
+  let later = addRelTime until (hours 6)
+  registry <- submit admin do
+    exerciseCmd registry Registry_UpdatePauseInfo with
+      reason = Some "incident 42, extended"
+      until = Some later
+  Some r <- queryContractId admin registry
+  r.paused === True
+  r.pauseReason === Some "incident 42, extended"
+  r.pauseUntil === Some later
+
 -- | Unpausing clears what the pause recorded.
 test_unpauseClearsTheRecordedFields : Script ()
 test_unpauseClearsTheRecordedFields = script do
