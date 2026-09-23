@@ -305,6 +305,12 @@ have no pending entry. Match the results against the canonical timelock's
 - The delay covers the privileged choices that demand a matured operation.
   Route every privileged choice through an operation; the library has no way
   to detect one that bypasses it.
+- Upgrading your package is a privileged action outside the timelock. An
+  upgrade of the timelock, config, or operation templates can change `apply`
+  or add a choice that changes the config, and existing contracts get the new
+  behavior once the participants vet the new package. Govern package vetting
+  with the same parties that the delay protects: with several signatories,
+  every signatory's participant must vet the upgrade.
 - `Timelock_Apply` verifies the actor, shared authority, pending list, and schedule.
   It also checks that the successor holds exactly the reduced pending list.
   The consumer implements `apply` and must dispatch each operation correctly.
