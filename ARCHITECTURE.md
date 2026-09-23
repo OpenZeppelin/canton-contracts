@@ -69,7 +69,12 @@ timelock's signatories, because a Daml choice applies typed contract
 data rather than forwarding an encoded call. The library contributes the
 interfaces that expose the operation's schedule and lifecycle, the functions
 that compute the schedule, and the guards that enforce it. The component is
-the frozen `openzeppelin-api-timelock-v1` package.
+two packages, split as Pausable is. `openzeppelin-api-timelock-v1` holds the
+interfaces, their views, and the failure statuses the interface choices raise.
+The interface choice bodies call helper functions that are compiled into the
+frozen package; the module's export list keeps them private, so no consumer
+depends on them. `openzeppelin-timelock-v1` holds the schedule functions, the
+pending-list functions, and the time guards for consumer choices.
 
 Timelock target choices authenticate the actor and enforce the lifecycle checks
 before calling consumer methods. Their authority consists of the target's

@@ -7,9 +7,10 @@ module OpenZeppelin.Api.TimelockV1TestFixtures where
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import DA.Optional (fromOptional)
 import qualified DA.TextMap as TextMap
-import DA.Time (RelTime, days)
+import DA.Time (days)
 
 import OpenZeppelin.Api.TimelockV1
+import OpenZeppelin.TimelockV1
 
 -- | An effect that requires the claimed authority's signature.
 template UnauthorizedEffect
@@ -91,20 +92,6 @@ template Treasury
       controller proposer
       do
         s <- scheduleAt config readyAt
-        op <- create LimitChange with
-          admin; proposer; executors; cancellers; newLimit
-          readyAt = s.readyAt; expiresAt = s.expiresAt
-        t <- create this with pending = addPending op pending
-        pure (t, op)
-
-    -- The same operation scheduled by a relative delay.
-    choice Treasury_ScheduleLimitAfter : (ContractId Treasury, ContractId LimitChange)
-      with
-        newLimit : Decimal
-        delay : RelTime
-      controller proposer
-      do
-        s <- scheduleAfter config delay
         op <- create LimitChange with
           admin; proposer; executors; cancellers; newLimit
           readyAt = s.readyAt; expiresAt = s.expiresAt
@@ -202,48 +189,6 @@ template LeakyTreasury
           readyAt = s.readyAt; expiresAt = s.expiresAt
         t <- create this with queue = addPending op queue
         pure (t, op)
-
--- | A stranger's contract for probing the guards on an interface value that
--- it can see and that another party controls, and the schedule functions on a
--- policy that no protected template accepts.
-template Probe
-  with
-    caller : Party
-  where
-    signatory caller
-
-    nonconsuming choice Probe_RequireReady : ()
-      with
-        target : ContractId Timelocked
-      controller caller
-      do
-        op <- fetch target
-        requireReady op
-
-    nonconsuming choice Probe_IsReadyAt : Bool
-      with
-        target : ContractId Timelocked
-        at : Time
-      controller caller
-      do
-        op <- fetch target
-        pure (isReadyAt at op)
-
-    nonconsuming choice Probe_ScheduleAt : TimelockedView
-      with
-        config : TimelockConfig
-        readyAt : Time
-      controller caller
-      do
-        scheduleAt config readyAt
-
-    nonconsuming choice Probe_ScheduleAfter : TimelockedView
-      with
-        config : TimelockConfig
-        delay : RelTime
-      controller caller
-      do
-        scheduleAfter config delay
 
 -- | Raised by the fixtures when `apply` receives an operation of a template
 -- the treasury does not handle.

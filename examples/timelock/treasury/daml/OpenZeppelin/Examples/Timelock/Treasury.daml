@@ -24,6 +24,7 @@ import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import qualified DA.TextMap as TextMap
 
 import qualified OpenZeppelin.Api.TimelockV1 as Timelock
+import qualified OpenZeppelin.TimelockV1 as Timelock
 
 -- | What the treasury pays out.
 template Payout

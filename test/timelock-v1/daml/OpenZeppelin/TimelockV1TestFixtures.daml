@@ -1,0 +1,84 @@
+-- | Fixtures for `OpenZeppelin.TimelockV1`: an operation that implements
+-- `Timelocked` only, and a probe that calls each function in a choice.
+module OpenZeppelin.TimelockV1TestFixtures where
+
+import DA.Time (RelTime)
+
+import OpenZeppelin.Api.TimelockV1
+import OpenZeppelin.TimelockV1
+
+-- | A scheduled operation with no effect.
+template Scheduled
+  with
+    owner : Party
+    readyAt : Time
+    expiresAt : Optional Time
+  where
+    signatory owner
+
+    interface instance Timelocked for Scheduled where
+      view = TimelockedView with readyAt, expiresAt
+
+-- | Calls the schedule functions, the pending-list functions, and the guards
+-- in a choice body.
+template Probe
+  with
+    caller : Party
+  where
+    signatory caller
+
+    nonconsuming choice Probe_ScheduleAt : TimelockedView
+      with
+        config : TimelockConfig
+        readyAt : Time
+      controller caller
+      do
+        scheduleAt config readyAt
+
+    nonconsuming choice Probe_ScheduleAfter : TimelockedView
+      with
+        config : TimelockConfig
+        delay : RelTime
+      controller caller
+      do
+        scheduleAfter config delay
+
+    nonconsuming choice Probe_RequireValidConfig : ()
+      with
+        config : TimelockConfig
+      controller caller
+      do
+        requireValidConfig config
+
+    nonconsuming choice Probe_TakePending : Pending
+      with
+        op : ContractId Timelocked
+        pending : Pending
+      controller caller
+      do
+        takePending op pending
+
+    nonconsuming choice Probe_RequireReady : ()
+      with
+        target : ContractId Timelocked
+      controller caller
+      do
+        op <- fetch target
+        requireReady op
+
+    nonconsuming choice Probe_RequireExpired : ()
+      with
+        target : ContractId Timelocked
+      controller caller
+      do
+        op <- fetch target
+        requireExpired op
+
+    nonconsuming choice Probe_IsReadyAt : Bool
+      with
+        target : ContractId Timelocked
+        at : Time
+      controller caller
+      do
+        op <- fetch target
+        pure (isReadyAt at op)

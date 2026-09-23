@@ -1,0 +1,143 @@
+-- | OpenZeppelin Timelock - the schedule functions, the pending-list
+-- functions, and the time guards for the interfaces in
+-- `OpenZeppelin.Api.TimelockV1`.
+--
+-- The consumer's schedule choice validates the policy, computes the schedule
+-- with `scheduleAt` or `scheduleAfter`, creates the operation, and records it
+-- with `addPending`:
+--
+-- ```
+-- choice TreasuryTimelock_ScheduleLimit : (ContractId TreasuryTimelock, ContractId LimitChange)
+--   with newLimit : Decimal; readyAt : Time
+--   controller proposer
+--   do
+--     s <- scheduleAt config readyAt
+--     op <- create LimitChange with
+--       admin; proposer; executor; newLimit
+--       readyAt = s.readyAt; expiresAt = s.expiresAt
+--     t <- create this with pending = addPending op pending
+--     pure (t, op)
+-- ```
+module OpenZeppelin.TimelockV1 where
+
+import DA.Action (unless)
+import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
+import DA.List (delete)
+import DA.Optional (whenSome)
+import DA.Time (RelTime, addRelTime, isLedgerTimeGE, isLedgerTimeLE, isLedgerTimeLT, microseconds)
+
+import OpenZeppelin.Api.TimelockV1
+import OpenZeppelin.TimelockV1.Internal as Internal
+
+-- | Whether a policy produces executable operations: `minDelay` is zero or
+-- greater, and `gracePeriod`, when set, is positive. Call it in the timelock
+-- template's `ensure` clause.
+isValidConfig : TimelockConfig -> Bool
+isValidConfig config =
+  config.minDelay >= zero && optional True (> zero) config.gracePeriod
+  where zero = microseconds 0
+
+-- | Fail with `eInvalidConfig` unless `isValidConfig` holds. Call it on the
+-- proposed policy in the choice that schedules a policy change.
+requireValidConfig : TimelockConfig -> Update ()
+requireValidConfig config = unless (isValidConfig config) (failWithStatus eInvalidConfig)
+
+-- | Compute the schedule of an operation that becomes ready at `readyAt`, and
+-- store the returned fields on the operation.
+--
+-- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
+-- with `eDelayTooShort` unless the ledger time is at least `config.minDelay`
+-- before `readyAt`. The check is a ledger-time bound, so the transaction's
+-- ledger time stays free within it.
+scheduleAt : TimelockConfig -> Time -> Update TimelockedView
+scheduleAt config readyAt = do
+  requireValidConfig config
+  early <- isLedgerTimeLE (addRelTime readyAt (negate config.minDelay))
+  unless early (failWithStatus eDelayTooShort)
+  pure TimelockedView with
+    readyAt
+    expiresAt = fmap (addRelTime readyAt) config.gracePeriod
+
+-- | Compute the schedule of an operation that becomes ready `delay` after the
+-- transaction's ledger time. It calls `getTime`, which fixes the ledger time
+-- of the transaction; use `scheduleAt` when the proposer knows the target
+-- time.
+--
+-- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
+-- with `eDelayTooShort` unless `delay` is at least `config.minDelay`.
+scheduleAfter : TimelockConfig -> RelTime -> Update TimelockedView
+scheduleAfter config delay = do
+  requireValidConfig config
+  unless (delay >= config.minDelay) (failWithStatus eDelayTooShort)
+  now <- getTime
+  let readyAt = addRelTime now delay
+  pure TimelockedView with
+    readyAt
+    expiresAt = fmap (addRelTime readyAt) config.gracePeriod
+
+-- | Record a newly created operation in the timelock's pending list. Call it
+-- in the schedule choice on the operation that the choice created.
+addPending : HasToInterface t Timelocked => ContractId t -> Pending -> Pending
+addPending op pending = toInterfaceContractId @Timelocked op :: pending
+
+-- | Remove an operation from the pending list, and fail with `eNotPending`
+-- when the list does not hold it. Call it first in an apply choice that you
+-- write yourself.
+takePending : HasToInterface t Timelocked => ContractId t -> Pending -> Update Pending
+takePending op pending = do
+  let cid = toInterfaceContractId @Timelocked op
+  unless (cid `elem` pending) (failWithStatus eNotPending)
+  pure (delete cid pending)
+
+-- | Fail unless the operation may execute now: the ledger time is at or after
+-- `readyAt` and, when `expiresAt` is set, before it. Fails with `eNotReady`
+-- before `readyAt` and with `eExpired` at or after `expiresAt`.
+requireReady : HasToInterface t Timelocked => t -> Update ()
+requireReady x = do
+  let v = view (toInterface @Timelocked x)
+  ready <- isLedgerTimeGE v.readyAt
+  unless ready (failWithStatus eNotReady)
+  whenSome v.expiresAt $ \expiresAt -> do
+    live <- isLedgerTimeLT expiresAt
+    unless live (failWithStatus eExpired)
+
+-- | Fail with `eNotExpired` unless `expiresAt` is set and the ledger time is
+-- at or after it.
+requireExpired : HasToInterface t Timelocked => t -> Update ()
+requireExpired x = do
+  let v = view (toInterface @Timelocked x)
+  case v.expiresAt of
+    None -> failWithStatus eNotExpired
+    Some expiresAt -> do
+      expired <- isLedgerTimeGE expiresAt
+      unless expired (failWithStatus eNotExpired)
+
+-- | Whether the operation may execute at `now`: `readyAt <= now`, and
+-- `now < expiresAt` when `expiresAt` is set.
+isReadyAt : HasToInterface t Timelocked => Time -> t -> Bool
+isReadyAt now x =
+  let v = view (toInterface @Timelocked x)
+  in v.readyAt <= now && optional True (now <) v.expiresAt
+
+-- | Whether the operation has expired at `now`: `expiresAt` is set and
+-- `expiresAt <= now`.
+isExpiredAt : HasToInterface t Timelocked => Time -> t -> Bool
+isExpiredAt now x =
+  let v = view (toInterface @Timelocked x)
+  in optional False (<= now) v.expiresAt
+
+-- Failure statuses. Each reaches the Ledger API as a `DAML_FAILURE` error
+-- carrying the `errorId` below, so a client matches on the id.
+
+-- | Raised when `isValidConfig` rejects a policy: a negative `minDelay`, or a
+-- `gracePeriod` of zero or less.
+-- `errorId`: `openzeppelin.com/timelock-invalid-config`.
+eInvalidConfig : FailureStatus
+eInvalidConfig = Internal.timelockFailure "invalid-config" InvalidIndependentOfSystemState
+  "Timelock: the policy needs a minDelay of zero or greater and a positive gracePeriod"
+
+-- | Raised when a schedule requests a delay shorter than `minDelay`.
+-- `errorId`: `openzeppelin.com/timelock-delay-too-short`.
+eDelayTooShort : FailureStatus
+eDelayTooShort = Internal.timelockFailure "delay-too-short" InvalidIndependentOfSystemState
+  "Timelock: the delay is shorter than the minimum delay"

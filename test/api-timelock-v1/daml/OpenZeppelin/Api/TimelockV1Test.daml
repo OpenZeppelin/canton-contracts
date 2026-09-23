@@ -3,10 +3,11 @@ module OpenZeppelin.Api.TimelockV1Test where
 
 import DA.Assert ((===))
 import DA.Fail (FailureStatus)
-import DA.Time (RelTime, addRelTime, days, hours, minutes, microseconds)
+import DA.Time (RelTime, addRelTime, days, hours, minutes)
 import Daml.Script
 
 import OpenZeppelin.Api.TimelockV1
+import OpenZeppelin.TimelockV1
 import OpenZeppelin.Api.TimelockV1TestFixtures
 
 data Fixture = Fixture with
@@ -104,40 +105,6 @@ test_scheduleAtDerivesTheView = script do
   tv.authority === admin
   Some ov <- queryInterfaceContractId executor (opOf op)
   ov === OperationView with executors = Some [executor], cancellers = [proposer, admin]
-
--- | `scheduleAfter` measures the delay from the ledger time.
-test_scheduleAfterDerivesTheView : Script ()
-test_scheduleAfterDerivesTheView = script do
-  Fixture{..} <- setup
-  (_, op) <- submit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimitAfter with newLimit = 20.0, delay = days 3
-  Some v <- queryInterfaceContractId admin (asOp op)
-  v.readyAt === addRelTime t0 (days 3)
-  v.expiresAt === Some (addRelTime t0 (days 10))
-
--- | A `readyAt` closer than `minDelay` is refused. INV-1.
-test_scheduleAtRejectsShortDelay : Script ()
-test_scheduleAtRejectsShortDelay = script do
-  Fixture{..} <- setup
-  r <- trySubmit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with
-      newLimit = 20.0, readyAt = addRelTime t0 (hours 23)
-  expectFailure eDelayTooShort r
-
--- | A `readyAt` exactly `minDelay` away is accepted: the bound is inclusive.
-test_scheduleAtAcceptsExactMinDelay : Script ()
-test_scheduleAtAcceptsExactMinDelay = script do
-  f <- setup
-  _ <- scheduleLimit f 20.0 (days 1)
-  pure ()
-
--- | A relative delay shorter than `minDelay` is refused. INV-1.
-test_scheduleAfterRejectsShortDelay : Script ()
-test_scheduleAfterRejectsShortDelay = script do
-  Fixture{..} <- setup
-  r <- trySubmit proposer do
-    exerciseCmd treasury Treasury_ScheduleLimitAfter with newLimit = 20.0, delay = hours 1
-  expectFailure eDelayTooShort r
 
 -- | A zero `minDelay` disables the delay, as in `TimelockController.sol`.
 test_zeroMinDelayAllowsImmediateReady : Script ()
@@ -514,49 +481,6 @@ test_configChangeCleanupAfterExpiry = script do
 -- Policy validation
 -------------------------------------------------------
 
--- | Create a probe for calling the schedule functions on any policy.
-setupProbe : Script (Party, ContractId Probe, Time)
-setupProbe = do
-  caller <- allocateParty "caller"
-  probe <- submit caller do createCmd Probe with caller
-  t0 <- getTime
-  pure (caller, probe, t0)
-
--- | A zero grace period leaves no ledger time at which an operation is ready,
--- so the schedule refuses the policy instead of creating a stillborn
--- operation. INV-7.
-test_zeroGracePeriodRejected : Script ()
-test_zeroGracePeriodRejected = script do
-  (caller, probe, t0) <- setupProbe
-  let config = TimelockConfig with minDelay = days 1, gracePeriod = Some (hours 0)
-  r <- trySubmit caller do
-    exerciseCmd probe Probe_ScheduleAt with config, readyAt = addRelTime t0 (days 1)
-  expectFailure eInvalidConfig r
-  r2 <- trySubmit caller do
-    exerciseCmd probe Probe_ScheduleAfter with config, delay = days 1
-  expectFailure eInvalidConfig r2
-
--- | A negative minimum delay would widen the acceptance window instead of
--- disabling the delay, so it is refused. INV-7.
-test_negativeMinDelayRejected : Script ()
-test_negativeMinDelayRejected = script do
-  (caller, probe, t0) <- setupProbe
-  let config = TimelockConfig with minDelay = negate (hours 1), gracePeriod = None
-  r <- trySubmit caller do
-    exerciseCmd probe Probe_ScheduleAt with config, readyAt = t0
-  expectFailure eInvalidConfig r
-
--- | Both fields at zero is the most extreme misconfiguration. INV-7.
-test_bothZeroRejected : Script ()
-test_bothZeroRejected = script do
-  (caller, probe, t0) <- setupProbe
-  let config = TimelockConfig with minDelay = hours 0, gracePeriod = Some (hours 0)
-  r <- trySubmit caller do
-    exerciseCmd probe Probe_ScheduleAt with config, readyAt = t0
-  expectFailure eInvalidConfig r
-  isValidConfig (TimelockConfig with minDelay = hours 0, gracePeriod = Some (microseconds 1)) === True
-  isValidConfig (TimelockConfig with minDelay = hours 0, gracePeriod = None) === True
-
 -- | The protected template refuses an invalid policy at creation, through
 -- `isValidConfig` in its `ensure` clause. INV-7.
 test_treasuryWithInvalidPolicyIsRefused : Script ()
@@ -580,16 +504,6 @@ test_configChangeToInvalidPolicyIsRefused = script do
       newConfig = broken, readyAt = addRelTime t0 (days 1)
   expectFailure eInvalidConfig r
 
--- | A `readyAt` at the maximum time fails: `expiresAt` cannot be computed, so
--- `Time` arithmetic aborts the transaction and no operation is created.
-test_scheduleNearMaxTimeFails : Script ()
-test_scheduleNearMaxTimeFails = script do
-  Fixture{..} <- setup
-  submitMustFail proposer do
-    exerciseCmd treasury Treasury_ScheduleLimit with newLimit = 20.0, readyAt = maxBound
-  ops <- query @LimitChange admin
-  ops === []
-
 -- Reading
 -------------------------------------------------------
 
@@ -606,50 +520,12 @@ test_viewVisibilityFollowsTheTemplate = script do
   hidden <- queryInterfaceContractId stranger (asOp op)
   hidden === None
 
--- | The pure predicates agree with the guards at the boundaries.
-test_purePredicatesMatchTheGuards : Script ()
-test_purePredicatesMatchTheGuards = script do
-  Fixture{..} <- setup
-  let readyAt = addRelTime t0 (days 2)
-      expiresAt = addRelTime readyAt (days 7)
-      op = LimitChange with
-        admin; proposer; executors = Some [executor]; cancellers = [admin]
-        newLimit = 20.0; readyAt; expiresAt = Some expiresAt
-  isReadyAt t0 op === False
-  isReadyAt (addRelTime readyAt (negate (minutes 1))) op === False
-  isReadyAt readyAt op === True
-  isReadyAt (addRelTime expiresAt (negate (minutes 1))) op === True
-  isReadyAt expiresAt op === False
-  isExpiredAt readyAt op === False
-  isExpiredAt expiresAt op === True
-  isExpiredAt expiresAt (op with expiresAt = None) === False
-
--- | The guards accept a bare `Timelocked`, so a party holding only the
--- interface contract id can check readiness. The check changes nothing.
-test_guardsAcceptAnInterfaceValue : Script ()
-test_guardsAcceptAnInterfaceValue = script do
-  f@Fixture{..} <- setup
-  (_, op) <- scheduleLimit f 20.0 (days 2)
-  probe <- submit admin do createCmd Probe with caller = admin
-  let target = asOp op
-  r <- trySubmit admin do exerciseCmd probe Probe_RequireReady with target
-  expectFailure eNotReady r
-  ready <- submit admin do
-    exerciseCmd probe Probe_IsReadyAt with target, at = addRelTime t0 (days 2)
-  ready === True
-  passTime (days 2)
-  submit admin do exerciseCmd probe Probe_RequireReady with target
-  Some _ <- queryContractId admin op
-  pure ()
-
 -- | The failure statuses are distinct and carry stable ids.
 test_failureStatusesAreDistinct : Script ()
 test_failureStatusesAreDistinct = script do
-  eDelayTooShort.errorId === "openzeppelin.com/timelock-delay-too-short"
   eNotReady.errorId === "openzeppelin.com/timelock-not-ready"
   eExpired.errorId === "openzeppelin.com/timelock-expired"
   eNotExpired.errorId === "openzeppelin.com/timelock-not-expired"
-  eInvalidConfig.errorId === "openzeppelin.com/timelock-invalid-config"
   eNotPending.errorId === "openzeppelin.com/timelock-not-pending"
   eNotExecutor.errorId === "openzeppelin.com/timelock-not-executor"
   eNotCanceller.errorId === "openzeppelin.com/timelock-not-canceller"

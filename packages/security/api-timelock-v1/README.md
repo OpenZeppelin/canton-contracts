@@ -10,9 +10,9 @@ privileged operation and its execution.
 | Version | `0.1.0` |
 | Status | Pre-release; unaudited |
 
-## Capabilities
+## What it provides
 
-Three interfaces and the functions around them:
+Three interfaces, their views, and the failure statuses their choices raise:
 
 - `Timelock`: the timelock contract. Its view, `TimelockView`, carries the
   `authority` that applies operations, the `TimelockConfig` in force, and the
@@ -26,28 +26,25 @@ Three interfaces and the functions around them:
   `Operation_Cancel`, and `Operation_Cleanup`, forward the authenticated actor
   to the timelock's lifecycle choice. `Operation` requires `Timelocked`.
 - `Timelocked`: the schedule of an operation, `readyAt` and `expiresAt`, for
-  the guards and for off-ledger readers.
-- `TimelockConfig`, `isValidConfig`, and `requireValidConfig`: the delay
-  policy, `minDelay` and an optional `gracePeriod`, and its validation. A
-  policy is valid when `minDelay` is zero or greater and `gracePeriod`, when
-  set, is positive.
-- `Pending`, `addPending`, and `takePending`: the list of scheduled
-  operations. The schedule choice adds to it; `Timelock_Apply` and
-  `Timelock_Drop` take from it, so only operations the schedule choice created
-  reach an effect. This binds the delay on the timelock's own
-  signatories, whose direct creations stay outside the list.
-- `scheduleAt` and `scheduleAfter`: compute the view of a new operation from
-  the policy, and refuse a delay shorter than `minDelay`.
-- `requireReady`, `requireExpired`, `isReadyAt`, and `isExpiredAt`: the time
-  guards and their pure forms, for a consumer that writes its own choices.
+  the lifecycle choices and for off-ledger readers.
+- `TimelockConfig`: the delay policy, `minDelay` and an optional
+  `gracePeriod`.
+- `Pending`: the list of scheduled operations. The schedule choice adds to
+  it; `Timelock_Apply` and `Timelock_Drop` take from it, so only operations
+  the schedule choice created reach an effect. This binds the delay on the
+  timelock's own signatories, whose direct creations stay outside the list.
 - `DropReason`: `CancelOperation` requires canceller permission;
   `CleanupOperation` requires expiry.
-- Ten failure statuses, each a `FailureStatus` with a stable `errorId` under
+- Eight failure statuses, each a `FailureStatus` with a stable `errorId` under
   `openzeppelin.com/timelock-`, so an off-ledger client matches the id in the
   `DAML_FAILURE` error and your tests compare the whole value.
 
-The package holds interfaces and functions; ledger state lives in the
-consumer's templates. A scheduled operation is a contract of the consumer's
+The schedule functions, the pending-list functions, the policy validation,
+and the time guards for your own choices live in
+[`openzeppelin-timelock-v1`](../timelock-v1/), which ships separately so that
+a fix to them does not move this frozen package.
+
+Ledger state lives in the consumer's templates. A scheduled operation is a contract of the consumer's
 own template, with the typed parameters of the operation as fields committed
 at scheduling time. The timelock's `apply` reads them through `fromInterface`,
 so the executor applies exactly the operation the proposer scheduled.
@@ -66,8 +63,9 @@ Scheduling consumes only the timelock, and applying consumes the timelock and
 the config. The business contract never takes part in governance, so its
 choices do not contend with it.
 
-Adopting the timelock is five steps. The library supplies the execute, cancel,
-and cleanup choices; you supply the templates, the schedule choices, and the
+Adopting the timelock is five steps. This package supplies the execute,
+cancel, and cleanup choices; `OpenZeppelin.TimelockV1` supplies the functions
+the snippets call; you supply the templates, the schedule choices, and the
 `apply` method.
 
 **1. Write the governed config.** Give it no choices, so that only the
@@ -282,34 +280,6 @@ The `Timelock_Apply` transaction node records execution, including direct calls.
 Its choice argument identifies the actor. The transaction records its ledger time.
 The operation's create and archive events bound its active lifetime.
 
-## Time on Canton
-
-Canton checks ledger time against record time within a synchronizer-configured
-tolerance, one minute by default.
-
-- The guards use `isLedgerTimeGE` and `isLedgerTimeLT` bounds.
-  These bounds support advance preparation when the complete transaction avoids
-  `getTime`. Preparation age, contract activity, and expiry still limit validity.
-- Both scheduling and execution can have clock skew. With tolerance `T`, the
-  guaranteed record-time delay is at least `max(0, minDelay - 2*T)`.
-  This bound assumes the same tolerance at both transactions.
-  A two-minute minimum can therefore provide no record-time reaction window
-  with a one-minute tolerance. Include both tolerances in the configured delay.
-- `scheduleAfter` computes `readyAt` from the scheduling transaction's ledger time.
-  Its `getTime` call fixes that timestamp during preparation.
-  It does not eliminate clock skew or guarantee an exact record-time delay.
-  Use `scheduleAt` for workflows that need a longer preparation window.
-- `Time` arithmetic near the representable bounds can abort the transaction.
-  A schedule that overflows fails before an operation is created.
-
-See [Time on Daml Ledgers](https://docs.digitalasset.com/overview/3.4/explanations/ledger-model/time.html)
-and [Implementing Time Constraints](https://docs.digitalasset.com/build/3.4/sdlc-howtos/smart-contracts/develop/patterns/implementing-time-constraints.html).
-
-Execution is a submission. Once an operation is ready, an executor submits the
-apply choice. An automation that watches pending operations and submits at
-`readyAt` is the consumer's off-ledger component, the same pattern the Canton
-Network's own governance uses.
-
 ## Off-ledger reads
 
 `TimelockedView` is the whole data surface of the interface:
@@ -375,10 +345,10 @@ that list when building an executor or dashboard.
 ## Compatibility
 
 The released API package is frozen. Daml interface definitions sit outside
-Smart Contract Upgrade (SCU). The guards, choices, and failure statuses share
-the interface's package ID and remain fixed with it.
-A different API generation uses a sibling `openzeppelin-timelock-api-v2` package
-with module `OpenZeppelin.TimelockV2`.
+Smart Contract Upgrade (SCU). The choices and failure statuses share the
+interface's package ID and remain fixed with it.
+A different API generation uses a sibling `openzeppelin-api-timelock-v2` package
+with module `OpenZeppelin.Api.TimelockV2`.
 
 For a consumer this means:
 
@@ -408,6 +378,7 @@ From the repository root:
 
 ```sh
 DAML_PACKAGE=packages/security/api-timelock-v1 dpm build
+DAML_PACKAGE=packages/security/timelock-v1 dpm build
 ```
 
 ## Consume a local build
@@ -415,15 +386,17 @@ DAML_PACKAGE=packages/security/api-timelock-v1 dpm build
 ```yaml
 data-dependencies:
   - ../canton-contracts/packages/security/api-timelock-v1/.daml/dist/openzeppelin-api-timelock-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/timelock-v1/.daml/dist/openzeppelin-timelock-v1-0.1.0.dar
 ```
 
 ```daml
 import OpenZeppelin.Api.TimelockV1
+import OpenZeppelin.TimelockV1
 ```
 
 ## Examples
 
-One runnable consumer project, building against this DAR through
+One runnable consumer project, building against both DARs through
 `data-dependencies`:
 
 - [`examples/timelock/treasury`](../../../examples/timelock/treasury): a

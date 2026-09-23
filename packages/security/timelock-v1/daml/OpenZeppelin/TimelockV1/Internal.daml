@@ -1,0 +1,14 @@
+-- | Internal helpers for `OpenZeppelin.TimelockV1`.
+module OpenZeppelin.TimelockV1.Internal where
+
+import DA.Fail (FailureCategory, FailureStatus (..))
+import qualified DA.TextMap as TextMap
+
+-- | Build a `FailureStatus` under the `openzeppelin.com/timelock-` error id
+-- prefix.
+timelockFailure : Text -> FailureCategory -> Text -> FailureStatus
+timelockFailure name category message = FailureStatus with
+  errorId = "openzeppelin.com/timelock-" <> name
+  category
+  message
+  meta = TextMap.empty

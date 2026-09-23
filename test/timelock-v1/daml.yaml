@@ -1,5 +1,5 @@
 sdk-version: 3.4.11
-name: openzeppelin-api-timelock-v1-test
+name: openzeppelin-timelock-v1-test
 source: daml
 version: 0.0.0
 dependencies:

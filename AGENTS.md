@@ -84,7 +84,9 @@ DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
 DAML_PACKAGE=examples/pausable/registry dpm damlc lint
 DAML_PACKAGE=examples/pausable/registry-test dpm damlc lint
 DAML_PACKAGE=packages/security/api-timelock-v1 dpm damlc lint
+DAML_PACKAGE=packages/security/timelock-v1 dpm damlc lint
 DAML_PACKAGE=test/api-timelock-v1 dpm damlc lint
+DAML_PACKAGE=test/timelock-v1 dpm damlc lint
 DAML_PACKAGE=examples/timelock/treasury dpm damlc lint
 DAML_PACKAGE=examples/timelock/treasury-test dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
@@ -95,6 +97,7 @@ DAML_PACKAGE=test/pausable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=examples/pausable/vault-test dpm test --all
 DAML_PACKAGE=examples/pausable/registry-test dpm test --all
 DAML_PACKAGE=test/api-timelock-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/timelock-v1 dpm test --all --show-coverage
 DAML_PACKAGE=examples/timelock/treasury-test dpm test --all
 scripts/check-sandbox.sh
 ```

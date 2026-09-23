@@ -54,17 +54,45 @@
 --
 -- # Package boundary
 --
--- This package holds the frozen interface, the schedule functions, and the
--- guards. Operation templates live in consuming packages, where they upgrade
--- through Smart Contract Upgrade independently of this package.
-module OpenZeppelin.Api.TimelockV1 where
+-- This package holds the frozen interfaces, their views, and the failure
+-- statuses that the interface choices raise. The schedule functions, the
+-- pending-list functions, and the time guards for consumer choices live in the
+-- `openzeppelin-timelock-v1` package, module `OpenZeppelin.TimelockV1`.
+-- Operation templates live in consuming packages, where they upgrade through
+-- Smart Contract Upgrade independently of this package.
+module OpenZeppelin.Api.TimelockV1
+  ( TimelockedView (..)
+  , Timelocked
+  , Pending
+  , TimelockConfig (..)
+  , TimelockView (..)
+  , OperationView (..)
+  , DropReason (..)
+  , Timelock
+  , apply
+  , unschedule
+  , Timelock_Apply (..)
+  , Timelock_Drop (..)
+  , Operation
+  , Operation_Execute (..)
+  , Operation_Cancel (..)
+  , Operation_Cleanup (..)
+  , eInvalidAuthority
+  , eNotPending
+  , eNotExecutor
+  , eNotCanceller
+  , eOperationRetained
+  , eNotReady
+  , eExpired
+  , eNotExpired
+  ) where
 
 import DA.Action (unless, when)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import DA.List (delete)
 import DA.Optional (whenSome)
 import qualified DA.TextMap as TextMap
-import DA.Time (RelTime, addRelTime, isLedgerTimeGE, isLedgerTimeLE, isLedgerTimeLT, microseconds)
+import DA.Time (RelTime, isLedgerTimeGE, isLedgerTimeLT)
 
 -- | When a scheduled operation may execute.
 data TimelockedView = TimelockedView with
@@ -101,32 +129,15 @@ data TimelockedView = TimelockedView with
 interface Timelocked where
   viewtype TimelockedView
 
--- | The operations a protected contract has scheduled and may still apply,
--- cancel, or clean up. Hold it as a field of the protected template beside
+-- | The operations a timelock has scheduled and may still apply, cancel, or
+-- clean up. Hold it as a field of the timelock template beside
 -- `TimelockConfig` and expose both through `TimelockView`. The schedule choice
--- appends with `addPending`; `Timelock_Apply` and `Timelock_Drop` remove with
--- `takePending`, which refuses an operation the list does not hold. Every
--- choice that changes the list is consuming, so a protected contract with
--- pending operations changes its contract id on each schedule and each apply.
+-- appends with `addPending` from `OpenZeppelin.TimelockV1`; `Timelock_Apply`
+-- and `Timelock_Drop` remove the operation they process, and refuse an
+-- operation the list does not hold. Every choice that changes the list is
+-- consuming, so the timelock changes its contract id on each schedule and
+-- each apply.
 type Pending = [ContractId Timelocked]
-
--- | Record a newly created operation in the protected contract's list. Call it
--- in the schedule choice on the operation it created:
---
--- > op <- create LimitChange with ..
--- > create this with pending = addPending op pending
-addPending : (HasToInterface t Timelocked) => ContractId t -> Pending -> Pending
-addPending op pending = toInterfaceContractId @Timelocked op :: pending
-
--- | Remove an operation from the protected contract's list, and fail with
--- `eNotPending` when the list does not hold it. `Timelock_Apply` and
--- `Timelock_Drop` call it, so only operations the schedule choice created reach
--- an effect. A consumer that writes its own apply choice calls it first.
-takePending : (HasToInterface t Timelocked) => ContractId t -> Pending -> Update Pending
-takePending op pending = do
-  let cid = toInterfaceContractId @Timelocked op
-  unless (cid `elem` pending) (failWithStatus eNotPending)
-  pure (delete cid pending)
 
 -- | The delay policy of a protected contract. Hold it as a field of the
 -- template whose privileged choices the timelock guards, so that the policy is
@@ -135,7 +146,8 @@ takePending op pending = do
 -- Changing the policy is itself a privileged operation. A consumer that wants
 -- the `updateDelay` behavior of `TimelockController.sol` schedules the change
 -- as an operation under the current policy, which is the self-administration
--- pattern the example package shows.
+-- pattern the example package shows. Validate a policy with `isValidConfig`
+-- from `OpenZeppelin.TimelockV1`.
 data TimelockConfig = TimelockConfig with
     minDelay : RelTime
       -- ^ The shortest delay a schedule may request, zero or greater. Zero
@@ -146,123 +158,6 @@ data TimelockConfig = TimelockConfig with
       --   `TimelockController.sol`. When set, a positive duration: it is the
       --   width of the window in which `requireReady` succeeds.
   deriving (Eq, Show)
-
--- | Whether a policy produces executable operations: `minDelay` is zero or
--- greater, and `gracePeriod`, when set, is positive. The schedule functions
--- check it, which keeps a protected template able to schedule operations
--- after its policy changes through a timelocked operation. Call it in the
--- protected template's `ensure` clause, so that the template refuses an
--- invalid policy at creation.
-isValidConfig : TimelockConfig -> Bool
-isValidConfig config =
-  config.minDelay >= aeternity && optional True (> aeternity) config.gracePeriod
-  where aeternity = microseconds 0
-
--- | Fail with `eInvalidConfig` unless `isValidConfig` holds. The schedule
--- functions call it on the policy in force. Call it on the proposed policy in
--- the choice that schedules a policy change, so that an invalid policy is
--- refused at proposal time.
-requireValidConfig : TimelockConfig -> Update ()
-requireValidConfig config = unless (isValidConfig config) (failWithStatus eInvalidConfig)
-
--- | Compute the schedule of an operation that becomes ready at `readyAt`.
--- Call it in the choice that creates the operation contract and store the
--- returned fields on it:
---
--- > choice Treasury_ScheduleLimit : (ContractId Treasury, ContractId LimitChange)
--- >   with newLimit : Decimal; readyAt : Time
--- >   controller proposer
--- >   do
--- >     s <- scheduleAt config readyAt
--- >     op <- create LimitChange with
--- >       admin; proposer; executor; newLimit
--- >       readyAt = s.readyAt; expiresAt = s.expiresAt
--- >     t <- create this with pending = addPending op pending
--- >     pure (t, op)
---
--- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
--- with `eDelayTooShort` unless the ledger time is at least `config.minDelay`
--- before `readyAt`. The check is a ledger-time bound, so the transaction's
--- ledger time stays free within it. Record the created operation with
--- `addPending`.
-scheduleAt : TimelockConfig -> Time -> Update TimelockedView
-scheduleAt config readyAt = do
-  requireValidConfig config
-  early <- isLedgerTimeLE (addRelTime readyAt (negate config.minDelay))
-  unless early (failWithStatus eDelayTooShort)
-  pure TimelockedView with
-    readyAt
-    expiresAt = fmap (addRelTime readyAt) config.gracePeriod
-
--- | Compute the schedule of an operation that becomes ready `delay` after the
--- transaction's ledger time. It reads `getTime`, which fixes the ledger time
--- of the transaction; use `scheduleAt` when the proposer knows the target time.
---
--- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
--- with `eDelayTooShort` unless `delay` is at least `config.minDelay`.
-scheduleAfter : TimelockConfig -> RelTime -> Update TimelockedView
-scheduleAfter config delay = do
-  requireValidConfig config
-  unless (delay >= config.minDelay) (failWithStatus eDelayTooShort)
-  now <- getTime
-  let readyAt = addRelTime now delay
-  pure TimelockedView with
-    readyAt
-    expiresAt = fmap (addRelTime readyAt) config.gracePeriod
-
--- | Fail unless the operation may execute now: the ledger time is at or after
--- `readyAt` and, when `expiresAt` is set, before it. Call it in the apply
--- choice after `takePending` and before applying the parameters:
---
--- > choice Treasury_ApplyLimit : ContractId Treasury
--- >   with opCid : ContractId LimitChange
--- >   controller executor
--- >   do
--- >     pending' <- takePending opCid pending
--- >     op <- fetch opCid
--- >     requireReady op
--- >     archive opCid
--- >     create this with limit = op.newLimit, pending = pending'
---
--- Accepts an implementing template or a `Timelocked`. Fails with `eNotReady`
--- before `readyAt` and with `eExpired` at or after `expiresAt`.
-requireReady : (HasToInterface t Timelocked) => t -> Update ()
-requireReady x = do
-  let v = view (toInterface @Timelocked x)
-  ready <- isLedgerTimeGE v.readyAt
-  unless ready (failWithStatus eNotReady)
-  whenSome v.expiresAt $ \expiresAt -> do
-    live <- isLedgerTimeLT expiresAt
-    unless live (failWithStatus eExpired)
-
--- | Fail unless the operation has expired: `expiresAt` is set and the ledger
--- time is at or after it. Use it on a cleanup choice that lets any party
--- archive an expired operation.
---
--- Fails with `eNotExpired` when `expiresAt` is `None` or lies in the future.
-requireExpired : (HasToInterface t Timelocked) => t -> Update ()
-requireExpired x = do
-  let v = view (toInterface @Timelocked x)
-  case v.expiresAt of
-    None -> failWithStatus eNotExpired
-    Some expiresAt -> do
-      expired <- isLedgerTimeGE expiresAt
-      unless expired (failWithStatus eNotExpired)
-
--- | Whether the operation may execute at `now`: `readyAt <= now`, and
--- `now < expiresAt` when `expiresAt` is set. A pure function for a choice or
--- an off-ledger reader that branches rather than refuses.
-isReadyAt : (HasToInterface t Timelocked) => Time -> t -> Bool
-isReadyAt now x =
-  let v = view (toInterface @Timelocked x)
-  in v.readyAt <= now && optional True (now <) v.expiresAt
-
--- | Whether the operation has expired at `now`: `expiresAt` is set and
--- `expiresAt <= now`.
-isExpiredAt : (HasToInterface t Timelocked) => Time -> t -> Bool
-isExpiredAt now x =
-  let v = view (toInterface @Timelocked x)
-  in optional False (<= now) v.expiresAt
 
 -- | The state of a protected contract that the lifecycle choices read.
 data TimelockView = TimelockView with
@@ -448,12 +343,12 @@ requireAuthority target op = do
   unless (authority `elem` signatory target && authority `elem` signatory op)
     (failWithStatus eInvalidAuthority)
 
--- | Fail with `eNotExecutor` unless `actor` may execute under the view.
+-- Fail with `eNotExecutor` unless `actor` may execute under the view.
 requireExecutor : Party -> OperationView -> Update ()
 requireExecutor actor v =
   unless (optional True (actor `elem`) v.executors) (failWithStatus eNotExecutor)
 
--- | Fail with `eNotCanceller` unless `actor` may cancel under the view.
+-- Fail with `eNotCanceller` unless `actor` may cancel under the view.
 requireCanceller : Party -> OperationView -> Update ()
 requireCanceller actor v =
   unless (actor `elem` v.cancellers) (failWithStatus eNotCanceller)
@@ -464,6 +359,34 @@ requireDropped op new = do
   successor <- fetch new
   when (toInterfaceContractId @Timelocked op `elem` (view successor).pending)
     (failWithStatus eOperationRetained)
+
+-- Remove the operation from the pending list, or fail with `eNotPending`.
+takePending : ContractId Operation -> Pending -> Update Pending
+takePending op pending = do
+  let cid = toInterfaceContractId @Timelocked op
+  unless (cid `elem` pending) (failWithStatus eNotPending)
+  pure (delete cid pending)
+
+-- Fail with `eNotReady` before `readyAt`, and with `eExpired` at or after
+-- `expiresAt`.
+requireReady : Operation -> Update ()
+requireReady op = do
+  let v = view (toInterface @Timelocked op)
+  ready <- isLedgerTimeGE v.readyAt
+  unless ready (failWithStatus eNotReady)
+  whenSome v.expiresAt $ \expiresAt -> do
+    live <- isLedgerTimeLT expiresAt
+    unless live (failWithStatus eExpired)
+
+-- Fail with `eNotExpired` unless `expiresAt` is set and has passed.
+requireExpired : Operation -> Update ()
+requireExpired op = do
+  let v = view (toInterface @Timelocked op)
+  case v.expiresAt of
+    None -> failWithStatus eNotExpired
+    Some expiresAt -> do
+      expired <- isLedgerTimeGE expiresAt
+      unless expired (failWithStatus eNotExpired)
 
 -- Failure statuses. Each is a `FailureStatus` raised with `failWithStatus`, so
 -- a rejected submission reaches the Ledger API as `DAML_FAILURE` with the
@@ -477,13 +400,6 @@ requireDropped op new = do
 -- on ledger time. Waiting turns `eNotReady` into success. `eExpired` and
 -- `eNotExpired` share the category because they are the same time comparison;
 -- a client treats `eExpired` as final.
-
--- | Raised when `isValidConfig` rejects a policy: a negative `minDelay`, or a
--- `gracePeriod` of zero or less.
--- `errorId`: `openzeppelin.com/timelock-invalid-config`.
-eInvalidConfig : FailureStatus
-eInvalidConfig = timelockFailure "invalid-config" InvalidIndependentOfSystemState
-  "Timelock: the policy needs a minDelay of zero or greater and a positive gracePeriod"
 
 -- | Raised when the declared authority does not sign both the target and operation.
 -- `errorId`: `openzeppelin.com/timelock-invalid-authority`.
@@ -518,12 +434,6 @@ eNotCanceller = timelockFailure "not-canceller" InvalidIndependentOfSystemState
 eOperationRetained : FailureStatus
 eOperationRetained = timelockFailure "operation-retained" InvalidIndependentOfSystemState
   "Timelock: the successor still lists the operation as pending"
-
--- | Raised when a schedule requests a delay shorter than `minDelay`.
--- `errorId`: `openzeppelin.com/timelock-delay-too-short`.
-eDelayTooShort : FailureStatus
-eDelayTooShort = timelockFailure "delay-too-short" InvalidIndependentOfSystemState
-  "Timelock: the delay is shorter than the minimum delay"
 
 -- | Raised when an operation executes before `readyAt`.
 -- `errorId`: `openzeppelin.com/timelock-not-ready`.
