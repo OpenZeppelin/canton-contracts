@@ -47,3 +47,18 @@ test_pauseStopsTheNewVersion = script do
   Left (FailureStatusError status) <- trySubmit holder do
     exerciseCmd paused V1_1.Account_Withdraw with amount = 1.0
   status === Pausable.eEnforcedPause
+
+-- | An exercise that names the 1.0.0 template runs the highest vetted
+-- version, 1.1.0, so the guard applies. A submission that pins 1.0.0 through
+-- package preference does not run the guard; the README describes that case.
+test_oldTemplateIdRunsTheNewVersion : Script ()
+test_oldTemplateIdRunsTheNewVersion = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd new V1_1.Account_Pause
+  Left (FailureStatusError status) <- trySubmit holder do
+    exerciseCmd (coerceContractId @V1_1.Account @V1_0.Account paused) V1_0.Account_Withdraw with amount = 1.0
+  status === Pausable.eEnforcedPause
+  unpaused <- submit admin do exerciseCmd paused V1_1.Account_Unpause
+  _ <- submit holder do
+    exerciseCmd (coerceContractId @V1_1.Account @V1_0.Account unpaused) V1_0.Account_Withdraw with amount = 1.0
+  pure ()

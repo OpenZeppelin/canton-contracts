@@ -83,6 +83,23 @@ show the two versions, and
 [`examples/pausable/retrofit-test`](../../../examples/pausable/retrofit-test)
 exercises both.
 
+### Old package versions after a retrofit
+
+The choices of the old version carry no guard.
+
+- An exercise that names the old template runs the highest version that the
+  participant vets, so the guard applies. The retrofit tests show this.
+- A submission that pins the old version through package preference runs the
+  old code without the guard. The ledger refuses it only when it cannot
+  downgrade the contract. After a flip stores `Some True` or `Some False`,
+  the old version cannot read the contract, and the refusal is an upgrade
+  error, not `eEnforcedPause`.
+- That refusal stays after an unpause to `Some False`, so clients that pin
+  the old version cannot use the contract again. If they must resume, write
+  the unpause to store `None`.
+
+Unvet the old version once every client uses the new one.
+
 ## Reading the flag off-ledger
 
 A wallet, a registry's metadata endpoint, or an auditor reads `PausableView`
