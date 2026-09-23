@@ -24,7 +24,7 @@ functions. Neither has a release or an audit.
 | [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` | Pre-release; unaudited |
 | [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Pre-release; unaudited |
 
-Two further components are early-stage candidates under
+Three further components are early-stage candidates under
 [`experiments/`](experiments/). They will be redesigned before they move into
 `packages/`, and that redesign will change module names, template and choice
 signatures, and package identity. Read
@@ -35,6 +35,7 @@ them.
 |---|---|---|---|
 | [Access Control](experiments/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | Experimental; unaudited |
 | [Ownable](experiments/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | Experimental; unaudited |
+| [Token CIP-0112](experiments/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | Experimental; unaudited |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching
