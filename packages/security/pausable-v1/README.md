@@ -147,8 +147,10 @@ Daml-LF `2.1`, built with the SDK that
 [`multi-package.yaml`](../../../multi-package.yaml) declares.
 
 The package holds functions and values, so a fix ships as a new version under
-the same name, and your package picks it up by rebuilding against the new
-DAR. This package defines no templates, interfaces, or data types, so your
+the same name, and your package picks it up in a new version built against
+the new DAR. The fix reaches only exercises that run your new version. A
+submission that selects your old version still runs the old guard, so unvet
+the old version of your package to remove it. This package defines no templates, interfaces, or data types, so your
 package's next Smart Contract Upgrade version may depend on a newer version
 of it. The `errorId` of every failure status is stable across versions. The
 interface package stays at its frozen version.
