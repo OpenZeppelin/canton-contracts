@@ -126,6 +126,9 @@ The interface exposes no choice, so a party that holds only a
 - A choice is gated only by its own guard call, and the guard checks the flag
   alone. Call `whenNotPaused` first in every choice a pause must stop, and
   keep each choice's controller as its access control.
+- Pass `this` to guards. A `Pausable` value fetched from a contract id the
+  caller supplies is the caller's choice of switch: the caller presents an
+  unpaused contract and the gated choice runs, with no error.
 
 ## Compatibility
 
