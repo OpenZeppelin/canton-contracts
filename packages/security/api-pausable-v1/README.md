@@ -157,7 +157,7 @@ failure status is a new version of `openzeppelin-pausable-v1`.
 For a consumer this means:
 
 - Pin the exact DAR. Your `interface instance` binds your template to one
-  package ID, and every participant that runs your gated choices vets that
+  package ID, and every participant that vets your package also vets that
   package ID.
 - Your own template stays upgradeable. The interface instance is declared on
   your template, so you add fields, such as CIP-0112 `pauseInfo`, through

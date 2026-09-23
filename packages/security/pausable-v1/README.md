@@ -159,9 +159,9 @@ package's next Smart Contract Upgrade version may depend on a newer version
 of it. The `errorId` of every failure status is stable across versions. The
 interface package stays at its frozen version.
 
-Your package binds to one package ID of this package at build time, and the
-gated choices run its code, so every participant that runs them vets that
-package ID beside the interface package ID.
+Your package binds to one package ID of this package at build time, so every
+participant that vets your package also vets that package ID and the
+interface package ID.
 
 `0.1.0` is a pre-release: the package ID may change between commits, and no
 audit has been performed. See [`RELEASING.md`](../../../RELEASING.md).
