@@ -296,7 +296,7 @@ have no pending entry. Match the results against the canonical timelock's
   Route every privileged choice through an operation; the library has no way
   to detect one that bypasses it.
 - `Timelock_Apply` verifies the actor, shared authority, pending list, and schedule.
-  It also checks that `apply` drops the operation.
+  It also checks that the successor holds exactly the reduced pending list.
   The consumer implements `apply` and must dispatch each operation correctly.
   Consumer methods define their own failures, such as `eUnknownOperation`.
 - Interface choices are frozen with the package. `Operation_Execute`,

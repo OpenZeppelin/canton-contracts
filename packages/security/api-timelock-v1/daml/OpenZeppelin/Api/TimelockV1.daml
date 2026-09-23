@@ -34,13 +34,13 @@ module OpenZeppelin.Api.TimelockV1
   , eNotPending
   , eNotExecutor
   , eNotCanceller
-  , eOperationRetained
+  , ePendingMismatch
   , eNotReady
   , eExpired
   , eNotExpired
   ) where
 
-import DA.Action (unless, when)
+import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import DA.List (delete)
 import DA.Optional (whenSome)
@@ -135,7 +135,7 @@ data DropReason
 -- * The operation's signatories are signatories of the timelock, so that the
 --   timelock can archive the operation.
 -- * The successor that a method creates holds the given pending list. The
---   choices fail with `eOperationRetained` when it still holds the operation.
+--   choices fail with `ePendingMismatch` when it holds any other list.
 -- * Executors and cancellers can see the timelock, as stakeholders or by
 --   explicit disclosure.
 interface Timelock where
@@ -167,7 +167,7 @@ interface Timelock where
       requireReady opValue
       archive op
       new <- apply this opValue pending'
-      requireDropped op new
+      requireSuccessorPending pending' new
       pure new
 
   -- Remove a pending operation without applying it. Fails unless the
@@ -187,7 +187,7 @@ interface Timelock where
         CleanupOperation -> requireExpired opValue
       archive op
       new <- unschedule this pending'
-      requireDropped op new
+      requireSuccessorPending pending' new
       pure new
 
 -- | A scheduled operation. Implement it, with `Timelocked`, on one template
@@ -252,12 +252,12 @@ requireCanceller : Party -> OperationView -> Update ()
 requireCanceller actor v =
   unless (actor `elem` v.cancellers) (failWithStatus eNotCanceller)
 
--- Fail with `eOperationRetained` when the successor still lists the operation.
-requireDropped : ContractId Operation -> ContractId Timelock -> Update ()
-requireDropped op new = do
+-- Fail with `ePendingMismatch` unless the successor holds exactly the reduced
+-- pending list.
+requireSuccessorPending : Pending -> ContractId Timelock -> Update ()
+requireSuccessorPending pending' new = do
   successor <- fetch new
-  when (toInterfaceContractId @Timelocked op `elem` (view successor).pending)
-    (failWithStatus eOperationRetained)
+  unless ((view successor).pending == pending') (failWithStatus ePendingMismatch)
 
 -- Remove the operation from the pending list, or fail with `eNotPending`.
 takePending : ContractId Operation -> Pending -> Update Pending
@@ -319,11 +319,11 @@ eNotCanceller = timelockFailure "not-canceller" InvalidIndependentOfSystemState
   "Timelock: the actor is not a canceller of this operation"
 
 -- | Raised when `apply` or `unschedule` creates a successor whose pending list
--- still holds the operation.
--- `errorId`: `openzeppelin.com/timelock-operation-retained`.
-eOperationRetained : FailureStatus
-eOperationRetained = timelockFailure "operation-retained" InvalidIndependentOfSystemState
-  "Timelock: the successor still lists the operation as pending"
+-- differs from the reduced list that the lifecycle choice passed in.
+-- `errorId`: `openzeppelin.com/timelock-pending-mismatch`.
+ePendingMismatch : FailureStatus
+ePendingMismatch = timelockFailure "pending-mismatch" InvalidIndependentOfSystemState
+  "Timelock: the successor's pending list differs from the reduced list"
 
 -- | Raised when an operation executes before `readyAt`.
 -- `errorId`: `openzeppelin.com/timelock-not-ready`.

@@ -157,8 +157,8 @@ template ConfigChange
     interface instance Operation for ConfigChange where
       view = OperationView with executors, cancellers
 
--- | A protected contract whose `apply` keeps the operation in the pending
--- list, which the library refuses with `eOperationRetained`.
+-- | A timelock whose `apply` and `unschedule` keep the operation in the
+-- pending list, which the library refuses with `ePendingMismatch`.
 template LeakyTreasury
   with
     admin : Party
@@ -178,6 +178,39 @@ template LeakyTreasury
       unschedule _ = toInterfaceContractId <$> create this
 
     choice LeakyTreasury_ScheduleLimit : (ContractId LeakyTreasury, ContractId LimitChange)
+      with
+        newLimit : Decimal
+        readyAt : Time
+      controller proposer
+      do
+        s <- scheduleAt config readyAt
+        op <- create LimitChange with
+          admin; proposer; executors = None; cancellers = [proposer]; newLimit
+          readyAt = s.readyAt; expiresAt = s.expiresAt
+        t <- create this with queue = addPending op queue
+        pure (t, op)
+
+-- | A timelock whose `apply` and `unschedule` clear the whole pending list,
+-- which the library refuses with `ePendingMismatch`.
+template ClearingTreasury
+  with
+    admin : Party
+    proposer : Party
+    limit : Decimal
+    config : TimelockConfig
+    queue : Pending
+  where
+    signatory admin
+    observer proposer
+
+    interface instance Timelock for ClearingTreasury where
+      view = TimelockView with authority = admin; config; pending = queue
+      apply op _ = case fromInterface @LimitChange op of
+        Some lc -> toInterfaceContractId <$> create this with limit = lc.newLimit, queue = []
+        None -> failWithStatus eUnknownOperation
+      unschedule _ = toInterfaceContractId <$> create this with queue = []
+
+    choice ClearingTreasury_ScheduleLimit : (ContractId ClearingTreasury, ContractId LimitChange)
       with
         newLimit : Decimal
         readyAt : Time

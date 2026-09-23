@@ -342,8 +342,9 @@ test_twoOperationsAtTheSameInstant = script do
   Some t <- queryContractId admin t4
   t.limit === 30.0
 
--- | An `apply` that keeps the operation in the pending list is refused, so a
--- mis-wired protected contract cannot execute an operation twice. INV-4.
+-- | An `apply` or `unschedule` that keeps the operation in the pending list is
+-- refused. The check detects a mis-wired method; the archive before `apply`
+-- already prevents a second execution. INV-4.
 test_applyRetainingTheOperationFails : Script ()
 test_applyRetainingTheOperationFails = script do
   admin <- allocateParty "admin"
@@ -357,10 +358,32 @@ test_applyRetainingTheOperationFails = script do
   passTime (days 2)
   r <- trySubmit proposer do
     exerciseCmd (opOf op) Operation_Execute with actor = proposer, target = targetOf l1
-  expectFailure eOperationRetained r
+  expectFailure ePendingMismatch r
   r2 <- trySubmit proposer do
     exerciseCmd (opOf op) Operation_Cancel with actor = proposer, target = targetOf l1
-  expectFailure eOperationRetained r2
+  expectFailure ePendingMismatch r2
+
+-- | An `apply` or `unschedule` that removes another operation's entry is
+-- refused, so a mis-wired method cannot strand a pending operation. INV-4.
+test_methodDroppingAnotherEntryFails : Script ()
+test_methodDroppingAnotherEntryFails = script do
+  admin <- allocateParty "admin"
+  proposer <- allocateParty "proposer"
+  t0 <- getTime
+  clearing <- submit admin do
+    createCmd ClearingTreasury with
+      admin; proposer; limit = 10.0; config = oneDayWeekGrace; queue = []
+  (c1, a) <- submit proposer do
+    exerciseCmd clearing ClearingTreasury_ScheduleLimit with newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  (c2, _) <- submit proposer do
+    exerciseCmd c1 ClearingTreasury_ScheduleLimit with newLimit = 30.0, readyAt = addRelTime t0 (days 2)
+  passTime (days 2)
+  r <- trySubmit proposer do
+    exerciseCmd (opOf a) Operation_Execute with actor = proposer, target = targetOf c2
+  expectFailure ePendingMismatch r
+  r2 <- trySubmit proposer do
+    exerciseCmd (opOf a) Operation_Cancel with actor = proposer, target = targetOf c2
+  expectFailure ePendingMismatch r2
 
 -- Cancelling and cleaning up
 -------------------------------------------------------
@@ -529,7 +552,7 @@ test_failureStatusesAreDistinct = script do
   eNotPending.errorId === "openzeppelin.com/timelock-not-pending"
   eNotExecutor.errorId === "openzeppelin.com/timelock-not-executor"
   eNotCanceller.errorId === "openzeppelin.com/timelock-not-canceller"
-  eOperationRetained.errorId === "openzeppelin.com/timelock-operation-retained"
+  ePendingMismatch.errorId === "openzeppelin.com/timelock-pending-mismatch"
   eInvalidAuthority.errorId === "openzeppelin.com/timelock-invalid-authority"
 
 -- Direct calls enforce the same lifecycle as calls through Operation.
