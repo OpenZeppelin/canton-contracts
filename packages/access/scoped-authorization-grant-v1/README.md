@@ -53,7 +53,10 @@ only from caller-controlled arguments would let the caller choose the policy
 being checked.
 
 `Authorization` is input, not proof by itself. The guard fetches the grant and
-matches its grantee to the authorized actor. Keep the guard on the committed
+compares its grantee with `authorization.actor`. It does not check who
+authorized the choice: `AuthorizationGrant_Use` needs the grantee's authority
+from any source, such as a consumer signatory. `controller authorization.actor`
+is therefore required. Keep the guard on the committed
 execution path of the protected operation. If a caught exception rolls back a
 successful check, call the guard again before continuing with protected work.
 
