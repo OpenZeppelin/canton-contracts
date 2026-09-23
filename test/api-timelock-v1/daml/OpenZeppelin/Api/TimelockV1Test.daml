@@ -494,6 +494,25 @@ test_configChangeIsTimelocked = script do
     exerciseCmd t2 Treasury_ScheduleLimit with newLimit = 20.0, readyAt = addRelTime now (hours 1)
   pure ()
 
+-- | A stricter policy does not reach an operation scheduled before it: the
+-- operation keeps its schedule and executes at its original `readyAt`.
+test_policyChangeLeavesScheduledOperations : Script ()
+test_policyChangeLeavesScheduledOperations = script do
+  f@Fixture{..} <- setup
+  (t1, lc) <- scheduleLimit f 20.0 (days 3)
+  let stricter = TimelockConfig with minDelay = days 30, gracePeriod = Some (days 7)
+  (t2, cc) <- submit proposer do
+    exerciseCmd t1 Treasury_ScheduleConfig with
+      newConfig = stricter, readyAt = addRelTime t0 (days 1)
+  passTime (days 1)
+  t3 <- execute executor t2 cc
+  Some t <- queryContractId admin t3
+  t.config === stricter
+  passTime (days 2)
+  t4 <- execute executor t3 lc
+  Some t' <- queryContractId admin t4
+  t'.limit === 20.0
+
 -- | A cancelled config change cannot execute.
 test_configChangeCancel : Script ()
 test_configChangeCancel = script do

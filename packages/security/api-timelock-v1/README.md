@@ -267,6 +267,13 @@ every choice that creates successors.
   consumer's to add: once a change to `minDelay = 0` has matured and applied,
   the next operation is immediate, so give the policy change its own, longer
   delay where that matters.
+- A policy change applies only to later schedules. An operation keeps the
+  `readyAt` and `expiresAt` that the policy in force at scheduling gave it,
+  so a longer `minDelay` or a new `gracePeriod` does not reach it. After a
+  stricter policy applies, cancel the pending operations that do not meet it.
+- When several operations are ready, the executors choose the order in which
+  they apply. Make each operation's effect independent of that order, or
+  make the order a precondition that `apply` checks on the governed state.
 
 The lifecycle of one operation:
 
