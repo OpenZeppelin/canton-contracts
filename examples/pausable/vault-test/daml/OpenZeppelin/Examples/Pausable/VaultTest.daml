@@ -98,8 +98,8 @@ test_pauseWhenPausedFails = script do
   submitMustFailWith Pausable.eEnforcedPause $ trySubmit admin do
     exerciseCmd vault Vault_Pause
 
--- | The recovery path runs only while paused, and moves the balance to the
--- admin.
+-- | The recovery path runs only while paused, and returns the balance to the
+-- owner.
 test_emergencyDrainRunsWhilePaused : Script ()
 test_emergencyDrainRunsWhilePaused = script do
   Fixture{..} <- setup
@@ -107,7 +107,7 @@ test_emergencyDrainRunsWhilePaused = script do
   (vault, payout) <- submit admin do exerciseCmd vault Vault_EmergencyDrain
   Some p <- queryContractId admin payout
   p.amount === 100.0
-  p.recipient === admin
+  p.recipient === owner
   Some v <- queryContractId admin vault
   v.balance === 0.0
 
