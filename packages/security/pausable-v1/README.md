@@ -23,6 +23,9 @@ Functions over any template that implements `Pausable`:
   client matches the id in the `DAML_FAILURE` error, and your tests compare
   the whole value.
 
+`OpenZeppelin.PausableV1.Internal` is not public API. Its contents can change
+in any version, so do not import it.
+
 ## Usage
 
 Your template holds the flag and implements the interface, as the
