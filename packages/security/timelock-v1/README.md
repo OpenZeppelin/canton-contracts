@@ -98,9 +98,13 @@ Daml-LF `2.1`, built with the SDK that
 The package holds functions and values, so a fix ships as a new version under
 the same name, and your package picks it up by rebuilding against the new
 DAR. The `errorId` of every failure status is stable across versions. The
-interface package stays at its frozen version. The lifecycle choices in the
-interface package apply the same time bounds as `requireReady` and
-`requireExpired`.
+interface package stays at its frozen version.
+
+`Timelock_Apply` and `Timelock_Drop` use private copies of `takePending`,
+`requireReady`, and `requireExpired` that are compiled into the frozen
+interface package. The copies apply the same bounds, and a test pins them to
+each other. A fix to this package does not reach the lifecycle choices; a fix
+to the frozen copies needs a sibling `-v2` interface package.
 
 Your package binds to one package ID of this package at build time, and your
 schedule choices run its code, so every participant that runs them vets that

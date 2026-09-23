@@ -320,6 +320,9 @@ have no pending entry. Match the results against the canonical timelock's
   every signatory's participant must vet the upgrade.
 - `Timelock_Apply` verifies the actor, shared authority, pending list, and schedule.
   It also checks that the successor holds exactly the reduced pending list.
+  That check detects a mis-wired method. It reads the id that the method
+  returns, so it cannot tell whether that id is the successor the method
+  created. The archive before `apply` already prevents a second execution.
   The consumer implements `apply` and must dispatch each operation correctly.
   Consumer methods define their own failures, such as `eUnknownOperation`.
 - Interface choices are frozen with the package. `Operation_Execute`,
@@ -335,6 +338,10 @@ have no pending entry. Match the results against the canonical timelock's
   template whose parameters list several effects, applied atomically in one
   choice body. Ordering between operations is a precondition on the governed
   state.
+- The pending list has no size bound, and every schedule, apply, and drop
+  copies and scans it. A proposer can fill it with operations whose
+  `readyAt` lies far in the future. Cap the list in your schedule choice, or
+  set a `gracePeriod` so that cleanup can remove old entries.
 - Every stakeholder of an operation sees its parameters. Keep sensitive
   parameters off an operation that many parties observe.
 - A `minDelay` of zero disables the delay. A `gracePeriod` of `None` keeps an
