@@ -80,7 +80,8 @@ template version outside SCU and an offline contract migration.
 - Shared pure helpers belong in a utility package that defines no templates,
   interfaces, exceptions, or serializable public state.
 - Adding a production dependency requires explicit architecture review because
-  an SCU lineage cannot later drop or downgrade that dependency.
+  an SCU lineage cannot later drop or downgrade a dependency other than a
+  utility package.
 - Third-party DARs are pinned by source, version, package IDs, SHA-256, and
   license in `dars/manifest.yaml`; binaries live in `dars/vendor/` when
   vendoring is needed.

@@ -67,6 +67,9 @@ then creates the successor with `paused` changed:
         create this with paused = False
 ```
 
+The flip choice is consuming, or calls `archive self` beside the create, so
+one contract stays active after the flip.
+
 To change other fields in the same transaction, set them in the same create.
 
 ```daml
@@ -88,6 +91,10 @@ Left (FailureStatusError status) <-
   trySubmit owner do exerciseCmd vault Vault_Withdraw with amount = 1.0
 status === Pausable.eEnforcedPause
 ```
+
+Test one round trip as well: after a pause, the predecessor id returns `None`
+from `queryContractId` and the successor's view reads `paused = True`; after
+an unpause, the mirror.
 
 A Ledger API or JSON Ledger API client sees the same failure as a
 `DAML_FAILURE` error whose `errorId` is
@@ -126,6 +133,8 @@ The interface exposes no choice, so a party that holds only a
 - A choice is gated only by its own guard call, and the guard checks the flag
   alone. Call `whenNotPaused` first in every choice a pause must stop, and
   keep each choice's controller as its access control.
+- The implementing template's `Archive` carries no guard, so its signatories
+  archive a paused contract.
 - Pass `this` to guards. A `Pausable` value fetched from a contract id the
   caller supplies is the caller's choice of switch: the caller presents an
   unpaused contract and the gated choice runs, with no error.
@@ -137,7 +146,9 @@ Daml-LF `2.1`, built with the SDK that
 
 The package holds functions and values, so a fix ships as a new version under
 the same name, and your package picks it up by rebuilding against the new
-DAR. The `errorId` of every failure status is stable across versions. The
+DAR. This package defines no templates, interfaces, or data types, so your
+package's next Smart Contract Upgrade version may depend on a newer version
+of it. The `errorId` of every failure status is stable across versions. The
 interface package stays at its frozen version.
 
 Your package binds to one package ID of this package at build time, and the
