@@ -132,8 +132,8 @@ data DropReason
 --
 -- * `authority` signs the timelock and every operation. The choices fail with
 --   `eInvalidAuthority` otherwise.
--- * The operation's signatories are signatories of the timelock, so that the
---   timelock can archive the operation.
+-- * Every signatory of the operation is a signatory of the timelock. The
+--   choices fail with `eInvalidAuthority` otherwise.
 -- * The successor that a method creates holds the given pending list. The
 --   choices fail with `ePendingMismatch` when it holds any other list.
 -- * Executors and cancellers can see the timelock, as stakeholders or by
@@ -235,11 +235,14 @@ interface Operation requires Timelocked where
       exercise target Timelock_Drop with actor, op = self, reason = CleanupOperation
 
 -- Fail with `eInvalidAuthority` unless the declared authority signs both
--- contracts.
+-- contracts and every signatory of the operation signs the timelock.
 requireAuthority : Timelock -> Operation -> Update ()
 requireAuthority target op = do
   let authority = (view target).authority
-  unless (authority `elem` signatory target && authority `elem` signatory op)
+      targetSignatories = signatory target
+  unless (authority `elem` targetSignatories
+      && authority `elem` signatory op
+      && all (`elem` targetSignatories) (signatory op))
     (failWithStatus eInvalidAuthority)
 
 -- Fail with `eNotExecutor` unless `actor` may execute under the view.
@@ -292,7 +295,8 @@ requireExpired op = do
 -- submission can succeed after `eNotReady` and `eNotExpired`; `eExpired` is
 -- final.
 
--- | Raised when `authority` does not sign both the timelock and the operation.
+-- | Raised when `authority` does not sign both the timelock and the operation,
+-- or when the operation has a signatory that the timelock does not have.
 -- `errorId`: `openzeppelin.com/timelock-invalid-authority`.
 eInvalidAuthority : FailureStatus
 eInvalidAuthority = timelockFailure "invalid-authority" InvalidIndependentOfSystemState

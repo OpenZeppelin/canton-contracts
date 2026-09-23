@@ -342,6 +342,28 @@ test_twoOperationsAtTheSameInstant = script do
   Some t <- queryContractId admin t4
   t.limit === 30.0
 
+-- | An operation with a signatory outside the timelock's signatories is
+-- refused for every actor, including an executor who is that signatory. INV-5.
+test_operationSignatoryOutsideTheTimelockRejected : Script ()
+test_operationSignatoryOutsideTheTimelockRejected = script do
+  admin <- allocateParty "admin"
+  proposer <- allocateParty "proposer"
+  executor <- allocateParty "executor"
+  t0 <- getTime
+  treasury <- submit admin do
+    createCmd Treasury with
+      admin; proposer; executors = Some [executor, proposer]; cancellers = [proposer]
+      limit = 10.0; config = oneDayWeekGrace; pending = []
+  (t1, op) <- submit proposer do
+    exerciseCmd treasury Treasury_ScheduleCosigned with newLimit = 20.0, readyAt = addRelTime t0 (days 2)
+  passTime (days 2)
+  r <- tryExecute executor t1 op
+  expectFailure eInvalidAuthority r
+  r2 <- tryExecute proposer t1 op
+  expectFailure eInvalidAuthority r2
+  r3 <- tryCancel proposer t1 op
+  expectFailure eInvalidAuthority r3
+
 -- | An `apply` or `unschedule` that keeps the operation in the pending list is
 -- refused. The check detects a mis-wired method; the archive before `apply`
 -- already prevents a second execution. INV-4.

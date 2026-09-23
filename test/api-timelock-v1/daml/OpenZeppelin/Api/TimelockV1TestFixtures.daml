@@ -98,6 +98,20 @@ template Treasury
         t <- create this with pending = addPending op pending
         pure (t, op)
 
+    -- A limit change that the proposer co-signs, which the library refuses.
+    choice Treasury_ScheduleCosigned : (ContractId Treasury, ContractId CosignedChange)
+      with
+        newLimit : Decimal
+        readyAt : Time
+      controller proposer
+      do
+        s <- scheduleAt config readyAt
+        op <- create CosignedChange with
+          admin; proposer; executors; cancellers; newLimit
+          readyAt = s.readyAt; expiresAt = s.expiresAt
+        t <- create this with pending = addPending op pending
+        pure (t, op)
+
     -- Self-administration: the delay policy changes only through the timelock
     -- it defines, under the policy in force when the change was scheduled. The
     -- proposed policy is validated here, at proposal time.
@@ -135,6 +149,26 @@ template LimitChange
       view = TimelockedView with readyAt, expiresAt
 
     interface instance Operation for LimitChange where
+      view = OperationView with executors, cancellers
+
+-- | A limit change with a signatory that the treasury does not have.
+template CosignedChange
+  with
+    admin : Party
+    proposer : Party
+    executors : Optional [Party]
+    cancellers : [Party]
+    newLimit : Decimal
+    readyAt : Time
+    expiresAt : Optional Time
+  where
+    signatory admin, proposer
+    observer fromOptional [] executors, cancellers
+
+    interface instance Timelocked for CosignedChange where
+      view = TimelockedView with readyAt, expiresAt
+
+    interface instance Operation for CosignedChange where
       view = OperationView with executors, cancellers
 
 -- | A pending change of the delay policy itself.
