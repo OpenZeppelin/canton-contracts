@@ -13,8 +13,8 @@ import qualified DA.TextMap as TextMap
 import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
 import qualified OpenZeppelin.PausableV1 as Pausable
 
--- | What the vault pays out. The owner receives it on redemption and on an
--- emergency drain.
+-- | What the vault pays out. The owner receives it on a withdrawal, on
+-- redemption, and on an emergency drain.
 template Payout
   with
     payer : Party
@@ -41,7 +41,7 @@ template Vault
       view = PausableView with paused
 
     -- A gated operation.
-    choice Vault_Withdraw : ContractId Vault
+    choice Vault_Withdraw : (ContractId Vault, ContractId Payout)
       with
         amount : Decimal
       controller owner
@@ -49,7 +49,9 @@ template Vault
         Pausable.whenNotPaused this
         unless (amount > 0.0) (failWithStatus eNonPositiveAmount)
         unless (amount <= balance) (failWithStatus eInsufficientBalance)
-        create this with balance = balance - amount
+        payout <- create Payout with payer = admin, recipient = owner, amount
+        vault <- create this with balance = balance - amount
+        pure (vault, payout)
 
     -- An escape hatch: the owner redeems the whole balance at any time, paused
     -- or not.

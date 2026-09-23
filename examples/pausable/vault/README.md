@@ -15,7 +15,8 @@ for one owner, with an emergency stop that the admin controls.
 
 - The `interface instance Pausable for Vault` that adopts the switch: one
   line, the view.
-- `whenNotPaused this` in a gated choice. The guard reads the contract that the
+- `whenNotPaused this` in a gated choice, `Vault_Withdraw`, which pays the
+  amount to the owner as a `Payout`. The guard reads the contract that the
   choice exercises, so no caller supplies the pause state.
 - `whenPaused this` on `Vault_EmergencyDrain`, a recovery path that runs only
   during an incident and returns the balance to the owner as a `Payout`.

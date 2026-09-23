@@ -41,9 +41,11 @@ submitMustFailWith expected action = action >>= \case
 test_withdrawRunsWhileUnpaused : Script ()
 test_withdrawRunsWhileUnpaused = script do
   Fixture{..} <- setup
-  vault <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
+  (vault, payout) <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
   Some v <- queryContractId owner vault
   v.balance === 60.0
+  Some p <- queryContractId owner payout
+  p.amount === 40.0
 
 -- | A non-positive amount fails the vault's own check.
 test_withdrawRefusesNonPositiveAmount : Script ()
@@ -126,9 +128,11 @@ test_unpauseRestoresOperation = script do
   vault <- submit admin do exerciseCmd vault Vault_Unpause
   Some c <- queryContractId admin vault
   Pausable.isPaused c === False
-  vault <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
+  (vault, payout) <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
   Some v <- queryContractId owner vault
   v.balance === 60.0
+  Some p <- queryContractId owner payout
+  p.amount === 40.0
 
 -- | Unpausing twice fails with eExpectedPause.
 test_unpauseWhenUnpausedFails : Script ()
