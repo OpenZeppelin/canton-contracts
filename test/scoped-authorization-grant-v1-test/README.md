@@ -14,8 +14,8 @@ package boundary used by an integrator.
 | Time | Unbounded and bounded windows; inclusive start, exclusive end at microsecond precision; one-microsecond windows; grants created after their window; malformed and empty intervals |
 | Lifecycle | Reuse, independent duplicate grants, revocation, renunciation, stale disclosures after Archive, Revoke, and Renounce, atomic command ordering |
 | Use event | Nested exercise, direct-use limits, rollback after business failure, no issuer authority leaking into sibling effects |
-| Licensing | Issuance, visibility, administration, duplicate registry IDs, policy rotation, grant lifecycle, time bounds, license revocation |
-| Treasury | Role-to-authority mapping, multi-payment role reuse, every stage's actor check, duty separation, stage revocation/expiry, policy binding and cleanup |
+| Licensing | Issuance, visibility, administration, duplicate registry IDs, policy rotation, grant lifecycle, time bounds, license revocation, operator revocation that keeps issued licenses |
+| Treasury | Role-to-authority mapping, multi-payment role reuse, every stage's actor check, duty separation, stage revocation/expiry, pending stages after an earlier role's revocation, wrong permission under the correct authority, grant windows at proposal, policy binding and cleanup |
 | Guard behavior | Check order; failures that a consumer `try/catch` cannot catch; native fetch errors when no consumer signatory is a grant stakeholder; a consumer signatory that supplies the grantee's authority |
 | Trust limits | Direct creation by full signatory sets; receipt payloads are not proof of prior choices; scope CIDs do not prove liveness |
 
