@@ -144,6 +144,17 @@ template TreasuryTimelock
         t <- create this with pending = Timelock.addPending op pending
         pure (t, op)
 
+    -- Recovery: remove pending entries whose operations `admin` archived
+    -- directly. The lifecycle choices fetch the operation, so they cannot
+    -- remove such an entry. `admin` is also a canceller, so the choice grants
+    -- no new power: removing a live operation's entry cancels it.
+    choice TreasuryTimelock_Prune : ContractId TreasuryTimelock
+      with
+        stale : Timelock.Pending
+      controller admin
+      do
+        create this with pending = filter (`notElem` stale) pending
+
     -- Self-administration: the delay policy changes only through a timelocked
     -- operation scheduled under the policy in force at the time. The proposed
     -- policy is validated at proposal time, so every policy that reaches the

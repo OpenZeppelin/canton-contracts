@@ -331,8 +331,12 @@ have no pending entry. Match the results against the canonical timelock's
   are born expired.
 - Cleanup is open to any actor after `expiresAt`.
   Signatories can also call the operation template's `Archive` choice directly.
-  Direct archival leaves a pending reference that operation-based cleanup cannot
-  remove. Consumers must define a recovery policy for these references.
+  That cancels the operation without a canceller check, and leaves a pending
+  entry that the lifecycle choices cannot remove, because they fetch the
+  operation. Give the operation the timelock's full signatory set, so that no
+  single party can archive it alone. Also add a recovery choice that the
+  signatories control and that removes such entries, as
+  `TreasuryTimelock_Prune` in the example does.
 - The time bounds hold within the synchronizer's ledger-time tolerance, so the
   effective delay can be shorter than `minDelay`. Size the delay as
   [Time on Canton](../timelock-v1/README.md#time-on-canton) describes.

@@ -162,6 +162,22 @@ demo = script do
     exerciseCmd (toInterfaceContractId @Timelock.Operation stale)
       Timelock.Operation_Cleanup with actor = executor, target = toInterfaceContractId timelock
 
+  -- An operation that `admin` archives directly leaves a pending entry that
+  -- the lifecycle choices cannot remove. `admin` removes it with the prune
+  -- choice.
+  now <- getTime
+  (timelock, dropped) <- submit proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = 70.0, readyAt = addRelTime now (days 2)
+  submit admin do archiveCmd dropped
+  submitMustFail proposer do
+    exerciseCmd (toInterfaceContractId @Timelock.Operation dropped)
+      Timelock.Operation_Cancel with actor = proposer, target = toInterfaceContractId timelock
+  timelock <- submit admin do
+    exerciseCmd timelock TreasuryTimelock_Prune with stale = [toInterfaceContractId dropped]
+  Some tv <- queryInterfaceContractId admin (toInterfaceContractId @Timelock.Timelock timelock)
+  tv.pending === []
+
   -- The delay policy is protected by itself. Shortening the delay takes the
   -- current delay to become effective, and then applies to later schedules.
   -- A policy change leaves the config in place.
