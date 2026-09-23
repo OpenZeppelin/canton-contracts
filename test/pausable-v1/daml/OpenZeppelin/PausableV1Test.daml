@@ -3,7 +3,7 @@
 module OpenZeppelin.PausableV1Test where
 
 import DA.Assert ((===))
-import DA.Fail (FailureStatus)
+import DA.Fail (FailureCategory (..), FailureStatus (..))
 import DA.Stack (HasCallStack)
 import Daml.Script
 
@@ -236,3 +236,120 @@ test_customAuthorityGatesTheFlip = script do
   -- the uniform read reports it
   Some pv <- queryInterfaceContractId holder (toInterfaceContractId @Pausable paused)
   pv.paused === True
+
+-- The failure statuses as an off-ledger contract
+-------------------------------------------------------
+
+-- | The `errorId` of each status is the string a Ledger API client matches on,
+-- and stays fixed across versions of this package.
+test_errorIdsAreStable : Script ()
+test_errorIdsAreStable = script do
+  eEnforcedPause.errorId === "openzeppelin.com/pausable-enforced-pause"
+  eExpectedPause.errorId === "openzeppelin.com/pausable-expected-pause"
+  eEnforcedPause.category === InvalidGivenCurrentSystemStateOther
+  eExpectedPause.category === InvalidGivenCurrentSystemStateOther
+
+-- | A refused choice writes nothing: after `eEnforcedPause` the contract is
+-- still active with every field as it was.
+test_refusedChoiceWritesNothing : Script ()
+test_refusedChoiceWritesNothing = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  submitMustFailWith eEnforcedPause $ trySubmit holder do
+    exerciseCmd paused Vault_Withdraw with amount = 10
+  Some v <- queryContractId admin paused
+  v.balance === 100
+  isPaused v === True
+
+-- | `whenNotPaused` runs before the consumer's own checks, so while paused a
+-- request that is also invalid on its own terms fails with `eEnforcedPause`.
+test_guardRunsBeforeConsumerChecks : Script ()
+test_guardRunsBeforeConsumerChecks = script do
+  Fixture{..} <- setup
+  submitMustFailWith eAmountNotPositive $ trySubmit holder do
+    exerciseCmd vault Vault_Withdraw with amount = 0
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  submitMustFailWith eEnforcedPause $ trySubmit holder do
+    exerciseCmd paused Vault_Withdraw with amount = 0
+
+-- The flag is read from the contract being exercised
+-------------------------------------------------------
+
+-- | A contract created with `paused = True` is paused from its first
+-- transaction: the guard reads the field, with no flip required first.
+test_contractCreatedPausedIsPaused : Script ()
+test_contractCreatedPausedIsPaused = script do
+  admin <- allocateParty "admin"
+  holder <- allocateParty "holder"
+  vault <- submit admin do
+    createCmd Vault with admin, holder, paused = True, balance = 100
+  submitMustFailWith eEnforcedPause $ trySubmit holder do
+    exerciseCmd vault Vault_Withdraw with amount = 10
+  unpaused <- submit admin do exerciseCmd vault Vault_Unpause
+  _ <- submit holder do exerciseCmd unpaused Vault_Withdraw with amount = 10
+  pure ()
+
+-- | The flip archives the unpaused predecessor, so a caller holding its id
+-- cannot run the gated choice against the old flag.
+test_staleIdCannotBypassPause : Script ()
+test_staleIdCannotBypassPause = script do
+  Fixture{..} <- setup
+  _ <- submit admin do exerciseCmd vault Vault_Pause
+  res <- trySubmit holder do exerciseCmd vault Vault_Withdraw with amount = 10
+  case res of
+    Left (ContractNotFound _ _) -> pure ()
+    other -> fail ("expected the stale id to be unknown, got " <> show other)
+
+-- | The switch is per contract. Pausing one vault leaves a sibling open, and
+-- a submission that touches both is refused as a whole.
+test_pauseIsPerContract : Script ()
+test_pauseIsPerContract = script do
+  Fixture{..} <- setup
+  sibling <- submit admin do
+    createCmd Vault with admin, holder, paused = False, balance = 100
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  submitMustFailWith eEnforcedPause $ trySubmit holder $
+    exerciseCmd sibling (Vault_Withdraw with amount = 10)
+      *> exerciseCmd paused (Vault_Withdraw with amount = 10)
+  Some s <- queryContractId holder sibling
+  s.balance === 100
+  sibling' <- submit holder do exerciseCmd sibling Vault_Withdraw with amount = 10
+  Some s' <- queryContractId holder sibling'
+  s'.balance === 90
+
+-- The consumer's controller is the only gate, on every flip
+-------------------------------------------------------
+
+-- | The unpause and the paused-only recovery path are refused to a party that
+-- is not the consumer's controller, before any guard runs.
+test_onlyTheConsumersControllerMayUnpauseOrRecover : Script ()
+test_onlyTheConsumersControllerMayUnpauseOrRecover = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  submitMustFailAuthorization $ trySubmit holder do
+    exerciseCmd paused Vault_Unpause
+  submitMustFailAuthorization $ trySubmit holder do
+    exerciseCmd paused Vault_EmergencyDrain
+  Some v <- queryContractId admin paused
+  isPaused v === True
+
+-- | A flip controller who is not a stakeholder must receive the contract
+-- through disclosure; with the right credential and no disclosure the
+-- contract is unknown to the submission.
+test_nonStakeholderFlipNeedsDisclosure : Script ()
+test_nonStakeholderFlipNeedsDisclosure = script do
+  admin <- allocateParty "admin"
+  holder <- allocateParty "holder"
+  guardian <- allocateParty "guardian"
+  rv <- submit admin do createCmd RoleVault with admin, holder, paused = False
+  cred <- submit admin do createCmd PauseCredential with admin, account = guardian
+  res <- trySubmit guardian do
+    exerciseCmd rv RoleVault_Pause with caller = guardian, credCid = cred
+  case res of
+    Left (ContractNotFound _ _) -> pure ()
+    other -> fail ("expected the undisclosed contract to be unknown, got " <> show other)
+  Some d <- queryDisclosure @RoleVault admin rv
+  paused <- submit (actAs guardian <> disclose d) do
+    exerciseCmd rv RoleVault_Pause with caller = guardian, credCid = cred
+  Some v <- queryContractId admin paused
+  isPaused v === True
