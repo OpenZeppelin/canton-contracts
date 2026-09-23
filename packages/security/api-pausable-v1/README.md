@@ -115,8 +115,10 @@ v.paused === True
 ```
 
 The flip is the consumer's exercise node in the transaction tree, recorded
-with its actor and its ledger time. The interval during which a pause was in
-force is the lifetime of a contract whose view reads `paused = True`.
+with its actor and its ledger time. A pause is in force from the flip that
+sets `paused = True` to the flip that clears it, across the chain of
+successor contracts. Choices such as a redemption or an emergency drain can
+replace the paused contract while the pause stays in force.
 
 ## Authority and lifecycle
 
