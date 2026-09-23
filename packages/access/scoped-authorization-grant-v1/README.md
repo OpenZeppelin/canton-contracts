@@ -78,6 +78,13 @@ contract IDs do not match. Increasing the expected `policyEpoch` in a resource's
 trusted policy rejects grants for earlier epochs. Other resources that still
 accept the old scope remain unaffected.
 
+The guard compares epochs for equality. The epoch of each logical resource
+must therefore only increase, and an application must never reuse an epoch. A
+resource that is recreated with an earlier epoch accepts the old grants for that
+epoch again. The authority can also issue a grant for a future epoch, which
+becomes valid when the policy reaches that epoch. When an application cannot
+keep the epochs increasing, use an instance-bound scope.
+
 An instance-bound grant remains active if its resource is archived, but it does
 not match a successor contract ID. Applications that frequently recreate a
 resource should use logical-only scope or a stable anchor CID when grants must

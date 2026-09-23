@@ -6,7 +6,8 @@ import qualified OpenZeppelin.ScopedAuthorizationGrantV1.Internal as Internal
 
 -- | The resource and permission a grant covers. Every field matches exactly.
 -- `resourceInstanceCid` can bind one contract instance; advancing the expected
--- `policyEpoch` rejects grants issued for earlier epochs.
+-- `policyEpoch` rejects grants issued for earlier epochs. Epochs must only
+-- increase: a reused epoch accepts the earlier grants for it again.
 data AuthorizationScope = AuthorizationScope with
     namespace : Text
     resourceType : Text
