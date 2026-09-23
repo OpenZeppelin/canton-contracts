@@ -13,6 +13,11 @@
 -- fits, from a single party to a role grant, an M-of-N approval, or a
 -- timelock.
 --
+-- The template's signatories can always archive the contract and create it
+-- again with any flag value, outside the flip choice. A pause authority model
+-- holds only when every signatory is part of that model or is trusted with
+-- the flag.
+--
 -- The switch is per contract and applies to new transactions: a gated choice
 -- refuses to start while the flag is set.
 module OpenZeppelin.Api.PausableV1 where

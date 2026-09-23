@@ -134,7 +134,9 @@ The interface exposes no choice, so a party that holds only a
   alone. Call `whenNotPaused` first in every choice a pause must stop, and
   keep each choice's controller as its access control.
 - The implementing template's `Archive` carries no guard, so its signatories
-  archive a paused contract.
+  archive a paused contract. They can also create it again with any flag
+  value, which skips the flip choice and its authority checks. Make every
+  signatory part of your pause authority model, or trust it with the flag.
 - Pass `this` to guards. A `Pausable` value fetched from a contract id the
   caller supplies is the caller's choice of switch: the caller presents an
   unpaused contract and the gated choice runs, with no error.

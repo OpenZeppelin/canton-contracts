@@ -102,6 +102,10 @@ body of the consumer's flip choice.
 - Pause authority is whatever the controller and body of your flip choice
   check. Review that choice as a privileged choice, and test that other
   parties are refused.
+- The template's signatories can always archive the contract and create it
+  again with any flag value, without the flip choice. A role, M-of-N, or
+  timelock rule in the flip choice therefore holds only when every signatory
+  is part of that rule or is trusted with the flag.
 - `PausableView` carries `paused` alone. A registry that serves CIP-0112
   `reason` and `until` holds them as its own template fields beside `paused`,
   as [`examples/pausable/registry`](../../../examples/pausable/registry)

@@ -163,6 +163,19 @@ test_archiveIsSignatoryOnly = script do
   res <- queryContractId admin vault
   res === None
 
+-- | The signatory can reset the flag without the flip choice, by archiving
+-- the paused contract and creating it again unpaused. The flip choice's
+-- authority checks do not run.
+test_signatoryResetsTheFlagByRecreate : Script ()
+test_signatoryResetsTheFlagByRecreate = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  Some v <- queryContractId admin paused
+  submit admin do archiveCmd paused
+  reset <- submit admin do createCmd v with paused = False
+  _ <- submit holder do exerciseCmd reset Vault_Withdraw with amount = 1
+  pure ()
+
 -- Sibling fields, set in the same transaction as the flip
 -------------------------------------------------------
 
