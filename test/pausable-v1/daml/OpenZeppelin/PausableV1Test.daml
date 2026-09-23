@@ -119,6 +119,32 @@ test_nonconsumingFlipLeavesTwoContracts = script do
   Some flipped <- queryContractId admin successor
   isPaused flipped === True
 
+-- | A nonconsuming flip choice that archives `self` beside the create leaves
+-- one contract, and a nonconsuming gated choice on the successor is refused.
+test_nonconsumingFlipWithArchiveLeavesOneContract : Script ()
+test_nonconsumingFlipWithArchiveLeavesOneContract = script do
+  admin <- allocateParty "admin"
+  av <- submit admin do createCmd ArchivingVault with admin, paused = False
+  False <- submit admin do exerciseCmd av ArchivingVault_Read
+  paused <- submit admin do exerciseCmd av ArchivingVault_Pause
+  gone <- queryContractId admin av
+  gone === None
+  active <- query @ArchivingVault admin
+  map fst active === [paused]
+  submitMustFailWith eEnforcedPause $ trySubmit admin do
+    exerciseCmd paused ArchivingVault_Read
+
+-- | The guards accept an interface value, so a choice that holds a `Pausable`
+-- from `toInterface this` reads the same flag.
+test_guardsAcceptAnInterfaceValue : Script ()
+test_guardsAcceptAnInterfaceValue = script do
+  Fixture{..} <- setup
+  Some v <- queryContractId admin vault
+  isPaused (toInterface @Pausable v) === False
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  Some p <- queryContractId admin paused
+  isPaused (toInterface @Pausable p) === True
+
 -- | Pausing while paused fails with `eEnforcedPause`: the flip choice runs
 -- `whenNotPaused` before its create.
 test_pauseWhenPausedFails : Script ()
