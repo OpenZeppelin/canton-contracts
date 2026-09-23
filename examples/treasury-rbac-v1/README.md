@@ -65,6 +65,13 @@ a member performing protected work, and discloses each pending workflow contract
 to the next actor. An actor becomes a workflow stakeholder after authorizing a
 stage.
 
+Each stage exercises `AuthorizationGrant_Use` on a grant that its role
+authority signs, and the role authorities are not treasury signatories. The
+participant of each role authority must therefore confirm every stage that
+uses that role's grants, and each role authority sees the `Use` node of those
+stages. The library README recommends an authority that is already a
+signatory; this example uses separate role authorities on purpose.
+
 ## Trust and application responsibilities
 
 Scoped grants fit this application because its roles are a closed set and their
