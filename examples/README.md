@@ -26,7 +26,7 @@ Consumers of `openzeppelin-api-timelock-v1`.
 
 | Example | Tests | Shows |
 |---|---|---|
-| [`treasury`](timelock/treasury) | [`treasury-test`](timelock/treasury-test) | A spending limit and a delay policy that change only through timelocked operations: schedule, wait, apply, cancel, expiry cleanup, and self-administration of the delay |
+| [`treasury`](timelock/treasury) | [`treasury-test`](timelock/treasury-test) | A timelock, a governed config, and a treasury on separate contracts. The spending limit and the delay policy change only through timelocked operations: schedule, wait, apply, cancel, expiry cleanup, and self-administration of the delay |
 
 ## Build and run
 

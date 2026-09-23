@@ -65,7 +65,7 @@ standard follows the same split, keeping its helper functions in
 
 Timelock ships no template for a different reason. A scheduled operation is a
 contract of the consumer's own template, typed by its fields and signed by the
-protected contract's signatories, because a Daml choice applies typed contract
+timelock's signatories, because a Daml choice applies typed contract
 data rather than forwarding an encoded call. The library contributes the
 interfaces that expose the operation's schedule and lifecycle, the functions
 that compute the schedule, and the guards that enforce it. The component is
@@ -76,6 +76,14 @@ before calling consumer methods. Their authority consists of the target's
 signatories and the actor. Operation choices forward requests to those target
 choices. The target verifies shared signatory authority and archives the operation
 in the same transaction as the state change.
+
+The recommended Timelock integration separates three contracts: the timelock,
+which holds the delay policy and the pending list; the governed config, which
+holds the settings that matured operations change; and the business contract,
+which reads the config. Every schedule consumes the timelock, and business
+choices consume the business contract, so the two workloads do not contend.
+The timelock records the current config id, because Daml 3.4 has no contract
+keys to look it up by.
 
 The API package follows the `openzeppelin-api-<component>-vN` freeze rule: no
 templates, no SCU, and a breaking change ships as a sibling `-v2` package. The
