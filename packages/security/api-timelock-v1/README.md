@@ -206,19 +206,13 @@ exerciseCmd (toInterfaceContractId @Operation opCid)
 ```
 
 Direct calls to `Timelock_Apply` and `Timelock_Drop` enforce the same checks.
-Both choices require the named `actor` as controller. Naming another party
-in the argument does not authorize a submission on that party's behalf.
-A failure restores the operation, the timelock, the governed config, and the
-pending entry together.
 
 ### Contract ids
 
-The pending list binds operations within the timelock's lineage.
-Initialize it empty. Each schedule choice adds only the operation it creates.
-Each successor preserves the remaining entries. Separate timelocks then have
-separate operation lists, even when they share an admin and policy.
-An active operation outside the target's list fails with `eNotPending`.
-An archived operation fails when the ledger attempts to exercise or fetch it.
+The pending list binds operations to the timelock's lineage. Initialize it
+empty, add only the operation that the schedule choice creates, and keep the
+remaining entries in every successor. An operation outside the list fails
+with `eNotPending`.
 
 The timelock's contract id changes on every schedule and every apply, so an
 executor reads the current id from the ledger at execution time. The governed
@@ -228,18 +222,15 @@ business choice that receives an archived config fails and is resubmitted.
 
 ## Authority and lifecycle
 
-The consumer selects the proposer, executors, and cancellers.
-The proposer controls the schedule choice. `OperationView` names the executors
-and cancellers. Each target choice uses its actor as controller and checks the
-operation's permission or expiry in its body. The target's signatories authorize
-the consumer method's effects.
+The consumer selects the proposer, executors, and cancellers. The proposer
+controls the schedule choice. `OperationView` names the executors and
+cancellers.
 
-The declared `authority` must sign both the timelock and the operation.
-The lifecycle choices check this requirement and fail with `eInvalidAuthority`
-when either signature is absent. An operation's signatories must be a subset
-of the target's signatories so the target can archive it.
-The target choice gets authority from its own signatories and its actor.
-This prevents a substituted target from using the operation's signatory authority.
+The declared `authority` must sign both the timelock and the operation, and
+the operation's signatories must be signatories of the timelock. The lifecycle
+choices fail with `eInvalidAuthority` otherwise. The choices take authority
+from the timelock's signatories and the actor only, so a substituted timelock
+cannot use the operation's signatory authority.
 
 The pending list rejects operations created outside the schedule choices.
 Signatories can still archive or recreate contracts, including a timelock with
@@ -276,10 +267,6 @@ The lifecycle of one operation:
 | Expired | Pending, with ledger time at or after `expiresAt` | Cleanup or cancellation succeeds |
 | Done | `Timelock_Apply` archives the operation and removes its pending entry | Final; the operation executes once |
 
-The `Timelock_Apply` transaction node records execution, including direct calls.
-Its choice argument identifies the actor. The transaction records its ledger time.
-The operation's create and archive events bound its active lifetime.
-
 ## Off-ledger reads
 
 `TimelockedView` is the whole data surface of the interface:
@@ -290,21 +277,18 @@ The operation's create and archive events bound its active lifetime.
 | `expiresAt` | `Optional Time` | The ledger time from which it may no longer execute, if any |
 
 A dashboard, an executor automation, or an auditor reads it without knowing the
-operation template. Query the Active Contract Service or the update stream with
-an interface filter on `OpenZeppelin.Api.TimelockV1:Timelocked` and request the
-interface view; every implementing contract visible to the querying party
-returns a `TimelockedView`. In Daml Script:
+operation template: query with an interface filter on
+`OpenZeppelin.Api.TimelockV1:Timelocked` and request the interface view. In
+Daml Script:
 
 ```daml
 Some v <- queryInterfaceContractId executor (toInterfaceContractId @Timelocked opCid)
 v.readyAt
 ```
 
-Visibility follows the implementing template and Daml disclosure rules.
-An interface query can also return directly created operations that have no
-pending entry. Match results against the canonical target's `TimelockView.pending`
-before presenting them as scheduled operations. Reconcile archive events with
-that list when building an executor or dashboard.
+An interface query also returns operations that were created directly and
+have no pending entry. Match the results against the canonical timelock's
+`TimelockView.pending` before presenting them as scheduled operations.
 
 ## Scope and security caveats
 
@@ -328,9 +312,8 @@ that list when building an executor or dashboard.
   template whose parameters list several effects, applied atomically in one
   choice body. Ordering between operations is a precondition on the governed
   state.
-- Pending operations are visible to the stakeholders of the operation
-  template. Keep sensitive parameters off an operation that many parties
-  observe.
+- Every stakeholder of an operation sees its parameters. Keep sensitive
+  parameters off an operation that many parties observe.
 - A `minDelay` of zero disables the delay. A `gracePeriod` of `None` keeps an
   operation executable until it is archived, as in `TimelockController.sol`.
   A negative `minDelay` or a `gracePeriod` of zero or less fails every schedule
@@ -340,7 +323,9 @@ that list when building an executor or dashboard.
   Signatories can also call the operation template's `Archive` choice directly.
   Direct archival leaves a pending reference that operation-based cleanup cannot
   remove. Consumers must define a recovery policy for these references.
-- A ledger-time check is honored within the synchronizer's tolerance.
+- The time bounds hold within the synchronizer's ledger-time tolerance, so the
+  effective delay can be shorter than `minDelay`. Size the delay as
+  [Time on Canton](../timelock-v1/README.md#time-on-canton) describes.
 
 ## Compatibility
 
