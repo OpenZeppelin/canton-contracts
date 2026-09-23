@@ -1,5 +1,5 @@
--- | Consumer fixtures: single-party and credential-based pause authority, the
--- sibling-field case, and implementations that break the `setPaused` rule.
+-- | Consumer fixtures: single-party and credential-based pause authority, and
+-- the sibling-field case.
 module OpenZeppelin.PausableV1TestFixtures where
 
 import DA.Action (unless)
@@ -33,7 +33,7 @@ eCredentialNotCallers = fixtureFailure "credential-not-callers"
   "RoleVault: credential is not the caller's"
 
 -- | The single-party case: the admin is the pause authority, and the consuming
--- flip choices create what `pause` and `unpause` return.
+-- flip choices guard, then create the successor with the flag changed.
 template Vault
   with
     admin : Party
@@ -47,19 +47,20 @@ template Vault
 
     interface instance Pausable for Vault where
       view = PausableView with paused
-      setPaused b = toInterface (this with paused = b)
 
-    -- The consumer supplies the authority, the library supplies the flip and
+    -- The consumer supplies the authority and the flip, the library supplies
     -- the guard.
     choice Vault_Pause : ContractId Vault
       controller admin
       do
-        create =<< pause this
+        whenNotPaused this
+        create this with paused = True
 
     choice Vault_Unpause : ContractId Vault
       controller admin
       do
-        create =<< unpause this
+        whenPaused this
+        create this with paused = False
 
     -- A gated operation.
     choice Vault_Withdraw : ContractId Vault
@@ -88,7 +89,7 @@ template PauseCredential
     observer account
 
 -- | The credential case: the flip choice takes the caller and a credential,
--- checks them in the body, then calls `pause`.
+-- checks them in the body, then flips.
 template RoleVault
   with
     admin : Party
@@ -100,7 +101,6 @@ template RoleVault
 
     interface instance Pausable for RoleVault where
       view = PausableView with paused
-      setPaused b = toInterface (this with paused = b)
 
     choice RoleVault_Pause : ContractId RoleVault
       with
@@ -111,7 +111,8 @@ template RoleVault
         cred <- fetch credCid
         unless (cred.admin == admin) (failWithStatus eWrongCredentialIssuer)
         unless (cred.account == caller) (failWithStatus eCredentialNotCallers)
-        create =<< pause this
+        whenNotPaused this
+        create this with paused = True
 
     choice RoleVault_Transfer : ContractId RoleVault
       controller holder
@@ -119,8 +120,8 @@ template RoleVault
         whenNotPaused this
         create this
 
--- | The sibling-field case: the flip choice records the pause reason on the
--- value that `pause` returns and creates once.
+-- | The sibling-field case: the flip choice sets the flag and the pause
+-- reason in one create.
 template Registry
   with
     admin : Party
@@ -131,40 +132,20 @@ template Registry
 
     interface instance Pausable for Registry where
       view = PausableView with paused
-      setPaused b = toInterface (this with paused = b)
 
     choice Registry_Pause : ContractId Registry
       with
         reason : Optional Text
       controller admin
       do
-        r <- pause this
-        create r with pauseReason = reason
+        whenNotPaused this
+        create this with paused = True, pauseReason = reason
 
     choice Registry_Unpause : ContractId Registry
       controller admin
       do
-        r <- unpause this
-        create r with pauseReason = None
-
--- | An unrelated template holding a `ContractId Pausable`. `pause` returns a
--- value, and only the implementing template's signatories can create the
--- successor, so the ledger stays unchanged.
-template Rogue
-  with
-    caller : Party
-  where
-    signatory caller
-
-    nonconsuming choice Rogue_TryPause : Bool
-      with
-        target : ContractId Pausable
-      controller caller
-      do
-        p <- fetch target
-        -- Yields a value with the flag set. The ledger stays unchanged.
-        flipped <- pause p
-        pure (isPaused flipped)
+        whenPaused this
+        create this with paused = False, pauseReason = None
 
 -- | Flips from a nonconsuming choice without archiving `self`, so the
 -- predecessor stays active beside the successor. The choice kind is the
@@ -178,70 +159,9 @@ template LeakyVault
 
     interface instance Pausable for LeakyVault where
       view = PausableView with paused
-      setPaused b = toInterface (this with paused = b)
 
     nonconsuming choice LeakyVault_Pause : ContractId LeakyVault
       controller admin
       do
-        create =<< pause this
-
--- Implementations that break the `setPaused` rule
--------------------------------------------------------
-
--- | Ignores the argument, so the flag never changes. `eFlagNotApplied`
--- catches it.
-template BrokenIgnoresFlag
-  with
-    admin : Party
-    paused : Bool
-  where
-    signatory admin
-
-    interface instance Pausable for BrokenIgnoresFlag where
-      view = PausableView with paused
-      setPaused _ = toInterface this
-
-    choice BrokenIgnoresFlag_Pause : ContractId BrokenIgnoresFlag
-      controller admin
-      do
-        create =<< pause this
-
-    choice BrokenIgnoresFlag_Unpause : ContractId BrokenIgnoresFlag
-      controller admin
-      do
-        create =<< unpause this
-
--- | A second implementer, so `Pausable` has more than one inhabitant.
-template Decoy
-  with
-    admin : Party
-    paused : Bool
-  where
-    signatory admin
-
-    interface instance Pausable for Decoy where
-      view = PausableView with paused
-      setPaused b = toInterface (this with paused = b)
-
--- | Returns another implementer's template. `eImplementerTypeMismatch`
--- catches it.
-template BrokenWrongTemplate
-  with
-    admin : Party
-    paused : Bool
-  where
-    signatory admin
-
-    interface instance Pausable for BrokenWrongTemplate where
-      view = PausableView with paused
-      setPaused b = toInterface (Decoy with admin = this.admin, paused = b)
-
-    choice BrokenWrongTemplate_Pause : ContractId BrokenWrongTemplate
-      controller admin
-      do
-        create =<< pause this
-
-    choice BrokenWrongTemplate_Unpause : ContractId BrokenWrongTemplate
-      controller admin
-      do
-        create =<< unpause this
+        whenNotPaused this
+        create this with paused = True

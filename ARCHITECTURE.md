@@ -57,8 +57,8 @@ supplies. The implementing templates live in consuming packages.
 
 The component is still two packages. `openzeppelin-api-pausable-v1` holds the
 interface and its view and nothing else, because that is the one part Daml
-cannot upgrade. `openzeppelin-pausable-v1` holds the guards, the flips, and the
-failure statuses. A bug fix in `pause` is a new version of the function
+cannot upgrade. `openzeppelin-pausable-v1` holds the guards and the failure
+statuses. A bug fix in `whenNotPaused` is a new version of the function
 package, and the frozen interface package does not move. The Splice token
 standard follows the same split, keeping its helper functions in
 `splice-token-standard-utils` beside its frozen interface packages.

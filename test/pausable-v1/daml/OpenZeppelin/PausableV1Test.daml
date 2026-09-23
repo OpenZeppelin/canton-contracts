@@ -1,5 +1,5 @@
--- | Tests for `OpenZeppelin.PausableV1`: the guards, the flips, and the
--- failure statuses.
+-- | Tests for `OpenZeppelin.PausableV1`: the guards and the failure statuses,
+-- exercised from consumer-written flip choices.
 module OpenZeppelin.PausableV1Test where
 
 import DA.Assert ((===))
@@ -81,11 +81,11 @@ test_whenPausedGuardsRecovery = script do
   Some v <- queryContractId admin drained
   v.balance === 0
 
--- pause and unpause, called from the consumer's own choice
+-- The flip, written by the consumer's own choice
 -------------------------------------------------------
 
--- | Pause, then unpause. The view tracks the flag, and `setPaused` leaves
--- every other field of the template untouched.
+-- | Pause, then unpause. The view tracks the flag, and the flip leaves every
+-- other field of the template untouched.
 test_pauseUnpauseRoundTrip : Script ()
 test_pauseUnpauseRoundTrip = script do
   Fixture{..} <- setup
@@ -119,8 +119,8 @@ test_nonconsumingFlipLeavesTwoContracts = script do
   Some flipped <- queryContractId admin successor
   isPaused flipped === True
 
--- | Pausing while paused fails with `eEnforcedPause`: `pause` runs
--- `whenNotPaused` first.
+-- | Pausing while paused fails with `eEnforcedPause`: the flip choice runs
+-- `whenNotPaused` before its create.
 test_pauseWhenPausedFails : Script ()
 test_pauseWhenPausedFails = script do
   Fixture{..} <- setup
@@ -128,8 +128,8 @@ test_pauseWhenPausedFails = script do
   submitMustFailWith eEnforcedPause $ trySubmit admin do
     exerciseCmd paused Vault_Pause
 
--- | Unpausing while unpaused fails with `eExpectedPause`: `unpause` runs
--- `whenPaused` first.
+-- | Unpausing while unpaused fails with `eExpectedPause`: the flip choice
+-- runs `whenPaused` before its create.
 test_unpauseWhenUnpausedFails : Script ()
 test_unpauseWhenUnpausedFails = script do
   Fixture{..} <- setup
@@ -163,24 +163,11 @@ test_archiveIsSignatoryOnly = script do
   res <- queryContractId admin vault
   res === None
 
--- | `pause` on an interface value yields a paused value and leaves the ledger
--- unchanged. Only the implementing template's signatories can create the
--- successor.
-test_flipOnInterfaceValueChangesNothing : Script ()
-test_flipOnInterfaceValueChangesNothing = script do
-  Fixture{..} <- setup
-  rogue <- submit holder do createCmd Rogue with caller = holder
-  computed <- submit holder do
-    exerciseCmd rogue Rogue_TryPause with target = readOf vault
-  computed === True
-  Some v <- queryContractId admin vault
-  isPaused v === False
-
 -- Sibling fields, set in the same transaction as the flip
 -------------------------------------------------------
 
--- | The consumer sets its own fields on the value `pause` returns and creates
--- once, so CIP-0112 `pauseInfo` lives beside the flag on one contract.
+-- | The consumer sets its own fields in the same create as the flag, so
+-- CIP-0112 `pauseInfo` lives beside the flag on one contract.
 test_pauseSetsSiblingFields : Script ()
 test_pauseSetsSiblingFields = script do
   admin <- allocateParty "admin"
@@ -192,7 +179,7 @@ test_pauseSetsSiblingFields = script do
   isPaused r === True
   r.pauseReason === Some "sanctions review"
 
--- | `unpause` clears them on the way out.
+-- | The unpause clears them on the way out.
 test_unpauseClearsSiblingFields : Script ()
 test_unpauseClearsSiblingFields = script do
   admin <- allocateParty "admin"
@@ -205,48 +192,11 @@ test_unpauseClearsSiblingFields = script do
   isPaused r === False
   r.pauseReason === None
 
--- The flag-applied check
--------------------------------------------------------
-
--- | An implementation that ignores the `setPaused` argument fails with
--- `eFlagNotApplied`.
-test_implementerIgnoringTheFlagFails : Script ()
-test_implementerIgnoringTheFlagFails = script do
-  admin <- allocateParty "admin"
-  b <- submit admin do createCmd BrokenIgnoresFlag with admin, paused = False
-  submitMustFailWith eFlagNotApplied $ trySubmit admin do
-    exerciseCmd b BrokenIgnoresFlag_Pause
-
--- | The same implementer is refused in the unpause direction.
-test_implementerIgnoringTheFlagFailsOnUnpause : Script ()
-test_implementerIgnoringTheFlagFailsOnUnpause = script do
-  admin <- allocateParty "admin"
-  b <- submit admin do createCmd BrokenIgnoresFlag with admin, paused = True
-  submitMustFailWith eFlagNotApplied $ trySubmit admin do
-    exerciseCmd b BrokenIgnoresFlag_Unpause
-
--- | An implementation that returns another implementer's template fails with
--- `eImplementerTypeMismatch`.
-test_implementerReturningAnotherTemplateFails : Script ()
-test_implementerReturningAnotherTemplateFails = script do
-  admin <- allocateParty "admin"
-  b <- submit admin do createCmd BrokenWrongTemplate with admin, paused = False
-  submitMustFailWith eImplementerTypeMismatch $ trySubmit admin do
-    exerciseCmd b BrokenWrongTemplate_Pause
-
--- | The same implementer is refused in the unpause direction.
-test_implementerReturningAnotherTemplateFailsOnUnpause : Script ()
-test_implementerReturningAnotherTemplateFailsOnUnpause = script do
-  admin <- allocateParty "admin"
-  b <- submit admin do createCmd BrokenWrongTemplate with admin, paused = True
-  submitMustFailWith eImplementerTypeMismatch $ trySubmit admin do
-    exerciseCmd b BrokenWrongTemplate_Unpause
-
 -- The credential case: the consumer's own authority
 -------------------------------------------------------
 
 -- | A credential-based pause authority authorizes the flip in the choice body
--- and gets the same guards, flip, and view as any other adopter.
+-- and gets the same guards and view as any other adopter.
 test_customAuthorityGatesTheFlip : Script ()
 test_customAuthorityGatesTheFlip = script do
   admin <- allocateParty "admin"

@@ -39,7 +39,6 @@ template Vault
     -- read it directly.
     interface instance Pausable for Vault where
       view = PausableView with paused
-      setPaused b = toInterface (this with paused = b)
 
     -- A gated operation.
     choice Vault_Withdraw : ContractId Vault
@@ -71,17 +70,19 @@ template Vault
         vault <- create this with balance = 0.0
         pure (vault, payout)
 
-    -- The pause authority. `pause` returns the flipped value, and this
-    -- consuming choice creates it.
+    -- The pause authority. Each consuming choice guards, then creates the
+    -- successor with the flag changed.
     choice Vault_Pause : ContractId Vault
       controller admin
       do
-        create =<< Pausable.pause this
+        Pausable.whenNotPaused this
+        create this with paused = True
 
     choice Vault_Unpause : ContractId Vault
       controller admin
       do
-        create =<< Pausable.unpause this
+        Pausable.whenPaused this
+        create this with paused = False
 
 -- | Raised when a withdrawal names a non-positive amount.
 eNonPositiveAmount : FailureStatus

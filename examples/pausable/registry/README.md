@@ -13,10 +13,8 @@ flip.
 
 ## What it shows
 
-- `pause` and `unpause`. The library guards, sets the flag, and
-  returns the value; the consuming choice sets `pauseReason` and
-  `pauseUntil` on the value and creates once, through the library rather than
-  around it.
+- Flip choices that set `paused`, `pauseReason`, and `pauseUntil` in one
+  create, after the library guard.
 - `pauseInfo.reason` and `pauseInfo.until` as fields of the registry.
   `PausableView` carries `paused` alone, so when CIP-0112 extends `PauseInfo`
   the registry adds a field under Smart Contract Upgrade and the interface
@@ -32,9 +30,9 @@ view, then an unpause that clears the recorded fields.
 ## Authority model
 
 `admin` is the sole signatory of `Registry` and the pause authority. The flip
-choices are consuming and create the value that `pause` and `unpause`
-return. `auditor` is an observer that reads the registry and its
-`PausableView`.
+choices are consuming: each guards, then creates the successor with the flag
+and its metadata changed. `auditor` is an observer that reads the registry
+and its `PausableView`.
 
 ## The deadline
 

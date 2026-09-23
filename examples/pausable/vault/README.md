@@ -13,8 +13,8 @@ for one owner, with an emergency stop that the admin controls.
 
 ## What it shows
 
-- The three lines of `interface instance Pausable for Vault` that adopt the
-  switch: the view, and `setPaused`.
+- The `interface instance Pausable for Vault` that adopts the switch: one
+  line, the view.
 - `whenNotPaused this` in a gated choice. The guard reads the contract that the
   choice exercises, so no caller supplies the pause state.
 - `whenPaused this` on `Vault_EmergencyDrain`, a recovery path that runs only
@@ -38,8 +38,8 @@ return to normal operation.
 authority. The flip creates the successor contract, which preserves the
 signatory set, so the choice already carries the authority the create needs.
 
-The flip choices are consuming and create the value that `pause` and
-`unpause` return.
+The flip choices are consuming. Each guards with `whenNotPaused` or
+`whenPaused`, then creates the successor with the flag changed.
 
 ## Build and run
 

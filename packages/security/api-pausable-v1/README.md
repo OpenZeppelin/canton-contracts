@@ -14,18 +14,15 @@ A frozen Daml interface that gives a template an emergency-stop switch.
 - `Pausable`: the interface your template declares an instance of.
 - `PausableView`: the flag, readable through the interface by every party
   that sees the contract.
-- `setPaused`: the method your template writes; `pause` and `unpause` in
-  [`openzeppelin-pausable-v1`](../pausable-v1/) call it.
 
-The guards, the flips, and the failure statuses live in
+The guards and the failure statuses live in
 [`openzeppelin-pausable-v1`](../pausable-v1/). The flag lives on your
 template, which binds the switch to the resource it protects.
 
 ## Usage
 
 Add a `paused : Bool` field to the template you protect, and give it an
-interface instance. `setPaused` returns your own template with the flag set
-and nothing else changed:
+interface instance whose view reports the field:
 
 ```daml
 import OpenZeppelin.Api.PausableV1
@@ -41,11 +38,10 @@ template Vault
 
     interface instance Pausable for Vault where
       view = PausableView with paused
-      setPaused b = toInterface (this with paused = b)
 ```
 
-Call `pause` and `unpause` from `openzeppelin-pausable-v1` in your flip
-choices rather than `setPaused`. The
+Your own choices flip the flag: each guards with `openzeppelin-pausable-v1`,
+then creates the successor with `paused` changed. The
 [`openzeppelin-pausable-v1` README](../pausable-v1/README.md) covers the
 guards, the flip choices, and the failure statuses to assert on in tests.
 
@@ -69,9 +65,9 @@ force is the lifetime of a contract whose view reads `paused = True`.
 
 ## Authority and lifecycle
 
-The interface carries the view and the `setPaused` method. Pause authority is
-the controller and body of the consumer's flip choice, and the `create` in
-that choice carries the implementing template's signatories. A flip archives
+The interface carries the view alone. Pause authority is the controller and
+body of the consumer's flip choice, and the `create` in that choice carries
+the implementing template's signatories. A flip archives
 the contract and creates its successor, so a reader holds the view of one
 contract at a time and re-queries after a flip.
 
@@ -83,10 +79,6 @@ contract at a time and re-queries after a flip.
 - Pause authority is whatever the controller and body of your flip choice
   check. Review that choice as a privileged choice, and test that other
   parties are refused.
-- `setPaused` must return your template with only the flag changed. `pause`
-  and `unpause` verify the flag alone, so a `setPaused` that also rewrites
-  another field rewrites contract state on every flip. Test one pause round
-  trip and compare every other field.
 - `PausableView` carries `paused` alone. A registry that serves CIP-0112
   `reason` and `until` holds them as its own template fields beside `paused`,
   as [`examples/pausable/registry`](../../../examples/pausable/registry)
@@ -102,8 +94,8 @@ Daml-LF `2.1`, built with the SDK that
 
 The package is frozen. A change to `Pausable` or `PausableView` ships as a
 sibling `openzeppelin-api-pausable-v2` package with module
-`OpenZeppelin.Api.PausableV2`, and the two coexist. A change to a guard, a
-flip, or a failure status is a new version of `openzeppelin-pausable-v1`.
+`OpenZeppelin.Api.PausableV2`, and the two coexist. A change to a guard or a
+failure status is a new version of `openzeppelin-pausable-v1`.
 
 For a consumer this means:
 

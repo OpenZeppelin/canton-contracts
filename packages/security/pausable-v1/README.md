@@ -1,6 +1,6 @@
 # Pausable V1
 
-The guards, flips, and failure statuses for the `Pausable` interface in
+The guards and failure statuses for the `Pausable` interface in
 [`openzeppelin-api-pausable-v1`](../api-pausable-v1/).
 
 | Field | Value |
@@ -18,14 +18,10 @@ Functions over any template that implements `Pausable`:
 - `whenNotPaused` and `whenPaused`: the guards a gated choice calls.
 - `isPaused`: the flag as a `Bool`, for a choice that branches on the flag
   rather than refusing to run.
-- `pause` and `unpause`: the guarded flips. Each checks the guard, sets the
-  flag through `setPaused`, verifies it, and returns the template value for
-  your choice to create.
-- `eEnforcedPause`, `eExpectedPause`, `eFlagNotApplied`, and
-  `eImplementerTypeMismatch`: the failure statuses. Each has a stable
-  `errorId` under `openzeppelin.com/pausable-`, so an off-ledger client
-  matches the id in the `DAML_FAILURE` error, and your tests compare the
-  whole value.
+- `eEnforcedPause` and `eExpectedPause`: the failure statuses. Each has a
+  stable `errorId` under `openzeppelin.com/pausable-`, so an off-ledger
+  client matches the id in the `DAML_FAILURE` error, and your tests compare
+  the whole value.
 
 ## Usage
 
@@ -53,43 +49,43 @@ import qualified OpenZeppelin.PausableV1 as Pausable
 incident, such as an emergency drain. `isPaused this` returns the flag for a
 choice that branches rather than refuses.
 
-**2. Write the flip choices.** Call `pause this` or `unpause this` from a
-choice whose controller and body express your pause authority. Each returns
-the template value with the new flag, and your choice creates it:
+**2. Write the flip choices.** A flip is a choice whose controller and body
+express your pause authority. It guards with `whenNotPaused` or `whenPaused`,
+then creates the successor with `paused` changed:
 
 ```daml
     choice Vault_Pause : ContractId Vault
       controller admin
-      do create =<< Pausable.pause this
+      do
+        Pausable.whenNotPaused this
+        create this with paused = True
 
     choice Vault_Unpause : ContractId Vault
       controller admin
-      do create =<< Pausable.unpause this
+      do
+        Pausable.whenPaused this
+        create this with paused = False
 ```
 
-To change other fields in the same transaction, update the returned value and
-create once. Keep `paused` and the fields that determine the signatories and
-the observers unchanged in that update.
+To change other fields in the same transaction, set them in the same create.
+Keep the fields that determine the signatories and the observers unchanged.
 
 ```daml
     choice Registry_Pause : ContractId Registry
       with reason : Optional Text
       controller admin
       do
-        r <- Pausable.pause this
-        create r with pauseReason = reason
+        Pausable.whenNotPaused this
+        create this with paused = True, pauseReason = reason
 ```
 
-`pause` and `unpause` return a value, and the calling choice performs the
-archive and the create. A nonconsuming flip choice calls `archive self`
-beside the create.
+A consuming choice archives the predecessor before the body runs. A
+nonconsuming flip choice calls `archive self` beside the create.
 
 **3. Assert on the failure statuses in your tests.** A gated choice that runs
 while paused fails with `eEnforcedPause`; a paused-only choice that runs while
-unpaused fails with `eExpectedPause`. `eFlagNotApplied` and
-`eImplementerTypeMismatch` fire only when an interface instance breaks the
-`setPaused` rule, so a test that pauses once catches a mis-wired
-implementation before it ships:
+unpaused fails with `eExpectedPause`. A flip choice that guards as above
+refuses a second pause or a second unpause with the same statuses:
 
 ```daml
 Left (FailureStatusError status) <-
@@ -105,8 +101,8 @@ the message text.
 ## Authority and lifecycle
 
 You write the choice that decides who may flip the switch; the package
-supplies the flip and the guard. The check runs in the choice body, so any
-authority model fits. A role, an M-of-N approval, or a timelock takes the
+supplies the guard. The check runs in the choice body, so any authority
+model fits. A role, an M-of-N approval, or a timelock takes the
 caller and its credential as choice arguments and checks them before the
 flip:
 
@@ -120,12 +116,13 @@ flip:
         cred <- fetch credCid
         unless (cred.admin == admin) (failWithStatus eWrongCredentialIssuer)
         unless (cred.account == caller) (failWithStatus eCredentialNotCallers)
-        create =<< Pausable.pause this
+        Pausable.whenNotPaused this
+        create this with paused = True
 ```
 
 - Creating the successor needs the implementing template's signatory
-  authority. `pause` on an interface value yields a value and leaves the
-  ledger unchanged.
+  authority. The interface exposes no choice, so a party that holds only a
+  `ContractId Pausable` cannot flip the flag.
 - A flip controller who is not a stakeholder receives the contract through
   disclosure and sees its whole payload.
 - A flip archives the contract, so contract IDs and disclosures held for it
@@ -138,16 +135,13 @@ flip:
 - A choice is gated only by its own guard call, and the guard checks the flag
   alone. Call `whenNotPaused` first in every choice a pause must stop, and
   keep each choice's controller as its access control.
-- After `pause` or `unpause`, the record update in your own `create` must
-  keep `paused` as returned. The package verifies the value it returns, so
-  `create r with paused = False` after `pause` is a pause that does not
-  pause, with no error. The same update must keep the fields that determine
-  the signatories and the observers: a changed signatory field fails the
-  create, and a dropped observer silently narrows who sees the paused
-  contract.
-- The `setPaused` caution in the
-  [`openzeppelin-api-pausable-v1` README](../api-pausable-v1/README.md)
-  applies: `pause` and `unpause` verify the flag alone.
+- The flip is your own `create`, and nothing checks it. A flip choice that
+  guards with `whenNotPaused` and then creates with `paused = False` is a
+  pause that does not pause, with no error. Test one pause round trip and
+  compare the flag and every other field.
+- The same `create` must keep the fields that determine the signatories and
+  the observers: a changed signatory field fails the create, and a dropped
+  observer silently narrows who sees the paused contract.
 
 ## Compatibility
 

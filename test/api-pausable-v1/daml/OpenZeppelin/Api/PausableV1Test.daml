@@ -1,5 +1,5 @@
--- | Tests for `OpenZeppelin.Api.PausableV1`: the view and the `setPaused`
--- method.
+-- | Tests for `OpenZeppelin.Api.PausableV1`: the view, read through the
+-- interface with no dependency on the function package.
 module OpenZeppelin.Api.PausableV1Test where
 
 import DA.Assert ((===))
@@ -46,15 +46,3 @@ test_viewTracksTheFlag = script do
   paused <- submit admin do exerciseCmd vault Vault_SetPaused with flag = True
   Some v <- queryInterfaceContractId holder (readOf paused)
   v === PausableView with paused = True
-
--- | The `setPaused` implementer method is pure: it yields a flipped value,
--- preserves every other field, and touches no ledger state.
-test_setPausedIsPure : Script ()
-test_setPausedIsPure = script do
-  admin <- allocateParty "admin"
-  holder <- allocateParty "holder"
-  let v = Vault with admin, holder, paused = False, balance = 100
-  Some flipped <- pure (fromInterface @Vault (setPaused (toInterface @Pausable v) True))
-  flipped.paused === True
-  flipped.balance === 100
-  v.paused === False

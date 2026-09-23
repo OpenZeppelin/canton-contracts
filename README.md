@@ -16,7 +16,7 @@ upload, and vet only the DARs they need.
 ## Packages
 
 The Pausable component lives under [`packages/`](packages/) as two packages:
-a frozen interface package and an upgradeable package of guard and flip
+a frozen interface package and an upgradeable package of guard
 functions. Neither has a release or an audit.
 
 | Component | Package | Public module | Status |

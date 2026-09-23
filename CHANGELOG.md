@@ -23,9 +23,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 - Added the function package `openzeppelin-pausable-v1` with public module
   `OpenZeppelin.PausableV1`, holding the guards `whenNotPaused` and
-  `whenPaused`, the flips `pause` and `unpause`, `isPaused`, and the failure
-  statuses `eEnforcedPause`, `eExpectedPause`, `eFlagNotApplied`, and
-  `eImplementerTypeMismatch`. It depends on `openzeppelin-api-pausable-v1`.
+  `whenPaused`, `isPaused`, and the failure statuses `eEnforcedPause` and
+  `eExpectedPause`. It depends on `openzeppelin-api-pausable-v1`.
 
 ### `openzeppelin-tokenCIP112-v1`
 

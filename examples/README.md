@@ -18,7 +18,7 @@ Consumers of `openzeppelin-api-pausable-v1` and `openzeppelin-pausable-v1`.
 | Example | Tests | Shows |
 |---|---|---|
 | [`vault`](pausable/vault) | [`vault-test`](pausable/vault-test) | Minimal adoption: the interface instance, the guards, an escape hatch, and the pause authority |
-| [`registry`](pausable/registry) | [`registry-test`](pausable/registry-test) | `pause` and `unpause` setting CIP-0112 `pauseInfo` fields in the same transaction as the flip |
+| [`registry`](pausable/registry) | [`registry-test`](pausable/registry-test) | Flip choices that set CIP-0112 `pauseInfo` fields in the same create as the flag |
 
 ## Build and run
 

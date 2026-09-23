@@ -2,8 +2,8 @@
 -- CIP-0112 metadata.
 --
 -- `pauseReason` and `pauseUntil` are fields of the registry. The flip choices
--- set them on the value that `pause` returns and create once, so the flag and
--- its metadata change in one transaction. If CIP-0112 extends `PauseInfo`,
+-- set them in the same create as the flag, so the flag and its metadata
+-- change in one transaction. If CIP-0112 extends `PauseInfo`,
 -- the registry adds a field under Smart Contract Upgrade.
 module OpenZeppelin.Examples.Pausable.Registry where
 
@@ -31,7 +31,6 @@ template Registry
 
     interface instance Pausable for Registry where
       view = PausableView with paused
-      setPaused b = toInterface (this with paused = b)
 
     -- Sets the flag and its metadata in one transaction.
     choice Registry_Pause : ContractId Registry
@@ -40,15 +39,15 @@ template Registry
         until : Optional Time
       controller admin
       do
-        r <- Pausable.pause this
-        create r with pauseReason = reason, pauseUntil = until
+        Pausable.whenNotPaused this
+        create this with paused = True, pauseReason = reason, pauseUntil = until
 
     -- Clears the pause metadata.
     choice Registry_Unpause : ContractId Registry
       controller admin
       do
-        r <- Pausable.unpause this
-        create r with pauseReason = None, pauseUntil = None
+        Pausable.whenPaused this
+        create this with paused = False, pauseReason = None, pauseUntil = None
 
     -- A gated operation.
     choice Registry_Register : ContractId Registry
