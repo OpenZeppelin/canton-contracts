@@ -250,6 +250,13 @@ test_customAuthorityGatesTheFlip = script do
   Some pv <- queryInterfaceContractId holder (toInterfaceContractId @Pausable paused)
   pv.paused === True
 
+  -- the flip checks the credential before the guard, so on the paused
+  -- contract a wrong credential reports the credential error first
+  Some pd <- queryDisclosure @RoleVault admin paused
+  submitMustFailWith eWrongCredentialIssuer $
+    trySubmit (actAs stranger <> disclose pd) do
+      exerciseCmd paused RoleVault_Pause with caller = stranger, credCid = rogueCred
+
 -- The failure statuses as an off-ledger contract
 -------------------------------------------------------
 
@@ -274,8 +281,9 @@ test_refusedChoiceWritesNothing = script do
   v.balance === 100
   isPaused v === True
 
--- | `whenNotPaused` runs before the consumer's own checks, so while paused a
--- request that is also invalid on its own terms fails with `eEnforcedPause`.
+-- | The fixture's `Vault_Withdraw` calls `whenNotPaused` before its own
+-- checks, so while paused a request that is also invalid on its own terms
+-- fails with `eEnforcedPause`. The statement order sets the error.
 test_guardRunsBeforeConsumerChecks : Script ()
 test_guardRunsBeforeConsumerChecks = script do
   Fixture{..} <- setup

@@ -29,9 +29,12 @@ Your template holds the flag and implements the interface, as the
 [`openzeppelin-api-pausable-v1` README](../api-pausable-v1/README.md) shows.
 Adopting the functions is three steps.
 
-**1. Guard the choices that a pause must stop.** Call `whenNotPaused this` as
-the first statement of every gated choice body. It takes the contract value
-the choice runs on, so the caller supplies nothing.
+**1. Guard the choices that a pause must stop.** Call `whenNotPaused this` in
+every gated choice body, before the choice changes state. It takes the
+contract value the choice runs on, so the caller supplies nothing. The first
+check that fails sets the error: a choice that calls the guard first reports
+`eEnforcedPause` while paused, and a choice that checks authorization first,
+as `RoleVault_Pause` below does, reports the authorization error.
 
 ```daml
 import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
@@ -132,8 +135,8 @@ therefore cannot flip the flag.
 - Pause is origination control. A gated choice refuses to start while paused,
   and transactions already committed stand.
 - A choice is gated only by its own guard call, and the guard checks the flag
-  alone. Call `whenNotPaused` first in every choice a pause must stop, and
-  keep each choice's controller as its access control.
+  alone. Call `whenNotPaused` before the state change in every choice a pause
+  must stop, and keep each choice's controller as its access control.
 - The implementing template's `Archive` carries no guard, so its signatories
   archive a paused contract. They can also create it again with any flag
   value, which skips the flip choice and its authority checks. Make every
