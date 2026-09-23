@@ -35,9 +35,11 @@ template AuthorizationGrant
     grantee : Party
     scope : AuthorizationScope
     validFrom : Optional Time
-      -- ^ Inclusive lower ledger-time bound, or unbounded when `None`.
+      -- ^ Inclusive lower ledger-time bound, or unbounded when `None`. The
+      --   record time can differ by up to the synchronizer's tolerance.
     validUntil : Optional Time
-      -- ^ Exclusive upper ledger-time bound, or unbounded when `None`.
+      -- ^ Exclusive upper ledger-time bound, or unbounded when `None`. The
+      --   record time can differ by up to the synchronizer's tolerance.
   where
     ensure Internal.validityWindowIsWellFormed validFrom validUntil
     signatory authority

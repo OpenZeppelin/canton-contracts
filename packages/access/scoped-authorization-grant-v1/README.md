@@ -116,6 +116,15 @@ present, creation requires `validFrom < validUntil`. Validation uses ledger-time
 predicates rather than reading `getTime`, so the check remains compatible with
 externally prepared and signed transactions.
 
+The bounds apply to ledger time, not to record time. The synchronizer accepts a
+ledger time within its configured tolerance of the record time, and the
+submitter chooses the ledger time within that tolerance. A use can therefore
+commit with a record time up to the tolerance after `validUntil` or before
+`validFrom`. When an exact cutoff matters, set the bounds with a margin, or
+revoke the grant. A transaction prepared inside the window and submitted after
+the tolerance fails with the Canton error `LEDGER_TIME_OUTSIDE_BOUNDS`, not with
+`OZ_SAG_EXPIRED`.
+
 Expiration does not archive a grant. An active grant may be outside its validity
 window or fail the current policy, so discovery alone does not establish permission.
 
