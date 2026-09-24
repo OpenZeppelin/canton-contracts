@@ -9,19 +9,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## Unreleased
 
+### `openzeppelin-allocation-request-v1`
+
+#### Added
+
+- Added the allocation-request package
+  `openzeppelin-allocation-request-v1` with public module
+  `OpenZeppelin.AllocationRequestV1`: the `TokenAllocationRequest` template
+  implements the Token Standard V2 `AllocationRequest` interface with accept,
+  reject, and withdraw, independent of any token registry.
+
 ### `openzeppelin-tokenCIP112-v1`
 
 #### Added
 
-- Added the experimental CIP-0112-compliant token package
+- Added the CIP-0112-compliant token package
   `openzeppelin-tokenCIP112-v1` with public module namespace
   `OpenZeppelin.TokenCIP112V1`. It implements the Token Standard V2 interfaces
-  and builds against the 13 vendored Token Standard V2 DARs under
-  `dars/vendor/`, with provenance recorded in `dars/manifest.yaml`.
-- Added the CIP-86 allowance component: the `TokenAllowance` template with
-  ERC-20 `approve` and `transferFrom` semantics, spent through the new
-  `TokenRules_ApproveAllowance` and `TokenRules_TransferFrom` registry
-  choices.
+  and builds against the 13 official Token Standard V2 DARs released by Splice
+  (tag `0.8.3`), vendored under `dars/vendor/` with provenance recorded in
+  `dars/manifest.yaml`.
+- `TokenHolding_OwnerUnlock` emits an `EventLog_HoldingsChange` for the
+  archived holding and its unlocked replacement, so owner recovery of an
+  expired lock is visible to Token Standard history parsers.
+- Added CIP-0112 iterated settlement: allocations created with
+  `nextIterationFunding` accept executor-supplied extra transfer legs per
+  settlement iteration, bounded by the locked reserve, and can roll proceeds
+  into a successor allocation returned as `nextIterationAllocationCid`.
+- `AllocationFactory_Allocate` rejects allocations whose authorizer is not a
+  regular (owned) account; the special mint and burn accounts cannot author
+  allocations.
 
 ### `openzeppelin-access-control-v1`
 

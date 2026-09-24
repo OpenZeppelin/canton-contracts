@@ -1,0 +1,838 @@
+-- | Tests for the CIP-0112-compliant token package
+-- (packages/token/tokenCIP112-v1), driven through the standard interfaces.
+-- Scenario setup and interface-driving helpers live in
+-- `OpenZeppelin.TokenCIP112V1TestFixtures`.
+module OpenZeppelin.TokenCIP112V1Test where
+
+import DA.Assert ((===), (=/=))
+import DA.Date (date, Month(Jan))
+import DA.Foldable (forA_)
+import DA.List (sort)
+import DA.Time (days, hours, minutes, time)
+import Daml.Script
+
+import DA.Map qualified as Map
+import DA.Optional (isSome)
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, senderSide, receiverSide, nonIteratedAllocation)
+
+import OpenZeppelin.TokenCIP112V1.Allocation
+import OpenZeppelin.TokenCIP112V1.Holding
+import OpenZeppelin.TokenCIP112V1.Registry
+import OpenZeppelin.TokenCIP112V1.Transfer
+import OpenZeppelin.TokenCIP112V1TestFixtures
+
+-- | Happy path: two-leg DvP with net funding. Alice sends 10 and receives 4,
+-- so only 6 is locked; Bob nets +6 and locks nothing. After settlement Alice
+-- holds her 4.0 change and Bob holds 6.0.
+testNetSettlementHappyPath : Script ()
+testNetSettlementHappyPath = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+
+  aliceResult <- allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  -- Net funding: 6.0 locked, 4.0 returned as change.
+  aliceHoldings <- query @TokenHolding alice
+  sort [h.holding.amount | (_, h) <- aliceHoldings] === [4.0, 6.0]
+
+  bobResult <- allocate s bob [receiverSide legAliceToBob, senderSide legBobToAlice] []
+  bobAllocCid <- completedCid bobResult
+
+  _ <- settleBatch s [legAliceToBob, legBobToAlice] [aliceAllocCid, bobAllocCid] emptyExtraArgs
+
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [4.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [6.0]
+
+-- | Conservation: a sender whose inputs do not cover the net debit fails
+-- closed at allocation time.
+testUnderfundedSenderFails : Script ()
+testUnderfundedSenderFails = do
+  s@Scenario{..} <- setup
+  smallInput <- mint admin alice 5.0
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = mkAllocationSpec admin alice [senderSide legAliceToBob]
+        requestedAt = t0
+        inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding smallInput]
+        extraArgs = emptyExtraArgs
+        actors = [alice]
+
+-- | Exact cover: a batch that presents the legs but is missing the
+-- counterparty's allocation is rejected.
+testMissingAuthorizationFails : Script ()
+testMissingAuthorizationFails = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob, legBobToAlice]
+        allocations = [nonIteratedAllocation aliceAllocCid]
+        actors = [app]
+        extraArgs = emptyExtraArgs
+
+-- | Exact cover, other direction: a batch carrying an allocation whose legs are
+-- not in the presented leg set is rejected.
+testSuperfluousAuthorizationFails : Script ()
+testSuperfluousAuthorizationFails = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  bobResult <- allocate s bob [receiverSide legAliceToBob, senderSide legBobToAlice] []
+  bobAllocCid <- completedCid bobResult
+  -- Present only leg-1 while the allocations authorize both legs.
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob]
+        allocations = [nonIteratedAllocation aliceAllocCid, nonIteratedAllocation bobAllocCid]
+        actors = [app]
+        extraArgs = emptyExtraArgs
+
+-- | Withdraw: the authorizer releases an uncommitted allocation and gets the
+-- locked funds back.
+testWithdrawReleasesFunds : Script ()
+testWithdrawReleasesFunds = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  _ <- submit (actAs alice) do
+    exerciseCmd aliceAllocCid AllocationV2.Allocation_Withdraw with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+-- | Executor cancel returns funds; admin cancel is refused while the allocation
+-- is live and accepted once its expiry has passed.
+testCancelPaths : Script ()
+testCancelPaths = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  -- Admin cannot cancel a live allocation.
+  submitMustFail (actAs admin) do
+    exerciseCmd aliceAllocCid AllocationV2.Allocation_Cancel with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+  -- Executors may cancel at any time.
+  _ <- submit (actAs app) do
+    exerciseCmd aliceAllocCid AllocationV2.Allocation_Cancel with
+      actors = [app]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+  -- Admin batch expiry after the deadline, via the rules contract.
+  input2 <- mint admin bob 5.0
+  bobResult <- allocateSpec s bob (mkAllocationSpec admin bob [senderSide (mkTransferLeg "leg-9" bob alice 5.0)]) [input2]
+  bobAllocCid <- completedCid bobResult
+  setTime t3
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireAllocations with
+      cancelArgs =
+        [ (bobAllocCid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs) ]
+      observers = []
+  bobAfter <- holdingAmounts bob
+  bobAfter === [5.0]
+
+-- Iterated settlement
+----------------------
+
+settleBatchFinalizedCmd
+  : Scenario -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation]
+  -> Commands AllocationV2.SettlementFactory_SettleBatchResult
+settleBatchFinalizedCmd Scenario{..} legs finalized =
+  exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+    AllocationV2.SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = legs
+      allocations = finalized
+      actors = [app]
+      extraArgs = emptyExtraArgs
+
+settleBatchFinalized
+  : Scenario -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation]
+  -> Script AllocationV2.SettlementFactory_SettleBatchResult
+settleBatchFinalized s legs finalized =
+  submit (actAs s.app <> discloseMany [s.rulesDisclosure]) (settleBatchFinalizedCmd s legs finalized)
+
+settledNext : AllocationV2.AllocationResult -> Script (Optional (ContractId AllocationV2.Allocation))
+settledNext result = case result.output of
+  AllocationV2.AllocationResult_Settled cid -> pure cid
+  other -> abort ("expected settled allocation, got: " <> show other)
+
+-- | An iterated allocation spec: no upfront legs, executors specify them per
+-- iteration up to the reserved funding.
+mkIteratedSpec : Party -> Party -> Optional (TextMap.TextMap Decimal) -> AllocationV2.AllocationSpecification
+mkIteratedSpec admin authorizer reserve =
+  (mkAllocationSpec admin authorizer []) with nextIterationFunding = reserve
+
+-- | Iterated settlement over two iterations: Alice deposits 10 TOK, Bob
+-- enables iterated settlement with no reserve. The executor settles a 3 TOK
+-- trade, both sides rolling into successor allocations, then a 1 TOK trade
+-- back that ends both chains and releases all funds unlocked.
+testIteratedSettlementLifecycle : Script ()
+testIteratedSettlementLifecycle = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocateSpec s alice
+    (mkIteratedSpec admin alice (Some (TextMap.fromList [("TOK", 10.0)]))) [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  bobResult <- allocateSpec s bob (mkIteratedSpec admin bob (Some TextMap.empty)) []
+  bobAllocCid <- completedCid bobResult
+
+  -- First iteration: alice sends 3 to bob; alice rolls her 7 change into the
+  -- next iteration, bob rolls his incoming 3.
+  let leg1 = mkTransferLeg "it-1" alice bob 3.0
+  r1 <- settleBatchFinalized s [leg1]
+    [ AllocationV2.FinalizedAllocation with
+        allocationCid = aliceAllocCid
+        extraTransferLegSides = [senderSide leg1]
+        nextIterationFunding = Some (TextMap.fromList [("TOK", 7.0)])
+    , AllocationV2.FinalizedAllocation with
+        allocationCid = bobAllocCid
+        extraTransferLegSides = [receiverSide leg1]
+        nextIterationFunding = Some (TextMap.fromList [("TOK", 3.0)])
+    ]
+  [aliceR1, bobR1] <- pure r1.allocationSettleResults
+  Some aliceAlloc2 <- settledNext aliceR1
+  Some bobAlloc2 <- settledNext bobR1
+  aliceMid <- holdingAmounts alice
+  aliceMid === [7.0]
+  bobMid <- holdingAmounts bob
+  bobMid === [3.0]
+
+  -- The successor tracks the chain: iteration count bumped, original cid
+  -- pinned, legs cleared, reservation carried.
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation alice aliceAlloc2
+  v.numIterations === 1
+  v.originalAllocationCid === Some aliceAllocCid
+  v.allocation.transferLegSides === []
+  v.allocation.nextIterationFunding === Some (TextMap.fromList [("TOK", 7.0)])
+
+  -- Second iteration: bob sends 1 back; no further iterations, so every
+  -- balance is released unlocked.
+  let leg2 = mkTransferLeg "it-2" bob alice 1.0
+  r2 <- settleBatchFinalized s [leg2]
+    [ AllocationV2.FinalizedAllocation with
+        allocationCid = aliceAlloc2
+        extraTransferLegSides = [receiverSide leg2]
+        nextIterationFunding = None
+    , AllocationV2.FinalizedAllocation with
+        allocationCid = bobAlloc2
+        extraTransferLegSides = [senderSide leg2]
+        nextIterationFunding = None
+    ]
+  [aliceR2, bobR2] <- pure r2.allocationSettleResults
+  None <- settledNext aliceR2
+  None <- settledNext bobR2
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [8.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [2.0]
+  assertNoLocks alice
+  assertNoLocks bob
+
+-- | Iterated-settlement bounds: a zero reserve entry and an under-funded
+-- reserve are rejected at allocation; a reservation exceeding the settlement
+-- proceeds is rejected at settle time; extra legs and reservations on a
+-- non-iterated allocation are rejected.
+testIteratedSettlementBounds : Script ()
+testIteratedSettlementBounds = do
+  s@Scenario{..} <- setup
+  -- Enabling iterated settlement without a reserve is `Some TextMap.empty`; a
+  -- zero entry is a caller error.
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = mkIteratedSpec admin alice (Some (TextMap.fromList [("TOK", 0.0)]))
+        requestedAt = t0
+        inputHoldingCids = []
+        extraArgs = emptyExtraArgs
+        actors = [alice]
+  -- The reserve is locked upfront, so it must be funded like net leg debits.
+  smallInput <- mint admin alice 5.0
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = mkIteratedSpec admin alice (Some (TextMap.fromList [("TOK", 6.0)]))
+        requestedAt = t0
+        inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding smallInput]
+        extraArgs = emptyExtraArgs
+        actors = [alice]
+
+  aliceResult <- allocateSpec s alice
+    (mkIteratedSpec admin alice (Some (TextMap.fromList [("TOK", 5.0)]))) [smallInput]
+  aliceAllocCid <- completedCid aliceResult
+  bobResult <- allocateSpec s bob (mkIteratedSpec admin bob (Some TextMap.empty)) []
+  bobAllocCid <- completedCid bobResult
+
+  -- Reserving more than the proceeds fails closed: 5 locked minus 3 sent
+  -- leaves 2, less than the requested 3.
+  let leg = mkTransferLeg "bd-1" alice bob 3.0
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure])
+    (settleBatchFinalizedCmd s [leg]
+      [ AllocationV2.FinalizedAllocation with
+          allocationCid = aliceAllocCid
+          extraTransferLegSides = [senderSide leg]
+          nextIterationFunding = Some (TextMap.fromList [("TOK", 3.0)])
+      , AllocationV2.FinalizedAllocation with
+          allocationCid = bobAllocCid
+          extraTransferLegSides = [receiverSide leg]
+          nextIterationFunding = None
+      ])
+
+  -- A non-iterated allocation accepts neither extra legs nor a reservation.
+  aliceInput2 <- mint admin alice 10.0
+  aliceNonIterResult <- allocate s alice [senderSide legAliceToBob] [aliceInput2]
+  aliceNonIter <- completedCid aliceNonIterResult
+  bobNonIterResult <- allocate s bob [receiverSide legAliceToBob] []
+  bobNonIter <- completedCid bobNonIterResult
+  let extraLeg = mkTransferLeg "bd-2" alice bob 1.0
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure])
+    (settleBatchFinalizedCmd s [legAliceToBob, extraLeg]
+      [ AllocationV2.FinalizedAllocation with
+          allocationCid = aliceNonIter
+          extraTransferLegSides = [senderSide extraLeg]
+          nextIterationFunding = None
+      , nonIteratedAllocation bobNonIter
+      ])
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure])
+    (settleBatchFinalizedCmd s [legAliceToBob]
+      [ AllocationV2.FinalizedAllocation with
+          allocationCid = aliceNonIter
+          extraTransferLegSides = []
+          nextIterationFunding = Some TextMap.empty
+      , nonIteratedAllocation bobNonIter
+      ])
+
+-- | A successor allocation is a plain allocation: the authorizer's account
+-- parties withdraw it and recover the reserved funds unlocked.
+testIteratedSuccessorWithdraw : Script ()
+testIteratedSuccessorWithdraw = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  aliceResult <- allocateSpec s alice
+    (mkIteratedSpec admin alice (Some (TextMap.fromList [("TOK", 10.0)]))) [input]
+  aliceAllocCid <- completedCid aliceResult
+  bobResult <- allocateSpec s bob (mkIteratedSpec admin bob (Some TextMap.empty)) []
+  bobAllocCid <- completedCid bobResult
+  let leg = mkTransferLeg "wd-1" alice bob 4.0
+  r <- settleBatchFinalized s [leg]
+    [ AllocationV2.FinalizedAllocation with
+        allocationCid = aliceAllocCid
+        extraTransferLegSides = [senderSide leg]
+        nextIterationFunding = Some (TextMap.fromList [("TOK", 6.0)])
+    , AllocationV2.FinalizedAllocation with
+        allocationCid = bobAllocCid
+        extraTransferLegSides = [receiverSide leg]
+        nextIterationFunding = None
+    ]
+  [aliceR, bobR] <- pure r.allocationSettleResults
+  Some aliceAlloc2 <- settledNext aliceR
+  None <- settledNext bobR
+  bobAfter <- holdingAmounts bob
+  bobAfter === [4.0]
+  _ <- submit (actAs alice) do
+    exerciseCmd aliceAlloc2 AllocationV2.Allocation_Withdraw with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [6.0]
+  assertNoLocks alice
+
+-- Transfer instructions
+------------------------
+
+-- | Two-step transfer: the sender instructs (locking the amount, change
+-- returned), the receiver accepts and gets the holding.
+testTransferTwoStep : Script ()
+testTransferTwoStep = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  instrCid <- pendingCid result
+  -- 3.0 change unlocked, 7.0 locked pending acceptance.
+  aliceMid <- holdingAmounts alice
+  aliceMid === [3.0, 7.0]
+
+  -- Wallets see who can act on the pending instruction, and the view points at
+  -- the live locked funding rather than the consumed inputs.
+  Some instrView <- queryInterfaceContractId @TransferInstructionV2.TransferInstruction bob instrCid
+  Map.lookup TransferInstructionV2.TIA_Accept instrView.availableActions === Some [[bob]]
+  Map.lookup TransferInstructionV2.TIA_Withdraw instrView.availableActions === Some [[alice]]
+  instrView.transfer.inputHoldingCids =/= map (toInterfaceContractId @HoldingV2.Holding) [aliceInput]
+
+  -- The admin can see the instruction but is not the receiver, so cannot accept.
+  submitMustFail (actAs admin) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+
+  _ <- submit (actAs bob) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [3.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [7.0]
+  assertNoLocks alice
+  assertNoLocks bob
+
+-- | One-step transfer: actors covering both accounts complete immediately,
+-- with no pending instruction and no lock.
+testTransferOneStep : Script ()
+testTransferOneStep = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice, bob] (mkTransfer s alice bob 7.0 [aliceInput])
+  _ <- completedHoldings result
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [3.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [7.0]
+  assertNoLocks alice
+
+-- | Reject and withdraw both return the locked funds to the sender.
+testTransferRejectAndWithdraw : Script ()
+testTransferRejectAndWithdraw = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  rejected <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  rejectedCid <- pendingCid rejected
+  _ <- submit (actAs bob) do
+    exerciseCmd rejectedCid TransferInstructionV2.TransferInstruction_Reject with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+  assertNoLocks alice
+
+  aliceHoldings <- query @TokenHolding alice
+  withdrawn <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 (map fst aliceHoldings))
+  withdrawnCid <- pendingCid withdrawn
+  _ <- submit (actAs alice) do
+    exerciseCmd withdrawnCid TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  sum aliceAfter === 10.0
+
+-- | Guards: underfunded transfers and expired execution windows fail closed.
+testTransferGuards : Script ()
+testTransferGuards = do
+  s@Scenario{..} <- setup
+  smallInput <- mint admin alice 5.0
+  -- Underfunded: inputs do not cover the transfer amount.
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+      TransferInstructionV2.TransferFactory_Transfer with
+        transfer = mkTransfer s alice bob 7.0 [smallInput]
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  -- executeBefore not in the future fails at the factory.
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+      TransferInstructionV2.TransferFactory_Transfer with
+        transfer = (mkTransfer s alice bob 5.0 [smallInput]) with executeBefore = t1
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  -- Accepting after executeBefore fails; the sender's lock has expired.
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 5.0 [smallInput])
+  instrCid <- pendingCid result
+  setTime t2
+  submitMustFail (actAs bob) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+
+-- | Admin expiry: only after the storage bound has passed, and the funds
+-- return to the sender.
+testTransferAdminExpiry : Script ()
+testTransferAdminExpiry = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  instrCid <- pendingCid result
+  let templateCid = fromInterfaceContractId @TokenTransferInstruction instrCid
+  -- Not yet expired: the admin cannot reclaim early.
+  submitMustFail (actAs admin) do
+    exerciseCmd templateCid TokenTransferInstruction_Expire
+  setTime t3
+  -- Batched expiry through the rules contract, mirroring allocation expiry.
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
+      instructionCids = [templateCid]
+      observers = []
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  sum aliceAfter === 10.0
+
+-- Adversarial and boundary scenarios
+------------------------------------
+
+-- | `Allocation_Settle` outside the batch factory currently succeeds for
+-- admin plus executors, bypassing the factory's exact-cover check: settling a
+-- lone receiver-side allocation credits the authorizer with no matching debit
+-- anywhere. This documents the behavior since the batch-settlement
+-- authorization guard was removed; see the package `ideas.md` on
+-- reintroducing it. Until then, exact cover holds only for settlements driven
+-- through `SettlementFactory_SettleBatch`.
+testDirectSettleAllowed : Script ()
+testDirectSettleAllowed = do
+  s@Scenario{..} <- setup
+  -- Bob's receiver-side-only allocation locks nothing; settling it alone
+  -- creates 10 TOK from nothing.
+  bobResult <- allocate s bob [receiverSide legAliceToBob] []
+  bobAllocCid <- completedCid bobResult
+  _ <- submit (actAs admin <> actAs app) do
+    exerciseCmd bobAllocCid AllocationV2.Allocation_Settle with
+      actors = [admin, app]
+      extraTransferLegSides = []
+      nextIterationFunding = None
+      extraArgs = emptyExtraArgs
+  bobAfter <- holdingAmounts bob
+  bobAfter === [10.0]
+
+-- | A settlement deadline beyond the registry's maxTTL is rejected
+-- outright, so `expiresAt` can never precede the deadline and the admin can
+-- never expire a live allocation.
+testDeadlineBoundedByMaxTTL : Script ()
+testDeadlineBoundedByMaxTTL = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  let farSpec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
+        settlementDeadline = Some (time (date 2027 Jan 1) 0 0 0)
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = farSpec
+        requestedAt = t0
+        inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding aliceInput]
+        extraArgs = emptyExtraArgs
+        actors = [alice]
+
+-- | A committed allocation without a settlement deadline could never be
+-- withdrawn, so creating one is refused.
+testCommittedRequiresDeadline : Script ()
+testCommittedRequiresDeadline = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  let badSpec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
+        committed = True
+        settlementDeadline = None
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = badSpec
+        requestedAt = t0
+        inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding aliceInput]
+        extraArgs = emptyExtraArgs
+        actors = [alice]
+
+-- | The funding lock outlives the instruction's own expiry, so the
+-- admin's expiry path always has a window in which it is guaranteed to work,
+-- and once the lock does expire the sender can self-recover.
+testLockGraceAndOwnerUnlock : Script ()
+testLockGraceAndOwnerUnlock = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  instrCid <- pendingCid result
+  let templateCid = fromInterfaceContractId @TokenTransferInstruction instrCid
+
+  -- Just past executeBefore: the lock has NOT yet expired, so the locked
+  -- holding cannot be re-spent as an input.
+  setTime t3
+  lockedHoldings <- query @TokenHolding alice
+  let lockedCids = [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock]
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+      TransferInstructionV2.TransferFactory_Transfer with
+        transfer = (mkTransfer s alice bob 7.0 lockedCids) with
+          requestedAt = t3
+          executeBefore = t4
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+  -- And the owner cannot unlock early either.
+  forA_ lockedCids $ \cid ->
+    submitMustFail (actAs alice <> actAs admin) do
+      exerciseCmd cid TokenHolding_OwnerUnlock
+
+  -- After the grace window the owner can always self-recover, which is what
+  -- makes admin GC safe.
+  setTime t4
+  forA_ lockedCids $ \cid ->
+    submit (actAs alice <> actAs admin) do
+      exerciseCmd cid TokenHolding_OwnerUnlock
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  sum aliceAfter === 10.0
+
+  -- The instruction shell now references an archived holding, so the normal
+  -- fund-returning paths fail — and admin GC is the escape hatch that keeps it
+  -- from being permanently unremovable.
+  submitMustFail (actAs admin) do
+    exerciseCmd templateCid TokenTransferInstruction_Expire
+  _ <- submit (actAs admin) do
+    exerciseCmd templateCid TokenTransferInstruction_AdminGC
+  gcd <- queryContractId admin templateCid
+  gcd === None
+
+-- | Owner unlock is a holdings change like any other (CIP-0112 §4.3.5): it
+-- emits one account-local `EventLog_HoldingsChange` naming the archived
+-- holding as input and its unlocked replacement as output, with no transfer
+-- legs, so event-driven wallets drop the stale contract id. The account
+-- parties exercise it alone; the admin's authority for the event comes from
+-- the holding's signatories.
+testOwnerUnlockEmitsHoldingsChange : Script ()
+testOwnerUnlockEmitsHoldingsChange = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  _ <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  lockedHoldings <- query @TokenHolding alice
+  lockedCid <- case [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock] of
+    [cid] -> pure cid
+    cids -> abort ("expected exactly one locked holding, got " <> show (length cids))
+  setTime t4
+  (newCid, tree) <- submitResultAndTree (actAs alice) do
+    exerciseCmd lockedCid TokenHolding_OwnerUnlock
+  ev <- expectOneHoldingsChange tree
+  ev.admin === admin
+  ev.account === basicAccount alice
+  ev.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding lockedCid]
+  ev.outputHoldingCids === [toInterfaceContractId @HoldingV2.Holding newCid]
+  ev.transferLegSides === []
+  assertMsg "the account parties must observe the event" (alice `elem` ev.observers)
+  assertNoLocks alice
+
+-- | A lock carrying `expiresAfter` is rejected at creation, since the
+-- package's expiry checks only model `expiresAt`.
+testExpiresAfterRejected : Script ()
+testExpiresAfterRejected = do
+  Scenario{..} <- setup
+  submitMustFail (actAs admin <> actAs alice) do
+    createCmd TokenHolding with
+      holding = HoldingV2.HoldingView with
+        account = basicAccount alice
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        amount = 5.0
+        lock = Some HoldingV2.Lock with
+          holders = [admin]
+          expiresAt = None
+          expiresAfter = Some (hours 1)
+          context = None
+        meta = emptyMetadata
+
+-- | A self-transfer completes in one step rather than creating a pending
+-- instruction the sender would have to accept from themselves.
+testSelfTransferOneStep : Script ()
+testSelfTransferOneStep = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice alice 4.0 [aliceInput])
+  _ <- completedHoldings result
+  aliceAfter <- holdingAmounts alice
+  sort aliceAfter === [4.0, 6.0]
+  assertNoLocks alice
+
+-- | A self-transfer of the full input value consolidates multiple holdings
+-- into a single one, with no change holding and no pending instruction.
+testSelfTransferConsolidates : Script ()
+testSelfTransferConsolidates = do
+  s@Scenario{..} <- setup
+  input1 <- mint admin alice 3.0
+  input2 <- mint admin alice 7.0
+  result <- instructTransfer s [alice] (mkTransfer s alice alice 10.0 [input1, input2])
+  _ <- completedHoldings result
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+  assertNoLocks alice
+
+-- | A special (ownerless) account cannot author an allocation: its leg sides
+-- net to zero, so it would lock nothing and settle as an unevented supply
+-- change (delivery-vs-mint). Refused at the factory until that path is
+-- deliberately supported.
+testSpecialAuthorizerRefused : Script ()
+testSpecialAuthorizerRefused = do
+  Scenario{..} <- setup
+  let specialAccount = HoldingV2.Account with owner = None; provider = None; id = "mint"
+      spec = AllocationV2.AllocationSpecification with
+        admin
+        authorizer = specialAccount
+        transferLegSides = [senderSide legAliceToBob]
+        settlementDeadline = Some t2
+        nextIterationFunding = None
+        committed = False
+        meta = emptyMetadata
+  -- `accountParties` resolves a special account to the admin, so the admin is
+  -- the only plausible actor — and even the admin is refused.
+  submitMustFail (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = spec
+        requestedAt = t0
+        inputHoldingCids = []
+        extraArgs = emptyExtraArgs
+        actors = [admin]
+
+-- | An empty batch is refused rather than succeeding as a no-op.
+testEmptyBatchRefused : Script ()
+testEmptyBatchRefused = do
+  Scenario{..} <- setup
+  submitMustFail (actAs app <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = []
+        allocations = []
+        actors = [app]
+        extraArgs = emptyExtraArgs
+
+-- | The advertised withdraw actor set is exactly what the choice body
+-- accepts (the authorizer's full account-party set).
+testAvailableActionsMatchImpl : Script ()
+testAvailableActionsMatchImpl = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation alice aliceAllocCid
+  Map.lookup AllocationV2.AA_Withdraw v.availableActions === Some [[alice]]
+  Map.lookup AllocationV2.AA_Settle v.availableActions === Some [[admin, app]]
+
+-- | The allocation-side admin GC mirrors the transfer-side one: unavailable
+-- while the funding lock is live, and once the lock has expired the shell can
+-- be removed while the authorizer self-recovers the funding.
+testAllocationAdminGC : Script ()
+testAllocationAdminGC = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
+  aliceAllocCid <- completedCid aliceResult
+  let templateCid = fromInterfaceContractId @TokenAllocation aliceAllocCid
+  submitMustFail (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_AdminGC
+  -- t4 is past lockExpiresAt (settlementDeadline t2 + lockGrace 1h).
+  setTime t4
+  _ <- submit (actAs admin) do
+    exerciseCmd templateCid TokenAllocation_AdminGC
+  gcd <- queryContractId admin templateCid
+  gcd === None
+  lockedHoldings <- query @TokenHolding alice
+  forA_ [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock] $ \cid ->
+    submit (actAs alice <> actAs admin) do
+      exerciseCmd cid TokenHolding_OwnerUnlock
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+-- | The registry rules contract is archivable by its signatory, so stale
+-- configuration does not accumulate on the ledger.
+testHousekeepingArchives : Script ()
+testHousekeepingArchives = do
+  admin <- allocateParty "admin"
+  setTime t1
+  rulesCid <- submit admin do
+    createCmd TokenRules with
+      admin
+      maxTTL = days 90
+      lockGrace = hours 1
+  submit admin do archiveCmd rulesCid
+
+-- | Registry misconfiguration is refused: a non-positive maxTTL or lockGrace
+-- would let the admin expire everything immediately.
+testRulesConfigValidated : Script ()
+testRulesConfigValidated = do
+  admin <- allocateParty "admin"
+  setTime t1
+  let base = TokenRules with
+        admin
+        maxTTL = days 90
+        lockGrace = hours 1
+  submitMustFail admin do createCmd base with maxTTL = minutes 0
+  submitMustFail admin do createCmd base with lockGrace = minutes 0
+
+-- | Issuance has an evented path, so supply changes are visible to standard
+-- history parsers instead of appearing as bare creates. Each supply change is
+-- explained by exactly one event whose leg names the mint or burn special
+-- account as the other side.
+testMintAndBurnEmitEvents : Script ()
+testMintAndBurnEmitEvents = do
+  s@Scenario{..} <- setup
+  (holdingCid, mintTree) <- submitResultAndTree (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Mint with
+      account = basicAccount alice
+      instrumentId = "TOK"
+      amount = 25.0
+      reason = "initial issuance"
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [25.0]
+  mintEvent <- expectOneHoldingsChange mintTree
+  mintEvent.account === basicAccount alice
+  mintEvent.inputHoldingCids === []
+  mintEvent.outputHoldingCids === [toInterfaceContractId @HoldingV2.Holding holdingCid]
+  map (.side) mintEvent.transferLegSides === [TransferEventsV2.ReceiverSide]
+  map (.otherside) mintEvent.transferLegSides === [mintAccount]
+  map (.amount) mintEvent.transferLegSides === [25.0]
+  -- Minting a non-positive amount is refused.
+  submitMustFail (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Mint with
+      account = basicAccount alice
+      instrumentId = "TOK"
+      amount = 0.0
+      reason = "bad"
+  -- Burning requires the account's authority and clears the holding.
+  submitMustFail (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Burn with
+      holdingCid
+      account = basicAccount alice
+      reason = "redeem"
+  burnTree <- submitTree (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Burn with
+      holdingCid
+      account = basicAccount alice
+      reason = "redeem"
+  aliceFinal <- holdingAmounts alice
+  aliceFinal === []
+  burnEvent <- expectOneHoldingsChange burnTree
+  burnEvent.account === basicAccount alice
+  burnEvent.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding holdingCid]
+  burnEvent.outputHoldingCids === []
+  map (.side) burnEvent.transferLegSides === [TransferEventsV2.SenderSide]
+  map (.otherside) burnEvent.transferLegSides === [burnAccount]
+  -- A locked holding cannot be burned: the lock reserves it for a workflow.
+  aliceInput <- mint admin alice 10.0
+  _ <- instructTransfer s [alice] (mkTransfer s alice bob 4.0 [aliceInput])
+  lockedHoldings <- query @TokenHolding alice
+  let lockedCids = [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock]
+  forA_ lockedCids $ \lockedCid ->
+    submitMustFail (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+      exerciseCmd rulesCid TokenRules_Burn with
+        holdingCid = lockedCid
+        account = basicAccount alice
+        reason = "burn locked"

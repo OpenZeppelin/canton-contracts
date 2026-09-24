@@ -1,0 +1,145 @@
+-- | The asset contract of the package and the helpers every value-moving
+-- module builds on.
+--
+-- Holdings are immutable: every balance change archives input holdings and
+-- creates output holdings, so an account's balance is the sum of its active
+-- `TokenHolding` contracts. A lock is a reservation recorded on the holding
+-- itself; the workflow contract that reserved the funds only references the
+-- locked holding by contract id. Package code enforces the lock uniformly:
+-- spending free balance goes through `fetchAndArchiveUnlockedHolding`,
+-- consuming a reservation goes through `fetchAndArchiveLockedHolding`, and
+-- releasing one goes through `unlockHoldings`.
+--
+-- Every lock carries a finite absolute expiry. After it passes, the account
+-- parties recover the funds through `TokenHolding_OwnerUnlock` or spend the
+-- holding directly, so no reservation can strand value.
+module OpenZeppelin.TokenCIP112V1.Holding where
+
+import DA.Assert (assertDeadlineExceeded)
+import DA.Foldable (forA_)
+import DA.Optional (isNone, isSome)
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.TokenCIP112V1.Base (emitHoldingsChange)
+
+-- | A holding is maintained jointly by the instrument admin and the account
+-- parties. Lock holders observe the contract so they can settle or release the
+-- locked funds. Regular accounts only: special (ownerless) accounts never hold.
+--
+-- Disclosure: the contract and its `HoldingV2.Holding` view are visible to the
+-- admin, the account parties, and the current lock holders; nobody else sees a
+-- balance. Creating a holding requires the admin's and every account party's
+-- authority, so holdings only ever appear through this package's choices.
+template TokenHolding with
+    holding : HoldingV2.HoldingView
+  where -- INFO - accountParties returns the party responsible for the account, which is the owner, or the registry admin when the account is a special instrument admin-managed account such as mint or burn. If the account also has a provider that is a different party, include it as well.
+    signatory holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+    observer lockHolders holding.lock -- INFO - lockHolders returns the holders of the lock, if the lock exists. 
+    ensure holding.amount > 0.0 -- INFO - Can't create empty holding.
+      && isSome holding.account.owner -- INFO - The TokenHolding must have at least an owner. This means the special mint and burn account can not have holdings, since they do not have owners. 
+      -- `expiresAfter` would make the effective lock expiry the earlier of the
+      -- two bounds (HoldingV2.Lock), which this package's expiry checks do not
+      -- model. Reject it at creation rather than mis-handle it later.
+      && optional True (isNone . (.expiresAfter)) holding.lock
+
+    choice TokenHolding_OwnerUnlock : ContractId TokenHolding
+      -- ^ Reclaim a holding whose lock has expired, without routing it through
+      -- a transfer or allocation. Archives this holding and recreates it
+      -- unlocked, and emits an account-local `EventLog_HoldingsChange` with
+      -- the consumed holding, its replacement, and no transfer legs, so
+      -- event-driven wallets drop the archived contract id. Fails while the
+      -- lock is live or indefinite. Without this choice, a locked holding
+      -- whose referencing workflow contract was garbage-collected would be
+      -- unrecoverable, since nothing else can clear a lock.
+      --
+      -- The admin's authority for the event comes from this template's
+      -- signatories, so the account parties can exercise the choice alone.
+      controller accountParties holding.instrumentId.admin holding.account
+      do
+        lock <- case holding.lock of
+          None -> fail "holding is not locked"
+          Some l -> pure l
+        case lock.expiresAt of
+          None -> fail "holding is locked indefinitely and cannot be unlocked by its owner"
+          Some expiresAt -> assertDeadlineExceeded "lock expiresAt" expiresAt
+        newCid <- create this with holding = holding with lock = None
+        emitHoldingsChange holding.instrumentId.admin holding.account []
+          [toInterfaceContractId @HoldingV2.Holding self]
+          [toInterfaceContractId @HoldingV2.Holding newCid]
+          []
+          "expired lock released by owner"
+        pure newCid
+
+    interface instance HoldingV2.Holding for TokenHolding where
+      view = holding
+
+lockHolders : Optional HoldingV2.Lock -> [Party]
+lockHolders lock = case lock of
+  None -> []
+  Some l -> l.holders
+
+createTokenHolding
+  : Party -> HoldingV2.Account -> Text -> Decimal -> Optional HoldingV2.Lock
+  -> Update (ContractId TokenHolding)
+createTokenHolding admin account instrumentId amount lock =
+  create TokenHolding with
+    holding = HoldingV2.HoldingView with
+      account
+      instrumentId = HoldingV2.InstrumentId with admin; id = instrumentId
+      amount
+      lock
+      meta = emptyMetadata
+
+-- | Consume a locked input holding after validating its identity.
+fetchAndArchiveLockedHolding
+  : Party -> HoldingV2.Account -> ContractId TokenHolding -> Update TokenHolding
+fetchAndArchiveLockedHolding admin expectedAccount cid = do
+  h <- fetch cid
+  require' ("inputHolding.instrumentId.admin", h.holding.instrumentId.admin) isEqualR ("admin", admin)
+  require' ("inputHolding.account", h.holding.account) isEqualR ("expectedAccount", expectedAccount)
+  require "input holding must be locked" (isSome h.holding.lock)
+  archive cid
+  pure h
+
+-- | Consume an unlocked input holding after validating its identity. A holding
+-- whose lock has expired is accepted, giving a combined unlock-and-use;
+-- unexpired or indefinite locks are rejected.
+fetchAndArchiveUnlockedHolding
+  : Party -> HoldingV2.Account -> ContractId TokenHolding -> Update TokenHolding
+fetchAndArchiveUnlockedHolding admin expectedAccount cid = do
+  h <- fetch cid
+  require' ("inputHolding.instrumentId.admin", h.holding.instrumentId.admin) isEqualR ("admin", admin)
+  require' ("inputHolding.account", h.holding.account) isEqualR ("expectedAccount", expectedAccount)
+  forA_ h.holding.lock $ \lock -> case lock.expiresAt of
+    None -> fail "input holding is locked indefinitely and cannot fund an allocation"
+    Some expiresAt -> assertDeadlineExceeded "input holding lock expiresAt" expiresAt
+  archive cid
+  pure h
+
+-- | Consume input holdings and tally the value they carried per instrument id.
+debitHoldings
+  : (ContractId TokenHolding -> Update TokenHolding)
+  -> [ContractId TokenHolding]
+  -> Update (TextMap.TextMap Decimal)
+debitHoldings fetchAndArchive cids = do
+  amounts <- forA cids $ \cid -> do
+    h <- fetchAndArchive cid
+    pure (h.holding.instrumentId.id, h.holding.amount)
+  pure (TextMap.fromListWithR (+) amounts)
+
+-- | Release locked holdings back to their account, returning the new unlocked
+-- holdings keyed by instrument id (the result-map shape of the standard's
+-- allocation choices).
+unlockHoldings
+  : Party -> HoldingV2.Account -> [ContractId TokenHolding]
+  -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
+unlockHoldings admin expectedAccount cids = do
+  unlocked <- forA cids $ \cid -> do
+    h <- fetchAndArchiveLockedHolding admin expectedAccount cid
+    newCid <- create h with holding = h.holding with lock = None
+    pure (h.holding.instrumentId.id, [toInterfaceContractId @HoldingV2.Holding newCid])
+  pure (TextMap.fromListWithR (++) unlocked)

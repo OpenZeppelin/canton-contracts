@@ -44,8 +44,12 @@ API packages may depend only on other API packages. A template-only component
 ships one implementation package; empty API packages add ceremony without an
 upgrade or interoperability benefit.
 
-The current three components define templates and functions but no Daml
-interfaces, so each presently has one production package.
+The components currently in the repository define templates and functions but
+no Daml interfaces, so each has one production package. Token CIP-0112 is the
+model: its templates implement the vendored upstream Token Standard V2
+interfaces through `interface instance` blocks, which an implementation
+package may do freely; only defining new interfaces or exceptions forces the
+frozen API-package split.
 
 ## Dependency policy
 

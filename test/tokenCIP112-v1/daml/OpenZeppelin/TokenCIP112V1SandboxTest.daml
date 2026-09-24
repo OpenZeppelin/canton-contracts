@@ -1,0 +1,78 @@
+-- | Sandbox validation for the token package: token creation, transfer, and
+-- querying against a real Canton ledger over the Ledger API.
+-- `scripts/check-sandbox.sh` runs each script over gRPC against a static-time
+-- sandbox; the same scripts also run under `dpm test` on the in-memory
+-- ledger.
+--
+-- Every script allocates fresh parties and pins the clock to `t1`, so the
+-- scripts compose in any order on one forward-only static-time ledger.
+module OpenZeppelin.TokenCIP112V1SandboxTest where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount)
+
+import OpenZeppelin.TokenCIP112V1.Registry
+import OpenZeppelin.TokenCIP112V1TestFixtures
+
+-- | Token creation and querying: holdings appear in owner queries, and the
+-- balance view is projection-scoped, so one owner cannot read another
+-- owner's holding.
+sandboxMintAndQuery : Script ()
+sandboxMintAndQuery = do
+  s@Scenario{..} <- setupPrefixed "mintandquery-"
+  aliceCid <- mint admin alice 100.0
+  bobCid <- mint admin bob 50.0
+  aliceAmounts <- holdingAmounts alice
+  aliceAmounts === [100.0]
+  bobAmounts <- holdingAmounts bob
+  bobAmounts === [50.0]
+  bobViewOfAlice <- queryContractId bob aliceCid
+  bobViewOfAlice === None
+  aliceViewOfBob <- queryContractId alice bobCid
+  aliceViewOfBob === None
+
+-- | Transfer over the standard interface: one step with both sides acting,
+-- two steps with the receiver accepting a pending instruction.
+sandboxTransferLifecycle : Script ()
+sandboxTransferLifecycle = do
+  s@Scenario{..} <- setupPrefixed "transferlifecycle-"
+  input1 <- mint admin alice 10.0
+  oneStep <- instructTransfer s [alice, bob] (mkTransfer s alice bob 7.0 [input1])
+  _ <- completedHoldings oneStep
+  input2 <- mint admin alice 5.0
+  twoStep <- instructTransfer s [alice] (mkTransfer s alice bob 2.0 [input2])
+  instrCid <- pendingCid twoStep
+  _ <- submit (actAs bob) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [3.0, 3.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [2.0, 7.0]
+  assertNoLocks alice
+  assertNoLocks bob
+
+-- | Mint and burn through the registry conserve the visible supply and emit
+-- the standard events.
+sandboxMintAndBurn : Script ()
+sandboxMintAndBurn = do
+  s@Scenario{..} <- setupPrefixed "mintandburn-"
+  mintedCid <- submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Mint with
+      account = basicAccount alice
+      instrumentId = "TOK"
+      amount = 10.0
+      reason = "sandbox mint"
+  aliceMinted <- holdingAmounts alice
+  aliceMinted === [10.0]
+  submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Burn with
+      holdingCid = mintedCid
+      account = basicAccount alice
+      reason = "sandbox burn"
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === []

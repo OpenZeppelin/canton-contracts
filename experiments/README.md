@@ -18,7 +18,6 @@ must satisfy.
 | [Access Control](access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | `AccessControl`, `AccessControlDefaultAdminRules` |
 | [Ownable](access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | `Ownable2Step` |
 | [Pausable](security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | `Pausable` |
-| [Token CIP-0112](token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | `ERC20` (partial) |
 
 Each package README.md states what the package provides and, more importantly, the
 authority and canonical-instance problems it does not solve. Read those warnings
@@ -48,6 +47,7 @@ design before it is rebuilt. Open an issue or discussion if a shape here is
 wrong or a Canton constraint is being modeled the hard way. That feedback is
 worth more now than after the redesign.
 
-No component has graduated to `packages/` yet, so there is nothing here you can
-safely build an application on. The [repository README.md](../README.md) covers
-the package and compatibility model a component must satisfy before it does.
+Components graduate to [`packages/`](../packages/) one at a time, and nothing
+that remains here is safe to build an application on. The
+[repository README.md](../README.md) covers the package and compatibility model
+a component must satisfy before it graduates.

@@ -15,11 +15,20 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-No component has been released yet. The three components below are early-stage
-candidates under [`experiments/`](experiments/). They build and are tested in CI,
-but they will be redesigned before they move into `packages/`, and that redesign
-will change module names, template and choice signatures, and package identity.
-Read [`experiments/README.md`](experiments/README.md) before depending on any of
+No component has been released yet. The components under
+[`packages/`](packages/) have passed their implementation phase; they build and
+are tested in CI, but they are unaudited and have no release.
+
+| Component | Package | Public module | Status |
+|---|---|---|---|
+| [Allocation Request](packages/token/allocation-request-v1/) | `openzeppelin-allocation-request-v1` | `OpenZeppelin.AllocationRequestV1` | Pre-release; unaudited |
+| [Token CIP-0112](packages/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | Pre-release; unaudited |
+
+The components below are early-stage candidates under
+[`experiments/`](experiments/). They build and are tested in CI, but they will
+be redesigned before they move into `packages/`, and that redesign will change
+module names, template and choice signatures, and package identity. Read
+[`experiments/README.md`](experiments/README.md) before depending on any of
 them.
 
 | Component | Package | Public module | Status |
@@ -86,7 +95,8 @@ import OpenZeppelin.OwnableV1
 ## Repository layout
 
 ```text
-packages/                 Released components; empty until the first release
+packages/
+  token/                  Category for token standard and settlement components
 test/                     Isolated component test packages
 experiments/
   access/                 Category for authorization and ownership components

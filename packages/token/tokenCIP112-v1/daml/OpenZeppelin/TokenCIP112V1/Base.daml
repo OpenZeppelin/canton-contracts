@@ -1,0 +1,68 @@
+-- | Shared basics for the CIP-0112 package: event-log host and
+-- helpers used across modules. Interface packages are the vendored Token
+-- Standard V2 DARs (see dars/token-standard/PROVENANCE.md).
+module OpenZeppelin.TokenCIP112V1.Base where
+
+import DA.Time (RelTime, addRelTime, subTime)
+
+import Splice.Api.Token.MetadataV1 -- TSv2 reuses MetadataV1, and does not declare a MetadataV2. 
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.TokenStandard.Utils
+
+-- | Event-log host. `EventLog_HoldingsChange` is an interface choice, so an
+-- emission needs a contract to exercise it on; this host is created and
+-- archived within the emitting transaction.
+template TokenEventLog with
+    admin : Party
+  where
+    signatory admin
+
+    interface instance TransferEventsV2.EventLog for TokenEventLog where
+      view = TransferEventsV2.EventLogView with admin; meta = emptyMetadata
+      eventLog_holdingsChangeImpl = eventLog_holdingsChangeDefaultImpl admin
+
+-- | Run an action with a temporary event-log host. Requires `admin` authority:
+-- every caller in this package emits from a choice on a contract that has the
+-- admin as signatory.
+withTempEventLog : Party -> (ContractId TransferEventsV2.EventLog -> Update a) -> Update a
+withTempEventLog admin f = do
+  cid <- create TokenEventLog with admin
+  result <- f (toInterfaceContractId cid)
+  archive cid
+  pure result
+
+-- | Emit a holdings-change event. `logHoldingsChange` suppresses events that
+-- are empty or on special (mint/burn) accounts.
+emitHoldingsChange
+  : Party
+  -> HoldingV2.Account
+  -> [Party]
+  -> [ContractId HoldingV2.Holding]
+  -> [ContractId HoldingV2.Holding]
+  -> [TransferEventsV2.TransferLegSide]
+  -> Text
+  -> Update ()
+emitHoldingsChange admin account executors inputs outputs legSides reason =
+  withTempEventLog admin $ \eventLogCid ->
+    logHoldingsChange eventLogCid TransferEventsV2.EventLog_HoldingsChange with
+      admin
+      account
+      inputHoldingCids = inputs
+      outputHoldingCids = outputs
+      transferLegSides = legSides
+      observers = accountParties admin account <> executors
+      extraArgs = ExtraArgs with
+        context = emptyChoiceContext
+        meta = reasonToMeta reason emptyMetadata
+
+-- | Storage bound for a pending contract (allocation or transfer instruction):
+-- at most `maxTTL` from now, capped by the workflow deadline, saturating at
+-- `maxTime` instead of overflowing.
+computeStorageExpiry : RelTime -> Time -> Optional Time -> Time
+computeStorageExpiry maxTTL now deadline =
+    optional identity min deadline candidate
+  where
+    candidate
+      | maxTime `subTime` now <= maxTTL = maxTime
+      | otherwise = now `addRelTime` maxTTL

@@ -1,0 +1,283 @@
+-- | Allocation template implementing the Token Standard V2 `Allocation`
+-- interface.
+--
+-- An allocation is born ready to settle: its funding is already locked when
+-- the contract is created (see `allocateImpl` in the Registry module), so no
+-- pending-approval state exists. Settlement consumes the locked holdings and
+-- nets the authorizer's credit per instrument across the effective transfer
+-- legs; every per-instrument total must be non-negative and must cover any
+-- requested next-iteration reserve, so a settle can never create or strand
+-- value within the allocation.
+--
+-- With `nextIterationFunding` set, settlement iterates: each settle may carry
+-- executor-supplied extra legs, reserves funding as freshly locked holdings,
+-- and creates a successor allocation in the same transaction. Every exit path
+-- — settle, withdraw, cancel, admin expiry, admin GC — either returns value to
+-- the authorizer or runs after the point where `TokenHolding_OwnerUnlock`
+-- already guarantees the authorizer's own recovery.
+module OpenZeppelin.TokenCIP112V1.Allocation where
+
+import DA.Assert (assertDeadlineExceeded, assertWithinDeadline)
+import DA.Foldable (forA_)
+import DA.List (dedupSort)
+import DA.Map qualified as Map
+import DA.Optional (fromOptional, isNone, isSome)
+import DA.TextMap qualified as TextMap
+import DA.Time (RelTime, addRelTime, convertMicrosecondsToRelTime)
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.TokenCIP112V1.Base
+import OpenZeppelin.TokenCIP112V1.Holding
+
+-- | A ready-to-settle allocation backed by locked holdings. When
+-- `allocation.nextIterationFunding` is set, iterated settlement is enabled:
+-- each settle may carry executor-supplied extra transfer legs and reserve
+-- funding for a successor allocation, created in the same transaction.
+--
+-- The admin and the authorizer's account parties sign so that neither side
+-- can create or drop an allocation alone; the settlement executors observe so
+-- they can drive settlement. Disclosure: the contract and its view — including
+-- the leg sides and locked-holding references — are visible to exactly those
+-- parties.
+template TokenAllocation with
+    originalAllocationCid : Optional (ContractId AllocationV2.Allocation)
+    settlement : AllocationV2.SettlementInfo
+    allocation : AllocationV2.AllocationSpecification
+    lockedHoldingCids : [ContractId TokenHolding]
+    requestedAt : Time
+      -- ^ The wallet-supplied request time, retained so stale or replayed
+      -- allocate requests remain diagnosable after the fact.
+    createdAt : Time
+      -- ^ When the original allocation was created; carried unchanged onto
+      -- iteration successors.
+    numIterations : Int
+      -- ^ Settlement iterations executed so far; zero for the original
+      -- allocation.
+    expiresAt : Time
+    lockExpiresAt : Time
+      -- ^ When the funding lock expires. Strictly after `expiresAt`, so there
+      -- is always a window in which the admin's expiry path is guaranteed to
+      -- succeed before the authorizer can re-spend the funding.
+    maxTTL : RelTime
+      -- ^ The registry's storage bound, snapshotted at allocation time so each
+      -- settlement iteration can bump the successor's expiry without reaching
+      -- back to the registry contract.
+    lockGrace : RelTime
+      -- ^ How long the funding lock outlives `expiresAt`, snapshotted from the
+      -- registry so every iteration reproduces the admin's guaranteed expiry
+      -- window.
+  where
+    signatory allocation.admin, accountParties allocation.admin allocation.authorizer
+    observer settlement.executors
+    ensure isValidSettlementInfoV2 settlement
+      && isValidAllocationSpecificationV2 (const True) allocation
+      -- A reservation draws on a regular account's holdings; special
+      -- (mint/burn) accounts hold nothing to reserve.
+      && (isNone allocation.nextIterationFunding || isRegularAccount allocation.authorizer)
+      && numIterations >= 0
+      && expiresAt < lockExpiresAt
+      && maxTTL > convertMicrosecondsToRelTime 0
+      && lockGrace > convertMicrosecondsToRelTime 0
+      -- A committed allocation with no settlement deadline can never be
+      -- withdrawn (the standard's own `ensureWithdrawIsAllowed` fails closed),
+      -- so refuse to create that shape at all.
+      && (not allocation.committed || isSome allocation.settlementDeadline)
+
+    interface instance AllocationV2.Allocation for TokenAllocation where
+      view = AllocationV2.AllocationView with
+        originalAllocationCid
+        settlement
+        allocation
+        holdingCids = map (toInterfaceContractId @HoldingV2.Holding) lockedHoldingCids
+        createdAt
+        numIterations
+        expiresAt = Some expiresAt
+        availableActions = allocationAvailableActions this
+        meta = emptyMetadata
+
+      -- The contract observers (executors) see every lifecycle exercise
+      -- regardless of which actor subset invoked it.
+      allocation_settleExtraObservers _ = observer this
+      allocation_cancelExtraObservers _ = observer this
+      allocation_withdrawExtraObservers _ = observer this
+
+      allocation_settleImpl self arg = do
+        archiveAndCheckActors self arg.actors [allocation.admin :: settlement.executors]
+        -- Re-checked here even when driven by the settlement factory: this
+        -- choice is also directly callable by admin plus executors.
+        --
+        -- CAUTION: with no batch-authorization proof required, a direct settle
+        -- by admin plus executors bypasses the factory's exact-cover check;
+        -- see `ideas.md` on reintroducing the guard.
+        forA_ allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
+        validateNextIterationArgs "Allocation_Settle" (isSome allocation.nextIterationFunding)
+          arg.extraTransferLegSides arg.nextIterationFunding
+        settleAllocation self this arg.extraTransferLegSides arg.nextIterationFunding
+
+      allocation_withdrawImpl self arg = do
+        archiveAndCheckActors self arg.actors [accountParties allocation.admin allocation.authorizer]
+        ensureWithdrawIsAllowed allocation
+        holdings <- unlockAndLog this "allocation withdrawn"
+        pure AllocationV2.AllocationResult with
+          output = AllocationV2.AllocationResult_Withdrawn
+          authorizerHoldingCids = holdings
+          meta = emptyMetadata
+
+      allocation_cancelImpl self arg = do
+        -- Executors may cancel any time; the admin only once `expiresAt` has
+        -- passed (checked by the default implementation).
+        allocationV2_cancelDefaultImpl (toInterface this) self arg $ do
+          holdings <- unlockAndLog this "allocation cancelled"
+          pure (holdings, emptyMetadata)
+
+    choice TokenAllocation_AdminGC : ()
+      -- ^ Last-resort admin cleanup for an allocation whose funding was
+      -- already reclaimed elsewhere (the authorizer re-spent it as an
+      -- expired-lock input, or self-unlocked it), which makes every
+      -- fund-returning path fail on the archived holding. Archives the
+      -- allocation and creates nothing. Only available once the funding lock
+      -- has expired, by which time the authorizer can always recover the
+      -- holding themselves via `TokenHolding_OwnerUnlock`, so this can never
+      -- strand funds.
+      controller allocation.admin
+      do assertDeadlineExceeded "allocation lockExpiresAt" lockExpiresAt
+
+
+-- View helpers
+---------------
+
+-- | Actions wallets may take, reported to exactly match what the choice bodies
+-- accept. The standard's default helper advertises withdraw for the account
+-- principal alone, but withdrawing re-creates the holding, whose signatories
+-- include every account party — so the joint set is what the implementation
+-- requires and therefore what must be advertised.
+allocationAvailableActions
+  : TokenAllocation -> Map.Map AllocationV2.AllocationAction [[Party]]
+allocationAvailableActions this = Map.fromList $
+  [ (AllocationV2.AA_Cancel, [dedupSort this.settlement.executors])
+  , (AllocationV2.AA_Settle, [dedupSort (this.allocation.admin :: this.settlement.executors)])
+  ] <>
+  -- Withdraw is advertised statically: for a committed allocation the choice
+  -- body still refuses it until the settlement deadline has passed, so wallets
+  -- may see a withdraw action that is not yet exercisable.
+  [ (AllocationV2.AA_Withdraw, [accountParties this.allocation.admin this.allocation.authorizer])
+  | not this.allocation.committed || isSome this.allocation.settlementDeadline
+  ]
+
+
+-- Settlement internals
+-----------------------
+
+-- | Net settlement of one allocation: consume the locked funds, add the
+-- authorizer's net credit per instrument across the effective legs (the
+-- allocation's own plus the executor-supplied extra legs), require every total
+-- to be non-negative (an under-funded sender fails closed), reserve the
+-- requested next-iteration funding as freshly locked holdings, and pay out the
+-- remainder as unlocked holdings.
+--
+-- When a reservation is requested — including an empty one — a successor
+-- allocation backed by the reserved holdings is created and returned, with an
+-- empty leg set, a bumped storage expiry (the standard's recommendation), and
+-- the commitment and deadline carried over. `authorizerHoldingCids` reports
+-- only the unlocked payouts; the reserved holdings are visible through the
+-- successor's view.
+settleAllocation
+  : ContractId AllocationV2.Allocation -> TokenAllocation
+  -> [AllocationV2.TransferLegSide] -> Optional (TextMap.TextMap Decimal)
+  -> Update AllocationV2.AllocationResult
+settleAllocation self this extraTransferLegSides nextIterationFunding = do
+  let admin = this.allocation.admin
+      authorizer = this.allocation.authorizer
+      effectiveLegSides = this.allocation.transferLegSides <> extraTransferLegSides
+      reserveAmounts = fromOptional TextMap.empty nextIterationFunding
+  lockedAmounts <- debitHoldings (fetchAndArchiveLockedHolding admin authorizer) this.lockedHoldingCids
+  let netAmounts = netAllocationCreditAmounts authorizer effectiveLegSides
+      totalAmounts = textMapUnionWith (+) lockedAmounts netAmounts
+
+  -- The reserved holdings get a fresh lock window, bumped per iteration within
+  -- the same deadline bound the original allocation was created under; the
+  -- bump is monotone because `computeStorageExpiry` grows with `now`.
+  now <- getTime
+  let newExpiresAt = computeStorageExpiry this.maxTTL now this.allocation.settlementDeadline
+      newLockExpiresAt = newExpiresAt `addRelTime` this.lockGrace
+      lock = HoldingV2.Lock with
+        holders = dedupSort (admin :: this.settlement.executors)
+        expiresAt = Some newLockExpiresAt
+        expiresAfter = None
+        context = Some ("allocation for settlement " <> this.settlement.id)
+
+  lockedAndPayouts <- forA (TextMap.toList (textMapMergeWithDefault (0.0, 0.0) totalAmounts reserveAmounts)) $
+    \(instrumentId, (total, reserve)) -> do
+      require' ("locked funds plus net credit for " <> instrumentId, total)
+        isGreaterOrEqualR ("zero", 0.0)
+      require' ("locked funds plus net credit for " <> instrumentId, total)
+        isGreaterOrEqualR ("requested next-iteration funding", reserve)
+      newLockedCids <-
+        if reserve > 0.0
+          then (:: []) <$> createTokenHolding admin authorizer instrumentId reserve (Some lock)
+          else pure []
+      payoutCids <-
+        if total - reserve > 0.0
+          then do
+            cid <- createTokenHolding admin authorizer instrumentId (total - reserve) None
+            pure [(instrumentId, [toInterfaceContractId @HoldingV2.Holding cid])]
+          else pure []
+      pure (newLockedCids, payoutCids)
+
+  let newLockedHoldingCids = concatMap fst lockedAndPayouts
+      payoutCids = TextMap.fromListWithR (++) (concatMap snd lockedAndPayouts)
+
+  nextIterationAllocationCid <- case nextIterationFunding of
+    None -> pure None
+    Some reserve -> do
+      successorCid <- create this with
+        -- Successors point at the chain's original allocation.
+        originalAllocationCid = Some (fromOptional self this.originalAllocationCid)
+        allocation = this.allocation with
+          -- The specified legs settle in the first iteration only.
+          transferLegSides = []
+          nextIterationFunding = Some reserve
+        lockedHoldingCids = newLockedHoldingCids
+        numIterations = this.numIterations + 1
+        expiresAt = newExpiresAt
+        lockExpiresAt = newLockExpiresAt
+      pure (Some (toInterfaceContractId @AllocationV2.Allocation successorCid))
+
+  emitHoldingsChange admin authorizer this.settlement.executors
+    (map toInterfaceContractId this.lockedHoldingCids)
+    (map toInterfaceContractId newLockedHoldingCids <> concat (textMapValues payoutCids))
+    (map toEventLegSide effectiveLegSides)
+    "allocation settled"
+  pure AllocationV2.AllocationResult with
+    output = AllocationV2.AllocationResult_Settled with nextIterationAllocationCid
+    authorizerHoldingCids = payoutCids
+    meta = emptyMetadata
+
+-- | Release the locked holdings to the authorizer and log the change.
+unlockAndLog : TokenAllocation -> Text -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
+unlockAndLog this reason = do
+  let admin = this.allocation.admin
+  holdings <- unlockHoldings admin this.allocation.authorizer this.lockedHoldingCids
+  emitHoldingsChange admin this.allocation.authorizer this.settlement.executors
+    (map toInterfaceContractId this.lockedHoldingCids)
+    (concat (textMapValues holdings))
+    []
+    reason
+  pure holdings
+
+toEventLegSide : AllocationV2.TransferLegSide -> TransferEventsV2.TransferLegSide
+toEventLegSide s = TransferEventsV2.TransferLegSide with
+  transferLegId = s.transferLegId
+  side = case s.side of
+    AllocationV2.SenderSide -> TransferEventsV2.SenderSide
+    AllocationV2.ReceiverSide -> TransferEventsV2.ReceiverSide
+  otherside = s.otherside
+  amount = s.amount
+  instrumentId = s.instrumentId
+  meta = s.meta
+
