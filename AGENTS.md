@@ -38,8 +38,9 @@ workspace files exist.
   depend on other implementation packages without an accepted architecture
   decision; prefer interface composition or consumer-side wiring.
 - Production packages must not depend on `daml-script`.
-- Test code lives in an isolated `-test` package under the root `test/` and 
-  `experiments/test/` directories and is never released or uploaded.
+- Test code lives in an isolated `-test` package under the root `test/`,
+  `experiments/test/` and `examples/*-test` directories and is never released
+  or uploaded.
 - Do not use `exposed-modules` as an API boundary. Use documented public modules
   and `.Internal` naming for implementation details.
 - Category directories under `packages/` and `experiments/` are navigation only

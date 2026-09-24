@@ -131,8 +131,8 @@ that holds only a `ContractId Pausable` cannot flip the flag.
 
 ## Scope and security caveats
 
-- Pause is origination control. A gated choice refuses to start while paused,
-  and transactions already committed stand.
+- Pause is origination control: a gated choice refuses to start while
+  paused.
 - A choice is gated only by its own guard call, and the guard checks the flag
   alone. Call `whenNotPaused` before the state change in every choice a pause
   must stop, and keep each choice's controller as its access control.
@@ -149,15 +149,11 @@ that holds only a `ContractId Pausable` cannot flip the flag.
 Daml-LF `2.1`, built with the SDK that
 [`multi-package.yaml`](../../../multi-package.yaml) declares.
 
-A fix ships as a new version under the same name. Your package picks it up in
-its next Smart Contract Upgrade version, built against the new DAR. The fix
-reaches only exercises that run your new version. A submission that selects
-your old version still runs the old guard, so unvet the old version of your
-package to remove it. The `errorId` of every failure status is stable across
+Your package picks up a fix to this package in its next Smart Contract
+Upgrade version, built against the new DAR. The fix reaches only exercises
+that run your new version. A submission that selects your old version still
+runs the old guard, so unvet the old version of your package to remove it. The `errorId` of every failure status is stable across
 versions.
-
-`0.1.0` is a pre-release: the package ID may change between commits, and no
-audit has been performed. See [`RELEASING.md`](../../../RELEASING.md).
 
 ## Build
 
