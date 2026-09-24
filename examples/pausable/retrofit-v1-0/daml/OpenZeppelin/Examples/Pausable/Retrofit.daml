@@ -1,0 +1,18 @@
+-- | The template before it adopts `Pausable`: version 1.0.0.
+module OpenZeppelin.Examples.Pausable.Retrofit where
+
+template Account
+  with
+    admin : Party
+    holder : Party
+    balance : Decimal
+  where
+    signatory admin
+    observer holder
+
+    choice Account_Withdraw : ContractId Account
+      with
+        amount : Decimal
+      controller holder
+      do
+        create this with balance = balance - amount

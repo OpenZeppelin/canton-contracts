@@ -42,6 +42,17 @@ template Registry
         Pausable.whenNotPaused this
         create this with paused = True, pauseReason = reason, pauseUntil = until
 
+    -- Changes the pause metadata while the pause stays in force, for example
+    -- to extend the published deadline.
+    choice Registry_UpdatePauseInfo : ContractId Registry
+      with
+        reason : Optional Text
+        until : Optional Time
+      controller admin
+      do
+        Pausable.whenPaused this
+        create this with pauseReason = reason, pauseUntil = until
+
     -- Clears the pause metadata.
     choice Registry_Unpause : ContractId Registry
       controller admin

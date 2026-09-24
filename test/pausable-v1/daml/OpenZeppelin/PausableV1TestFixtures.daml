@@ -147,6 +147,32 @@ template Registry
         whenPaused this
         create this with paused = False, pauseReason = None
 
+-- | Flips from a nonconsuming choice that archives `self` beside the create,
+-- so one contract stays active. The template also has a nonconsuming gated
+-- operation.
+template ArchivingVault
+  with
+    admin : Party
+    paused : Bool
+  where
+    signatory admin
+
+    interface instance Pausable for ArchivingVault where
+      view = PausableView with paused
+
+    nonconsuming choice ArchivingVault_Pause : ContractId ArchivingVault
+      controller admin
+      do
+        whenNotPaused this
+        archive self
+        create this with paused = True
+
+    nonconsuming choice ArchivingVault_Read : Bool
+      controller admin
+      do
+        whenNotPaused this
+        pure paused
+
 -- | Flips from a nonconsuming choice without archiving `self`, so the
 -- predecessor stays active beside the successor. The choice kind is the
 -- consumer's responsibility.

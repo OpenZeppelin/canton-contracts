@@ -25,8 +25,9 @@ import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
 import OpenZeppelin.Api.PausableV1 (Pausable)
 import qualified OpenZeppelin.PausableV1.Internal as Internal
 
--- | Fail with `eEnforcedPause` unless the contract is unpaused. Call it first
--- in every gated choice, and in the choice that pauses:
+-- | Fail with `eEnforcedPause` unless the contract is unpaused. Call it
+-- before the state change in every gated choice, and in the choice that
+-- pauses:
 --
 -- ```
 -- choice Vault_Withdraw : ContractId Vault

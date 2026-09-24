@@ -1,0 +1,16 @@
+sdk-version: 3.4.11
+name: pausable-retrofit-example
+source: daml
+version: 1.1.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  - ../../../packages/security/api-pausable-v1/.daml/dist/openzeppelin-api-pausable-v1-0.1.0.dar
+  - ../../../packages/security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
+upgrades: ../retrofit-v1-0/.daml/dist/pausable-retrofit-example-1.0.0.dar
+build-options:
+  - --target=2.1
+  # Adding an interface instance under SCU is allowed with this option. See
+  # the SCU retrofit section of the `openzeppelin-api-pausable-v1` README.
+  - -Wno-template-has-new-interface-instance
