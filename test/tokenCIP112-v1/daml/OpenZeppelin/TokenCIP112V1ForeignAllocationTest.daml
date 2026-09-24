@@ -1,0 +1,311 @@
+-- | Tests for the two review findings on `TokenRules` about contracts that
+-- implement `AllocationV2.Allocation` but are not `TokenAllocation`s:
+--
+-- 1. batch settlement fetches and exercises allocations by interface only, so
+--    a foreign template whose view names this registry's admin passes the
+--    exact-cover check and then runs its own `Allocation_Settle` body with
+--    admin plus executor authority;
+-- 2. admin expiry does the same with `Allocation_Cancel` and the admin's
+--    authority alone.
+--
+-- `ForeignAllocation` is the attacker's template. Its view is an ordinary
+-- field the attacker fills in at creation, and its settle and cancel bodies
+-- create a `TokenHolding` for the attacker. Inside the registry's transaction
+-- those bodies would run with the admin's authority (lent by `TokenRules`)
+-- plus the attacker's own signature, which is exactly the signatory set of a
+-- `TokenHolding`.
+--
+-- The three attack scripts build each attack in full and assert that the
+-- registry refuses it. Without `requireTokenAllocation` in `Registry.daml`
+-- every one of them goes through; the doc comments record the balances that
+-- resulted. The final script pins the other side of the guard: genuine
+-- `TokenAllocation`s pass through both guarded choices unchanged.
+module OpenZeppelin.TokenCIP112V1ForeignAllocationTest where
+
+import DA.Action (unless)
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.Map qualified as Map
+import DA.Text (isInfixOf)
+import DA.TextMap qualified as TextMap
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide, nonIteratedAllocation)
+
+import OpenZeppelin.TokenCIP112V1.Holding
+import OpenZeppelin.TokenCIP112V1.Registry
+import OpenZeppelin.TokenCIP112V1TestFixtures
+
+-- The attacker's template
+--------------------------
+
+template ForeignAllocation with
+    attacker : Party
+    claimedView : AllocationV2.AllocationView
+      -- ^ Whatever the registry should believe about this contract.
+    extraObservers : [Party]
+      -- ^ Naming the registry admin here lets the admin fetch the contract
+      -- and makes it show up in the admin's interface queries.
+    mintAmount : Optional Decimal
+      -- ^ What the settle and cancel bodies mint to the attacker; `None`
+      -- makes the bodies do nothing at all.
+  where
+    signatory attacker
+    observer extraObservers
+
+    interface instance AllocationV2.Allocation for ForeignAllocation where
+      view = claimedView
+      allocation_settleExtraObservers _ = []
+      allocation_cancelExtraObservers _ = []
+      allocation_withdrawExtraObservers _ = []
+      allocation_settleImpl _ _ = do
+        abuseLentAuthority this
+        pure (foreignResult AllocationV2.AllocationResult_Settled with nextIterationAllocationCid = None)
+      allocation_cancelImpl _ _ = do
+        abuseLentAuthority this
+        pure (foreignResult AllocationV2.AllocationResult_Cancelled)
+      allocation_withdrawImpl _ _ = pure (foreignResult AllocationV2.AllocationResult_Withdrawn)
+
+-- | Runs inside a registry choice: the admin's authority is available because
+-- `TokenRules` is signed by the admin and passes the admin as an actor.
+abuseLentAuthority : ForeignAllocation -> Update ()
+abuseLentAuthority this = forA_ this.mintAmount $ \amount -> do
+  _ <- create TokenHolding with
+    holding = HoldingV2.HoldingView with
+      account = basicAccount this.attacker
+      instrumentId = HoldingV2.InstrumentId with
+        admin = this.claimedView.allocation.admin
+        id = "TOK"
+      amount
+      lock = None
+      meta = emptyMetadata
+  pure ()
+
+foreignResult : AllocationV2.AllocationResult_Output -> AllocationV2.AllocationResult
+foreignResult output = AllocationV2.AllocationResult with
+  output
+  authorizerHoldingCids = TextMap.empty
+  meta = emptyMetadata
+
+-- Attack helpers
+-----------------
+
+-- | A view that passes every check the registry performs on it: this
+-- registry's admin, the batch's settlement info, and whichever leg sides the
+-- attacker wants to be credited for.
+forgedView
+  : Party -> AllocationV2.SettlementInfo -> Party -> [AllocationV2.TransferLegSide] -> Optional Time
+  -> AllocationV2.AllocationView
+forgedView admin settlement authorizer sides expiresAt = AllocationV2.AllocationView with
+  originalAllocationCid = None
+  settlement
+  allocation = mkAllocationSpec admin authorizer sides
+  holdingCids = []
+  createdAt = t0
+  numIterations = 0
+  expiresAt
+  availableActions = Map.empty
+  meta = emptyMetadata
+
+-- | Anyone can be the executor of a settlement they define themselves.
+attackerSettlement : Party -> AllocationV2.SettlementInfo
+attackerSettlement attacker = AllocationV2.SettlementInfo with
+  executors = [attacker]
+  id = "attacker-settlement"
+  cid = None
+  meta = emptyMetadata
+
+settleBatchAsCmd
+  : Scenario -> Party -> AllocationV2.SettlementInfo -> [AllocationV2.TransferLeg]
+  -> [ContractId AllocationV2.Allocation]
+  -> Commands AllocationV2.SettlementFactory_SettleBatchResult
+settleBatchAsCmd s executor settlement legs allocs =
+  exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory s.rulesCid)
+    AllocationV2.SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = legs
+      allocations = map nonIteratedAllocation allocs
+      actors = [executor]
+      extraArgs = emptyExtraArgs
+
+expireCmd : Scenario -> [ContractId AllocationV2.Allocation] -> Commands ()
+expireCmd Scenario{..} cids =
+  exerciseCmd rulesCid TokenRules_ExpireAllocations with
+    cancelArgs =
+      [ (cid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)
+      | cid <- cids ]
+    observers = []
+
+-- | The message `requireTokenAllocation` in `Registry.daml` fails with.
+notTokenAllocation : Text
+notTokenAllocation = "allocation is not a TokenAllocation of this package"
+
+-- | Like `submitMustFail`, but also requires the rejection to carry the given
+-- text, so the test cannot pass because of some unrelated failure.
+mustFailWith : Text -> SubmitOptions -> Commands a -> Script ()
+mustFailWith expected options cmds = do
+  result <- trySubmit options cmds
+  case result of
+    Right _ -> abort "submission succeeded but was expected to fail"
+    Left err -> do
+      let msg = show err
+      unless (expected `isInfixOf` msg) $
+        abort ("submission failed for an unexpected reason: " <> msg)
+
+-- | A genuine `TokenAllocation` under a settlement of the attacker's choosing.
+allocateUnder
+  : Scenario -> AllocationV2.SettlementInfo -> Party -> [AllocationV2.TransferLegSide]
+  -> [ContractId TokenHolding]
+  -> Script (ContractId AllocationV2.Allocation)
+allocateUnder s settlement authorizer sides inputs = do
+  result <- submit (actAs authorizer <> discloseMany [s.rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory s.rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = mkAllocationSpec s.admin authorizer sides
+        requestedAt = t0
+        inputHoldingCids = map (toInterfaceContractId @HoldingV2.Holding) inputs
+        extraArgs = emptyExtraArgs
+        actors = [authorizer]
+  completedCid result
+
+-- Finding 1: settlement
+------------------------
+
+-- | Variant A. The attacker is the settlement executor. One forged contract
+-- claims both sides of a self-leg, so the exact-cover check is satisfied, and
+-- its settle body mints 1,000,000 TOK. The leg amount is irrelevant.
+--
+-- Unguarded outcome: attacker `[]` -> `[1000000.0]`.
+testForeignSettleBodyMints : Script ()
+testForeignSettleBodyMints = do
+  s@Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+  let settlement = attackerSettlement attacker
+      leg = mkTransferLeg "leg-x" attacker attacker 1.0
+  before <- holdingAmounts attacker
+  before === []
+  foreignCid <- submit attacker do
+    createCmd ForeignAllocation with
+      attacker
+      claimedView = forgedView admin settlement attacker [senderSide leg, receiverSide leg] (Some t2)
+      extraObservers = []
+      mintAmount = Some 1000000.0
+  mustFailWith notTokenAllocation (actAs attacker <> discloseMany [rulesDisclosure]) $
+    settleBatchAsCmd s attacker settlement [leg] [toInterfaceContractId foreignCid]
+  after <- holdingAmounts attacker
+  after === []
+
+-- | Variant B. Bob holds a genuine receiver-side `TokenAllocation` for a leg
+-- attacker -> bob. The attacker forges only the sender side and funds
+-- nothing; the forged body does nothing at all. Bob is credited 10 TOK by
+-- genuine registry code and nothing is debited anywhere.
+--
+-- Unguarded outcome: bob `[]` -> `[10.0]`, attacker unchanged at `[]`.
+testForeignSenderViewSkipsDebit : Script ()
+testForeignSenderViewSkipsDebit = do
+  s@Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+  let settlement = attackerSettlement attacker
+      leg = mkTransferLeg "leg-x" attacker bob 10.0
+  bobAllocCid <- allocateUnder s settlement bob [receiverSide leg] []
+  foreignCid <- submit attacker do
+    createCmd ForeignAllocation with
+      attacker
+      claimedView = forgedView admin settlement attacker [senderSide leg] (Some t2)
+      extraObservers = []
+      mintAmount = None
+  mustFailWith notTokenAllocation (actAs attacker <> discloseMany [rulesDisclosure]) $
+    settleBatchAsCmd s attacker settlement [leg] [toInterfaceContractId foreignCid, bobAllocCid]
+  attackerAfter <- holdingAmounts attacker
+  attackerAfter === []
+  bobAfter <- holdingAmounts bob
+  bobAfter === []
+
+-- Finding 2: admin expiry
+--------------------------
+
+-- | The forged contract names the admin as observer and reports a past
+-- `expiresAt`. The admin's cleanup automation discovers it through an
+-- interface query, exactly like a real stale allocation, and expires it. The
+-- forged cancel body runs with the admin's authority and mints.
+--
+-- Unguarded outcome: attacker `[]` -> `[1000000.0]`, triggered by the admin.
+-- The interface query still returns the forged contract after the fix, so
+-- admin automation should select candidates by the `TokenAllocation`
+-- template, or a planted contract fails every batch that includes it.
+testForeignCancelViaAdminExpiryMints : Script ()
+testForeignCancelViaAdminExpiryMints = do
+  s@Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+  foreignCid <- submit attacker do
+    createCmd ForeignAllocation with
+      attacker
+      claimedView = forgedView admin (attackerSettlement attacker) attacker [] (Some t0)
+      extraObservers = [admin]
+      mintAmount = Some 1000000.0
+  -- Admin automation: every Allocation visible to the admin whose expiry has passed.
+  now <- getTime
+  visible <- queryInterface @AllocationV2.Allocation admin
+  let expired = [ cid | (cid, Some v) <- visible, Some t <- [v.expiresAt], t < now ]
+  expired === [toInterfaceContractId foreignCid]
+  before <- holdingAmounts attacker
+  before === []
+  mustFailWith notTokenAllocation (actAs admin <> discloseMany [rulesDisclosure]) $ expireCmd s expired
+  after <- holdingAmounts attacker
+  after === []
+
+-- Guard acceptance
+-------------------
+
+-- | `requireTokenAllocation` accepts this package's allocations and rejects
+-- only the foreign contract, in both guarded choices. A forged contract with
+-- an empty view claims no leg sides, so the default's exact-cover check would
+-- not object to it; the guard is what refuses it. The refusal is atomic and
+-- leaves the genuine allocations untouched, so the same call without the
+-- forged contract still goes through.
+testGuardAcceptsGenuineAllocations : Script ()
+testGuardAcceptsGenuineAllocations = do
+  s@Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+
+  -- Settlement: a genuine two-sided batch, run by the fixture executor.
+  aliceInput <- mint admin alice 10.0
+  aliceAllocCid <- allocate s alice [senderSide legAliceToBob] [aliceInput] >>= completedCid
+  bobAllocCid <- allocate s bob [receiverSide legAliceToBob] [] >>= completedCid
+  foreignCid <- submit attacker do
+    createCmd ForeignAllocation with
+      attacker
+      claimedView = forgedView admin settlement attacker [] (Some t2)
+      extraObservers = [app]
+      mintAmount = Some 1000000.0
+  mustFailWith notTokenAllocation (actAs app <> discloseMany [rulesDisclosure]) $
+    settleBatchAsCmd s app settlement [legAliceToBob]
+      [aliceAllocCid, bobAllocCid, toInterfaceContractId foreignCid]
+  _ <- settleBatch s [legAliceToBob] [aliceAllocCid, bobAllocCid] emptyExtraArgs
+  bobSettled <- holdingAmounts bob
+  bobSettled === [10.0]
+
+  -- Expiry: a genuine stale allocation, expired by the admin.
+  bobInput <- mint admin bob 5.0
+  staleCid <- allocateSpec s bob
+    (mkAllocationSpec admin bob [senderSide (mkTransferLeg "leg-9" bob alice 5.0)]) [bobInput]
+    >>= completedCid
+  staleForeignCid <- submit attacker do
+    createCmd ForeignAllocation with
+      attacker
+      claimedView = forgedView admin settlement attacker [] (Some t0)
+      extraObservers = [admin]
+      mintAmount = Some 1000000.0
+  setTime t3
+  mustFailWith notTokenAllocation (actAs admin <> discloseMany [rulesDisclosure]) $
+    expireCmd s [staleCid, toInterfaceContractId staleForeignCid]
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) $ expireCmd s [staleCid]
+  bobFinal <- holdingAmounts bob
+  bobFinal === [5.0, 10.0]
+  attackerFinal <- holdingAmounts attacker
+  attackerFinal === []

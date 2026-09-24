@@ -78,6 +78,14 @@ template TokenRules with
         -- allocation's own reserve instead). The `validateNextIterationArgs`
         -- call in `allocation_settleImpl` is the effective guard for that
         -- field; do not remove it as redundant.
+        --
+        -- The default also fetches each allocation by interface only, so any
+        -- template implementing `Allocation` whose view names this admin
+        -- would pass its cover check and then run its own `Allocation_Settle`
+        -- body with the admin's authority. Pin every allocation to this
+        -- package's template before the default sees it.
+        forA_ arg.allocations $ \finalizedAlloc ->
+          requireTokenAllocation finalizedAlloc.allocationCid
         settlementFactoryV2_settleBatchDefaultImpl perAllocationExtraArgs admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for TokenRules where
@@ -96,9 +104,12 @@ template TokenRules with
 
     nonconsuming choice TokenRules_ExpireAllocations : ()
       -- ^ Batched admin expiry of stale allocations through the standard
-      -- cancel choice. Actors, admin, and expiry are re-verified per
-      -- allocation here, independently of the cancel implementation, so this
-      -- entry point cannot be turned into cancellation of live allocations.
+      -- cancel choice. Each allocation is pinned to `TokenAllocation`, and
+      -- actors, admin, and expiry are re-verified per allocation here,
+      -- independently of the cancel implementation. This entry point can
+      -- therefore be turned neither into cancellation of live allocations nor
+      -- into running a foreign `Allocation_Cancel` body with the admin's
+      -- authority.
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
         observers : [Party]
@@ -109,8 +120,8 @@ template TokenRules with
       do
         forA_ cancelArgs $ \(allocCid, cancelArg) -> do
           requireMatchExpected ("cancelArg.actors", cancelArg.actors) [admin]
-          alloc <- fetch allocCid
-          let v = view alloc
+          alloc <- requireTokenAllocation allocCid
+          let v = view (toInterface @AllocationV2.Allocation alloc)
           requireMatchExpected ("allocation.admin", v.allocation.admin) admin
           case v.expiresAt of
             None -> fail "cannot expire an allocation without an expiry time"
@@ -175,6 +186,23 @@ template TokenRules with
           requireMatchExpected ("transfer.instrumentId.admin", instr.transfer.instrumentId.admin) admin
           _ <- exercise cid TokenTransferInstruction_Expire
           pure ()
+
+-- Allocation identity
+----------------------
+
+-- | Fail unless the interface contract id refers to this package's
+-- `TokenAllocation`, and return its payload. An interface-typed id may point
+-- at any template implementing `Allocation`, and that template's view and
+-- choice bodies are code this registry does not control. Every registry
+-- choice that exercises an allocation with the admin's authority pins the
+-- template through this guard first, so that authority only ever reaches code
+-- from this package.
+requireTokenAllocation : ContractId AllocationV2.Allocation -> Update TokenAllocation
+requireTokenAllocation allocCid = do
+  fetched <- fetchFromInterface @TokenAllocation allocCid
+  case fetched of
+    Some (_, alloc) -> pure alloc
+    None -> fail "allocation is not a TokenAllocation of this package"
 
 -- Allocation creation
 ----------------------
