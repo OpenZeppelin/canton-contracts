@@ -41,9 +41,11 @@ submitMustFailWith expected action = action >>= \case
 test_withdrawRunsWhileUnpaused : Script ()
 test_withdrawRunsWhileUnpaused = script do
   Fixture{..} <- setup
-  vault <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
+  (vault, payout) <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
   Some v <- queryContractId owner vault
   v.balance === 60.0
+  Some p <- queryContractId owner payout
+  p.amount === 40.0
 
 -- | A non-positive amount fails the vault's own check.
 test_withdrawRefusesNonPositiveAmount : Script ()
@@ -126,9 +128,11 @@ test_unpauseRestoresOperation = script do
   vault <- submit admin do exerciseCmd vault Vault_Unpause
   Some c <- queryContractId admin vault
   Pausable.isPaused c === False
-  vault <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
+  (vault, payout) <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
   Some v <- queryContractId owner vault
   v.balance === 60.0
+  Some p <- queryContractId owner payout
+  p.amount === 40.0
 
 -- | Unpausing twice fails with eExpectedPause.
 test_unpauseWhenUnpausedFails : Script ()
@@ -136,3 +140,29 @@ test_unpauseWhenUnpausedFails = script do
   Fixture{..} <- setup
   submitMustFailWith Pausable.eExpectedPause $ trySubmit admin do
     exerciseCmd vault Vault_Unpause
+
+-- | The flag survives the choices that replace a paused vault: after a
+-- redemption or an emergency drain, the successor is still paused and still
+-- refuses a withdrawal.
+test_flagSurvivesRedeemAndDrain : Script ()
+test_flagSurvivesRedeemAndDrain = script do
+  Fixture{..} <- setup
+  vault <- submit admin do exerciseCmd vault Vault_Pause
+  (vault, _) <- submit owner do exerciseCmd vault Vault_Redeem
+  Some v <- queryContractId owner vault
+  Pausable.isPaused v === True
+  submitMustFailWith Pausable.eEnforcedPause $ trySubmit owner do
+    exerciseCmd vault Vault_Withdraw with amount = 1.0
+  (vault, _) <- submit admin do exerciseCmd vault Vault_EmergencyDrain
+  Some v <- queryContractId admin vault
+  Pausable.isPaused v === True
+
+-- | The owner is a signatory, but the flip and recovery choices name `admin`
+-- as controller, so the owner cannot pause, unpause, or drain.
+test_ownerCannotFlipOrDrain : Script ()
+test_ownerCannotFlipOrDrain = script do
+  Fixture{..} <- setup
+  submitMustFail owner do exerciseCmd vault Vault_Pause
+  vault <- submit admin do exerciseCmd vault Vault_Pause
+  submitMustFail owner do exerciseCmd vault Vault_Unpause
+  submitMustFail owner do exerciseCmd vault Vault_EmergencyDrain

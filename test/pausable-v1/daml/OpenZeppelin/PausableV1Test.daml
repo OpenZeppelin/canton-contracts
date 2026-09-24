@@ -119,6 +119,32 @@ test_nonconsumingFlipLeavesTwoContracts = script do
   Some flipped <- queryContractId admin successor
   isPaused flipped === True
 
+-- | A nonconsuming flip choice that archives `self` beside the create leaves
+-- one contract, and a nonconsuming gated choice on the successor is refused.
+test_nonconsumingFlipWithArchiveLeavesOneContract : Script ()
+test_nonconsumingFlipWithArchiveLeavesOneContract = script do
+  admin <- allocateParty "admin"
+  av <- submit admin do createCmd ArchivingVault with admin, paused = False
+  False <- submit admin do exerciseCmd av ArchivingVault_Read
+  paused <- submit admin do exerciseCmd av ArchivingVault_Pause
+  gone <- queryContractId admin av
+  gone === None
+  active <- query @ArchivingVault admin
+  map fst active === [paused]
+  submitMustFailWith eEnforcedPause $ trySubmit admin do
+    exerciseCmd paused ArchivingVault_Read
+
+-- | The guards accept an interface value, so a choice that holds a `Pausable`
+-- from `toInterface this` reads the same flag.
+test_guardsAcceptAnInterfaceValue : Script ()
+test_guardsAcceptAnInterfaceValue = script do
+  Fixture{..} <- setup
+  Some v <- queryContractId admin vault
+  isPaused (toInterface @Pausable v) === False
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  Some p <- queryContractId admin paused
+  isPaused (toInterface @Pausable p) === True
+
 -- | Pausing while paused fails with `eEnforcedPause`: the flip choice runs
 -- `whenNotPaused` before its create.
 test_pauseWhenPausedFails : Script ()
@@ -162,6 +188,19 @@ test_archiveIsSignatoryOnly = script do
   submit admin do archiveCmd vault
   res <- queryContractId admin vault
   res === None
+
+-- | The signatory can reset the flag without the flip choice, by archiving
+-- the paused contract and creating it again unpaused. The flip choice's
+-- authority checks do not run.
+test_signatoryResetsTheFlagByRecreate : Script ()
+test_signatoryResetsTheFlagByRecreate = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd vault Vault_Pause
+  Some v <- queryContractId admin paused
+  submit admin do archiveCmd paused
+  reset <- submit admin do createCmd v with paused = False
+  _ <- submit holder do exerciseCmd reset Vault_Withdraw with amount = 1
+  pure ()
 
 -- Sibling fields, set in the same transaction as the flip
 -------------------------------------------------------
@@ -237,6 +276,13 @@ test_customAuthorityGatesTheFlip = script do
   Some pv <- queryInterfaceContractId holder (toInterfaceContractId @Pausable paused)
   pv.paused === True
 
+  -- the flip checks the credential before the guard, so on the paused
+  -- contract a wrong credential reports the credential error first
+  Some pd <- queryDisclosure @RoleVault admin paused
+  submitMustFailWith eWrongCredentialIssuer $
+    trySubmit (actAs stranger <> disclose pd) do
+      exerciseCmd paused RoleVault_Pause with caller = stranger, credCid = rogueCred
+
 -- The failure statuses as an off-ledger contract
 -------------------------------------------------------
 
@@ -261,8 +307,9 @@ test_refusedChoiceWritesNothing = script do
   v.balance === 100
   isPaused v === True
 
--- | `whenNotPaused` runs before the consumer's own checks, so while paused a
--- request that is also invalid on its own terms fails with `eEnforcedPause`.
+-- | The fixture's `Vault_Withdraw` calls `whenNotPaused` before its own
+-- checks, so while paused a request that is also invalid on its own terms
+-- fails with `eEnforcedPause`. The statement order sets the error.
 test_guardRunsBeforeConsumerChecks : Script ()
 test_guardRunsBeforeConsumerChecks = script do
   Fixture{..} <- setup

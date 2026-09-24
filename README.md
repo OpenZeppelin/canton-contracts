@@ -26,7 +26,7 @@ Timelock follows the same split. No package has a release or an audit.
 | [Timelock API](packages/security/api-timelock-v1/) | `openzeppelin-api-timelock-v1` | `OpenZeppelin.Api.TimelockV1` | Pre-release; unaudited |
 | [Timelock](packages/security/timelock-v1/) | `openzeppelin-timelock-v1` | `OpenZeppelin.TimelockV1` | Pre-release; unaudited |
 
-Two further components are early-stage candidates under
+Three further components are early-stage candidates under
 [`experiments/`](experiments/). They will be redesigned before they move into
 `packages/`, and that redesign will change module names, template and choice
 signatures, and package identity. Read
@@ -37,6 +37,7 @@ them.
 |---|---|---|---|
 | [Access Control](experiments/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | Experimental; unaudited |
 | [Ownable](experiments/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | Experimental; unaudited |
+| [Token CIP-0112](experiments/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | Experimental; unaudited |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching

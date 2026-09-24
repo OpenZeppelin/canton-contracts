@@ -15,6 +15,8 @@ flip.
 
 - Flip choices that set `paused`, `pauseReason`, and `pauseUntil` in one
   create, after the library guard.
+- `Registry_UpdatePauseInfo`, guarded with `whenPaused`, which changes the
+  reason and the deadline while the pause stays in force.
 - `pauseInfo.reason` and `pauseInfo.until` as fields of the registry.
   `PausableView` carries `paused` alone, so when CIP-0112 extends `PauseInfo`
   the registry adds a field under Smart Contract Upgrade and the interface
@@ -37,8 +39,9 @@ and its `PausableView`.
 ## The deadline
 
 `pauseUntil` is published for reporting. The guard reads `paused` alone, so
-the pause ends when `admin` exercises `Registry_Unpause`. A pause that expires
-on its own is a feature the consumer writes, with its own rule for who may
+the pause ends when `admin` exercises `Registry_Unpause`. `admin` extends the
+published deadline with `Registry_UpdatePauseInfo`. A pause that expires on
+its own is a feature the consumer writes, with its own rule for who may
 extend it.
 
 ## Build and run

@@ -21,5 +21,8 @@ packages:
   - examples/pausable/vault-test
   - examples/pausable/registry
   - examples/pausable/registry-test
+  - examples/pausable/retrofit-v1-0
+  - examples/pausable/retrofit-v1-1
+  - examples/pausable/retrofit-test
   - examples/timelock/treasury
   - examples/timelock/treasury-test

@@ -23,15 +23,18 @@ Functions over any template that implements `Pausable`:
   client matches the id in the `DAML_FAILURE` error, and your tests compare
   the whole value.
 
+`OpenZeppelin.PausableV1.Internal` is not public API. Its contents can change
+in any version, so do not import it.
+
 ## Usage
 
 Your template holds the flag and implements the interface, as the
 [`openzeppelin-api-pausable-v1` README](../api-pausable-v1/README.md) shows.
 Adopting the functions is three steps.
 
-**1. Guard the choices that a pause must stop.** Call `whenNotPaused this` as
-the first statement of every gated choice body. It takes the contract value
-the choice runs on, so the caller supplies nothing.
+**1. Guard the choices that a pause must stop.** Call `whenNotPaused this` in
+every gated choice body, before the choice changes state. It takes the
+contract value the choice runs on, so the caller supplies nothing.
 
 ```daml
 import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
@@ -123,18 +126,21 @@ flip:
         create this with paused = True
 ```
 
-The interface exposes no choice, so a party that holds only a
-`ContractId Pausable` cannot flip the flag.
+The interface has only the implicit `Archive` choice, which the template's
+signatories control. A party that holds only a `ContractId Pausable`
+therefore cannot flip the flag.
 
 ## Scope and security caveats
 
 - Pause is origination control. A gated choice refuses to start while paused,
   and transactions already committed stand.
 - A choice is gated only by its own guard call, and the guard checks the flag
-  alone. Call `whenNotPaused` first in every choice a pause must stop, and
-  keep each choice's controller as its access control.
+  alone. Call `whenNotPaused` before the state change in every choice a pause
+  must stop, and keep each choice's controller as its access control.
 - The implementing template's `Archive` carries no guard, so its signatories
-  archive a paused contract.
+  archive a paused contract. They can also create it again with any flag
+  value, which skips the flip choice and its authority checks. Make every
+  signatory part of your pause authority model, or trust it with the flag.
 - Pass `this` to guards. A `Pausable` value fetched from a contract id the
   caller supplies is the caller's choice of switch: the caller presents an
   unpaused contract and the gated choice runs, with no error.
@@ -145,15 +151,17 @@ Daml-LF `2.1`, built with the SDK that
 [`multi-package.yaml`](../../../multi-package.yaml) declares.
 
 The package holds functions and values, so a fix ships as a new version under
-the same name, and your package picks it up by rebuilding against the new
-DAR. This package defines no templates, interfaces, or data types, so your
+the same name, and your package picks it up in a new version built against
+the new DAR. The fix reaches only exercises that run your new version. A
+submission that selects your old version still runs the old guard, so unvet
+the old version of your package to remove it. This package defines no templates, interfaces, or data types, so your
 package's next Smart Contract Upgrade version may depend on a newer version
 of it. The `errorId` of every failure status is stable across versions. The
 interface package stays at its frozen version.
 
-Your package binds to one package ID of this package at build time, and the
-gated choices run its code, so every participant that runs them vets that
-package ID beside the interface package ID.
+Your package binds to one package ID of this package at build time, so every
+participant that vets your package also vets that package ID and the
+interface package ID.
 
 `0.1.0` is a pre-release: the package ID may change between commits, and no
 audit has been performed. See [`RELEASING.md`](../../../RELEASING.md).
