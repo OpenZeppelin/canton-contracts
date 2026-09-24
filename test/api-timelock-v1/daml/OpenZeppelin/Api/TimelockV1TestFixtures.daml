@@ -46,6 +46,9 @@ template FalseTarget
         _ <- create UnauthorizedEffect with authority = claimedAuthority, recipient = attacker
         toInterfaceContractId <$> create this with pending = pending'
 
+      applyImpl self arg = applyOperation (toInterface @Timelock this) self arg
+      dropImpl self arg = dropOperation (toInterface @Timelock this) self arg
+
 -- | A treasury whose spending limit and delay policy change only through
 -- timelocked operations. `admin` signs and is the `authority` that applies
 -- operations; `proposer` schedules; `executors` and `cancellers` are recorded
@@ -82,6 +85,9 @@ template Treasury
           None -> failWithStatus eUnknownOperation
 
       unschedule pending' = toInterfaceContractId <$> create this with pending = pending'
+
+      applyImpl self arg = applyOperation (toInterface @Timelock this) self arg
+      dropImpl self arg = dropOperation (toInterface @Timelock this) self arg
 
     -- Schedule a limit change to become ready at `readyAt`. Consuming: the
     -- successor records the operation in `pending`.
@@ -211,6 +217,9 @@ template LeakyTreasury
         None -> failWithStatus eUnknownOperation
       unschedule _ = toInterfaceContractId <$> create this
 
+      applyImpl self arg = applyOperation (toInterface @Timelock this) self arg
+      dropImpl self arg = dropOperation (toInterface @Timelock this) self arg
+
     choice LeakyTreasury_ScheduleLimit : (ContractId LeakyTreasury, ContractId LimitChange)
       with
         newLimit : Decimal
@@ -243,6 +252,9 @@ template ClearingTreasury
         Some lc -> toInterfaceContractId <$> create this with limit = lc.newLimit, queue = []
         None -> failWithStatus eUnknownOperation
       unschedule _ = toInterfaceContractId <$> create this with queue = []
+
+      applyImpl self arg = applyOperation (toInterface @Timelock this) self arg
+      dropImpl self arg = dropOperation (toInterface @Timelock this) self arg
 
     choice ClearingTreasury_ScheduleLimit : (ContractId ClearingTreasury, ContractId LimitChange)
       with

@@ -1,7 +1,8 @@
 # Timelock V1
 
-The schedule functions, the pending-list functions, and the time guards for
-the interfaces in [`openzeppelin-api-timelock-v1`](../api-timelock-v1/).
+The lifecycle functions, the schedule functions, the pending-list functions,
+the time guards, and the failure statuses for the interfaces in
+[`openzeppelin-api-timelock-v1`](../api-timelock-v1/).
 
 | Field | Value |
 |---|---|
@@ -13,6 +14,12 @@ the interfaces in [`openzeppelin-api-timelock-v1`](../api-timelock-v1/).
 
 ## What it provides
 
+- `applyOperation` and `dropOperation`: the bodies of `Timelock_Apply` and
+  `Timelock_Drop`. Call them from the `applyImpl` and `dropImpl` methods of
+  your timelock template. They check pending membership, shared authority,
+  executor or canceller permission, and the time bounds, archive the
+  operation, call your `apply` or `unschedule` method, and check the
+  successor's pending list.
 - `scheduleAt` and `scheduleAfter`: compute the `TimelockedView` of a new
   operation from the policy, and refuse a delay shorter than `minDelay`.
 - `isValidConfig` and `requireValidConfig`: the policy validation. A policy
@@ -22,14 +29,21 @@ the interfaces in [`openzeppelin-api-timelock-v1`](../api-timelock-v1/).
   and remove one or fail with `eNotPending`.
 - `requireReady`, `requireExpired`, `isReadyAt`, and `isExpiredAt`: the time
   guards and their pure forms, for a consumer that writes its own choices.
-- `eInvalidConfig` and `eDelayTooShort`: the failure statuses of the schedule
-  functions. Each has a stable `errorId` under `openzeppelin.com/timelock-`.
+- Ten failure statuses: `eInvalidConfig` and `eDelayTooShort` for the
+  schedule functions, and `eInvalidAuthority`, `eNotPending`, `eNotExecutor`,
+  `eNotCanceller`, `ePendingMismatch`, `eNotReady`, `eExpired`, and
+  `eNotExpired` for the lifecycle functions and the guards. Each is a
+  `FailureStatus` with a stable `errorId` under `openzeppelin.com/timelock-`,
+  so an off-ledger client matches the id in the `DAML_FAILURE` error and your
+  tests compare the whole value.
 
 ## Usage
 
 The [`openzeppelin-api-timelock-v1` README](../api-timelock-v1/README.md)
-shows the whole integration. The functions appear in three places:
+shows the whole integration. The functions appear in four places:
 
+- The timelock template's `applyImpl` and `dropImpl` methods call
+  `applyOperation` and `dropOperation`.
 - The timelock template's `ensure` clause checks `isValidConfig config`.
 - Each schedule choice calls `scheduleAt` or `scheduleAfter`, creates the
   operation with the returned fields, and records it with `addPending`.
@@ -100,15 +114,13 @@ the same name, and your package picks it up by rebuilding against the new
 DAR. The `errorId` of every failure status is stable across versions. The
 interface package stays at its frozen version.
 
-`Timelock_Apply` and `Timelock_Drop` use private copies of `takePending`,
-`requireReady`, and `requireExpired` that are compiled into the frozen
-interface package. The copies apply the same bounds, and a test pins them to
-each other. A fix to this package does not reach the lifecycle choices; a fix
-to the frozen copies needs a sibling `-v2` interface package.
+`Timelock_Apply` and `Timelock_Drop` run this package's code through your
+`applyImpl` and `dropImpl` methods. A fix to a lifecycle check reaches your
+existing contracts when you upgrade your package against the new DAR.
 
 Your package binds to one package ID of this package at build time, and your
-schedule choices run its code, so every participant that runs them vets that
-package ID beside the interface package ID.
+schedule choices and lifecycle methods run its code, so every participant that
+runs them vets that package ID beside the interface package ID.
 
 `0.1.0` is a pre-release: the package ID may change between commits, and no
 audit has been performed. See [`RELEASING.md`](../../../RELEASING.md).

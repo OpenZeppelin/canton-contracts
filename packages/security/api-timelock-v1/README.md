@@ -12,14 +12,16 @@ privileged operation and its execution.
 
 ## What it provides
 
-Three interfaces, their views, and the failure statuses their choices raise:
+Three interfaces and their views. The package holds no logic:
 
 - `Timelock`: the timelock contract. Its view, `TimelockView`, carries the
   `authority` that applies operations, the `TimelockConfig` in force, and the
   `Pending` list of scheduled operations. Its choices, `Timelock_Apply` and
-  `Timelock_Drop`, authenticate the actor and verify pending membership,
-  shared authority, permissions, and time bounds. They archive the operation
-  before calling the consumer's `apply` or `unschedule` method.
+  `Timelock_Drop`, call the `applyImpl` and `dropImpl` methods. You implement
+  those methods with `applyOperation` and `dropOperation` from
+  `OpenZeppelin.TimelockV1`. These functions authenticate the actor and verify
+  pending membership, shared authority, permissions, and time bounds. They
+  archive the operation before calling your `apply` or `unschedule` method.
   The method creates the successor with the reduced pending list.
 - `Operation`: a scheduled operation. Its view, `OperationView`, names the
   `executors` and `cancellers`. Its choices, `Operation_Execute`,
@@ -35,14 +37,11 @@ Three interfaces, their views, and the failure statuses their choices raise:
   creates directly stays outside the list and has no effect.
 - `DropReason`: `CancelOperation` requires canceller permission;
   `CleanupOperation` requires expiry.
-- Eight failure statuses, each a `FailureStatus` with a stable `errorId` under
-  `openzeppelin.com/timelock-`, so an off-ledger client matches the id in the
-  `DAML_FAILURE` error and your tests compare the whole value.
 
-The schedule functions, the pending-list functions, the policy validation,
-and the time guards for your own choices live in
-[`openzeppelin-timelock-v1`](../timelock-v1/), which ships separately so that
-a fix to them does not move this frozen package.
+The lifecycle functions, the schedule functions, the pending-list functions,
+the policy validation, the time guards, and the failure statuses live in
+[`openzeppelin-timelock-v1`](../timelock-v1/). That package ships separately,
+so a fix to a check does not move this frozen package.
 
 Ledger state lives in the consumer's templates. A scheduled operation is a contract of the consumer's
 own template, with the typed parameters of the operation as fields committed
@@ -64,9 +63,9 @@ the config. The business contract never takes part in governance, so its
 choices do not contend with it.
 
 Adopting the timelock is five steps. This package supplies the execute,
-cancel, and cleanup choices; `OpenZeppelin.TimelockV1` supplies the functions
-the snippets call; you supply the templates, the schedule choices, and the
-`apply` method.
+cancel, and cleanup choices; `OpenZeppelin.TimelockV1` supplies the lifecycle
+checks and the functions the snippets call; you supply the templates, the
+schedule choices, and the methods.
 
 **1. Write the governed config.** Give it no choices, so that only the
 timelock replaces it. Make the executors observers, because the execute
@@ -91,7 +90,9 @@ refuses a policy that cannot schedule operations. The view names the
 signatory that applies operations. `apply` dispatches on the operation's
 template with `fromInterface`, replaces the governed config, and creates the
 successor with the new config id and the reduced pending list. `unschedule`
-creates the successor with the reduced list alone:
+creates the successor with the reduced list alone. `applyImpl` and `dropImpl`
+call the lifecycle functions, which run every check before they call `apply`
+or `unschedule`:
 
 ```daml
 template TreasuryTimelock
@@ -121,6 +122,10 @@ template TreasuryTimelock
 
       unschedule pending' = toInterfaceContractId <$>
         create this with pending = pending'
+
+      applyImpl self arg = applyOperation (toInterface @Timelock this) self arg
+
+      dropImpl self arg = dropOperation (toInterface @Timelock this) self arg
 ```
 
 **3. Write one operation template per operation kind.** Its fields are the
@@ -194,12 +199,13 @@ business contract's signatories:
 ### Execute, cancel, and clean up
 
 An executor exercises `Operation_Execute` on the operation with the current
-timelock as `target`. `Timelock_Apply` authenticates the actor and checks
-pending membership, shared authority, executor permission, and readiness. It
-archives the operation before calling your `apply` method.
-`Operation_Cancel` and `Operation_Cleanup` call `Timelock_Drop` with the
-corresponding `DropReason`. That choice checks cancellation permission or
-expiry before archiving the operation and calling `unschedule`:
+timelock as `target`. `Timelock_Apply` calls your `applyImpl`, and
+`applyOperation` authenticates the actor and checks pending membership, shared
+authority, executor permission, and readiness. It archives the operation
+before calling your `apply` method. `Operation_Cancel` and `Operation_Cleanup`
+call `Timelock_Drop` with the corresponding `DropReason`. Through `dropImpl`,
+`dropOperation` checks cancellation permission or expiry before archiving the
+operation and calling `unschedule`:
 
 ```daml
 exerciseCmd (toInterfaceContractId @Operation opCid)
@@ -229,7 +235,7 @@ cancellers.
 
 The declared `authority` must sign both the timelock and the operation, and
 the operation's signatories must be signatories of the timelock. The lifecycle
-choices fail with `eInvalidAuthority` otherwise. The choices take authority
+functions fail with `eInvalidAuthority` otherwise. The choices take authority
 from the timelock's signatories and the actor only, so a substituted timelock
 cannot use the operation's signatory authority.
 
@@ -318,7 +324,7 @@ have no pending entry. Match the results against the canonical timelock's
   behavior once the participants vet the new package. Govern package vetting
   with the same parties that the delay protects: with several signatories,
   every signatory's participant must vet the upgrade.
-- `Timelock_Apply` verifies the actor, shared authority, pending list, and schedule.
+- `applyOperation` verifies the actor, shared authority, pending list, and schedule.
   It also checks that the successor holds exactly the reduced pending list.
   That check detects a mis-wired method. It reads the id that the method
   returns, so it cannot tell whether that id is the successor the method
@@ -328,7 +334,12 @@ have no pending entry. Match the results against the canonical timelock's
 - Interface choices are frozen with the package. `Operation_Execute`,
   `Operation_Cancel`, `Operation_Cleanup`, `Timelock_Apply`, and
   `Timelock_Drop` keep their names, arguments, and bodies for the life of
-  `openzeppelin-api-timelock-v1`.
+  `openzeppelin-api-timelock-v1`. The bodies only forward to methods, so the
+  checks upgrade with `openzeppelin-timelock-v1`.
+- The interface does not enforce the checks. They run because your
+  `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`. A
+  method that skips them lets an executor apply an operation without the
+  delay.
 - Every choice that changes the pending list is consuming, so scheduling and
   applying contend on the timelock. Two proposers scheduling in the same
   instant see one of them fail and resubmit against the successor. Keep the
@@ -365,8 +376,10 @@ have no pending entry. Match the results against the canonical timelock's
 ## Compatibility
 
 The released API package is frozen. Daml interface definitions sit outside
-Smart Contract Upgrade (SCU). The choices and failure statuses share the
-interface's package ID and remain fixed with it.
+Smart Contract Upgrade (SCU). The choices share the interface's package ID
+and remain fixed with it. The choice bodies only call methods, so a fix to a
+lifecycle check ships in `openzeppelin-timelock-v1`, and your package picks it
+up through SCU.
 A different API generation uses a sibling `openzeppelin-api-timelock-v2` package
 with module `OpenZeppelin.Api.TimelockV2`.
 

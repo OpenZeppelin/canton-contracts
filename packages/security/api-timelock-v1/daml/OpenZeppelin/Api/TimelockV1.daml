@@ -10,42 +10,15 @@
 -- * `Timelocked`, on each operation template: when the operation is ready and
 --   when it expires.
 --
--- The consumer writes the schedule choices and the `apply` method. The
--- schedule functions and the time guards for consumer choices live in the
--- `openzeppelin-timelock-v1` package, module `OpenZeppelin.TimelockV1`.
-module OpenZeppelin.Api.TimelockV1
-  ( TimelockedView (..)
-  , Timelocked
-  , Pending
-  , TimelockConfig (..)
-  , TimelockView (..)
-  , OperationView (..)
-  , DropReason (..)
-  , Timelock
-  , apply
-  , unschedule
-  , Timelock_Apply (..)
-  , Timelock_Drop (..)
-  , Operation
-  , Operation_Execute (..)
-  , Operation_Cancel (..)
-  , Operation_Cleanup (..)
-  , eInvalidAuthority
-  , eNotPending
-  , eNotExecutor
-  , eNotCanceller
-  , ePendingMismatch
-  , eNotReady
-  , eExpired
-  , eNotExpired
-  ) where
+-- The package holds no logic. Each interface choice calls a method of the
+-- implementing template. The consumer writes the schedule choices and the
+-- `apply` and `unschedule` methods, and implements `applyImpl` and `dropImpl`
+-- with the lifecycle functions of the `openzeppelin-timelock-v1` package,
+-- module `OpenZeppelin.TimelockV1`. That package also holds the schedule
+-- functions, the time guards, and the failure statuses.
+module OpenZeppelin.Api.TimelockV1 where
 
-import DA.Action (unless)
-import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
-import DA.List (delete)
-import DA.Optional (whenSome)
-import qualified DA.TextMap as TextMap
-import DA.Time (RelTime, isLedgerTimeGE, isLedgerTimeLT)
+import DA.Time (RelTime)
 
 -- | When a scheduled operation may execute.
 data TimelockedView = TimelockedView with
@@ -124,19 +97,24 @@ data DropReason
 -- ready. Implement it on a template with a `TimelockConfig` field and a
 -- `Pending` field, and write the schedule choices on that template.
 --
--- `Timelock_Apply` and `Timelock_Drop` check the operation and then call the
--- `apply` or `unschedule` method, which creates the successor timelock. Both
--- choices consume the timelock, so its contract id changes on every schedule,
--- apply, cancel, and cleanup.
+-- `Timelock_Apply` and `Timelock_Drop` call the `applyImpl` or `dropImpl`
+-- method. Implement these two methods with `applyOperation` and
+-- `dropOperation` from `OpenZeppelin.TimelockV1`. Those functions check the
+-- operation, archive it, and then call the `apply` or `unschedule` method,
+-- which creates the successor timelock. Both choices consume the timelock, so
+-- its contract id changes on every schedule, apply, cancel, and cleanup.
 --
 -- Requirements:
 --
--- * `authority` signs the timelock and every operation. The choices fail with
---   `eInvalidAuthority` otherwise.
+-- * `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`.
+--   The interface does not enforce the checks itself.
+-- * `authority` signs the timelock and every operation. The lifecycle
+--   functions fail with `eInvalidAuthority` otherwise.
 -- * Every signatory of the operation is a signatory of the timelock. The
---   choices fail with `eInvalidAuthority` otherwise.
+--   lifecycle functions fail with `eInvalidAuthority` otherwise.
 -- * The successor that a method creates holds the given pending list. The
---   choices fail with `ePendingMismatch` when it holds any other list.
+--   lifecycle functions fail with `ePendingMismatch` when it holds any other
+--   list.
 -- * Executors and cancellers can see the timelock, as stakeholders or by
 --   explicit disclosure.
 interface Timelock where
@@ -145,34 +123,34 @@ interface Timelock where
   apply : Operation -> Pending -> Update (ContractId Timelock)
     -- ^ Apply the operation's parameters to the governed state, and create
     --   the successor timelock with the given pending list. Dispatch on the
-    --   operation's template with `fromInterface`. `Timelock_Apply` calls it
+    --   operation's template with `fromInterface`. `applyOperation` calls it
     --   after it checks the operation and archives it.
 
   unschedule : Pending -> Update (ContractId Timelock)
     -- ^ Create the successor timelock with the given pending list.
-    --   `Timelock_Drop` calls it after it checks the operation and archives
+    --   `dropOperation` calls it after it checks the operation and archives
     --   it.
 
-  -- Apply a pending operation. Fails unless the operation is pending, the
-  -- actor is an executor, and the operation is ready.
+  applyImpl : ContractId Timelock -> Timelock_Apply -> Update (ContractId Timelock)
+    -- ^ The body of `Timelock_Apply`. Implement it as
+    --   `applyImpl self arg = applyOperation (toInterface @Timelock this) self arg`.
+
+  dropImpl : ContractId Timelock -> Timelock_Drop -> Update (ContractId Timelock)
+    -- ^ The body of `Timelock_Drop`. Implement it as
+    --   `dropImpl self arg = dropOperation (toInterface @Timelock this) self arg`.
+
+  -- Apply a pending operation. `applyOperation` fails unless the operation is
+  -- pending, the actor is an executor, and the operation is ready.
   choice Timelock_Apply : ContractId Timelock
     with
       actor : Party
       op : ContractId Operation
     controller actor
     do
-      pending' <- takePending op (view this).pending
-      opValue <- fetch op
-      requireAuthority this opValue
-      requireExecutor actor (view opValue)
-      requireReady opValue
-      archive op
-      new <- apply this opValue pending'
-      requireSuccessorPending pending' new
-      pure new
+      applyImpl this self arg
 
-  -- Remove a pending operation without applying it. Fails unless the
-  -- operation is pending and the `reason` holds.
+  -- Remove a pending operation without applying it. `dropOperation` fails
+  -- unless the operation is pending and the `reason` holds.
   choice Timelock_Drop : ContractId Timelock
     with
       actor : Party
@@ -180,16 +158,7 @@ interface Timelock where
       reason : DropReason
     controller actor
     do
-      pending' <- takePending op (view this).pending
-      opValue <- fetch op
-      requireAuthority this opValue
-      case reason of
-        CancelOperation -> requireCanceller actor (view opValue)
-        CleanupOperation -> requireExpired opValue
-      archive op
-      new <- unschedule this pending'
-      requireSuccessorPending pending' new
-      pure new
+      dropImpl this self arg
 
 -- | A scheduled operation. Implement it, with `Timelocked`, on one template
 -- per operation kind. The template's fields are the operation's typed
@@ -197,7 +166,7 @@ interface Timelock where
 --
 -- Executors, cancellers, and cleanup actors call the choices on the
 -- operation, with the current timelock as `target`. Each choice forwards the
--- actor to `Timelock_Apply` or `Timelock_Drop`, which does the checks.
+-- actor to `Timelock_Apply` or `Timelock_Drop`, whose method does the checks.
 --
 -- Requirements:
 --
@@ -234,123 +203,3 @@ interface Operation requires Timelocked where
     controller actor
     do
       exercise target Timelock_Drop with actor, op = self, reason = CleanupOperation
-
--- Fail with `eInvalidAuthority` unless the declared authority signs both
--- contracts and every signatory of the operation signs the timelock.
-requireAuthority : Timelock -> Operation -> Update ()
-requireAuthority target op = do
-  let authority = (view target).authority
-      targetSignatories = signatory target
-  unless (authority `elem` targetSignatories
-      && authority `elem` signatory op
-      && all (`elem` targetSignatories) (signatory op))
-    (failWithStatus eInvalidAuthority)
-
--- Fail with `eNotExecutor` unless `actor` may execute under the view.
-requireExecutor : Party -> OperationView -> Update ()
-requireExecutor actor v =
-  unless (optional True (actor `elem`) v.executors) (failWithStatus eNotExecutor)
-
--- Fail with `eNotCanceller` unless `actor` may cancel under the view.
-requireCanceller : Party -> OperationView -> Update ()
-requireCanceller actor v =
-  unless (actor `elem` v.cancellers) (failWithStatus eNotCanceller)
-
--- Fail with `ePendingMismatch` unless the successor holds exactly the reduced
--- pending list.
-requireSuccessorPending : Pending -> ContractId Timelock -> Update ()
-requireSuccessorPending pending' new = do
-  successor <- fetch new
-  unless ((view successor).pending == pending') (failWithStatus ePendingMismatch)
-
--- Remove the operation from the pending list, or fail with `eNotPending`.
-takePending : ContractId Operation -> Pending -> Update Pending
-takePending op pending = do
-  let cid = toInterfaceContractId @Timelocked op
-  unless (cid `elem` pending) (failWithStatus eNotPending)
-  pure (delete cid pending)
-
--- Fail with `eNotReady` before `readyAt`, and with `eExpired` at or after
--- `expiresAt`.
-requireReady : Operation -> Update ()
-requireReady op = do
-  let v = view (toInterface @Timelocked op)
-  ready <- isLedgerTimeGE v.readyAt
-  unless ready (failWithStatus eNotReady)
-  whenSome v.expiresAt $ \expiresAt -> do
-    live <- isLedgerTimeLT expiresAt
-    unless live (failWithStatus eExpired)
-
--- Fail with `eNotExpired` unless `expiresAt` is set and has passed.
-requireExpired : Operation -> Update ()
-requireExpired op = do
-  let v = view (toInterface @Timelocked op)
-  case v.expiresAt of
-    None -> failWithStatus eNotExpired
-    Some expiresAt -> do
-      expired <- isLedgerTimeGE expiresAt
-      unless expired (failWithStatus eNotExpired)
-
--- Failure statuses. Each reaches the Ledger API as a `DAML_FAILURE` error
--- carrying the `errorId` below, so a client matches on the id. A later
--- submission can succeed after `eNotReady` and `eNotExpired`; `eExpired` is
--- final.
-
--- | Raised when `authority` does not sign both the timelock and the operation,
--- or when the operation has a signatory that the timelock does not have.
--- `errorId`: `openzeppelin.com/timelock-invalid-authority`.
-eInvalidAuthority : FailureStatus
-eInvalidAuthority = timelockFailure "invalid-authority" InvalidIndependentOfSystemState
-  "Timelock: the authority must sign both the target and the operation"
-
--- | Raised when the timelock's pending list does not hold the operation: the
--- operation was created outside a schedule choice, was already applied or
--- dropped, or belongs to another timelock.
--- `errorId`: `openzeppelin.com/timelock-not-pending`.
-eNotPending : FailureStatus
-eNotPending = timelockFailure "not-pending" InvalidGivenCurrentSystemStateOther
-  "Timelock: the operation is not pending on this contract"
-
--- | Raised when `Operation_Execute`'s actor is outside the view's executors.
--- `errorId`: `openzeppelin.com/timelock-not-executor`.
-eNotExecutor : FailureStatus
-eNotExecutor = timelockFailure "not-executor" InvalidIndependentOfSystemState
-  "Timelock: the actor is not an executor of this operation"
-
--- | Raised when `Operation_Cancel`'s actor is outside the view's cancellers.
--- `errorId`: `openzeppelin.com/timelock-not-canceller`.
-eNotCanceller : FailureStatus
-eNotCanceller = timelockFailure "not-canceller" InvalidIndependentOfSystemState
-  "Timelock: the actor is not a canceller of this operation"
-
--- | Raised when `apply` or `unschedule` creates a successor whose pending list
--- differs from the reduced list that the lifecycle choice passed in.
--- `errorId`: `openzeppelin.com/timelock-pending-mismatch`.
-ePendingMismatch : FailureStatus
-ePendingMismatch = timelockFailure "pending-mismatch" InvalidIndependentOfSystemState
-  "Timelock: the successor's pending list differs from the reduced list"
-
--- | Raised when an operation executes before `readyAt`.
--- `errorId`: `openzeppelin.com/timelock-not-ready`.
-eNotReady : FailureStatus
-eNotReady = timelockFailure "not-ready" InvalidGivenCurrentSystemStateOther
-  "Timelock: the operation is not ready"
-
--- | Raised when an operation executes at or after `expiresAt`.
--- `errorId`: `openzeppelin.com/timelock-expired`.
-eExpired : FailureStatus
-eExpired = timelockFailure "expired" InvalidGivenCurrentSystemStateOther
-  "Timelock: the operation has expired"
-
--- | Raised when a cleanup runs before `expiresAt`, or on an operation without one.
--- `errorId`: `openzeppelin.com/timelock-not-expired`.
-eNotExpired : FailureStatus
-eNotExpired = timelockFailure "not-expired" InvalidGivenCurrentSystemStateOther
-  "Timelock: the operation has not expired"
-
-timelockFailure : Text -> FailureCategory -> Text -> FailureStatus
-timelockFailure name category message = FailureStatus with
-  errorId = "openzeppelin.com/timelock-" <> name
-  category
-  message
-  meta = TextMap.empty

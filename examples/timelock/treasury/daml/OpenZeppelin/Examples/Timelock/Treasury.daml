@@ -87,7 +87,7 @@ template Treasury
 -- | The timelock. `admin` signs it and is the authority that applies
 -- operations, so every operation created in one of its choices carries
 -- `admin`'s signature. `pending` lists the operations the schedule choices
--- created; the library's lifecycle choices accept only those, so an operation
+-- created; the library's lifecycle functions accept only those, so an operation
 -- that `admin` creates directly has no effect. `target` is the current
 -- `TreasuryConfig`: `apply` replaces the config and records the successor's
 -- id.
@@ -105,11 +105,12 @@ template TreasuryTimelock
     observer proposer, executor
     ensure Timelock.isValidConfig config
 
-    -- The `Timelock` instance: the view the lifecycle choices read, and the
-    -- two methods that create the successor. `apply` dispatches on the
-    -- operation's template and reads its typed parameters. The library has
-    -- verified that the operation is pending on this timelock before it calls
-    -- `apply`, so the branches read parameters only.
+    -- The `Timelock` instance: the view the lifecycle functions read, the two
+    -- methods that create the successor, and the two methods that run the
+    -- library's lifecycle functions. `apply` dispatches on the operation's
+    -- template and reads its typed parameters. The library has verified that
+    -- the operation is pending on this timelock before it calls `apply`, so
+    -- the branches read parameters only.
     interface instance Timelock.Timelock for TreasuryTimelock where
       view = Timelock.TimelockView with authority = admin; config; pending
 
@@ -125,6 +126,10 @@ template TreasuryTimelock
           None -> failWithStatus eUnknownOperation
 
       unschedule pending' = toInterfaceContractId <$> create this with pending = pending'
+
+      applyImpl self arg = Timelock.applyOperation (toInterface @Timelock.Timelock this) self arg
+
+      dropImpl self arg = Timelock.dropOperation (toInterface @Timelock.Timelock this) self arg
 
     -- Schedule a limit change. The new limit is validated at proposal time.
     -- `scheduleAt` refuses a `readyAt` closer than `config.minDelay` and
@@ -145,7 +150,7 @@ template TreasuryTimelock
         pure (t, op)
 
     -- Recovery: remove pending entries whose operations `admin` archived
-    -- directly. The lifecycle choices fetch the operation, so they cannot
+    -- directly. The lifecycle functions fetch the operation, so they cannot
     -- remove such an entry. `admin` is also a canceller, so the choice grants
     -- no new power: removing a live operation's entry cancels it.
     choice TreasuryTimelock_Prune : ContractId TreasuryTimelock

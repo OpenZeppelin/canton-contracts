@@ -1,8 +1,111 @@
--- | Internal helpers for `OpenZeppelin.TimelockV1`.
+-- | Internal helpers for `OpenZeppelin.TimelockV1`: the failure statuses,
+-- which the public module re-exports, and the checks of the lifecycle
+-- functions.
 module OpenZeppelin.TimelockV1.Internal where
 
-import DA.Fail (FailureCategory, FailureStatus (..))
+import DA.Action (unless)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import qualified DA.TextMap as TextMap
+
+import OpenZeppelin.Api.TimelockV1
+
+-- | Fail with `eInvalidAuthority` unless the declared authority signs both
+-- contracts and every signatory of the operation signs the timelock.
+requireAuthority : Timelock -> Operation -> Update ()
+requireAuthority target op = do
+  let authority = (view target).authority
+      targetSignatories = signatory target
+  unless (authority `elem` targetSignatories
+      && authority `elem` signatory op
+      && all (`elem` targetSignatories) (signatory op))
+    (failWithStatus eInvalidAuthority)
+
+-- | Fail with `eNotExecutor` unless `actor` may execute under the view.
+requireExecutor : Party -> OperationView -> Update ()
+requireExecutor actor v =
+  unless (optional True (actor `elem`) v.executors) (failWithStatus eNotExecutor)
+
+-- | Fail with `eNotCanceller` unless `actor` may cancel under the view.
+requireCanceller : Party -> OperationView -> Update ()
+requireCanceller actor v =
+  unless (actor `elem` v.cancellers) (failWithStatus eNotCanceller)
+
+-- | Fail with `ePendingMismatch` unless the successor holds exactly the
+-- reduced pending list.
+requireSuccessorPending : Pending -> ContractId Timelock -> Update ()
+requireSuccessorPending pending' new = do
+  successor <- fetch new
+  unless ((view successor).pending == pending') (failWithStatus ePendingMismatch)
+
+-- Failure statuses. Each reaches the Ledger API as a `DAML_FAILURE` error
+-- carrying the `errorId` below, so a client matches on the id. A later
+-- submission can succeed after `eNotReady` and `eNotExpired`; `eExpired` is
+-- final.
+
+-- | Raised when `isValidConfig` rejects a policy: a negative `minDelay`, or a
+-- `gracePeriod` of zero or less.
+-- `errorId`: `openzeppelin.com/timelock-invalid-config`.
+eInvalidConfig : FailureStatus
+eInvalidConfig = timelockFailure "invalid-config" InvalidIndependentOfSystemState
+  "Timelock: the policy needs a minDelay of zero or greater and a positive gracePeriod"
+
+-- | Raised when a schedule requests a delay shorter than `minDelay`.
+-- `errorId`: `openzeppelin.com/timelock-delay-too-short`.
+eDelayTooShort : FailureStatus
+eDelayTooShort = timelockFailure "delay-too-short" InvalidIndependentOfSystemState
+  "Timelock: the delay is shorter than the minimum delay"
+
+-- | Raised when `authority` does not sign both the timelock and the operation,
+-- or when the operation has a signatory that the timelock does not have.
+-- `errorId`: `openzeppelin.com/timelock-invalid-authority`.
+eInvalidAuthority : FailureStatus
+eInvalidAuthority = timelockFailure "invalid-authority" InvalidIndependentOfSystemState
+  "Timelock: the authority must sign both the target and the operation"
+
+-- | Raised when the timelock's pending list does not hold the operation: the
+-- operation was created outside a schedule choice, was already applied or
+-- dropped, or belongs to another timelock.
+-- `errorId`: `openzeppelin.com/timelock-not-pending`.
+eNotPending : FailureStatus
+eNotPending = timelockFailure "not-pending" InvalidGivenCurrentSystemStateOther
+  "Timelock: the operation is not pending on this contract"
+
+-- | Raised when the actor of an apply is outside the view's executors.
+-- `errorId`: `openzeppelin.com/timelock-not-executor`.
+eNotExecutor : FailureStatus
+eNotExecutor = timelockFailure "not-executor" InvalidIndependentOfSystemState
+  "Timelock: the actor is not an executor of this operation"
+
+-- | Raised when the actor of a cancellation is outside the view's cancellers.
+-- `errorId`: `openzeppelin.com/timelock-not-canceller`.
+eNotCanceller : FailureStatus
+eNotCanceller = timelockFailure "not-canceller" InvalidIndependentOfSystemState
+  "Timelock: the actor is not a canceller of this operation"
+
+-- | Raised when `apply` or `unschedule` creates a successor whose pending list
+-- differs from the reduced list that the lifecycle function passed in.
+-- `errorId`: `openzeppelin.com/timelock-pending-mismatch`.
+ePendingMismatch : FailureStatus
+ePendingMismatch = timelockFailure "pending-mismatch" InvalidIndependentOfSystemState
+  "Timelock: the successor's pending list differs from the reduced list"
+
+-- | Raised when an operation executes before `readyAt`.
+-- `errorId`: `openzeppelin.com/timelock-not-ready`.
+eNotReady : FailureStatus
+eNotReady = timelockFailure "not-ready" InvalidGivenCurrentSystemStateOther
+  "Timelock: the operation is not ready"
+
+-- | Raised when an operation executes at or after `expiresAt`.
+-- `errorId`: `openzeppelin.com/timelock-expired`.
+eExpired : FailureStatus
+eExpired = timelockFailure "expired" InvalidGivenCurrentSystemStateOther
+  "Timelock: the operation has expired"
+
+-- | Raised when a cleanup runs before `expiresAt`, or on an operation without one.
+-- `errorId`: `openzeppelin.com/timelock-not-expired`.
+eNotExpired : FailureStatus
+eNotExpired = timelockFailure "not-expired" InvalidGivenCurrentSystemStateOther
+  "Timelock: the operation has not expired"
 
 -- | Build a `FailureStatus` under the `openzeppelin.com/timelock-` error id
 -- prefix.

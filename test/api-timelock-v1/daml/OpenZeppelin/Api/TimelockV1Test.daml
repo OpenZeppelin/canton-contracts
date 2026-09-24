@@ -1,10 +1,10 @@
--- | Tests for OpenZeppelin.Api.TimelockV1.
+-- | Tests for the interfaces in OpenZeppelin.Api.TimelockV1, wired to the
+-- lifecycle functions of OpenZeppelin.TimelockV1.
 module OpenZeppelin.Api.TimelockV1Test where
 
 import DA.Assert ((===))
-import DA.Foldable (forA_)
 import DA.Fail (FailureStatus)
-import DA.Time (RelTime, addRelTime, days, hours, microseconds, minutes)
+import DA.Time (RelTime, addRelTime, days, hours, minutes)
 import Daml.Script
 
 import OpenZeppelin.Api.TimelockV1
@@ -513,22 +513,6 @@ test_zeroDelayPolicyMakesNextOperationImmediate = script do
   t4 <- execute executor t3 lc
   Some t <- queryContractId admin t4
   t.limit === 20.0
-
--- | The frozen guards in `Timelock_Apply` and the public `isReadyAt` agree at
--- every boundary, so the two copies cannot drift apart unnoticed.
-test_frozenAndPublicGuardsAgree : Script ()
-test_frozenAndPublicGuardsAgree = script do
-  let readyOffset = days 2
-      expiresOffset = days 9
-      tick = microseconds 1
-  forA_ [(readyOffset, negate tick), (readyOffset, hours 0), (expiresOffset, negate tick), (expiresOffset, hours 0)] $ \(base, shift) -> do
-    f@Fixture{..} <- setup
-    (t1, op) <- scheduleLimit f 20.0 readyOffset
-    Some value <- queryContractId admin op
-    let at = addRelTime (addRelTime t0 base) shift
-    setTime at
-    r <- tryExecute executor t1 op
-    either (const False) (const True) r === isReadyAt at value
 
 -- | A stricter policy does not reach an operation scheduled before it: the
 -- operation keeps its schedule and executes at its original `readyAt`.
