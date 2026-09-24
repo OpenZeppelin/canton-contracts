@@ -20,8 +20,14 @@ manifests="$(find examples -type d -name .daml -prune -o -name daml.yaml -type f
 example_count=0
 while IFS= read -r manifest; do
 	package_dir="$(dirname "$manifest")"
+	package_name="$(sed -n 's/^name:[[:space:]]*//p' "$manifest")"
 
-	grep -Eq '^[[:space:]]*-[[:space:]]*\.\./.+\.dar$' "$manifest" ||
+	case "$package_name" in
+	*-test) ;;
+	*) continue ;;
+	esac
+
+	grep -Eq '^[[:space:]]*-[[:space:]]*(\.\./)+packages/.+\.dar$' "$manifest" ||
 		fail "example $package_dir must data-depend on a production DAR"
 
 	printf 'examples: running %s\n' "$package_dir"
