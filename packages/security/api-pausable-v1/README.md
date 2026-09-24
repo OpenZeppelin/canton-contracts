@@ -72,9 +72,7 @@ The guards read the view, so the gated choices call `whenNotPaused this` as
 before.
 
 The SCU check of `damlc` refuses a new interface instance on an existing
-template by default, with `template-has-new-interface-instance`. The check
-exists because contracts created under the old version gain the instance,
-and clients that still use the old version do not know it. Build the new
+template by default, with `template-has-new-interface-instance`. Build the new
 version with `-Wno-template-has-new-interface-instance` after you review the
 old-version behavior that the next section describes.
 [`examples/pausable/retrofit-v1-0`](../../../examples/pausable/retrofit-v1-0)
@@ -114,10 +112,8 @@ Some v <- queryInterfaceContractId reader (toInterfaceContractId @Pausable cid)
 v.paused === True
 ```
 
-The flip is the consumer's exercise node in the transaction tree, recorded
-with its actor and its ledger time. A pause is in force from the flip that
-sets `paused = True` to the flip that clears it, across the chain of
-successor contracts.
+A pause is in force from the flip that sets `paused = True` to the flip that
+clears it, across the chain of successor contracts.
 
 ## Authority and lifecycle
 
@@ -156,16 +152,14 @@ failure status is a new version of `openzeppelin-pausable-v1`.
 For a consumer this means:
 
 - Pin the exact DAR. Your `interface instance` binds your template to one
-  package ID, and every participant that vets your package also vets that
-  package ID.
+  package ID of this package.
 - Your own template stays upgradeable. The interface instance is declared on
   your template, so you add fields, such as CIP-0112 `pauseInfo`, through
   Smart Contract Upgrade (SCU) of your package while this package stays at
   its frozen version.
 - Adopting `openzeppelin-api-pausable-v2` takes one of two paths. Under SCU
-  of your own package, you add a second `interface instance`; an interface
-  instance stays through every SCU version, so your template implements both
-  for life. The new instance needs `-Wno-template-has-new-interface-instance`,
+  of your own package, you add a second `interface instance`, and your
+  template implements both for life. The new instance needs `-Wno-template-has-new-interface-instance`,
   as in the SCU retrofit above. To drop V1, you create a new template version
   outside SCU and migrate existing contracts to it offline. The migration
   copies the flag, so a paused contract stays paused in the new template. It

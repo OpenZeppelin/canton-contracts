@@ -47,9 +47,12 @@ workspace files exist.
 - Do not publish upstream Canton or Splice interfaces under an OpenZeppelin
   namespace. Consume exact, verified upstream DARs.
 
-Every production template or interface must document signatories, observers,
-controllers, choices, disclosure and privacy expectations, authorization
-assumptions, archival behavior, failure modes, and upgrade/migration assumptions.
+Every production template or interface must document what it adds to
+signatories, observers, controllers, choices, disclosure and privacy
+expectations, authorization assumptions, archival behavior, failure modes, and
+upgrade/migration assumptions. Document only what the component defines or
+changes. Do not restate standard Daml or Canton semantics or repository release
+policy, and omit a topic where the component adds nothing.
 
 ## Daml toolchain
 

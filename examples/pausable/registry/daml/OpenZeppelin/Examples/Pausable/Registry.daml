@@ -3,8 +3,7 @@
 --
 -- `pauseReason` and `pauseUntil` are fields of the registry. The flip choices
 -- set them in the same create as the flag, so the flag and its metadata
--- change in one transaction. If CIP-0112 extends `PauseInfo`,
--- the registry adds a field under Smart Contract Upgrade.
+-- change in one transaction.
 module OpenZeppelin.Examples.Pausable.Registry where
 
 import DA.Action (when)

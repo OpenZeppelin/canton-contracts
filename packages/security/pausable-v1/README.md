@@ -126,9 +126,8 @@ flip:
         create this with paused = True
 ```
 
-The interface has only the implicit `Archive` choice, which the template's
-signatories control. A party that holds only a `ContractId Pausable`
-therefore cannot flip the flag.
+The interface defines no choice (other than the implicit `Archive`), so a party
+that holds only a `ContractId Pausable` cannot flip the flag.
 
 ## Scope and security caveats
 
@@ -150,18 +149,12 @@ therefore cannot flip the flag.
 Daml-LF `2.1`, built with the SDK that
 [`multi-package.yaml`](../../../multi-package.yaml) declares.
 
-The package holds functions and values, so a fix ships as a new version under
-the same name, and your package picks it up in a new version built against
-the new DAR. The fix reaches only exercises that run your new version. A
-submission that selects your old version still runs the old guard, so unvet
-the old version of your package to remove it. This package defines no templates, interfaces, or data types, so your
-package's next Smart Contract Upgrade version may depend on a newer version
-of it. The `errorId` of every failure status is stable across versions. The
-interface package stays at its frozen version.
-
-Your package binds to one package ID of this package at build time, so every
-participant that vets your package also vets that package ID and the
-interface package ID.
+A fix ships as a new version under the same name. Your package picks it up in
+its next Smart Contract Upgrade version, built against the new DAR. The fix
+reaches only exercises that run your new version. A submission that selects
+your old version still runs the old guard, so unvet the old version of your
+package to remove it. The `errorId` of every failure status is stable across
+versions.
 
 `0.1.0` is a pre-release: the package ID may change between commits, and no
 audit has been performed. See [`RELEASING.md`](../../../RELEASING.md).
