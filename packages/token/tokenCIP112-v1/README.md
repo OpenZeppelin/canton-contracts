@@ -12,11 +12,14 @@ registry rules, and event logging.
 | Status | Pre-release; unaudited |
 | Standard | [CIP-0112](https://github.com/global-synchronizer-foundation/cips) / Token Standard V2 |
 
-> [!WARNING]
-> The Token Standard V2 interfaces are devnet-stage upstream. The vendored DARs
-> under [`dars/vendor/`](../../../dars/vendor/) are local builds from a pinned
-> splice commit; every package ID changes when upstream cuts a release. See
-> [`dars/manifest.yaml`](../../../dars/manifest.yaml) for provenance.
+> [!NOTE]
+> The Token Standard V2 interface DARs under
+> [`dars/vendor/`](../../../dars/vendor/) are byte-identical copies of the
+> artifacts Splice releases under `daml/dars/` (release tag `0.8.3`). Their
+> package IDs are the ones Splice deployments already vet, so this package
+> interoperates with wallets and registries built on the official interfaces.
+> [`dars/manifest.yaml`](../../../dars/manifest.yaml) records every package ID
+> and digest.
 
 ## What it provides
 
@@ -74,9 +77,10 @@ the same templates: the V1 DARs are vendored under
 
 The package builds with the workspace SDK declared in
 [`multi-package.yaml`](../../../multi-package.yaml) and targets Daml-LF 2.1.
-It is the first release of the `openzeppelin-tokenCIP112-v1` SCU lineage:
-templates upgrade in place, and the vendored interface DARs are pinned until
-upstream cuts a release (see the warning above).
+It is the first release of the `openzeppelin-tokenCIP112-v1` SCU lineage and
+depends on the official Splice Token Standard V2 packages (see the note
+above). Later versions of the lineage that keep those dependencies can upgrade
+its templates in place.
 
 ## Build
 

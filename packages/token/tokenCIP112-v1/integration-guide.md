@@ -9,8 +9,9 @@ imports — are in [`README.md`](README.md).
 Three roles interact with the package:
 
 - The **registry operator** hosts the `admin` party. Its participant uploads
-  the vendored Token Standard V2 DARs from
-  [`dars/vendor/`](../../../dars/vendor/) first, then the package DAR. The
+  the Token Standard V2 DARs from [`dars/vendor/`](../../../dars/vendor/)
+  first (a participant that already runs Splice has these exact packages),
+  then the package DAR. The
   operator creates one `TokenRules` contract per registry configuration and
   serves it to consumers by explicit disclosure.
 - **Wallet users** hold accounts. Their participants upload the same DARs.
@@ -21,9 +22,10 @@ Three roles interact with the package:
   contract observers and drive `SettlementFactory_SettleBatch` with the
   executors as actors.
 
-Every participant needs the identical vendored DARs: the package IDs are pinned
-by [`dars/manifest.yaml`](../../../dars/manifest.yaml) and change when upstream
-cuts a release.
+Every participant needs these exact packages.
+[`dars/manifest.yaml`](../../../dars/manifest.yaml) records their package IDs,
+which are those of the Splice release artifacts, so a participant that has
+vetted Splice's Token Standard V2 packages can vet this package alongside them.
 
 ## Patterns
 
@@ -77,8 +79,8 @@ successor to exit.
 The package implements CIP-0112 / Token Standard V2: `HoldingV2.Holding`,
 `TransferInstructionV2.TransferFactory` and `TransferInstruction`,
 `AllocationInstructionV2.AllocationFactory`, `AllocationV2.Allocation` and
-`SettlementFactory`, and `TransferEventsV2.EventLog`, against the vendored
-devnet-stage DARs.
+`SettlementFactory`, and `TransferEventsV2.EventLog`, against the official
+Splice release DARs vendored under [`dars/vendor/`](../../../dars/vendor/).
 
 Conformance notes:
 

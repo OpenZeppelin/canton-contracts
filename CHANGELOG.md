@@ -26,8 +26,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Added the CIP-0112-compliant token package
   `openzeppelin-tokenCIP112-v1` with public module namespace
   `OpenZeppelin.TokenCIP112V1`. It implements the Token Standard V2 interfaces
-  and builds against the 13 vendored Token Standard V2 DARs under
-  `dars/vendor/`, with provenance recorded in `dars/manifest.yaml`.
+  and builds against the 13 official Token Standard V2 DARs released by Splice
+  (tag `0.8.3`), vendored under `dars/vendor/` with provenance recorded in
+  `dars/manifest.yaml`.
 - Added CIP-0112 iterated settlement: allocations created with
   `nextIterationFunding` accept executor-supplied extra transfer legs per
   settlement iteration, bounded by the locked reserve, and can roll proceeds
