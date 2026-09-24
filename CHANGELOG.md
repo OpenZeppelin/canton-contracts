@@ -29,6 +29,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   and builds against the 13 official Token Standard V2 DARs released by Splice
   (tag `0.8.3`), vendored under `dars/vendor/` with provenance recorded in
   `dars/manifest.yaml`.
+- `TokenHolding_OwnerUnlock` emits an `EventLog_HoldingsChange` for the
+  archived holding and its unlocked replacement, so owner recovery of an
+  expired lock is visible to Token Standard history parsers.
 - Added CIP-0112 iterated settlement: allocations created with
   `nextIterationFunding` accept executor-supplied extra transfer legs per
   settlement iteration, bounded by the locked reserve, and can roll proceeds

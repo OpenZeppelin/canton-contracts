@@ -19,8 +19,9 @@ import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.TokenCIP112V1.Allocation
 import OpenZeppelin.TokenCIP112V1.Holding
@@ -602,6 +603,33 @@ testLockGraceAndOwnerUnlock = do
   gcd <- queryContractId admin templateCid
   gcd === None
 
+-- | Owner unlock is a holdings change like any other (CIP-0112 §4.3.5): it
+-- emits one account-local `EventLog_HoldingsChange` naming the archived
+-- holding as input and its unlocked replacement as output, with no transfer
+-- legs, so event-driven wallets drop the stale contract id. The account
+-- parties exercise it alone; the admin's authority for the event comes from
+-- the holding's signatories.
+testOwnerUnlockEmitsHoldingsChange : Script ()
+testOwnerUnlockEmitsHoldingsChange = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  _ <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  lockedHoldings <- query @TokenHolding alice
+  lockedCid <- case [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock] of
+    [cid] -> pure cid
+    cids -> abort ("expected exactly one locked holding, got " <> show (length cids))
+  setTime t4
+  (newCid, tree) <- submitResultAndTree (actAs alice) do
+    exerciseCmd lockedCid TokenHolding_OwnerUnlock
+  ev <- expectOneHoldingsChange tree
+  ev.admin === admin
+  ev.account === basicAccount alice
+  ev.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding lockedCid]
+  ev.outputHoldingCids === [toInterfaceContractId @HoldingV2.Holding newCid]
+  ev.transferLegSides === []
+  assertMsg "the account parties must observe the event" (alice `elem` ev.observers)
+  assertNoLocks alice
+
 -- | A lock carrying `expiresAfter` is rejected at creation, since the
 -- package's expiry checks only model `expiresAt`.
 testExpiresAfterRejected : Script ()
@@ -749,12 +777,14 @@ testRulesConfigValidated = do
   submitMustFail admin do createCmd base with maxTTL = minutes 0
   submitMustFail admin do createCmd base with lockGrace = minutes 0
 
--- | Capability gap: issuance now has an evented path, so supply changes are
--- visible to standard history parsers instead of appearing as bare creates.
+-- | Issuance has an evented path, so supply changes are visible to standard
+-- history parsers instead of appearing as bare creates. Each supply change is
+-- explained by exactly one event whose leg names the mint or burn special
+-- account as the other side.
 testMintAndBurnEmitEvents : Script ()
 testMintAndBurnEmitEvents = do
   s@Scenario{..} <- setup
-  holdingCid <- submit (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+  (holdingCid, mintTree) <- submitResultAndTree (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_Mint with
       account = basicAccount alice
       instrumentId = "TOK"
@@ -762,6 +792,13 @@ testMintAndBurnEmitEvents = do
       reason = "initial issuance"
   aliceAfter <- holdingAmounts alice
   aliceAfter === [25.0]
+  mintEvent <- expectOneHoldingsChange mintTree
+  mintEvent.account === basicAccount alice
+  mintEvent.inputHoldingCids === []
+  mintEvent.outputHoldingCids === [toInterfaceContractId @HoldingV2.Holding holdingCid]
+  map (.side) mintEvent.transferLegSides === [TransferEventsV2.ReceiverSide]
+  map (.otherside) mintEvent.transferLegSides === [mintAccount]
+  map (.amount) mintEvent.transferLegSides === [25.0]
   -- Minting a non-positive amount is refused.
   submitMustFail (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_Mint with
@@ -775,13 +812,19 @@ testMintAndBurnEmitEvents = do
       holdingCid
       account = basicAccount alice
       reason = "redeem"
-  _ <- submit (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+  burnTree <- submitTree (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_Burn with
       holdingCid
       account = basicAccount alice
       reason = "redeem"
   aliceFinal <- holdingAmounts alice
   aliceFinal === []
+  burnEvent <- expectOneHoldingsChange burnTree
+  burnEvent.account === basicAccount alice
+  burnEvent.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding holdingCid]
+  burnEvent.outputHoldingCids === []
+  map (.side) burnEvent.transferLegSides === [TransferEventsV2.SenderSide]
+  map (.otherside) burnEvent.transferLegSides === [burnAccount]
   -- A locked holding cannot be burned: the lock reserves it for a workflow.
   aliceInput <- mint admin alice 10.0
   _ <- instructTransfer s [alice] (mkTransfer s alice bob 4.0 [aliceInput])

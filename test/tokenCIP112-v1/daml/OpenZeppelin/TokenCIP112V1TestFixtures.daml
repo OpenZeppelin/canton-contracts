@@ -7,7 +7,7 @@ module OpenZeppelin.TokenCIP112V1TestFixtures where
 import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
 import DA.List (sort)
-import DA.Optional (isNone)
+import DA.Optional (isNone, optionalToList)
 import DA.Time (days, hours, time)
 import Daml.Script
 
@@ -15,6 +15,7 @@ import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils (basicAccount, nonIteratedAllocation)
 
@@ -192,3 +193,26 @@ assertNoLocks : Party -> Script ()
 assertNoLocks owner = do
   holdings <- query @TokenHolding owner
   all (\(_, h) -> isNone h.holding.lock) holdings === True
+
+-- Event inspection
+-------------------
+
+-- | Every `EventLog_HoldingsChange` exercised anywhere in a transaction tree,
+-- in tree order. The event-log host is created and archived within the same
+-- transaction, so the tree is the only place the payloads can be read.
+holdingsChangeEvents : TransactionTree -> [TransferEventsV2.EventLog_HoldingsChange]
+holdingsChangeEvents tree = concatMap holdingsChangeEventsIn tree.rootEvents
+
+-- | Recursion lives at the top level because Daml rejects recursive local
+-- bindings.
+holdingsChangeEventsIn : TreeEvent -> [TransferEventsV2.EventLog_HoldingsChange]
+holdingsChangeEventsIn (CreatedEvent _) = []
+holdingsChangeEventsIn (ExercisedEvent ex) =
+  optionalToList (fromAnyChoice @TransferEventsV2.EventLog ex.argument)
+    <> concatMap holdingsChangeEventsIn ex.childEvents
+
+-- | The single holdings-change event a transaction must carry.
+expectOneHoldingsChange : TransactionTree -> Script TransferEventsV2.EventLog_HoldingsChange
+expectOneHoldingsChange tree = case holdingsChangeEvents tree of
+  [ev] -> pure ev
+  evs -> abort ("expected exactly one holdings-change event, got " <> show (length evs))

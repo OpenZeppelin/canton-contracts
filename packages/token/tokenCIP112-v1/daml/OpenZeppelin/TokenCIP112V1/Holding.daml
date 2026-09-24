@@ -24,6 +24,8 @@ import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.TokenStandard.Utils
 
+import OpenZeppelin.TokenCIP112V1.Base (emitHoldingsChange)
+
 -- | A holding is maintained jointly by the instrument admin and the account
 -- parties. Lock holders observe the contract so they can settle or release the
 -- locked funds. Regular accounts only: special (ownerless) accounts never hold.
@@ -47,10 +49,15 @@ template TokenHolding with
     choice TokenHolding_OwnerUnlock : ContractId TokenHolding
       -- ^ Reclaim a holding whose lock has expired, without routing it through
       -- a transfer or allocation. Archives this holding and recreates it
-      -- unlocked. Fails while the lock is live or indefinite. Without this, a
-      -- locked holding whose referencing workflow contract was
-      -- garbage-collected would be unrecoverable, since nothing else can clear
-      -- a lock.
+      -- unlocked, and emits an account-local `EventLog_HoldingsChange` with
+      -- the consumed holding, its replacement, and no transfer legs, so
+      -- event-driven wallets drop the archived contract id. Fails while the
+      -- lock is live or indefinite. Without this choice, a locked holding
+      -- whose referencing workflow contract was garbage-collected would be
+      -- unrecoverable, since nothing else can clear a lock.
+      --
+      -- The admin's authority for the event comes from this template's
+      -- signatories, so the account parties can exercise the choice alone.
       controller accountParties holding.instrumentId.admin holding.account
       do
         lock <- case holding.lock of
@@ -59,7 +66,13 @@ template TokenHolding with
         case lock.expiresAt of
           None -> fail "holding is locked indefinitely and cannot be unlocked by its owner"
           Some expiresAt -> assertDeadlineExceeded "lock expiresAt" expiresAt
-        create this with holding = holding with lock = None
+        newCid <- create this with holding = holding with lock = None
+        emitHoldingsChange holding.instrumentId.admin holding.account []
+          [toInterfaceContractId @HoldingV2.Holding self]
+          [toInterfaceContractId @HoldingV2.Holding newCid]
+          []
+          "expired lock released by owner"
+        pure newCid
 
     interface instance HoldingV2.Holding for TokenHolding where
       view = holding
