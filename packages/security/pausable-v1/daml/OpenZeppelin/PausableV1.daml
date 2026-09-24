@@ -27,8 +27,7 @@ import qualified OpenZeppelin.PausableV1.Internal as Internal
 
 -- | Fail with `eEnforcedPause` unless the contract is unpaused. Call it
 -- before the state change in every gated choice, and in the choice that
--- pauses. Authorization checks can run first; the first check that fails
--- sets the error:
+-- pauses:
 --
 -- ```
 -- choice Vault_Withdraw : ContractId Vault

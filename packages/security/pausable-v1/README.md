@@ -34,10 +34,7 @@ Adopting the functions is three steps.
 
 **1. Guard the choices that a pause must stop.** Call `whenNotPaused this` in
 every gated choice body, before the choice changes state. It takes the
-contract value the choice runs on, so the caller supplies nothing. The first
-check that fails sets the error: a choice that calls the guard first reports
-`eEnforcedPause` while paused, and a choice that checks authorization first,
-as `RoleVault_Pause` below does, reports the authorization error.
+contract value the choice runs on, so the caller supplies nothing.
 
 ```daml
 import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
