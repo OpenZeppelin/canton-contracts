@@ -55,13 +55,53 @@ the contract being exercised is sound and a guard that fetches a separate
 switch contract is not, since a caller can substitute or omit a contract it
 supplies. The implementing templates live in consuming packages.
 
-The component is still two packages. `openzeppelin-api-pausable-v1` holds the
+The Pausable component is two packages. `openzeppelin-api-pausable-v1` holds the
 interface and its view and nothing else, because that is the one part Daml
 cannot upgrade. `openzeppelin-pausable-v1` holds the guards and the failure
 statuses. A bug fix in `whenNotPaused` is a new version of the function
 package, and the frozen interface package does not move. The Splice token
 standard follows the same split, keeping its helper functions in
 `splice-token-standard-utils` beside its frozen interface packages.
+
+Timelock ships no template for a different reason. A scheduled operation is a
+contract of the consumer's own template, typed by its fields and signed by the
+timelock's signatories, because a Daml choice applies typed contract
+data rather than forwarding an encoded call. The library contributes the
+interfaces that expose the operation's schedule and lifecycle, the functions
+that compute the schedule, and the guards that enforce it. The component is
+two packages, split as Pausable is. `openzeppelin-api-timelock-v1` holds the
+interfaces and their views, and no logic. `openzeppelin-timelock-v1` holds the
+lifecycle functions, the schedule functions, the pending-list functions, the
+time guards, and the failure statuses. The failure statuses and the private
+checks live in `OpenZeppelin.TimelockV1.Internal`, and the public module
+re-exports the failure statuses.
+
+Each target choice body calls a method of the implementing template:
+`Timelock_Apply` calls `applyImpl`, and `Timelock_Drop` calls `dropImpl`. The
+consumer implements each method with one call to `applyOperation` or
+`dropOperation`. The Splice token standard interfaces use the same pattern. A
+fix to a lifecycle check is a new version of the function package, and the
+consumer picks it up through a Smart Contract Upgrade of its own package. A
+check in a frozen choice body cannot be fixed: SCU cannot remove an interface
+instance, so the faulty choice stays callable on every implementing contract.
+The cost is that the interface does not enforce the checks. They run because
+the consumer's method calls the lifecycle function, as the consumer's `apply`
+and schedule choices run because the consumer writes them.
+
+The lifecycle functions authenticate the actor and enforce the lifecycle
+checks before calling the consumer's `apply` or `unschedule` method. The
+authority of a target choice consists of the target's signatories and the
+actor. Operation choices forward requests to the target choices. The lifecycle
+functions verify shared signatory authority and archive the operation in the
+same transaction as the state change.
+
+The recommended Timelock integration separates three contracts: the timelock,
+which holds the delay policy and the pending list; the governed config, which
+holds the settings that matured operations change; and the business contract,
+which reads the config. Every schedule consumes the timelock, and business
+choices consume the business contract, so the two workloads do not contend.
+The timelock records the current config id, because Daml 3.4 has no contract
+keys to look it up by.
 
 The API package follows the `openzeppelin-api-<component>-vN` freeze rule: no
 templates, no SCU, and a breaking change ships as a sibling `-v2` package. The
@@ -73,7 +113,8 @@ template, never remove one, and adding one needs the `damlc` option
 `-Wno-template-has-new-interface-instance`. So adopting an API `-v2` package
 means the template implements both interfaces for life; dropping the `-v1`
 instance needs a new template version outside SCU and an offline contract
-migration that copies the flag.
+migration that copies the contract state, such as the pause flag or the
+pending list.
 
 ## Dependency policy
 

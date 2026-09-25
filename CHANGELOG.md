@@ -9,6 +9,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## Unreleased
 
+### `openzeppelin-api-timelock-v1`
+
+#### Added
+
+- Added the frozen interface package `openzeppelin-api-timelock-v1` with public
+  module `OpenZeppelin.Api.TimelockV1`, holding the `Timelock`, `Operation`,
+  and `Timelocked` interfaces, their views, `TimelockConfig`, `Pending`, and
+  `DropReason`.
+- The target lifecycle choices `Timelock_Apply` and `Timelock_Drop` call the
+  `applyImpl` and `dropImpl` methods of the implementing template.
+  `Timelock_Drop` takes a `DropReason` for cancellation or expiry cleanup.
+
+### `openzeppelin-timelock-v1`
+
+#### Added
+
+- Added the function package `openzeppelin-timelock-v1` with public module
+  `OpenZeppelin.TimelockV1`, holding `applyOperation`, `dropOperation`,
+  `scheduleAt`, `scheduleAfter`, `isValidConfig`, `requireValidConfig`,
+  `addPending`, `takePending`, `requireReady`, `requireExpired`, `isReadyAt`,
+  `isExpiredAt`, and the ten failure statuses of the component. It depends on
+  `openzeppelin-api-timelock-v1`.
+- `applyOperation` and `dropOperation` authenticate `actor` and enforce
+  permissions, time bounds, pending membership, and shared signatory
+  authority. Both archive the operation atomically with the state change.
+
 ### `openzeppelin-api-pausable-v1`
 
 #### Added

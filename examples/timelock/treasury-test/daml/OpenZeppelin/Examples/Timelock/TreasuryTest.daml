@@ -1,0 +1,203 @@
+-- | The lifecycle of `OpenZeppelin.Examples.Timelock.Treasury`, as a runnable script.
+module OpenZeppelin.Examples.Timelock.TreasuryTest where
+
+import DA.Assert ((===))
+import DA.Time (addRelTime, days, hours)
+import Daml.Script
+
+import qualified OpenZeppelin.Api.TimelockV1 as Timelock
+import OpenZeppelin.Examples.Timelock.Treasury
+
+-- | Execute an operation on the timelock as `actor`, returning the successor.
+execute : (HasToInterface o Timelock.Operation)
+  => Party -> ContractId TreasuryTimelock -> ContractId o -> Script (ContractId TreasuryTimelock)
+execute actor t op = fromInterfaceContractId @TreasuryTimelock <$> submit actor do
+  exerciseCmd (toInterfaceContractId @Timelock.Operation op)
+    Timelock.Operation_Execute with actor, target = toInterfaceContractId t
+
+-- | The current `TreasuryConfig` of a timelock.
+currentConfig : Party -> ContractId TreasuryTimelock -> Script (ContractId TreasuryConfig)
+currentConfig p t = do
+  Some tl <- queryContractId p t
+  pure tl.target
+
+-- | A limit change that waits out its delay, one that a proposer cancels, one
+-- that expires, and a delay-policy change that goes through the same timelock.
+demo : Script ()
+demo = script do
+  admin <- allocateParty "admin"
+  proposer <- allocateParty "proposer"
+  executor <- allocateParty "executor"
+  supplier <- allocateParty "supplier"
+  t0 <- getTime
+
+  -- A two-day delay, and a week to execute once ready.
+  let config = Timelock.TimelockConfig with
+        minDelay = days 2
+        gracePeriod = Some (days 7)
+  cfg <- submit admin do
+    createCmd TreasuryConfig with admin; executor; limit = 100.0
+  timelock <- submit admin do
+    createCmd TreasuryTimelock with
+      admin; proposer; executor; config; pending = []; target = cfg
+  treasury <- submit admin do
+    createCmd Treasury with admin; balance = 10000.0
+
+  -- The protected operation: a payment above the limit is refused.
+  (treasury, _) <- submit admin do
+    exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 100.0
+  submitMustFail admin do
+    exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 250.0
+
+  -- A config that another party signs is refused.
+  other <- allocateParty "other"
+  foreign <- submit other do
+    createCmd TreasuryConfig with admin = other; executor = other; limit = 1000.0
+  submitMustFail admin do
+    exerciseCmd treasury Treasury_Pay with configCid = foreign, recipient = supplier, amount = 250.0
+
+  -- The sole signatory is not bound: a config that `admin` creates directly
+  -- passes the signatory check. The application identifies the canonical
+  -- config, which is the one the timelock records.
+  direct <- submit admin do
+    createCmd TreasuryConfig with admin; executor; limit = 1000.0
+  (treasury, _) <- submit admin do
+    exerciseCmd treasury Treasury_Pay with configCid = direct, recipient = supplier, amount = 250.0
+  canonical <- currentConfig admin timelock
+  canonical === cfg
+  submit admin do archiveCmd direct
+
+  -- A delay shorter than the policy is refused at scheduling time.
+  submitMustFail proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = 500.0, readyAt = addRelTime t0 (hours 1)
+
+  -- A negative limit is refused at scheduling time.
+  submitMustFail proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = -1.0, readyAt = addRelTime t0 (days 3)
+
+  -- The proposer schedules a limit raise that becomes ready in three days. The
+  -- timelock records it as pending, so the timelock's contract id changes.
+  (timelock, raise) <- submit proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = 500.0, readyAt = addRelTime t0 (days 3)
+
+  -- Scheduling leaves the treasury and the config untouched, so payments
+  -- continue against the same contracts.
+  (treasury, _) <- submit admin do
+    exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 50.0
+
+  -- An operation that the admin creates directly, ready at once, is absent
+  -- from the pending list and is refused.
+  forged <- submit admin do
+    createCmd LimitChange with
+      admin; proposer; executor; newLimit = 500.0; readyAt = t0; expiresAt = None
+  submitMustFail executor do
+    exerciseCmd (toInterfaceContractId @Timelock.Operation forged)
+      Timelock.Operation_Execute with actor = executor, target = toInterfaceContractId timelock
+  submit admin do archiveCmd forged
+
+  -- Off-ledger tooling reads pending operations through the interface views,
+  -- whatever template implements them.
+  Some v <- queryInterfaceContractId executor (toInterfaceContractId @Timelock.Timelocked raise)
+  v.readyAt === addRelTime t0 (days 3)
+  v.expiresAt === Some (addRelTime t0 (days 10))
+  Some tv <- queryInterfaceContractId executor (toInterfaceContractId @Timelock.Timelock timelock)
+  tv.pending === [toInterfaceContractId raise]
+
+  -- Too early: the execute choice fails, and the limit stays at 100.
+  submitMustFail executor do
+    exerciseCmd (toInterfaceContractId @Timelock.Operation raise)
+      Timelock.Operation_Execute with actor = executor, target = toInterfaceContractId timelock
+  -- Direct target calls enforce executor permission and the same delay.
+  submitMustFail admin do
+    exerciseCmd (toInterfaceContractId @Timelock.Timelock timelock)
+      Timelock.Timelock_Apply with actor = admin, op = toInterfaceContractId raise
+  submitMustFail executor do
+    exerciseCmd (toInterfaceContractId @Timelock.Timelock timelock)
+      Timelock.Timelock_Apply with actor = executor, op = toInterfaceContractId raise
+  submitMustFail admin do
+    exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 250.0
+
+  -- Three days later the operation is ready. Executing it archives the
+  -- operation and the config, and records the new config on the timelock.
+  passTime (days 3)
+  timelock <- execute executor timelock raise
+  submitMustFail admin do
+    exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 250.0
+  cfg <- currentConfig admin timelock
+  (treasury, _) <- submit admin do
+    exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 250.0
+
+  -- The operation executed once; presenting it again fails.
+  submitMustFail executor do
+    exerciseCmd (toInterfaceContractId @Timelock.Operation raise)
+      Timelock.Operation_Execute with actor = executor, target = toInterfaceContractId timelock
+
+  -- A pending change can be cancelled by the proposer before it matures.
+  now <- getTime
+  (timelock, cut) <- submit proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = 50.0, readyAt = addRelTime now (days 2)
+  timelock <- fromInterfaceContractId @TreasuryTimelock <$> submit proposer do
+    exerciseCmd (toInterfaceContractId @Timelock.Operation cut)
+      Timelock.Operation_Cancel with actor = proposer, target = toInterfaceContractId timelock
+  passTime (days 2)
+  submitMustFail executor do
+    exerciseCmd (toInterfaceContractId @Timelock.Operation cut)
+      Timelock.Operation_Execute with actor = executor, target = toInterfaceContractId timelock
+
+  -- A change left unexecuted through the grace period expires. Execute fails
+  -- from then on, and anyone may clean it up.
+  now <- getTime
+  (timelock, stale) <- submit proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = 1000.0, readyAt = addRelTime now (days 2)
+  passTime (days 9)
+  submitMustFail executor do
+    exerciseCmd (toInterfaceContractId @Timelock.Operation stale)
+      Timelock.Operation_Execute with actor = executor, target = toInterfaceContractId timelock
+  timelock <- fromInterfaceContractId @TreasuryTimelock <$> submit executor do
+    exerciseCmd (toInterfaceContractId @Timelock.Operation stale)
+      Timelock.Operation_Cleanup with actor = executor, target = toInterfaceContractId timelock
+
+  -- An operation that `admin` archives directly leaves a pending entry that
+  -- the lifecycle choices cannot remove. `admin` removes it with the prune
+  -- choice.
+  now <- getTime
+  (timelock, dropped) <- submit proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = 70.0, readyAt = addRelTime now (days 2)
+  submit admin do archiveCmd dropped
+  submitMustFail proposer do
+    exerciseCmd (toInterfaceContractId @Timelock.Operation dropped)
+      Timelock.Operation_Cancel with actor = proposer, target = toInterfaceContractId timelock
+  timelock <- submit admin do
+    exerciseCmd timelock TreasuryTimelock_Prune with stale = [toInterfaceContractId dropped]
+  Some tv <- queryInterfaceContractId admin (toInterfaceContractId @Timelock.Timelock timelock)
+  tv.pending === []
+
+  -- The delay policy is protected by itself. Shortening the delay takes the
+  -- current delay to become effective, and then applies to later schedules.
+  -- A policy change leaves the config in place.
+  now <- getTime
+  let faster = Timelock.TimelockConfig with
+        minDelay = hours 6
+        gracePeriod = Some (days 1)
+  submitMustFail proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleConfig with
+      newConfig = faster, readyAt = addRelTime now (hours 6)
+  (timelock, policy) <- submit proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleConfig with
+      newConfig = faster, readyAt = addRelTime now (days 2)
+  passTime (days 2)
+  timelock <- execute executor timelock policy
+  cfg' <- currentConfig admin timelock
+  cfg' === cfg
+  now <- getTime
+  _ <- submit proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = 600.0, readyAt = addRelTime now (hours 6)
+
+  pure ()

@@ -1,0 +1,12 @@
+sdk-version: 3.4.11
+name: timelock-treasury-example
+source: daml
+version: 0.0.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  - ../../../packages/security/api-timelock-v1/.daml/dist/openzeppelin-api-timelock-v1-0.1.0.dar
+  - ../../../packages/security/timelock-v1/.daml/dist/openzeppelin-timelock-v1-0.1.0.dar
+build-options:
+  - --target=2.1

@@ -1,0 +1,14 @@
+sdk-version: 3.4.11
+name: openzeppelin-api-timelock-v1-test
+source: daml
+version: 0.0.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+data-dependencies:
+  - ../../packages/security/api-timelock-v1/.daml/dist/openzeppelin-api-timelock-v1-0.1.0.dar
+  - ../../packages/security/timelock-v1/.daml/dist/openzeppelin-timelock-v1-0.1.0.dar
+build-options:
+  - --target=2.1
+  - -Wno-template-interface-depends-on-daml-script

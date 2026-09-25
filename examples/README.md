@@ -21,6 +21,14 @@ Consumers of `openzeppelin-api-pausable-v1` and `openzeppelin-pausable-v1`.
 | [`registry`](pausable/registry) | [`registry-test`](pausable/registry-test) | Flip choices that set CIP-0112 `pauseInfo` fields in the same create as the flag |
 | [`retrofit-v1-0`](pausable/retrofit-v1-0), [`retrofit-v1-1`](pausable/retrofit-v1-1) | [`retrofit-test`](pausable/retrofit-test) | Adoption in the next SCU version of a template with active contracts |
 
+## `timelock`
+
+Consumers of `openzeppelin-api-timelock-v1` and `openzeppelin-timelock-v1`.
+
+| Example | Tests | Shows |
+|---|---|---|
+| [`treasury`](timelock/treasury) | [`treasury-test`](timelock/treasury-test) | A timelock, a governed config, and a treasury on separate contracts. The spending limit and the delay policy change only through timelocked operations: schedule, wait, apply, cancel, expiry cleanup, and self-administration of the delay |
+
 ## Build and run
 
 From the repository root, using the package path from `multi-package.yaml`:

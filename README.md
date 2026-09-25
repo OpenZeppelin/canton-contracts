@@ -15,14 +15,16 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-The Pausable component lives under [`packages/`](packages/) as two packages:
-a frozen interface package and an upgradeable package of guard
-functions. Neither has a release or an audit.
+Two components live under [`packages/`](packages/). Pausable is two packages:
+a frozen interface package and an upgradeable package of guard functions.
+Timelock follows the same split. No package has a release or an audit.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|
 | [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` | Pre-release; unaudited |
 | [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Pre-release; unaudited |
+| [Timelock API](packages/security/api-timelock-v1/) | `openzeppelin-api-timelock-v1` | `OpenZeppelin.Api.TimelockV1` | Pre-release; unaudited |
+| [Timelock](packages/security/timelock-v1/) | `openzeppelin-timelock-v1` | `OpenZeppelin.TimelockV1` | Pre-release; unaudited |
 
 Three further components are early-stage candidates under
 [`experiments/`](experiments/). They will be redesigned before they move into
@@ -101,7 +103,7 @@ Each package `README.md` shows the consumer code for that component, and
 
 ```text
 packages/
-  security/               Category for emergency-stop and safety components
+  security/               Category for emergency-stop, delay, and safety components
 test/                     Isolated component test packages
 experiments/
   access/                 Category for authorization and ownership components

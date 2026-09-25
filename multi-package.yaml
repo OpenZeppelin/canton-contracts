@@ -13,6 +13,10 @@ packages:
   - packages/security/pausable-v1
   - test/api-pausable-v1
   - test/pausable-v1
+  - packages/security/api-timelock-v1
+  - packages/security/timelock-v1
+  - test/api-timelock-v1
+  - test/timelock-v1
   - examples/pausable/vault
   - examples/pausable/vault-test
   - examples/pausable/registry
@@ -20,3 +24,5 @@ packages:
   - examples/pausable/retrofit-v1-0
   - examples/pausable/retrofit-v1-1
   - examples/pausable/retrofit-test
+  - examples/timelock/treasury
+  - examples/timelock/treasury-test

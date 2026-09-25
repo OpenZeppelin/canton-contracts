@@ -10,6 +10,8 @@ are navigation only and never appear in a package name or module namespace.
 |---|---|---|---|
 | `security/` | [Pausable API](security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
 | `security/` | [Pausable](security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` |
+| `security/` | [Timelock API](security/api-timelock-v1/) | `openzeppelin-api-timelock-v1` | `OpenZeppelin.Api.TimelockV1` |
+| `security/` | [Timelock](security/timelock-v1/) | `openzeppelin-timelock-v1` | `OpenZeppelin.TimelockV1` |
 
 Each package `README.md` documents the public module, the authority and
 lifecycle model, the build command, a consumption example, and the security

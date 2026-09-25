@@ -1,0 +1,205 @@
+-- | OpenZeppelin Timelock - a mandatory delay between the proposal of a
+-- privileged operation and its execution.
+--
+-- Three interfaces:
+--
+-- * `Timelock`, on the consumer's timelock template: the delay policy, the
+--   pending operations, and the choices that apply or drop one of them.
+-- * `Operation`, on each operation template: who may execute and cancel, and
+--   the choices those parties call.
+-- * `Timelocked`, on each operation template: when the operation is ready and
+--   when it expires.
+--
+-- The package holds no logic. Each interface choice calls a method of the
+-- implementing template. The consumer writes the schedule choices and the
+-- `apply` and `unschedule` methods, and implements `applyImpl` and `dropImpl`
+-- with the lifecycle functions of the `openzeppelin-timelock-v1` package,
+-- module `OpenZeppelin.TimelockV1`. That package also holds the schedule
+-- functions, the time guards, and the failure statuses.
+module OpenZeppelin.Api.TimelockV1 where
+
+import DA.Time (RelTime)
+
+-- | When a scheduled operation may execute.
+data TimelockedView = TimelockedView with
+    readyAt : Time
+      -- ^ The earliest ledger time at which the operation may execute.
+    expiresAt : Optional Time
+      -- ^ The ledger time from which the operation may no longer execute, or
+      --   `None` when the operation stays executable until it is archived.
+  deriving (Eq, Show)
+
+-- | The schedule of an operation. Implement it on every operation template,
+-- beside `Operation`, with the two fields that the schedule choice stored:
+--
+-- ```
+-- interface instance Timelocked for LimitChange where
+--   view = TimelockedView with readyAt, expiresAt
+-- ```
+--
+-- Off-ledger readers query it to list operations and their times without
+-- knowing the operation template. The interface has no choices.
+interface Timelocked where
+  viewtype TimelockedView
+
+-- | The operations that a timelock scheduled and has not yet applied or
+-- dropped. Hold it as a field of the timelock template, initialize it empty,
+-- and add to it only in the schedule choices, with `addPending`.
+-- `Timelock_Apply` and `Timelock_Drop` refuse an operation that the list does
+-- not hold, so an operation created outside the schedule choices has no
+-- effect.
+type Pending = [ContractId Timelocked]
+
+-- | The delay policy. Hold it as a field of the timelock template and check
+-- it with `isValidConfig` in the `ensure` clause. To change it, schedule the
+-- new policy as an operation under the current one.
+data TimelockConfig = TimelockConfig with
+    minDelay : RelTime
+      -- ^ The shortest delay a schedule may request, zero or greater. Zero
+      --   disables the delay.
+    gracePeriod : Optional RelTime
+      -- ^ How long after `readyAt` an operation stays executable, positive
+      --   when set. `None` keeps an operation executable until it is
+      --   archived. Any party can clean up an expired operation, so choose a
+      --   value well above the synchronizer's ledger-time tolerance.
+  deriving (Eq, Show)
+
+-- | The state of a timelock that the lifecycle choices read.
+data TimelockView = TimelockView with
+    authority : Party
+      -- ^ A signatory of the timelock and of every operation it schedules.
+    config : TimelockConfig
+      -- ^ The delay policy in force.
+    pending : Pending
+      -- ^ The operations that may still be applied, cancelled, or cleaned
+      --   up.
+  deriving (Eq, Show)
+
+-- | Who may execute and cancel an operation.
+data OperationView = OperationView with
+    executors : Optional [Party]
+      -- ^ The parties that may call `Operation_Execute`. `None` lets any
+      --   party that holds the operation and the timelock execute.
+    cancellers : [Party]
+      -- ^ The parties that may call `Operation_Cancel`.
+  deriving (Eq, Show)
+
+-- | Why `Timelock_Drop` removes a pending operation.
+data DropReason
+  = CancelOperation
+    -- ^ The actor must be a canceller named on the operation.
+  | CleanupOperation
+    -- ^ The operation must have expired. Any actor may clean it up.
+  deriving (Eq, Show)
+
+-- | The timelock: the contract that holds the delay policy and the pending
+-- operations, and applies an operation to the governed state once it is
+-- ready. Implement it on a template with a `TimelockConfig` field and a
+-- `Pending` field, and write the schedule choices on that template.
+--
+-- `Timelock_Apply` and `Timelock_Drop` call the `applyImpl` or `dropImpl`
+-- method. Implement these two methods with `applyOperation` and
+-- `dropOperation` from `OpenZeppelin.TimelockV1`. Those functions check the
+-- operation, archive it, and then call the `apply` or `unschedule` method,
+-- which creates the successor timelock. Both choices consume the timelock, so
+-- its contract id changes on every schedule, apply, cancel, and cleanup.
+--
+-- Requirements:
+--
+-- * `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`.
+--   The interface does not enforce the checks itself.
+-- * `authority` signs the timelock and every operation. The lifecycle
+--   functions fail with `eInvalidAuthority` otherwise.
+-- * Every signatory of the operation is a signatory of the timelock. The
+--   lifecycle functions fail with `eInvalidAuthority` otherwise.
+-- * The successor that a method creates holds the given pending list. The
+--   lifecycle functions fail with `ePendingMismatch` when it holds any other
+--   list.
+-- * Executors and cancellers can see the timelock, as stakeholders or by
+--   explicit disclosure.
+interface Timelock where
+  viewtype TimelockView
+
+  apply : Operation -> Pending -> Update (ContractId Timelock)
+    -- ^ Apply the operation's parameters to the governed state, and create
+    --   the successor timelock with the given pending list. Dispatch on the
+    --   operation's template with `fromInterface`. `applyOperation` calls it
+    --   after it checks the operation and archives it.
+
+  unschedule : Pending -> Update (ContractId Timelock)
+    -- ^ Create the successor timelock with the given pending list.
+    --   `dropOperation` calls it after it checks the operation and archives
+    --   it.
+
+  applyImpl : ContractId Timelock -> Timelock_Apply -> Update (ContractId Timelock)
+    -- ^ The body of `Timelock_Apply`. Implement it as
+    --   `applyImpl self arg = applyOperation (toInterface @Timelock this) self arg`.
+
+  dropImpl : ContractId Timelock -> Timelock_Drop -> Update (ContractId Timelock)
+    -- ^ The body of `Timelock_Drop`. Implement it as
+    --   `dropImpl self arg = dropOperation (toInterface @Timelock this) self arg`.
+
+  -- Apply a pending operation. `applyOperation` fails unless the operation is
+  -- pending, the actor is an executor, and the operation is ready.
+  choice Timelock_Apply : ContractId Timelock
+    with
+      actor : Party
+      op : ContractId Operation
+    controller actor
+    do
+      applyImpl this self arg
+
+  -- Remove a pending operation without applying it. `dropOperation` fails
+  -- unless the operation is pending and the `reason` holds.
+  choice Timelock_Drop : ContractId Timelock
+    with
+      actor : Party
+      op : ContractId Operation
+      reason : DropReason
+    controller actor
+    do
+      dropImpl this self arg
+
+-- | A scheduled operation. Implement it, with `Timelocked`, on one template
+-- per operation kind. The template's fields are the operation's typed
+-- parameters, which the timelock's `apply` reads.
+--
+-- Executors, cancellers, and cleanup actors call the choices on the
+-- operation, with the current timelock as `target`. Each choice forwards the
+-- actor to `Timelock_Apply` or `Timelock_Drop`, whose method does the checks.
+--
+-- Requirements:
+--
+-- * Create the operation in a schedule choice on the timelock, so that it
+--   carries the timelock's `authority` and enters the pending list.
+-- * Make the executors and cancellers stakeholders, or disclose the operation
+--   to them.
+interface Operation requires Timelocked where
+  viewtype OperationView
+
+  -- Execute the operation on `target`. The actor must be an executor.
+  nonconsuming choice Operation_Execute : ContractId Timelock
+    with
+      actor : Party
+      target : ContractId Timelock
+    controller actor
+    do
+      exercise target Timelock_Apply with actor, op = self
+
+  -- Cancel the operation. The actor must be a canceller.
+  nonconsuming choice Operation_Cancel : ContractId Timelock
+    with
+      actor : Party
+      target : ContractId Timelock
+    controller actor
+    do
+      exercise target Timelock_Drop with actor, op = self, reason = CancelOperation
+
+  -- Remove the operation after it expires. Any actor may call it.
+  nonconsuming choice Operation_Cleanup : ContractId Timelock
+    with
+      actor : Party
+      target : ContractId Timelock
+    controller actor
+    do
+      exercise target Timelock_Drop with actor, op = self, reason = CleanupOperation
