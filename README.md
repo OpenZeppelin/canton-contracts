@@ -15,18 +15,27 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-No component has been released yet. The three components below are early-stage
-candidates under [`experiments/`](experiments/). They build and are tested in CI,
-but they will be redesigned before they move into `packages/`, and that redesign
-will change module names, template and choice signatures, and package identity.
-Read [`experiments/README.md`](experiments/README.md) before depending on any of
+The Pausable component lives under [`packages/`](packages/) as two packages:
+a frozen interface package and an upgradeable package of guard
+functions. Neither has a release or an audit.
+
+| Component | Package | Public module | Status |
+|---|---|---|---|
+| [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` | Pre-release; unaudited |
+| [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Pre-release; unaudited |
+
+Three further components are early-stage candidates under
+[`experiments/`](experiments/). They will be redesigned before they move into
+`packages/`, and that redesign will change module names, template and choice
+signatures, and package identity. Read
+[`experiments/README.md`](experiments/README.md) before depending on any of
 them.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|
 | [Access Control](experiments/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | Experimental; unaudited |
 | [Ownable](experiments/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | Experimental; unaudited |
-| [Pausable](experiments/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Experimental; unaudited |
+| [Token CIP-0112](experiments/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | Experimental; unaudited |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching
@@ -56,14 +65,14 @@ dpm build --all
 To build one component independently:
 
 ```sh
-cd experiments/access/ownable-v1
+cd packages/security/api-pausable-v1
 dpm build
 ```
 
-The resulting evaluation DAR is written to:
+The resulting DAR is written to:
 
 ```text
-experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+packages/security/api-pausable-v1/.daml/dist/openzeppelin-api-pausable-v1-0.1.0.dar
 ```
 
 ## Consume a local build
@@ -76,21 +85,27 @@ dependencies:
   - daml-prim
   - daml-stdlib
 data-dependencies:
-  - ../canton-contracts/experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/api-pausable-v1/.daml/dist/openzeppelin-api-pausable-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
 ```
 
 ```daml
-import OpenZeppelin.OwnableV1
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
 ```
+
+Each package `README.md` shows the consumer code for that component, and
+[`examples/`](examples/) holds runnable consumer projects.
 
 ## Repository layout
 
 ```text
-packages/                 Released components; empty until the first release
+packages/
+  security/               Category for emergency-stop and safety components
 test/                     Isolated component test packages
 experiments/
   access/                 Category for authorization and ownership components
-  security/               Category for operational security components
+  token/                  Category for token standard components
   test/                   Isolated component test packages
 dars/
   released/               Immutable OpenZeppelin release baselines
@@ -107,8 +122,9 @@ release lineage.
 ## Package and compatibility model
 
 - One independently released unit is one Daml package and one DAR.
-- Components defining Daml interfaces use a frozen `-api-vN` package and a
-  separate upgradeable implementation package. Template-only components use one
+- Components defining Daml interfaces use a frozen
+  `openzeppelin-api-<component>-vN` package and a separate upgradeable package
+  for templates or helper functions. Template-only components use one
   implementation package.
 - Breaking changes create a sibling `-v2` package and `V2` module suffix;
   compatible SCU releases retain the existing package name.

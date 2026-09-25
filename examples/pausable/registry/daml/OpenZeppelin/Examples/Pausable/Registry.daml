@@ -1,0 +1,78 @@
+-- | Adoption of `Pausable` by a registry that serves
+-- CIP-0112 metadata.
+--
+-- `pauseReason` and `pauseUntil` are fields of the registry. The flip choices
+-- set them in the same create as the flag, so the flag and its metadata
+-- change in one transaction.
+module OpenZeppelin.Examples.Pausable.Registry where
+
+import DA.Action (when)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import qualified DA.TextMap as TextMap
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
+
+template Registry
+  with
+    admin : Party
+    auditor : Party
+      -- ^ Reads the registry and its pause state.
+    paused : Bool
+    pauseReason : Optional Text
+      -- ^ CIP-0112 `pauseInfo.reason`.
+    pauseUntil : Optional Time
+      -- ^ CIP-0112 `pauseInfo.until`, published for reporting.
+    entries : [Text]
+      -- ^ The state that a pause protects.
+  where
+    signatory admin
+    observer auditor
+
+    interface instance Pausable for Registry where
+      view = PausableView with paused
+
+    -- Sets the flag and its metadata in one transaction.
+    choice Registry_Pause : ContractId Registry
+      with
+        reason : Optional Text
+        until : Optional Time
+      controller admin
+      do
+        Pausable.whenNotPaused this
+        create this with paused = True, pauseReason = reason, pauseUntil = until
+
+    -- Changes the pause metadata while the pause stays in force, for example
+    -- to extend the published deadline.
+    choice Registry_UpdatePauseInfo : ContractId Registry
+      with
+        reason : Optional Text
+        until : Optional Time
+      controller admin
+      do
+        Pausable.whenPaused this
+        create this with pauseReason = reason, pauseUntil = until
+
+    -- Clears the pause metadata.
+    choice Registry_Unpause : ContractId Registry
+      controller admin
+      do
+        Pausable.whenPaused this
+        create this with paused = False, pauseReason = None, pauseUntil = None
+
+    -- A gated operation.
+    choice Registry_Register : ContractId Registry
+      with
+        entry : Text
+      controller admin
+      do
+        Pausable.whenNotPaused this
+        when (entry == "") (failWithStatus eEmptyEntry)
+        create this with entries = entry :: entries
+
+-- | Raised when a registration names an empty entry.
+eEmptyEntry : FailureStatus
+eEmptyEntry = FailureStatus with
+  errorId = "myapp.com/registry-empty-entry"
+  category = InvalidIndependentOfSystemState
+  message = "Registry: entry must not be empty"
+  meta = TextMap.empty

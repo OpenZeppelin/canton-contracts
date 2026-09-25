@@ -1,0 +1,25 @@
+-- | Consumer fixture: a template that implements `Pausable` and flips its own
+-- flag, with no dependency on the function package.
+module OpenZeppelin.Api.PausableV1TestFixtures where
+
+import OpenZeppelin.Api.PausableV1
+
+template Vault
+  with
+    admin : Party
+    holder : Party
+    paused : Bool
+    balance : Int
+  where
+    signatory admin
+    observer holder
+
+    interface instance Pausable for Vault where
+      view = PausableView with paused
+
+    choice Vault_SetPaused : ContractId Vault
+      with
+        flag : Bool
+      controller admin
+      do
+        create this with paused = flag

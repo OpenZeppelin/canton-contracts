@@ -35,17 +35,45 @@ them beside templates prevents those templates from benefiting from SCU.
 When a component defines an interface, use two production packages:
 
 ```text
-<component>-api-v1     Frozen interfaces, exceptions, and API types; no templates
-<component>-v1         Templates implementing the API
-<component>-test       Daml Script tests; never released
+openzeppelin-api-<component>-v1    Frozen interfaces, exceptions, API types
+openzeppelin-<component>-v1        Templates or functions implementing the API
+openzeppelin-<component>-v1-test   Daml Script tests; never released
 ```
 
 API packages may depend only on other API packages. A template-only component
 ships one implementation package; empty API packages add ceremony without an
 upgrade or interoperability benefit.
 
-The current three components define templates and functions but no Daml
-interfaces, so each presently has one production package.
+The three components under `experiments/` define templates and functions but no
+Daml interfaces, so each has one production package.
+
+### Components without templates
+
+Some components ship no template of their own. Pausable is the model: the
+pause flag is a field of the consumer's template, because a guard that reads
+the contract being exercised is sound and a guard that fetches a separate
+switch contract is not, since a caller can substitute or omit a contract it
+supplies. The implementing templates live in consuming packages.
+
+The component is still two packages. `openzeppelin-api-pausable-v1` holds the
+interface and its view and nothing else, because that is the one part Daml
+cannot upgrade. `openzeppelin-pausable-v1` holds the guards and the failure
+statuses. A bug fix in `whenNotPaused` is a new version of the function
+package, and the frozen interface package does not move. The Splice token
+standard follows the same split, keeping its helper functions in
+`splice-token-standard-utils` beside its frozen interface packages.
+
+The API package follows the `openzeppelin-api-<component>-vN` freeze rule: no
+templates, no SCU, and a breaking change ships as a sibling `-v2` package. The
+function package depends on the API package alone, and a consumer data-depends
+on both DARs. The consumer's implementing template upgrades through SCU
+independently, because the interface instance is declared on the template and
+the API package does not move. SCU can only add an interface instance to that
+template, never remove one, and adding one needs the `damlc` option
+`-Wno-template-has-new-interface-instance`. So adopting an API `-v2` package
+means the template implements both interfaces for life; dropping the `-v1`
+instance needs a new template version outside SCU and an offline contract
+migration that copies the flag.
 
 ## Dependency policy
 
@@ -54,7 +82,8 @@ interfaces, so each presently has one production package.
 - Shared pure helpers belong in a utility package that defines no templates,
   interfaces, exceptions, or serializable public state.
 - Adding a production dependency requires explicit architecture review because
-  an SCU lineage cannot later drop or downgrade that dependency.
+  an SCU lineage cannot later drop or downgrade a dependency other than a
+  utility package.
 - Third-party DARs are pinned by source, version, package IDs, SHA-256, and
   license in `dars/manifest.yaml`; binaries live in `dars/vendor/` when
   vendoring is needed.
@@ -67,7 +96,7 @@ contract-model generation:
 
 ```text
 openzeppelin-ownable-v1
-openzeppelin-rbac-api-v1
+openzeppelin-api-rbac-v1
 openzeppelin-rbac-v1
 ```
 
@@ -75,9 +104,15 @@ Public modules use matching major-version namespaces:
 
 ```daml
 OpenZeppelin.OwnableV1
+OpenZeppelin.Api.RbacV1
 OpenZeppelin.RbacV1
 OpenZeppelin.RbacV1.Internal
 ```
+
+An API package places its modules under `OpenZeppelin.Api`, the same way the
+Splice token standard places its interface modules under `Splice.Api`. The
+namespace tells a consumer that the module holds only frozen interface and
+exception definitions.
 
 Compatible SCU releases keep the same package name and increment the package
 version. A breaking change creates a sibling `-v2` package and a `V2` module

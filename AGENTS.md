@@ -28,16 +28,19 @@ workspace files exist.
 
 - One independently released unit equals one package and one DAR.
 - Package names use `openzeppelin-<component>-vN`; module names use
-  `OpenZeppelin.<Component>VN`.
+  `OpenZeppelin.<Component>VN`. API packages use
+  `openzeppelin-api-<component>-vN` and place their modules under
+  `OpenZeppelin.Api.<Component>VN`.
 - A component that defines Daml interfaces or exceptions uses a frozen
-  `-api-vN` package containing no templates. Template-only components do not get
+  `openzeppelin-api-<component>-vN` package containing no templates. Template-only components do not get
   empty API packages.
 - API packages may depend only on API packages. Implementation packages must not
   depend on other implementation packages without an accepted architecture
   decision; prefer interface composition or consumer-side wiring.
 - Production packages must not depend on `daml-script`.
-- Test code lives in an isolated `-test` package under the root `test/` and 
-  `experiments/test/` directories and is never released or uploaded.
+- Test code lives in an isolated `-test` package under the root `test/`,
+  `experiments/test/` and `examples/*-test` directories and is never released
+  or uploaded.
 - Do not use `exposed-modules` as an API boundary. Use documented public modules
   and `.Internal` naming for implementation details.
 - Category directories under `packages/` and `experiments/` are navigation only
@@ -45,9 +48,12 @@ workspace files exist.
 - Do not publish upstream Canton or Splice interfaces under an OpenZeppelin
   namespace. Consume exact, verified upstream DARs.
 
-Every production template or interface must document signatories, observers,
-controllers, choices, disclosure and privacy expectations, authorization
-assumptions, archival behavior, failure modes, and upgrade/migration assumptions.
+Every production template or interface must document what it adds to
+signatories, observers, controllers, choices, disclosure and privacy
+expectations, authorization assumptions, archival behavior, failure modes, and
+upgrade/migration assumptions. Document only what the component defines or
+changes. Do not restate standard Daml or Canton semantics or repository release
+policy, and omit a topic where the component adds nothing.
 
 ## Daml toolchain
 
@@ -69,16 +75,29 @@ dpm build --all
 scripts/check.sh
 DAML_PACKAGE=experiments/access/access-control-v1 dpm damlc lint
 DAML_PACKAGE=experiments/access/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/security/pausable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/pausable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm damlc lint
+DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc lint
+DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
+DAML_PACKAGE=test/api-pausable-v1 dpm damlc lint
+DAML_PACKAGE=test/pausable-v1 dpm damlc lint
+DAML_PACKAGE=examples/pausable/vault dpm damlc lint
+DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
+DAML_PACKAGE=examples/pausable/registry dpm damlc lint
+DAML_PACKAGE=examples/pausable/registry-test dpm damlc lint
+DAML_PACKAGE=examples/pausable/retrofit-v1-0 dpm damlc lint
+DAML_PACKAGE=examples/pausable/retrofit-v1-1 dpm damlc lint
+DAML_PACKAGE=examples/pausable/retrofit-test dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/pausable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/api-pausable-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/pausable-v1 dpm test --all --show-coverage
+DAML_PACKAGE=examples/pausable/vault-test dpm test --all
+DAML_PACKAGE=examples/pausable/registry-test dpm test --all
+DAML_PACKAGE=examples/pausable/retrofit-test dpm test --all
 scripts/check-sandbox.sh
 ```
 
@@ -114,6 +133,7 @@ caveats.
 packages and their public APIs. Exclude repository organization, CI, tests,
 tooling, and documentation-only changes.
 
-The CI-only `scripts/check-lint.sh` and `scripts/check-coverage.sh` discover and
-validate workspace packages. Public and contributor documentation shows native
-DPM commands instead of presenting those helpers as the development interface.
+The CI-only `scripts/check-lint.sh`, `scripts/check-coverage.sh`, and
+`scripts/check-examples.sh` discover and validate workspace packages. Public
+and contributor documentation shows native DPM commands instead of presenting
+those helpers as the development interface.

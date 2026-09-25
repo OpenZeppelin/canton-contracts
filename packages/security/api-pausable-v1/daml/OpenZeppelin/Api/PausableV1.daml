@@ -1,0 +1,43 @@
+-- | OpenZeppelin Pausable - the interface for an emergency-stop switch on a
+-- Daml template.
+--
+-- The implementing template holds a `paused` flag and declares an
+-- `interface instance Pausable` whose view reports it. The guards and the
+-- failure statuses live in the `openzeppelin-pausable-v1` package, module
+-- `OpenZeppelin.PausableV1`.
+--
+-- The flag is a field of the contract being exercised, so a guard reads it
+-- from the contract it runs on. The consumer decides who may pause:
+-- authorization lives in the controller and body of the consumer's flip
+-- choice, which creates the successor with the flag changed, so any model
+-- fits, from a single party to a role grant, an M-of-N approval, or a
+-- timelock.
+--
+-- The template's signatories can always archive the contract and create it
+-- again with any flag value, outside the flip choice. A pause authority model
+-- holds only when every signatory is part of that model or is trusted with
+-- the flag.
+--
+-- The switch is per contract and applies to new transactions: a gated choice
+-- refuses to start while the flag is set.
+module OpenZeppelin.Api.PausableV1 where
+
+-- | The view of a `Pausable` contract.
+data PausableView = PausableView with
+    paused : Bool
+      -- ^ `True` while the contract is paused.
+  deriving (Eq, Show)
+
+-- | The emergency-stop switch, implemented by any template that holds a
+-- `paused` flag:
+--
+-- ```
+-- interface instance Pausable for Vault where
+--   view = PausableView with paused
+-- ```
+--
+-- The interface defines no choice: the implementing template's own choices
+-- flip the flag. The guards in `OpenZeppelin.PausableV1` raise the failure
+-- statuses.
+interface Pausable where
+  viewtype PausableView
