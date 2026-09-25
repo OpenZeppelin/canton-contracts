@@ -47,6 +47,7 @@ design before it is rebuilt. Open an issue or discussion if a shape here is
 wrong or a Canton constraint is being modeled the hard way. That feedback is
 worth more now than after the redesign.
 
-No component has graduated to `packages/` yet, so there is nothing here you can
-safely build an application on. The [repository README.md](../README.md) covers
-the package and compatibility model a component must satisfy before it does.
+Do not build an application on anything in this directory. Components that are
+ready for application use live under [`packages/`](../packages/). The
+[repository README.md](../README.md) covers the package and compatibility model
+a component must satisfy before it moves there.
