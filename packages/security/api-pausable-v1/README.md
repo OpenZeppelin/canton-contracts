@@ -72,9 +72,7 @@ The guards read the view, so the gated choices call `whenNotPaused this` as
 before.
 
 The SCU check of `damlc` refuses a new interface instance on an existing
-template by default, with `template-has-new-interface-instance`. The check
-exists because contracts created under the old version gain the instance,
-and clients that still use the old version do not know it. Build the new
+template by default, with `template-has-new-interface-instance`. Build the new
 version with `-Wno-template-has-new-interface-instance` after you review the
 old-version behavior that the next section describes.
 [`examples/pausable/retrofit-v1-0`](../../../examples/pausable/retrofit-v1-0)
@@ -85,28 +83,18 @@ exercises both.
 
 ### Old package versions after a retrofit
 
-The choices of the old version carry no guard.
-
-- An exercise that names the old template runs the highest version that the
-  participant vets, so the guard applies. The retrofit tests show this.
-- A submission that pins the old version through package preference runs the
-  old code without the guard. The ledger refuses it only when it cannot
-  downgrade the contract. After a flip stores `Some True` or `Some False`,
-  the old version cannot read the contract, and the refusal is an upgrade
-  error, not `eEnforcedPause`.
-- That refusal stays after an unpause to `Some False`, so clients that pin
-  the old version cannot use the contract again. If they must resume, write
-  the unpause to store `None`.
-
-Unvet the old version once every client uses the new one.
+The choices of the old version carry no guard, so a submission that pins the
+old version runs without it. Once a flip stores `Some True` or `Some False`,
+the old version cannot read the contract, and such a submission fails with an
+upgrade error rather than `eEnforcedPause`. It keeps failing after an unpause
+to `Some False`. If clients that pin the old version must resume, write the
+unpause to store `None`. Unvet the old version once every client uses the new
+one.
 
 ## Reading the flag off-ledger
 
 A wallet, a registry's metadata endpoint, or an auditor reads `PausableView`
-without knowing the implementing template. Query the Active Contract Service
-or the update stream with an `InterfaceFilter` for `Pausable` that requests
-the interface view; every implementing contract visible to the querying party
-returns a `PausableView`. The JSON Ledger API accepts the same filter shape.
+through the `Pausable` interface, without knowing the implementing template.
 In Daml Script:
 
 ```daml
@@ -114,10 +102,8 @@ Some v <- queryInterfaceContractId reader (toInterfaceContractId @Pausable cid)
 v.paused === True
 ```
 
-The flip is the consumer's exercise node in the transaction tree, recorded
-with its actor and its ledger time. A pause is in force from the flip that
-sets `paused = True` to the flip that clears it, across the chain of
-successor contracts.
+A pause is in force from the flip that sets `paused = True` to the flip that
+clears it, across the chain of successor contracts.
 
 ## Authority and lifecycle
 
@@ -140,40 +126,29 @@ body of the consumer's flip choice.
   `reason` and `until` holds them as its own template fields beside `paused`,
   as [`examples/pausable/registry`](../../../examples/pausable/registry)
   shows.
-- The ledger records when a pause held, not the attempts it blocked. An
-  off-ledger client that needs those logs its own rejected submissions.
 
 ## Compatibility
 
 Daml-LF `2.1`, built with the SDK that
 [`multi-package.yaml`](../../../multi-package.yaml) declares.
 
-The package is frozen. A change to `Pausable` or `PausableView` ships as a
-sibling `openzeppelin-api-pausable-v2` package with module
-`OpenZeppelin.Api.PausableV2`, and the two coexist. A change to a guard or a
-failure status is a new version of `openzeppelin-pausable-v1`.
+A change to a guard or a failure status ships as a new version of
+`openzeppelin-pausable-v1`, and this package stays at its frozen version.
 
 For a consumer this means:
 
-- Pin the exact DAR. Your `interface instance` binds your template to one
-  package ID, and every participant that vets your package also vets that
-  package ID.
 - Your own template stays upgradeable. The interface instance is declared on
   your template, so you add fields, such as CIP-0112 `pauseInfo`, through
   Smart Contract Upgrade (SCU) of your package while this package stays at
   its frozen version.
 - Adopting `openzeppelin-api-pausable-v2` takes one of two paths. Under SCU
-  of your own package, you add a second `interface instance`; an interface
-  instance stays through every SCU version, so your template implements both
-  for life. The new instance needs `-Wno-template-has-new-interface-instance`,
+  of your own package, you add a second `interface instance`, and your
+  template implements both for life. The new instance needs `-Wno-template-has-new-interface-instance`,
   as in the SCU retrofit above. To drop V1, you create a new template version
   outside SCU and migrate existing contracts to it offline. The migration
   copies the flag, so a paused contract stays paused in the new template. It
   changes no business state, so let it run while paused, and do not clear the
   flag in it.
-
-`0.1.0` is a pre-release: the package ID may change between commits, and no
-audit has been performed. See [`RELEASING.md`](../../../RELEASING.md).
 
 ## Build
 

@@ -96,7 +96,7 @@ import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
 import qualified OpenZeppelin.PausableV1 as Pausable
 ```
 
-Each package README shows the consumer code for that component, and
+Each package `README.md` shows the consumer code for that component, and
 [`examples/`](examples/) holds runnable consumer projects.
 
 ## Repository layout
@@ -124,9 +124,10 @@ release lineage.
 ## Package and compatibility model
 
 - One independently released unit is one Daml package and one DAR.
-- Components defining Daml interfaces use a frozen `-api-vN` package and a
-  separate upgradeable package for templates or helper functions. Template-only
-  components use one implementation package.
+- Components defining Daml interfaces use a frozen
+  `openzeppelin-api-<component>-vN` package and a separate upgradeable package
+  for templates or helper functions. Template-only components use one
+  implementation package.
 - Breaking changes create a sibling `-v2` package and `V2` module suffix;
   compatible SCU releases retain the existing package name.
 - Composition between implementations happens through interfaces or in the

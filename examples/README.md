@@ -9,7 +9,7 @@ Daml Script tests live in a sibling `-test` package that data-depends on the
 example DAR, so the example DAR does not depend on `daml-script`. Examples are
 never released or uploaded.
 
-Directories group examples by component and never appear in a package name.
+Directories group examples by component.
 
 ## `pausable`
 

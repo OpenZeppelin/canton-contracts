@@ -76,8 +76,11 @@ production_manifests="$(printf '%s' "$production_manifests" | sed '/^$/d' | sort
 test_manifests="$(printf '%s' "$test_manifests" | sed '/^$/d' | sort)"
 [ -n "$test_manifests" ] || fail "no test package manifests found"
 
-for manifest_list in "$production_manifests" "$test_manifests"; do
+example_manifests="$(find_manifests examples | sort)"
+
+for manifest_list in "$production_manifests" "$test_manifests" "$example_manifests"; do
 	while IFS= read -r manifest; do
+		[ -n "$manifest" ] || continue
 		package_sdk="$(sed -n 's/^sdk-version:[[:space:]]*//p' "$manifest")"
 		[ "$package_sdk" = "$workspace_sdk" ] ||
 			fail "${manifest#"$ROOT/"} sdk-version must match multi-package.yaml"
@@ -149,5 +152,22 @@ while IFS= read -r manifest; do
 	grep -Eq '^[[:space:]]*-[[:space:]]*\.\./\.\./.+\.dar$' "$manifest" ||
 		fail "test package ${manifest#"$ROOT/"} must data-depend on a production DAR"
 done <<< "$test_manifests"
+
+# An example keeps its Daml Script tests in a sibling -test package, so the
+# example DAR itself stays free of daml-script.
+while IFS= read -r manifest; do
+	[ -n "$manifest" ] || continue
+	package_name="$(sed -n 's/^name:[[:space:]]*//p' "$manifest")"
+
+	case "$package_name" in
+	*-test)
+		;;
+	*)
+		if grep -Eq '(^|[[:space:]-])daml-script($|[[:space:]])' "$manifest"; then
+			fail "example package ${manifest#"$ROOT/"} depends on daml-script; move its tests to a -test package"
+		fi
+		;;
+	esac
+done <<< "$example_manifests"
 
 printf 'check: OK\n'
