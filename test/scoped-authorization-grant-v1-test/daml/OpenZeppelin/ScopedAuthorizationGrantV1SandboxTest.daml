@@ -15,3 +15,4 @@ sandboxAuthorization = script do
   Use.test_businessFailureAfterUseRollsBackEffects
   Boundary.test_implicitArchiveAndStaleDisclosure
   Boundary.test_revocationOrderingIsAtomic
+  Use.test_directUseRespectsValidityWindow

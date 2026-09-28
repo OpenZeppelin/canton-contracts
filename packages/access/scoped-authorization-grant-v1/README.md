@@ -128,7 +128,8 @@ not undo committed work.
 ## Usage records
 
 Every successful `requireAuthorization` call exercises
-`AuthorizationGrant_Use` after validation. The use event is visible only if the
+`AuthorizationGrant_Use` after matching the actor, authority, and scope. The choice
+enforces the grant's validity window. The use event is visible only if the
 transaction commits and that exercise is not rolled back by a
 [caught exception](https://docs.canton.network/appdev/reference/daml-language-reference#catch-exceptions).
 The authority, grantee, and other witnesses can read the exercise through the
@@ -137,8 +138,9 @@ Ledger API with the appropriate party and event filters. On Canton 3.5, use
 [`TransactionTreeStream` data source](https://docs.canton.network/sdks-tools/development-tools/pqs/configure#transactions-data-source)
 to index exercises.
 
-The choice returns `()` and adds no observers. Calling `Use` directly only
-records that the grantee exercised it, even if the active grant has expired.
+The choice returns `()` and adds no observers. Calling `Use` directly records
+that the grantee exercised it within the grant's validity window; it does not
+validate the application's expected authority or scope.
 Check that the event came from the application's guarded choice before treating
 it as proof of a protected operation. Plain fetches are not usage records, and
 the authority does not necessarily see the enclosing operation's private details.
@@ -155,6 +157,8 @@ with these stable IDs and metadata:
 | `OZ_SAG_SCOPE_MISMATCH` | `fields`: comma-separated mismatched scope field names |
 | `OZ_SAG_NOT_YET_VALID` | `validFrom`: inclusive lower bound |
 | `OZ_SAG_EXPIRED` | `validUntil`: exclusive upper bound |
+
+Direct `AuthorizationGrant_Use` calls return the same validity-window failures.
 
 All use `failedPrecondition` (`FAILED_PRECONDITION`). Match the Ledger API's
 `ErrorInfo.reason = DAML_FAILURE` and `metadata.error_id`, rather than parsing
@@ -202,8 +206,9 @@ grant administration, transferability, counters, or an interface.
   to a protected choice.
 - `AuthorizationRequirement` carries the authority and exact scope expected by
   that choice.
-- `requireAuthorization` fetches and validates the presented grant, then
-  exercises `AuthorizationGrant_Use` to record usage.
+- `requireAuthorization` fetches the grant and checks the actor, authority, and
+  scope, then exercises `AuthorizationGrant_Use` to check the validity window
+  and record usage.
 
 `OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contains unsupported
 implementation details and is not part of the consumer API.

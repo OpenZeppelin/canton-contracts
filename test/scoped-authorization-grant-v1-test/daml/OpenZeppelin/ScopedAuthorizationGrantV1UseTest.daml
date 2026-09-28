@@ -1,6 +1,7 @@
 module OpenZeppelin.ScopedAuthorizationGrantV1UseTest where
 
 import DA.Foldable (forA_)
+import DA.Time (addRelTime, days, seconds)
 import Daml.Script
 
 import OpenZeppelin.ScopedAuthorizationGrantV1
@@ -142,25 +143,53 @@ test_directUseRequiresGrantee = script do
     _ -> fail "expected one direct Use event"
   assertGrantActive actor grant
 
-test_directUseDoesNotValidateExpiry : Script ()
-test_directUseDoesNotValidateExpiry = script do
+test_directUseRespectsValidityWindow : Script ()
+test_directUseRespectsValidityWindow = script do
   setTime Fixtures.t0
   issuer <- allocateParty "issuer"
   actor <- allocateParty "actor"
   consumer <- allocateParty "consumer"
-  grant <- createGrant issuer actor (Some Fixtures.t1)
+  let validUntil = addRelTime Fixtures.t1 (days 1)
+  grant <- submit issuer do
+    createCmd AuthorizationGrant with
+      authority = issuer
+      grantee = actor
+      scope = Fixtures.treasuryScope 1
+      validFrom = Some Fixtures.t1
+      validUntil = Some validUntil
   (probe, disclosure) <- createProbe consumer issuer
-  setTime Fixtures.t1
-  -- A direct Use is an observable marker, not proof of guard validation.
-  submit actor do exerciseCmd grant AuthorizationGrant_Use
-  result <- submitWithError (actAs actor <> disclose disclosure) do
-    exerciseCmd probe UseProbe_Run with
-      authorization = Authorization with actor; grantCid = grant
-  case result of
-    FailureStatusError status ->
-      assertMsg "expected expiry failure" (status.errorId == "OZ_SAG_EXPIRED")
-    other -> fail $ "expected structured expiry failure, got " <> show other
+  Fixtures.submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show Fixtures.t1)]
+    actor [] do
+      exerciseCmd grant AuthorizationGrant_Use
+  Fixtures.submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show Fixtures.t1)]
+    actor [disclosure] do
+      exerciseCmd probe UseProbe_Run with
+        authorization = Authorization with actor; grantCid = grant
   assertGrantActive actor grant
+
+  forA_ [Fixtures.t1, addRelTime validUntil (seconds (-1))] \now -> do
+    setTime now
+    tree <- submitTree actor do exerciseCmd grant AuthorizationGrant_Use
+    case tree.rootEvents of
+      [ExercisedEvent use] -> assertUseEvent grant use
+      _ -> fail "expected one direct Use event"
+    nestedTree <- submitTree (actAs actor <> disclose disclosure) do
+      exerciseCmd probe UseProbe_Run with
+        authorization = Authorization with actor; grantCid = grant
+    assertNestedUse probe grant nestedTree
+    assertGrantActive actor grant
+
+  forA_ [validUntil, addRelTime validUntil (seconds 1)] \now -> do
+    setTime now
+    Fixtures.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show validUntil)]
+      actor [] do
+        exerciseCmd grant AuthorizationGrant_Use
+    Fixtures.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show validUntil)]
+      actor [disclosure] do
+        exerciseCmd probe UseProbe_Run with
+          authorization = Authorization with actor; grantCid = grant
+  assertGrantActive actor grant
+  assertGrantActive issuer grant
 
 test_nestedUseDoesNotLeakIssuerAuthority : Script ()
 test_nestedUseDoesNotLeakIssuerAuthority = script do

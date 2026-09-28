@@ -13,10 +13,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 #### Added
 
-- Added an unaudited library candidate for authority-signed, resource-scoped
-  permissions with optional contract-instance binding and ledger-time bounds.
-- Added atomic grant-use records, revocation and renunciation choices, and
-  stable machine-readable guard failures.
+- Added Scoped Authorization Grant for authority-signed, resource-scoped
+  permissions with expiry, revocation, usage records, and structured failures.
 
 ### `openzeppelin-tokenCIP112-v1`
 

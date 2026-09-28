@@ -43,11 +43,14 @@ template AuthorizationGrant
     signatory authority
     observer grantee
 
-    -- | Records use without consuming the grant. Policy validation belongs to
-    -- `requireAuthorization`; this event alone does not prove a protected effect.
+    -- | Records use within the validity window without consuming the grant.
+    -- Actor and policy matching belong to `requireAuthorization`;
+    -- this event alone does not prove a protected effect.
     nonconsuming choice AuthorizationGrant_Use : ()
       controller grantee
-      do pure ()
+      do
+        Internal.requireValidFrom validFrom
+        Internal.requireValidUntil validUntil
 
     choice AuthorizationGrant_Revoke : ()
       controller authority
@@ -85,6 +88,4 @@ requireAuthorization authorization requirement = do
       , ("resourceInstanceCid", grant.scope.resourceInstanceCid == requirement.expectedScope.resourceInstanceCid)
       ])
     (grant.scope == requirement.expectedScope)
-  Internal.requireValidFrom grant.validFrom
-  Internal.requireValidUntil grant.validUntil
   exercise authorization.grantCid AuthorizationGrant_Use
