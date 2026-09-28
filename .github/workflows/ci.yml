@@ -1,7 +1,8 @@
 name: ci
 
 # Validation gate for the OpenZeppelin Daml contracts library: enforce package
-# boundaries, build every package in dependency order, and lint every package.
+# boundaries, build every package in dependency order, lint every package, and
+# run the consumer examples.
 #
 on:
   push:
@@ -35,3 +36,6 @@ jobs:
 
       - name: Lint all packages
         run: scripts/check-lint.sh
+
+      - name: Run consumer examples
+        run: scripts/check-examples.sh

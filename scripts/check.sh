@@ -44,7 +44,8 @@ for file in \
 	SECURITY.md AGENTS.md LICENSE multi-package.yaml dars/README.md \
 	dars/manifest.yaml audits/README.md examples/README.md \
 	experiments/README.md \
-	scripts/check-coverage.sh scripts/check-lint.sh scripts/check-sandbox.sh; do
+	scripts/check-coverage.sh scripts/check-lint.sh scripts/check-examples.sh \
+	scripts/check-sandbox.sh; do
 	require_file "$file"
 done
 
@@ -75,8 +76,11 @@ production_manifests="$(printf '%s' "$production_manifests" | sed '/^$/d' | sort
 test_manifests="$(printf '%s' "$test_manifests" | sed '/^$/d' | sort)"
 [ -n "$test_manifests" ] || fail "no test package manifests found"
 
-for manifest_list in "$production_manifests" "$test_manifests"; do
+example_manifests="$(find_manifests examples | sort)"
+
+for manifest_list in "$production_manifests" "$test_manifests" "$example_manifests"; do
 	while IFS= read -r manifest; do
+		[ -n "$manifest" ] || continue
 		package_sdk="$(sed -n 's/^sdk-version:[[:space:]]*//p' "$manifest")"
 		[ "$package_sdk" = "$workspace_sdk" ] ||
 			fail "${manifest#"$ROOT/"} sdk-version must match multi-package.yaml"
@@ -111,7 +115,7 @@ while IFS= read -r manifest; do
 		fail "production package ${manifest#"$ROOT/"} depends on daml-script"
 	fi
 
-	if [[ "$package_name" == *-api-v* ]]; then
+	if [[ "$package_name" == openzeppelin-api-* ]]; then
 		if grep -R -n -E --include='*.daml' '^[[:space:]]*template[[:space:]]+' "$package_dir/daml"; then
 			fail "API package ${manifest#"$ROOT/"} defines templates"
 		fi
@@ -120,7 +124,7 @@ while IFS= read -r manifest; do
 		# allowed; only new interface or exception definitions are not.
 		if grep -R -n -E --include='*.daml' '^[[:space:]]*(interface|exception)[[:space:]]+' "$package_dir/daml" |
 			grep -v -E 'interface[[:space:]]+instance[[:space:]]'; then
-			fail "implementation package ${manifest#"$ROOT/"} defines interfaces or exceptions; create a frozen -api-vN package"
+			fail "implementation package ${manifest#"$ROOT/"} defines interfaces or exceptions; create a frozen openzeppelin-api-<component>-vN package"
 		fi
 	fi
 
@@ -148,5 +152,22 @@ while IFS= read -r manifest; do
 	grep -Eq '^[[:space:]]*-[[:space:]]*\.\./\.\./.+\.dar$' "$manifest" ||
 		fail "test package ${manifest#"$ROOT/"} must data-depend on a production DAR"
 done <<< "$test_manifests"
+
+# An example keeps its Daml Script tests in a sibling -test package, so the
+# example DAR itself stays free of daml-script.
+while IFS= read -r manifest; do
+	[ -n "$manifest" ] || continue
+	package_name="$(sed -n 's/^name:[[:space:]]*//p' "$manifest")"
+
+	case "$package_name" in
+	*-test)
+		;;
+	*)
+		if grep -Eq '(^|[[:space:]-])daml-script($|[[:space:]])' "$manifest"; then
+			fail "example package ${manifest#"$ROOT/"} depends on daml-script; move its tests to a -test package"
+		fi
+		;;
+	esac
+done <<< "$example_manifests"
 
 printf 'check: OK\n'

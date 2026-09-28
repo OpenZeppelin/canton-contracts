@@ -1,0 +1,80 @@
+-- | OpenZeppelin Pausable - the guards and failure statuses for the
+-- `Pausable` interface in `OpenZeppelin.Api.PausableV1`.
+--
+-- Gated choices call `whenNotPaused this`. The consumer's own flip choices
+-- guard, then create the successor with the flag changed. The controller and
+-- body of the flip choice carry the pause authority:
+--
+-- ```
+-- choice RoleVault_Pause : ContractId RoleVault
+--   with
+--     caller : Party
+--     credCid : ContractId PauseCredential
+--   controller caller
+--   do
+--     cred <- fetch credCid
+--     unless (cred.admin == admin) (failWithStatus eWrongCredentialIssuer)
+--     unless (cred.account == caller) (failWithStatus eCredentialNotCallers)
+--     whenNotPaused this
+--     create this with paused = True
+-- ```
+module OpenZeppelin.PausableV1 where
+
+import DA.Action (unless, when)
+import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
+import OpenZeppelin.Api.PausableV1 (Pausable)
+import qualified OpenZeppelin.PausableV1.Internal as Internal
+
+-- | Fail with `eEnforcedPause` unless the contract is unpaused. Call it
+-- before the state change in every gated choice, and in the choice that
+-- pauses:
+--
+-- ```
+-- choice Vault_Withdraw : ContractId Vault
+--   with amount : Int
+--   controller holder
+--   do
+--     whenNotPaused this
+--     create this with balance = balance - amount
+--
+-- choice Vault_Pause : ContractId Vault
+--   controller admin
+--   do
+--     whenNotPaused this
+--     create this with paused = True
+-- ```
+whenNotPaused : HasToInterface t Pausable => t -> Update ()
+whenNotPaused x = when (isPaused x) (failWithStatus eEnforcedPause)
+
+-- | Fail with `eExpectedPause` unless the contract is paused. Use it on
+-- recovery choices that run only during an incident, and in the choice that
+-- unpauses:
+--
+-- ```
+-- choice Vault_Unpause : ContractId Vault
+--   controller admin
+--   do
+--     whenPaused this
+--     create this with paused = False
+-- ```
+whenPaused : HasToInterface t Pausable => t -> Update ()
+whenPaused x = unless (isPaused x) (failWithStatus eExpectedPause)
+
+-- | Read the flag as a pure function.
+isPaused : HasToInterface t Pausable => t -> Bool
+isPaused x = (view (toInterface @Pausable x)).paused
+
+-- Failure statuses. Each reaches the Ledger API as a `DAML_FAILURE` error
+-- carrying the `errorId` below, so a client matches on the id.
+
+-- | Raised when an operation requires the contract to be unpaused.
+-- `errorId`: `openzeppelin.com/pausable-enforced-pause`.
+eEnforcedPause : FailureStatus
+eEnforcedPause = Internal.pausableFailure "enforced-pause" InvalidGivenCurrentSystemStateOther
+  "Pausable: the contract is paused"
+
+-- | Raised when an operation requires the contract to be paused.
+-- `errorId`: `openzeppelin.com/pausable-expected-pause`.
+eExpectedPause : FailureStatus
+eExpectedPause = Internal.pausableFailure "expected-pause" InvalidGivenCurrentSystemStateOther
+  "Pausable: the contract is not paused"
