@@ -11,3 +11,5 @@ data-dependencies:
 build-options:
   - --target=2.1
   - -Wno-template-interface-depends-on-daml-script
+  # Regression tests deliberately exercise legacy try/catch behavior.
+  - -Wno-deprecated-exceptions

@@ -1,13 +1,14 @@
 module OpenZeppelin.ScopedAuthorizationGrantV1UseTest where
 
+import DA.Exception (GeneralError(..), throw)
 import DA.Foldable (forA_)
-import DA.Time (addRelTime, days, seconds)
+import DA.Time (addRelTime, days, microseconds)
 import Daml.Script
 
 import OpenZeppelin.ScopedAuthorizationGrantV1
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as Fixtures
 
--- The consumer signer deliberately differs from the grant issuer.
+-- Separate consumer and grant authorities expose authorization-context mistakes.
 template UseProbe
   with
     consumer : Party
@@ -42,6 +43,46 @@ template UseProbe
         requireAuthorization authorization (probeRequirement this)
         _ <- create UseProbeEffect with consumer
         assertMsg "UseTest: deliberate business failure" False
+
+    nonconsuming choice UseProbe_TryRun : ()
+      with authorization : Authorization
+      controller authorization.actor
+      do
+        try do
+          requireAuthorization authorization (probeRequirement this)
+        catch
+          (_ : AnyException) -> pure ()
+
+    nonconsuming choice UseProbe_CatchAfterUse : ContractId UseProbeEffect
+      with
+        authorization : Authorization
+        recheck : Bool
+      controller authorization.actor
+      do
+        try do
+          requireAuthorization authorization (probeRequirement this)
+          throw (GeneralError "deliberate business failure")
+        catch
+          (GeneralError _) -> pure ()
+        if recheck then requireAuthorization authorization (probeRequirement this) else pure ()
+        create UseProbeEffect with consumer
+
+template GrantDelegate
+  with
+    grantee : Party
+    delegate : Party
+  where
+    signatory grantee
+    observer delegate
+
+    nonconsuming choice GrantDelegate_Run : ()
+      with
+        probe : ContractId UseProbe
+        grant : ContractId AuthorizationGrant
+      controller delegate
+      do
+        exercise probe UseProbe_Run with
+          authorization = Authorization with actor = grantee; grantCid = grant
 
 template UseProbeEffect
   with consumer : Party
@@ -158,16 +199,18 @@ test_directUseRespectsValidityWindow = script do
       validFrom = Some Fixtures.t1
       validUntil = Some validUntil
   (probe, disclosure) <- createProbe consumer issuer
-  Fixtures.submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show Fixtures.t1)]
-    actor [] do
-      exerciseCmd grant AuthorizationGrant_Use
-  Fixtures.submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show Fixtures.t1)]
-    actor [disclosure] do
-      exerciseCmd probe UseProbe_Run with
-        authorization = Authorization with actor; grantCid = grant
+  forA_ [Fixtures.t0, addRelTime Fixtures.t1 (microseconds (-1))] \now -> do
+    setTime now
+    Fixtures.submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show Fixtures.t1)]
+      actor [] do
+        exerciseCmd grant AuthorizationGrant_Use
+    Fixtures.submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show Fixtures.t1)]
+      actor [disclosure] do
+        exerciseCmd probe UseProbe_Run with
+          authorization = Authorization with actor; grantCid = grant
   assertGrantActive actor grant
 
-  forA_ [Fixtures.t1, addRelTime validUntil (seconds (-1))] \now -> do
+  forA_ [Fixtures.t1, addRelTime validUntil (microseconds (-1))] \now -> do
     setTime now
     tree <- submitTree actor do exerciseCmd grant AuthorizationGrant_Use
     case tree.rootEvents of
@@ -179,7 +222,7 @@ test_directUseRespectsValidityWindow = script do
     assertNestedUse probe grant nestedTree
     assertGrantActive actor grant
 
-  forA_ [validUntil, addRelTime validUntil (seconds 1)] \now -> do
+  forA_ [validUntil, addRelTime validUntil (microseconds 1)] \now -> do
     setTime now
     Fixtures.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show validUntil)]
       actor [] do
@@ -225,3 +268,123 @@ test_businessFailureAfterUseRollsBackEffects = script do
     exerciseCmd probe UseProbe_Run with
       authorization = Authorization with actor; grantCid = grant
   assertNestedUse probe grant tree
+
+test_guardFailuresCannotBeCaught : Script ()
+test_guardFailuresCannotBeCaught = script do
+  setTime Fixtures.t0
+  issuer <- allocateParty "issuer"
+  actor <- allocateParty "actor"
+  other <- allocateParty "other"
+  let base = AuthorizationGrant with
+        authority = issuer; grantee = actor; scope = Fixtures.treasuryScope 1
+        validFrom = None; validUntil = None
+  let wrongScope = base.scope with permission = "other"
+  let future = base with validFrom = Some Fixtures.t1
+  -- Combined mismatches also pin down authority -> grantee -> scope -> time order.
+  let cases =
+        [ ((base with authority = other), "OZ_SAG_AUTHORITY_MISMATCH",
+            [("expected", partyToText issuer), ("actual", partyToText other)])
+        , ((base with grantee = other), "OZ_SAG_GRANTEE_MISMATCH",
+            [("expected", partyToText actor), ("actual", partyToText other)])
+        , ((base with scope = wrongScope), "OZ_SAG_SCOPE_MISMATCH", [("fields", "permission")])
+        , (future, "OZ_SAG_NOT_YET_VALID", [("validFrom", show Fixtures.t1)])
+        , ((base with validUntil = Some Fixtures.t0), "OZ_SAG_EXPIRED",
+            [("validUntil", show Fixtures.t0)])
+        , ((future with authority = other; grantee = other; scope = wrongScope),
+            "OZ_SAG_AUTHORITY_MISMATCH",
+            [("expected", partyToText issuer), ("actual", partyToText other)])
+        , ((future with grantee = other; scope = wrongScope), "OZ_SAG_GRANTEE_MISMATCH",
+            [("expected", partyToText actor), ("actual", partyToText other)])
+        , ((future with scope = wrongScope), "OZ_SAG_SCOPE_MISMATCH", [("fields", "permission")])
+        ]
+  forA_ cases \(payload, errorId, metadata) -> do
+    grant <- submit payload.authority do createCmd payload
+    -- The consumer signatory authorizes fetch even when the actor is not the grantee.
+    (probe, probeDisclosure) <- createProbe payload.authority issuer
+    grantDisclosure <- Fixtures.discloseTo @AuthorizationGrant payload.authority grant
+    Fixtures.submitDisclosedMustFailWith errorId metadata actor [probeDisclosure, grantDisclosure] do
+      exerciseCmd probe UseProbe_TryRun with
+        authorization = Authorization with actor; grantCid = grant
+    assertGrantActive payload.authority grant
+  grant <- submit issuer do createCmd base
+  (probe, disclosure) <- createProbe issuer issuer
+  Fixtures.submitDisclosed actor [disclosure] do
+    exerciseCmd probe UseProbe_TryRun with
+      authorization = Authorization with actor; grantCid = grant
+
+test_nonGranteeCanFailBeforeMatching : Script ()
+test_nonGranteeCanFailBeforeMatching = script do
+  issuer <- allocateParty "issuer"
+  grantee <- allocateParty "grantee"
+  outsider <- allocateParty "outsider"
+  consumer <- allocateParty "consumer"
+  grant <- createGrant issuer grantee None
+  (probe, probeDisclosure) <- createProbe consumer issuer
+  grantDisclosure <- Fixtures.discloseTo @AuthorizationGrant issuer grant
+  expectAuthorizationFailure (actAs outsider <> discloseMany [probeDisclosure, grantDisclosure]) do
+    exerciseCmd probe UseProbe_Run with
+      authorization = Authorization with actor = outsider; grantCid = grant
+
+test_consumerSignatoryCanDelegateGranteeAuthority : Script ()
+test_consumerSignatoryCanDelegateGranteeAuthority = script do
+  issuer <- allocateParty "issuer"
+  grantee <- allocateParty "grantee"
+  delegate <- allocateParty "delegate"
+  consumer <- allocateParty "consumer"
+  grant <- createGrant issuer grantee None
+  (probe, probeDisclosure) <- createProbe consumer issuer
+  grantDisclosure <- Fixtures.discloseTo @AuthorizationGrant issuer grant
+  let options = actAs delegate <> discloseMany [probeDisclosure, grantDisclosure]
+  expectAuthorizationFailure options do
+    exerciseCmd probe UseProbe_Run with
+      authorization = Authorization with actor = grantee; grantCid = grant
+  delegation <- submit grantee do createCmd GrantDelegate with grantee; delegate
+  submit options do exerciseCmd delegation GrantDelegate_Run with probe; grant
+  assertGrantActive grantee grant
+
+test_caughtBusinessFailureRollsBackUse : Script ()
+test_caughtBusinessFailureRollsBackUse = script do
+  issuer <- allocateParty "issuer"
+  actor <- allocateParty "actor"
+  consumer <- allocateParty "consumer"
+  grant <- createGrant issuer actor None
+  (probe, disclosure) <- createProbe consumer issuer
+  forA_ [False, True] \recheck -> do
+    tree <- submitTree (actAs actor <> disclose disclosure) do
+      exerciseCmd probe UseProbe_CatchAfterUse with
+        authorization = Authorization with actor; grantCid = grant
+        recheck
+    case tree.rootEvents of
+      [ExercisedEvent outer] -> case (recheck, outer.childEvents) of
+        (False, [CreatedEvent _]) -> pure ()
+        (True, [ExercisedEvent use, CreatedEvent _]) -> assertUseEvent grant use
+        _ -> fail $ "unexpected committed events after catch: " <> show outer.childEvents
+      _ -> fail "expected one root exercise"
+    assertGrantActive actor grant
+
+test_oneMicrosecondWindow : Script ()
+test_oneMicrosecondWindow = script do
+  oneMicrosecondWindowFrom Fixtures.t0
+
+oneMicrosecondWindowFrom : Time -> Script ()
+oneMicrosecondWindowFrom start = do
+  setTime start
+  issuer <- allocateParty "issuer"
+  actor <- allocateParty "actor"
+  let lower = addRelTime start (microseconds 1)
+  let upper = addRelTime lower (microseconds 1)
+  let payload = AuthorizationGrant with
+        authority = issuer; grantee = actor; scope = Fixtures.treasuryScope 1
+        validFrom = Some lower; validUntil = Some upper
+  grant <- submit issuer do createCmd payload
+  Fixtures.submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show lower)] actor [] do
+    exerciseCmd grant AuthorizationGrant_Use
+  setTime lower
+  submit actor do exerciseCmd grant AuthorizationGrant_Use
+  setTime upper
+  Fixtures.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show upper)] actor [] do
+    exerciseCmd grant AuthorizationGrant_Use
+  -- Creation validates the shape of a window, not whether it has already elapsed.
+  expired <- submit issuer do createCmd payload
+  Fixtures.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show upper)] actor [] do
+    exerciseCmd expired AuthorizationGrant_Use

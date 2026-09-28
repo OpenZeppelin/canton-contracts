@@ -35,13 +35,43 @@ test_implicitArchiveAndStaleDisclosure : Script ()
 test_implicitArchiveAndStaleDisclosure = script do
   authority <- allocateParty "authority"
   actor <- allocateParty "actor"
-  grant <- createGrant authority actor (F.treasuryScope 1)
-  disclosure <- F.discloseTo @SAG.AuthorizationGrant authority grant
-  submitMustFail actor do archiveCmd grant
-  submit authority do archiveCmd grant
-  queryContractId actor grant >>= (=== None)
-  F.submitDisclosedMustFail actor [disclosure] do
-    exerciseCmd grant SAG.AuthorizationGrant_Use
+  check <- submit authority do
+    createCmd F.AuthorizationCheck with authority; requiredScope = F.treasuryScope 1
+  checkDisclosure <- F.discloseTo @F.AuthorizationCheck authority check
+  forA_ ([0, 1, 2] : [Int]) \mode -> do
+    grant <- createGrant authority actor (F.treasuryScope 1)
+    disclosure <- F.discloseTo @SAG.AuthorizationGrant authority grant
+    case mode of
+      0 -> do
+        submitMustFail actor do archiveCmd grant
+        submit authority do archiveCmd grant
+      1 -> submit authority do exerciseCmd grant SAG.AuthorizationGrant_Revoke
+      _ -> submit actor do exerciseCmd grant SAG.AuthorizationGrant_Renounce
+    queryContractId actor grant >>= (=== None)
+    F.submitDisclosedMustFail actor [disclosure] do
+      exerciseCmd grant SAG.AuthorizationGrant_Use
+    F.submitDisclosedMustFail actor [disclosure, checkDisclosure] do
+      exerciseCmd check F.AuthorizationCheck_Run with
+        authorization = SAG.Authorization with actor; grantCid = grant
+
+test_epochReuseAndFutureGrants : Script ()
+test_epochReuseAndFutureGrants = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  first <- createGrant authority actor (F.treasuryScope 1)
+  future <- createGrant authority actor (F.treasuryScope 2)
+  -- Recreating the logical resource with an old epoch re-enables its active grants.
+  forA_ [1, 2, 1] \epoch -> do
+    check <- submit authority do
+      createCmd F.AuthorizationCheck with authority; requiredScope = F.treasuryScope epoch
+    disclosure <- F.discloseTo @F.AuthorizationCheck authority check
+    forA_ [(1, first), (2, future)] \(grantEpoch, grant) -> do
+      let command = exerciseCmd check F.AuthorizationCheck_Run with
+            authorization = SAG.Authorization with actor; grantCid = grant
+      if grantEpoch == epoch then F.submitDisclosed actor [disclosure] command
+      else F.submitDisclosedMustFailWith "OZ_SAG_SCOPE_MISMATCH" [("fields", "policyEpoch")]
+        actor [disclosure] command
+    submit authority do archiveCmd check
 
 test_logicalScopeCanBeSharedAcrossResources : Script ()
 test_logicalScopeCanBeSharedAcrossResources = script do

@@ -3,8 +3,9 @@ module Example.TreasuryRbacV1SecurityTest where
 import DA.Assert ((===))
 import DA.Date (Month(Jan), date)
 import DA.Foldable (forA_)
-import DA.Time (time)
+import DA.Time (addRelTime, hours, time)
 import qualified DA.Optional as Optional
+import qualified DA.TextMap as TextMap
 import Daml.Script
 
 import qualified Example.TreasuryRbacV1 as App
@@ -132,6 +133,60 @@ test_executorMustDifferFromBothEarlierActors = script do
   _ <- F.submitDisclosed s.executor [s.disclosure, disclosure] (execute s approved)
   pure ()
 
+test_revokingEarlierRolesPreservesPendingWork : Script ()
+test_revokingEarlierRolesPreservesPendingWork = script do
+  s <- setup
+  (proposal, proposalDisclosure) <- createProposal s
+  submit s.operations do exerciseCmd s.proposerGrant SAG.AuthorizationGrant_Revoke
+  approved <- F.submitDisclosed s.approver [s.disclosure, proposalDisclosure] (approve s proposal)
+  disclosure <- F.discloseTo @App.ApprovedPayment s.owner approved
+  submit s.approvals do exerciseCmd s.approverGrant SAG.AuthorizationGrant_Revoke
+  receipt <- F.submitDisclosed s.executor [s.disclosure, disclosure] (execute s approved)
+  active <- queryContractId s.beneficiary receipt
+  assertMsg "earlier role revocation must not cancel completed workflow steps" (Optional.isSome active)
+
+test_correctAuthorityWrongPermissionFails : Script ()
+test_correctAuthorityWrongPermissionFails = script do
+  s <- setup
+  (proposal, disclosure) <- createProposal s
+  Some payload <- queryContractId s.approver s.approverGrant
+  wrongGrant <- submit s.approvals do
+    createCmd (payload with scope = payload.scope with permission = "other")
+  result <- submitWithError (actAs s.approver <> discloseMany [s.disclosure, disclosure])
+    (approve (s with approverGrant = wrongGrant) proposal)
+  case result of
+    FailureStatusError status -> do
+      status.errorId === "OZ_SAG_SCOPE_MISMATCH"
+      status.meta === TextMap.singleton "fields" "permission"
+    other -> fail $ "expected permission mismatch, got " <> show other
+
+test_proposerGrantMustBeWithinItsWindow : Script ()
+test_proposerGrantMustBeWithinItsWindow = script do
+  now <- getTime
+  let start = addRelTime now (hours 1)
+  let end = addRelTime now (hours 2)
+  s <- setup
+  grant <- F.submitDisclosed s.operations [s.disclosure] do
+    exerciseCmd s.treasury App.Treasury_GrantRole with
+      member = s.proposer; role = Policy.PaymentProposer
+      validFrom = Some start; validUntil = Some end
+  let command = propose (s with proposerGrant = grant)
+  let expectFailure errorId metadata = do
+        result <- submitWithError (actAs s.proposer <> disclose s.disclosure) command
+        case result of
+          FailureStatusError status -> do
+            status.errorId === errorId
+            status.meta === metadata
+          other -> fail $ "expected proposer validity failure, got " <> show other
+  expectFailure "OZ_SAG_NOT_YET_VALID" (TextMap.singleton "validFrom" (show start))
+  query @App.PaymentProposal s.owner >>= (=== [])
+  setTime start
+  proposal <- F.submitDisclosed s.proposer [s.disclosure] command
+  setTime end
+  expectFailure "OZ_SAG_EXPIRED" (TextMap.singleton "validUntil" (show end))
+  proposals <- query @App.PaymentProposal s.owner
+  map fst proposals === [proposal]
+
 test_stolenAndForgedActorsFailAtEveryStage : Script ()
 test_stolenAndForgedActorsFailAtEveryStage = script do
   s <- setup
@@ -148,7 +203,6 @@ test_stolenAndForgedActorsFailAtEveryStage = script do
     let expect result = case result of
           -- A stolen grant can fail fetch authorization before grantee matching.
           AuthorizationError _ -> pure ()
-          FailureStatusError status | not forgeActor -> status.errorId === "OZ_SAG_GRANTEE_MISMATCH"
           other -> fail $ "unexpected impersonation result: " <> show other
     submitWithError options (exerciseCmd s.treasury App.Treasury_ProposePayment with
       authorization = auth (actor s.proposer) s.proposerGrant

@@ -16,8 +16,8 @@ import qualified DA.Fail as Fail
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1.Internal as Internal
 
 -- | The resource and permission a grant covers. Every field matches exactly.
--- `resourceInstanceCid` can bind one contract instance; advancing the expected
--- `policyEpoch` rejects grants issued for earlier epochs.
+-- `resourceInstanceCid` can bind one contract instance. Epoch-based invalidation
+-- requires increasing the expected `policyEpoch` without reusing earlier values.
 data AuthorizationScope = AuthorizationScope with
     namespace : Text
     resourceType : Text
@@ -39,6 +39,7 @@ data AuthorizationRequirement = AuthorizationRequirement with
 -- Use preserves the grant; revoke, renounce, and the authority's Archive consume it.
 -- Other readers need disclosure. Creation rejects malformed validity windows.
 -- Consumers must bind the actor and derive trusted policy; see the package README.
+-- Validity bounds use ledger time, subject to synchronizer record-time tolerance.
 -- Unreleased 0.x API; no upgrade compatibility baseline is published.
 template AuthorizationGrant
   with

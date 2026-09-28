@@ -15,7 +15,12 @@ sandboxAuthorization = script do
   Use.test_guardRecordsNestedUseAndPreservesGrant
   Use.test_nestedUseDoesNotLeakIssuerAuthority
   Use.test_businessFailureAfterUseRollsBackEffects
+  Use.test_guardFailuresCannotBeCaught
+  Use.test_nonGranteeCanFailBeforeMatching
+  Use.test_consumerSignatoryCanDelegateGranteeAuthority
+  Use.test_caughtBusinessFailureRollsBackUse
   Boundary.test_implicitArchiveAndStaleDisclosure
+  Boundary.test_epochReuseAndFutureGrants
   Boundary.test_revocationOrderingIsAtomic
   Check.test_checkReturnsMatchingFailures
   Check.test_checkMatchesEveryScopeField
@@ -24,3 +29,4 @@ sandboxAuthorization = script do
   Check.test_checkDoesNotAuthenticateActor
   Use.test_directUseRespectsValidityWindow
   Check.checkValidityWindowsFrom (addRelTime Core.t1 (days 2))
+  Use.oneMicrosecondWindowFrom (addRelTime Core.t1 (days 5))

@@ -105,11 +105,13 @@ test_revokeRenounceAndArchivePreventFurtherIssuance = script do
       exerciseCmd s.registry App.LicenseRegistry_AppointOperator with
         operator = s.operator; validFrom = None; validUntil = None
     let auth = (authorization s) with grantCid = grant
-    _ <- F.submitDisclosed s.operator [s.disclosure] (issue s auth)
+    license <- F.submitDisclosed s.operator [s.disclosure] (issue s auth)
     case mode of
       0 -> submit s.licensor do exerciseCmd grant SAG.AuthorizationGrant_Revoke
       1 -> submit s.operator do exerciseCmd grant SAG.AuthorizationGrant_Renounce
       _ -> submit s.licensor do archiveCmd grant
+    active <- queryContractId s.licensee license
+    assertMsg "removing an operator grant must preserve issued licenses" (Optional.isSome active)
     F.submitDisclosedMustFail s.operator [s.disclosure] (issue s auth)
 
 test_validityBoundsPropagateThroughTheApp : Script ()

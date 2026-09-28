@@ -80,6 +80,8 @@ DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm damlc lint
 DAML_PACKAGE=test/api-pausable-v1-test dpm damlc lint
 DAML_PACKAGE=test/pausable-v1-test dpm damlc lint
+DAML_PACKAGE=examples/licensing-app-v1 dpm damlc lint
+DAML_PACKAGE=examples/licensing-app-v1-test dpm damlc lint
 DAML_PACKAGE=examples/pausable/registry dpm damlc lint
 DAML_PACKAGE=examples/pausable/registry-test dpm damlc lint
 DAML_PACKAGE=examples/pausable/retrofit-v1-0 dpm damlc lint
@@ -87,16 +89,23 @@ DAML_PACKAGE=examples/pausable/retrofit-v1-1 dpm damlc lint
 DAML_PACKAGE=examples/pausable/retrofit-test dpm damlc lint
 DAML_PACKAGE=examples/pausable/vault dpm damlc lint
 DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
+DAML_PACKAGE=examples/treasury-rbac-v1 dpm damlc lint
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm damlc lint
 DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/api-pausable-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/pausable-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=examples/pausable/registry-test dpm test --all
 DAML_PACKAGE=examples/pausable/retrofit-test dpm test --all
 DAML_PACKAGE=examples/pausable/vault-test dpm test --all
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm test --all --show-coverage
 scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=authorization scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=licensing scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=treasury scripts/check-sandbox.sh
 ```
 
 `scripts/check.sh` enforces package boundaries. Component tests and production

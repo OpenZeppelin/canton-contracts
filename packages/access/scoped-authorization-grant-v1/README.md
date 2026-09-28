@@ -102,14 +102,16 @@ verify its template type. Including the ID does not grant read access to the
 resource. Derive the expected ID from trusted contract state.
 
 Every scope field must match: `None` does not match `Some`, and two different
-contract IDs do not match. Increasing the expected `policyEpoch` in a resource's
-trusted policy rejects grants for earlier epochs. Other resources that still
-accept the old scope remain unaffected.
+contract IDs do not match. To invalidate grants through `policyEpoch`, increase
+the expected value in the resource's trusted policy. Never reuse an earlier epoch
+for the same identity, including after migration: it can reactivate old grants.
+Future-epoch grants become usable when the expected epoch matches, if all other
+checks pass. Other resources accepting the old scope remain unaffected.
 
 An instance-bound grant remains active if its resource is archived, but it does
-not match a successor contract ID. Applications that frequently recreate a
-resource should use logical-only scope or a stable anchor CID when grants must
-continue across those transitions.
+not match a successor contract ID. Bind to the resource's own CID when a recreated
+resource must start with fresh grants. Use logical-only scope or a stable anchor
+CID when grants should survive those transitions, without reusing earlier epochs.
 
 ### Role-based access control
 
@@ -143,6 +145,12 @@ so the grant does not introduce an unrelated confirming participant.
 present, creation requires `validFrom < validUntil`. Validation uses ledger-time
 predicates rather than reading `getTime`, so the check remains compatible with
 externally prepared and signed transactions.
+
+These are ledger-time bounds, not exact wall-clock deadlines. Ledger time may
+differ from record time within the synchronizer's
+[configured tolerance](https://docs.canton.network/overview/reference/ledger-causality#guarantees).
+Allow a margin for real-world deadlines. A prepared transaction submitted too
+late can fail with `LEDGER_TIME_OUTSIDE_BOUNDS` instead of `OZ_SAG_EXPIRED`.
 
 Expiration does not archive a grant. An active grant may be outside its validity
 window or fail the current policy, so discovery alone does not establish permission.
@@ -204,9 +212,14 @@ fields instead of copying arbitrary-length scope values.
 to a backend, map it to an application-defined serializable type, such as a
 record containing the error ID and metadata.
 
-Unavailable or archived contracts, missing controller authority, and malformed
-windows rejected by `ensure` retain Canton-native errors. Those failures can
-occur before the guard's checks run.
+Matching starts only after a successful fetch. If neither the grant's authority
+nor its grantee authorizes that fetch, even a disclosed grant fails with a native
+authorization error before `OZ_SAG_GRANTEE_MISMATCH`. Unavailable or archived
+contracts and missing controller authority also retain Canton-native errors;
+`checkAuthorization` does not return these as `Left`.
+
+Creation rejects malformed validity windows through `ensure`, also with a
+Canton-native error.
 
 ## Authority rotation
 

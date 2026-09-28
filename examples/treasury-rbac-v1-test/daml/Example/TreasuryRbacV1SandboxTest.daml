@@ -11,4 +11,7 @@ sandboxTreasury = script do
   Security.test_executorMustDifferFromBothEarlierActors
   Security.test_stolenAndForgedActorsFailAtEveryStage
   Security.test_policyAdministrationAndPendingWorkflowCleanup
+  Security.test_revokingEarlierRolesPreservesPendingWork
+  Security.test_correctAuthorityWrongPermissionFails
   Security.test_expiredGrantCannotExecuteApprovedPayment
+  Security.test_proposerGrantMustBeWithinItsWindow

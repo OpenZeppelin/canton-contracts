@@ -38,9 +38,14 @@ jointly authorize each successor.
 ## Lifecycle
 
 Role authorities revoke individual grants through
-`AuthorizationGrant_Revoke`; members may renounce them. The treasury owner may
-rotate `policyEpoch`, which creates a successor Treasury contract. Earlier role
-grants fail because their scope contains the previous contract ID and epoch.
+`AuthorizationGrant_Revoke`; members may renounce them. Each stage checks its
+current actor's grant, not grants used at earlier stages. Revoking a proposer or
+approver grant leaves their completed proposals or approvals available to the
+next authorized actor.
+
+The treasury owner may rotate `policyEpoch`, which creates a successor Treasury
+contract. Earlier role grants fail because their scope contains the previous
+contract ID and epoch.
 Pending proposals and approvals also record their originating epoch and exact
 Treasury contract ID, so they cannot cross a policy or Treasury instance
 boundary. After rotation, a pending proposal or approval can be archived only
@@ -56,6 +61,10 @@ application backend discloses the treasury to an authority issuing a role and to
 a member performing protected work, and discloses each pending workflow contract
 to the next actor. An actor becomes a workflow stakeholder after authorizing a
 stage.
+
+The separate role authorities may add confirming participants to each stage.
+Each authority sees the `AuthorizationGrant_Use` exercise for its grant, but not
+necessarily the full payment workflow.
 
 ## Trust and application responsibilities
 
