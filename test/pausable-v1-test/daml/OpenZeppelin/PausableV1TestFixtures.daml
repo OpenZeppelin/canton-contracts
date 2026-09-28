@@ -1,0 +1,193 @@
+-- | Consumer fixtures: single-party and credential-based pause authority, and
+-- the sibling-field case.
+module OpenZeppelin.PausableV1TestFixtures where
+
+import DA.Action (unless)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import qualified DA.TextMap as TextMap
+
+import OpenZeppelin.Api.PausableV1
+import OpenZeppelin.PausableV1
+
+-- Consumer-side failures, raised with `failWithStatus` so tests match on a
+-- stable `errorId`.
+fixtureFailure : Text -> Text -> FailureStatus
+fixtureFailure name message = FailureStatus with
+  errorId = "example.com/pausable-test-" <> name
+  category = InvalidGivenCurrentSystemStateOther
+  message
+  meta = TextMap.empty
+
+eAmountNotPositive : FailureStatus
+eAmountNotPositive = fixtureFailure "amount-not-positive" "Vault: amount must be positive"
+
+eInsufficientBalance : FailureStatus
+eInsufficientBalance = fixtureFailure "insufficient-balance" "Vault: insufficient balance"
+
+eWrongCredentialIssuer : FailureStatus
+eWrongCredentialIssuer = fixtureFailure "wrong-credential-issuer"
+  "RoleVault: wrong credential issuer"
+
+eCredentialNotCallers : FailureStatus
+eCredentialNotCallers = fixtureFailure "credential-not-callers"
+  "RoleVault: credential is not the caller's"
+
+-- | The single-party case: the admin is the pause authority, and the consuming
+-- flip choices guard, then create the successor with the flag changed.
+template Vault
+  with
+    admin : Party
+    holder : Party
+    paused : Bool
+    balance : Int
+  where
+    signatory admin
+    observer holder
+    ensure balance >= 0
+
+    interface instance Pausable for Vault where
+      view = PausableView with paused
+
+    -- The consumer supplies the authority and the flip, the library supplies
+    -- the guard.
+    choice Vault_Pause : ContractId Vault
+      controller admin
+      do
+        whenNotPaused this
+        create this with paused = True
+
+    choice Vault_Unpause : ContractId Vault
+      controller admin
+      do
+        whenPaused this
+        create this with paused = False
+
+    -- A gated operation.
+    choice Vault_Withdraw : ContractId Vault
+      with amount : Int
+      controller holder
+      do
+        whenNotPaused this
+        unless (amount > 0) (failWithStatus eAmountNotPositive)
+        unless (amount <= balance) (failWithStatus eInsufficientBalance)
+        create this with balance = balance - amount
+
+    -- A recovery path that runs only while paused.
+    choice Vault_EmergencyDrain : ContractId Vault
+      controller admin
+      do
+        whenPaused this
+        create this with balance = 0
+
+-- | A credential standing in for an AccessControl `RoleGrant`.
+template PauseCredential
+  with
+    admin : Party
+    account : Party
+  where
+    signatory admin
+    observer account
+
+-- | The credential case: the flip choice takes the caller and a credential,
+-- checks them in the body, then flips.
+template RoleVault
+  with
+    admin : Party
+    holder : Party
+    paused : Bool
+  where
+    signatory admin
+    observer holder
+
+    interface instance Pausable for RoleVault where
+      view = PausableView with paused
+
+    choice RoleVault_Pause : ContractId RoleVault
+      with
+        caller : Party
+        credCid : ContractId PauseCredential
+      controller caller
+      do
+        cred <- fetch credCid
+        unless (cred.admin == admin) (failWithStatus eWrongCredentialIssuer)
+        unless (cred.account == caller) (failWithStatus eCredentialNotCallers)
+        whenNotPaused this
+        create this with paused = True
+
+    choice RoleVault_Transfer : ContractId RoleVault
+      controller holder
+      do
+        whenNotPaused this
+        create this
+
+-- | The sibling-field case: the flip choice sets the flag and the pause
+-- reason in one create.
+template Registry
+  with
+    admin : Party
+    paused : Bool
+    pauseReason : Optional Text
+  where
+    signatory admin
+
+    interface instance Pausable for Registry where
+      view = PausableView with paused
+
+    choice Registry_Pause : ContractId Registry
+      with
+        reason : Optional Text
+      controller admin
+      do
+        whenNotPaused this
+        create this with paused = True, pauseReason = reason
+
+    choice Registry_Unpause : ContractId Registry
+      controller admin
+      do
+        whenPaused this
+        create this with paused = False, pauseReason = None
+
+-- | Flips from a nonconsuming choice that archives `self` beside the create,
+-- so one contract stays active. The template also has a nonconsuming gated
+-- operation.
+template ArchivingVault
+  with
+    admin : Party
+    paused : Bool
+  where
+    signatory admin
+
+    interface instance Pausable for ArchivingVault where
+      view = PausableView with paused
+
+    nonconsuming choice ArchivingVault_Pause : ContractId ArchivingVault
+      controller admin
+      do
+        whenNotPaused this
+        archive self
+        create this with paused = True
+
+    nonconsuming choice ArchivingVault_Read : Bool
+      controller admin
+      do
+        whenNotPaused this
+        pure paused
+
+-- | Flips from a nonconsuming choice without archiving `self`, so the
+-- predecessor stays active beside the successor. The choice kind is the
+-- consumer's responsibility.
+template LeakyVault
+  with
+    admin : Party
+    paused : Bool
+  where
+    signatory admin
+
+    interface instance Pausable for LeakyVault where
+      view = PausableView with paused
+
+    nonconsuming choice LeakyVault_Pause : ContractId LeakyVault
+      controller admin
+      do
+        whenNotPaused this
+        create this with paused = True

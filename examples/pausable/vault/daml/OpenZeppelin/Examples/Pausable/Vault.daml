@@ -1,0 +1,103 @@
+-- | Minimal adoption of `Pausable`: a vault holding a
+-- balance for one owner, with an emergency stop that the admin controls.
+--
+-- Adopting `Pausable` takes one template field, an `interface instance`, one
+-- `whenNotPaused` call per gated choice, and the two flip choices that name
+-- the pause authority. Gating is a decision per choice: `Vault_Redeem` stays
+-- open while paused, and `Vault_EmergencyDrain` runs only while paused.
+module OpenZeppelin.Examples.Pausable.Vault where
+
+import DA.Action (unless)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import qualified DA.TextMap as TextMap
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
+
+-- | What the vault pays out. The owner receives it on a withdrawal, on
+-- redemption, and on an emergency drain.
+template Payout
+  with
+    payer : Party
+    recipient : Party
+    amount : Decimal
+  where
+    signatory payer
+    observer recipient
+    ensure amount >= 0.0
+
+template Vault
+  with
+    admin : Party
+    owner : Party
+    balance : Decimal
+    paused : Bool
+  where
+    signatory admin, owner
+    ensure balance >= 0.0
+
+    -- Adopts the switch. The flag is a field of this contract, so the guards
+    -- read it directly.
+    interface instance Pausable for Vault where
+      view = PausableView with paused
+
+    -- A gated operation.
+    choice Vault_Withdraw : (ContractId Vault, ContractId Payout)
+      with
+        amount : Decimal
+      controller owner
+      do
+        Pausable.whenNotPaused this
+        unless (amount > 0.0) (failWithStatus eNonPositiveAmount)
+        unless (amount <= balance) (failWithStatus eInsufficientBalance)
+        payout <- create Payout with payer = admin, recipient = owner, amount
+        vault <- create this with balance = balance - amount
+        pure (vault, payout)
+
+    -- An escape hatch: the owner redeems the whole balance at any time, paused
+    -- or not.
+    choice Vault_Redeem : (ContractId Vault, ContractId Payout)
+      controller owner
+      do
+        payout <- create Payout with payer = admin, recipient = owner, amount = balance
+        vault <- create this with balance = 0.0
+        pure (vault, payout)
+
+    -- A recovery path that runs only while paused. The admin returns the
+    -- balance to the owner.
+    choice Vault_EmergencyDrain : (ContractId Vault, ContractId Payout)
+      controller admin
+      do
+        Pausable.whenPaused this
+        payout <- create Payout with payer = admin, recipient = owner, amount = balance
+        vault <- create this with balance = 0.0
+        pure (vault, payout)
+
+    -- The pause authority. Each consuming choice guards, then creates the
+    -- successor with the flag changed.
+    choice Vault_Pause : ContractId Vault
+      controller admin
+      do
+        Pausable.whenNotPaused this
+        create this with paused = True
+
+    choice Vault_Unpause : ContractId Vault
+      controller admin
+      do
+        Pausable.whenPaused this
+        create this with paused = False
+
+-- | Raised when a withdrawal names a non-positive amount.
+eNonPositiveAmount : FailureStatus
+eNonPositiveAmount = FailureStatus with
+  errorId = "myapp.com/vault-non-positive-amount"
+  category = InvalidIndependentOfSystemState
+  message = "Vault: amount must be positive"
+  meta = TextMap.empty
+
+-- | Raised when a withdrawal names more than the balance.
+eInsufficientBalance : FailureStatus
+eInsufficientBalance = FailureStatus with
+  errorId = "myapp.com/vault-insufficient-balance"
+  category = InvalidGivenCurrentSystemStateOther
+  message = "Vault: amount exceeds balance"
+  meta = TextMap.empty

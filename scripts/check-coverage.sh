@@ -70,6 +70,27 @@ for tree_pair in "${TREES[@]}"; do
 		package_dir="$(dirname "$manifest")"
 		component="$(basename "$package_dir")"
 		test_package="$test_tree/$component-test"
+		if [ "$source_tree" = "$test_tree" ]; then
+			test_package="$package_dir-test"
+			# Versioned upgrade examples can share a test package that imports
+			# both DARs instead of having one test package per version.
+			if [ ! -f "$test_package/daml.yaml" ]; then
+				test_package=""
+				while IFS= read -r candidate_manifest; do
+					candidate="$(dirname "$candidate_manifest")"
+					case "$candidate" in
+					*-test) ;;
+					*) continue ;;
+					esac
+					candidate_dar_dir="$(relpath "$candidate" "$package_dir")/.daml/dist/"
+					if grep -Fq "$candidate_dar_dir" "$candidate_manifest"; then
+						[ -z "$test_package" ] || fail "multiple test packages for $package_dir"
+						test_package="$candidate"
+					fi
+				done < <(find "$test_tree" -type d -name .daml -prune -o -name daml.yaml -type f -print | sort)
+				[ -n "$test_package" ] || fail "missing test package for $package_dir"
+			fi
+		fi
 		test_manifest="$test_package/daml.yaml"
 		coverage_report="$REPORTS/$component-coverage.txt"
 

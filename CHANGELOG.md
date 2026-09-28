@@ -16,6 +16,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Added Scoped Authorization Grant for authority-signed, resource-scoped
   permissions with expiry, revocation, usage records, and structured failures.
 
+### `openzeppelin-api-pausable-v1`
+
+#### Added
+
+- Added the frozen interface package `openzeppelin-api-pausable-v1` with public
+  module `OpenZeppelin.Api.PausableV1`, holding the `Pausable` interface and
+  `PausableView`.
+
+### `openzeppelin-pausable-v1`
+
+#### Added
+
+- Added the function package `openzeppelin-pausable-v1` with public module
+  `OpenZeppelin.PausableV1`, holding the guards `whenNotPaused` and
+  `whenPaused`, `isPaused`, and the failure statuses `eEnforcedPause` and
+  `eExpectedPause`. It depends on `openzeppelin-api-pausable-v1`.
+
 ### `openzeppelin-tokenCIP112-v1`
 
 #### Added
@@ -29,24 +46,3 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   ERC-20 `approve` and `transferFrom` semantics, spent through the new
   `TokenRules_ApproveAllowance` and `TokenRules_TransferFrom` registry
   choices.
-
-### `openzeppelin-access-control-v1`
-
-#### Removed (Breaking)
-
-- Removed the experimental Access Control package. Scoped Authorization Grant
-  provides the permission-checking foundation; it is not an API-compatible
-  replacement for the experimental role-management choices.
-
-### `openzeppelin-ownable-v1`
-
-#### Removed (Breaking)
-
-- Removed the experimental Ownable package.
-
-### `openzeppelin-pausable-v1`
-
-#### Changed (Breaking)
-
-- Renamed the pre-release package and public module into the `v1` lineage
-  without changing contract behavior.

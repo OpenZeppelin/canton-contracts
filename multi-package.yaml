@@ -6,15 +6,24 @@ packages:
   # Library
   - packages/access/scoped-authorization-grant-v1
   - test/scoped-authorization-grant-v1-test
+  - packages/security/api-pausable-v1
+  - test/api-pausable-v1-test
+  - packages/security/pausable-v1
+  - test/pausable-v1-test
 
   # Integration examples
   - examples/licensing-app-v1
   - examples/licensing-app-v1-test
+  - examples/pausable/registry
+  - examples/pausable/registry-test
+  - examples/pausable/retrofit-v1-0
+  - examples/pausable/retrofit-v1-1
+  - examples/pausable/retrofit-test
+  - examples/pausable/vault
+  - examples/pausable/vault-test
   - examples/treasury-rbac-v1
   - examples/treasury-rbac-v1-test
 
   # Experiments
-  - experiments/security/pausable-v1
-  - experiments/test/pausable-v1-test
   - experiments/token/tokenCIP112-v1
   - experiments/test/tokenCIP112-v1-test

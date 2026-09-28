@@ -15,7 +15,6 @@ must satisfy.
 
 | Component | Package | Public module | Solidity analogue |
 |---|---|---|---|
-| [Pausable](security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | `Pausable` |
 | [Token CIP-0112](token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | `ERC20` (partial) |
 
 Each package README.md states what the package provides and, more importantly, the
@@ -29,14 +28,14 @@ tests keep running as the repository changes. From the repository root:
 
 ```sh
 dpm build --all
-DAML_PACKAGE=experiments/test/pausable-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm test --all --show-coverage
 ```
 
 Each component's isolated test package lives under [`test/`](test/) and
 data-depends on the built DAR. Build one component on its own with:
 
 ```sh
-DAML_PACKAGE=experiments/security/pausable-v1 dpm build
+DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm build
 ```
 
 ## What to use them for

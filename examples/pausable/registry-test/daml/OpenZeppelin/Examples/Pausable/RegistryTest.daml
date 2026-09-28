@@ -1,0 +1,167 @@
+-- | Tests for `Registry`: a pause that records its reason, and an unpause
+-- that clears it.
+module OpenZeppelin.Examples.Pausable.RegistryTest where
+
+import DA.Assert ((===))
+import DA.Fail (FailureStatus)
+import DA.Stack (HasCallStack)
+import DA.Time (addRelTime, hours)
+import Daml.Script
+
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
+import OpenZeppelin.Examples.Pausable.Registry
+
+data Fixture = Fixture with
+  admin : Party
+  auditor : Party
+  until : Time
+  registry : ContractId Registry
+
+-- | An unpaused registry holding one entry.
+setup : Script Fixture
+setup = do
+  admin <- allocateParty "admin"
+  auditor <- allocateParty "auditor"
+  now <- getTime
+  let until = addRelTime now (hours 6)
+  registry <- submit admin do
+    createCmd Registry with
+      admin
+      auditor
+      paused = False
+      pauseReason = None
+      pauseUntil = None
+      entries = []
+  registry <- submit admin do
+    exerciseCmd registry Registry_Register with entry = "first"
+  pure Fixture with ..
+
+readOf : ContractId Registry -> ContractId Pausable
+readOf = toInterfaceContractId
+
+-- | Run a submission and require the ledger to reject it with exactly this
+-- status. Any other outcome fails with what arrived instead.
+submitMustFailWith
+  : (HasCallStack, Show a)
+  => FailureStatus -> Script (Either SubmitError a) -> Script ()
+submitMustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  other -> fail ("expected " <> show expected <> ", got " <> show other)
+
+pauseWithReason : Fixture -> Script (ContractId Registry)
+pauseWithReason Fixture{..} = submit admin do
+  exerciseCmd registry Registry_Pause with
+    reason = Some "incident 42"
+    until = Some until
+
+-- | Unpaused, a registration lands at the head of the entries.
+test_registerAddsEntry : Script ()
+test_registerAddsEntry = script do
+  Fixture{..} <- setup
+  registry <- submit admin do
+    exerciseCmd registry Registry_Register with entry = "second"
+  Some r <- queryContractId admin registry
+  r.entries === ["second", "first"]
+
+-- | An empty entry fails the registry's own check.
+test_registerRefusesEmptyEntry : Script ()
+test_registerRefusesEmptyEntry = script do
+  Fixture{..} <- setup
+  submitMustFailWith eEmptyEntry $ trySubmit admin do
+    exerciseCmd registry Registry_Register with entry = ""
+
+-- | One transaction sets the flag and the metadata that reports it.
+test_pauseRecordsReasonAndDeadline : Script ()
+test_pauseRecordsReasonAndDeadline = script do
+  f@Fixture{..} <- setup
+  registry <- pauseWithReason f
+  Some r <- queryContractId admin registry
+  r.paused === True
+  r.pauseReason === Some "incident 42"
+  r.pauseUntil === Some until
+
+-- | An observer reads the flag through the view.
+test_auditorReadsTheView : Script ()
+test_auditorReadsTheView = script do
+  f@Fixture{..} <- setup
+  registry <- pauseWithReason f
+  Some v <- queryInterfaceContractId auditor (readOf registry)
+  v === PausableView with paused = True
+
+-- | While paused, a registration fails with `eEnforcedPause`.
+test_registerRefusedWhilePaused : Script ()
+test_registerRefusedWhilePaused = script do
+  f@Fixture{..} <- setup
+  registry <- pauseWithReason f
+  submitMustFailWith Pausable.eEnforcedPause $ trySubmit admin do
+    exerciseCmd registry Registry_Register with entry = "second"
+  Some r <- queryContractId admin registry
+  r.entries === ["first"]
+
+-- | While paused, the admin changes the reason and the deadline, and the
+-- registry stays paused. The update is refused while unpaused.
+test_updatePauseInfoWhilePaused : Script ()
+test_updatePauseInfoWhilePaused = script do
+  f@Fixture{..} <- setup
+  submitMustFailWith Pausable.eExpectedPause $ trySubmit admin do
+    exerciseCmd registry Registry_UpdatePauseInfo with reason = Some "early", until = None
+  registry <- pauseWithReason f
+  let later = addRelTime until (hours 6)
+  registry <- submit admin do
+    exerciseCmd registry Registry_UpdatePauseInfo with
+      reason = Some "incident 42, extended"
+      until = Some later
+  Some r <- queryContractId admin registry
+  r.paused === True
+  r.pauseReason === Some "incident 42, extended"
+  r.pauseUntil === Some later
+
+-- | Unpausing clears what the pause recorded.
+test_unpauseClearsTheRecordedFields : Script ()
+test_unpauseClearsTheRecordedFields = script do
+  f@Fixture{..} <- setup
+  registry <- pauseWithReason f
+  registry <- submit admin do exerciseCmd registry Registry_Unpause
+  Some r <- queryContractId admin registry
+  r.paused === False
+  r.pauseReason === None
+  r.pauseUntil === None
+
+-- | After the unpause, a registration lands again.
+test_registerRunsAfterUnpause : Script ()
+test_registerRunsAfterUnpause = script do
+  f@Fixture{..} <- setup
+  registry <- pauseWithReason f
+  registry <- submit admin do exerciseCmd registry Registry_Unpause
+  registry <- submit admin do
+    exerciseCmd registry Registry_Register with entry = "second"
+  Some r <- queryContractId admin registry
+  r.entries === ["second", "first"]
+
+-- | The auditor observes the registry but cannot pause it.
+test_auditorCannotPause : Script ()
+test_auditorCannotPause = script do
+  Fixture{..} <- setup
+  submitMustFail auditor do
+    exerciseCmd registry Registry_Pause with reason = None, until = None
+
+-- | While paused, an empty entry fails with `eEnforcedPause`, because the
+-- guard runs before the registry's own check.
+test_pausedEmptyEntryReportsThePause : Script ()
+test_pausedEmptyEntryReportsThePause = script do
+  f@Fixture{..} <- setup
+  registry <- pauseWithReason f
+  submitMustFailWith Pausable.eEnforcedPause $ trySubmit admin do
+    exerciseCmd registry Registry_Register with entry = ""
+
+-- | A second pause fails with `eEnforcedPause`, and an unpause while
+-- unpaused fails with `eExpectedPause`.
+test_repeatedFlipsFail : Script ()
+test_repeatedFlipsFail = script do
+  f@Fixture{..} <- setup
+  submitMustFailWith Pausable.eExpectedPause $ trySubmit admin do
+    exerciseCmd registry Registry_Unpause
+  registry <- pauseWithReason f
+  submitMustFailWith Pausable.eEnforcedPause $ trySubmit admin do
+    exerciseCmd registry Registry_Pause with reason = None, until = None

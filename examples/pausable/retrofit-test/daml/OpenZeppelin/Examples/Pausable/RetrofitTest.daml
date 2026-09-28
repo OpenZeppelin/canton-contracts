@@ -1,0 +1,64 @@
+-- | A template that adopts `Pausable` in its next SCU version, exercised
+-- through both package versions.
+module OpenZeppelin.Examples.Pausable.RetrofitTest where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import OpenZeppelin.Api.PausableV1 (Pausable)
+import qualified OpenZeppelin.PausableV1 as Pausable
+import qualified V1_0.OpenZeppelin.Examples.Pausable.Retrofit as V1_0
+import qualified V1_1.OpenZeppelin.Examples.Pausable.Retrofit as V1_1
+
+data Fixture = Fixture with
+  admin : Party
+  holder : Party
+  old : ContractId V1_0.Account
+  new : ContractId V1_1.Account
+
+-- | A contract created under version 1.0.0, before the adoption.
+setup : Script Fixture
+setup = do
+  admin <- allocateParty "admin"
+  holder <- allocateParty "holder"
+  old <- submit admin do
+    createCmd V1_0.Account with admin; holder; balance = 100.0
+  let new = coerceContractId old
+  pure Fixture with ..
+
+-- | A contract created before the adoption reads as unpaused, and its gated
+-- choice runs under the new version.
+test_oldContractReadsUnpaused : Script ()
+test_oldContractReadsUnpaused = script do
+  Fixture{..} <- setup
+  Some v <- queryInterfaceContractId holder (toInterfaceContractId @Pausable new)
+  v.paused === False
+  _ <- submit holder do exerciseCmd new V1_1.Account_Withdraw with amount = 1.0
+  pure ()
+
+-- | The flip stores `Some True`, and the gated choice of the new version
+-- fails with `eEnforcedPause`.
+test_pauseStopsTheNewVersion : Script ()
+test_pauseStopsTheNewVersion = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd new V1_1.Account_Pause
+  Some a <- queryContractId admin paused
+  a.paused === Some True
+  Left (FailureStatusError status) <- trySubmit holder do
+    exerciseCmd paused V1_1.Account_Withdraw with amount = 1.0
+  status === Pausable.eEnforcedPause
+
+-- | An exercise that names the 1.0.0 template runs the highest vetted
+-- version, 1.1.0, so the guard applies. A submission that pins 1.0.0 through
+-- package preference does not run the guard; the README describes that case.
+test_oldTemplateIdRunsTheNewVersion : Script ()
+test_oldTemplateIdRunsTheNewVersion = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd new V1_1.Account_Pause
+  Left (FailureStatusError status) <- trySubmit holder do
+    exerciseCmd (coerceContractId @V1_1.Account @V1_0.Account paused) V1_0.Account_Withdraw with amount = 1.0
+  status === Pausable.eEnforcedPause
+  unpaused <- submit admin do exerciseCmd paused V1_1.Account_Unpause
+  _ <- submit holder do
+    exerciseCmd (coerceContractId @V1_1.Account @V1_0.Account unpaused) V1_0.Account_Withdraw with amount = 1.0
+  pure ()

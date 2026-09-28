@@ -15,14 +15,20 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-No component has been released or audited yet. Scoped Authorization Grant is a
-library candidate under `packages/`. Earlier designs remain under
-[`experiments/`](experiments/); their APIs and package identities are unstable.
+The library provides the following packages under [`packages/`](packages/):
 
-| Component | Package | Public module | Status |
-|---|---|---|---|
-| [Scoped Authorization Grant](packages/access/scoped-authorization-grant-v1/) | `openzeppelin-scoped-authorization-grant-v1` | `OpenZeppelin.ScopedAuthorizationGrantV1` | Candidate; unaudited |
-| [Pausable](experiments/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Experimental; unaudited |
+| Component | Package | Public module |
+|---|---|---|
+| [Scoped Authorization Grant](packages/access/scoped-authorization-grant-v1/) | `openzeppelin-scoped-authorization-grant-v1` | `OpenZeppelin.ScopedAuthorizationGrantV1` |
+| [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
+| [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` |
+
+Token CIP-0112 is an early-stage experiment with unstable APIs and package
+identity. Read [`experiments/README.md`](experiments/README.md) for its limits.
+
+| Component | Package | Public module |
+|---|---|---|
+| [Token CIP-0112](experiments/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching
@@ -56,7 +62,7 @@ To build one component independently:
 DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm build
 ```
 
-The resulting evaluation DAR is written to:
+The resulting DAR is written to:
 
 ```text
 packages/access/scoped-authorization-grant-v1/.daml/dist/openzeppelin-scoped-authorization-grant-v1-0.1.0.dar
@@ -79,13 +85,17 @@ data-dependencies:
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
 ```
 
+Each package `README.md` shows the consumer code for that component, and
+[`examples/`](examples/) holds runnable consumer projects.
+
 ## Repository layout
 
 ```text
 packages/                 Library components and release candidates
+  access/                 Authorization components
+  security/               Emergency-stop and safety components
 test/                     Isolated library test packages
 experiments/
-  security/               Category for operational security components
   token/                  Category for token components
   test/                   Isolated component test packages
 dars/
@@ -103,8 +113,9 @@ release lineage.
 ## Package and compatibility model
 
 - One independently released unit is one Daml package and one DAR.
-- Components defining Daml interfaces use a frozen `-api-vN` package and a
-  separate upgradeable implementation package. Template-only components use one
+- Components defining Daml interfaces use a frozen
+  `openzeppelin-api-<component>-vN` package and a separate upgradeable package
+  for templates or helper functions. Template-only components use one
   implementation package.
 - Breaking changes create a sibling `-v2` package and `V2` module suffix;
   compatible SCU releases retain the existing package name.
