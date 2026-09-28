@@ -57,6 +57,34 @@ matches its grantee to the authorized actor. Keep the guard on the committed
 execution path of the protected operation. If a caught exception rolls back a
 successful check, call the guard again before continuing with protected work.
 
+## Conditional checks
+
+Use `checkAuthorization` to choose between candidate grants. It fetches the
+grant and checks the actor, authority, exact scope, and validity window. It
+returns `Right ()` on success or `Left FailureStatus` with the first mismatch,
+without recording use. Call `requireAuthorization` for the selected grant
+before performing protected work:
+
+```daml
+result <- SAG.checkAuthorization preferred requirement
+let selected = case result of
+      Right () -> preferred
+      Left _ -> fallback
+SAG.requireAuthorization selected requirement
+```
+
+Use the choice's controller as the actor in both `Authorization` values, and
+derive the requirement from trusted policy. A successful check does not
+establish the actor's authority by itself. The
+[conditional-check tests](../../../test/scoped-authorization-grant-v1-test/daml/OpenZeppelin/ScopedAuthorizationGrantV1CheckTest.daml)
+include a complete choice using this pattern.
+
+Fetch visibility and authorization rules still apply. Archived or unavailable
+grant IDs still abort on fetch; they are not returned as `Left` and cannot be
+skipped this way. Fetching a rejected candidate also makes it a transaction
+dependency. Prefer selecting a grant in the backend
+when the choice does not need to evaluate alternatives itself.
+
 ## Resource identity
 
 `resourceId` is a stable application identifier represented as `Text`.
@@ -144,11 +172,14 @@ validate the application's expected authority or scope.
 Check that the event came from the application's guarded choice before treating
 it as proof of a protected operation. Plain fetches are not usage records, and
 the authority does not necessarily see the enclosing operation's private details.
+`checkAuthorization` produces no `Use` event, whether its result is success or failure.
 
-## Guard failures
+## Validation results
 
-The guard uses [`DA.Fail.failWithStatus`](https://docs.canton.network/appdev/reference/daml-standard-library/da-fail)
-with these stable IDs and metadata:
+`checkAuthorization` returns failures as `Left FailureStatus`.
+`requireAuthorization` raises them with
+[`DA.Fail.failWithStatus`](https://docs.canton.network/appdev/reference/daml-standard-library/da-fail).
+Both use these stable IDs and metadata, checking in the order shown:
 
 | Error ID | Metadata |
 |---|---|
@@ -158,14 +189,20 @@ with these stable IDs and metadata:
 | `OZ_SAG_NOT_YET_VALID` | `validFrom`: inclusive lower bound |
 | `OZ_SAG_EXPIRED` | `validUntil`: exclusive upper bound |
 
-Direct `AuthorizationGrant_Use` calls return the same validity-window failures.
+Direct `AuthorizationGrant_Use` calls raise the same validity-window failures.
 
-All use `failedPrecondition` (`FAILED_PRECONDITION`). Match the Ledger API's
+All statuses use `failedPrecondition` (`FAILED_PRECONDITION`). For a returned
+status, inspect `errorId` and `meta`; returning `Left` does not fail the transaction.
+For an aborted transaction, match the Ledger API's
 `ErrorInfo.reason = DAML_FAILURE` and `metadata.error_id`, rather than parsing
-the human-readable message. These failures abort the transaction and cannot be
+the human-readable message. Raised failures abort the transaction and cannot be
 caught with Daml `try/catch`. Retry only after obtaining a suitable grant or,
 for a future-dated grant, reaching its validity window. Scope metadata names
 fields instead of copying arbitrary-length scope values.
+
+`FailureStatus` is not serializable as a choice result. To return a check result
+to a backend, map it to an application-defined serializable type, such as a
+record containing the error ID and metadata.
 
 Unavailable or archived contracts, missing controller authority, and malformed
 windows rejected by `ensure` retain Canton-native errors. Those failures can
@@ -206,12 +243,15 @@ grant administration, transferability, counters, or an interface.
   to a protected choice.
 - `AuthorizationRequirement` carries the authority and exact scope expected by
   that choice.
+- `checkAuthorization` fetches the grant and returns the result of matching
+  the actor, authority, scope, and validity window without recording usage.
 - `requireAuthorization` fetches the grant and checks the actor, authority, and
   scope, then exercises `AuthorizationGrant_Use` to check the validity window
   and record usage.
 
-`OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contains unsupported
-implementation details and is not part of the consumer API.
+Only the entries above and the documented grant choices form the consumer API.
+Matching helpers and `OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contain
+unsupported implementation details.
 
 ## Build and compatibility
 

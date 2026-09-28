@@ -2,7 +2,6 @@
 module OpenZeppelin.ScopedAuthorizationGrantV1.Internal where
 
 import qualified DA.Fail as Fail
-import qualified DA.Foldable as Foldable
 import qualified DA.Text as Text
 import qualified DA.TextMap as TextMap
 import DA.Time (isLedgerTimeGE, isLedgerTimeLT)
@@ -12,21 +11,35 @@ validityWindowIsWellFormed (Some validFrom) (Some validUntil) =
   validFrom < validUntil
 validityWindowIsWellFormed _ _ = True
 
-requireValidFrom : Optional Time -> Update ()
-requireValidFrom validFrom =
-  Foldable.forA_ validFrom \start -> do
+checkValidityWindow
+  : Optional Time -> Optional Time -> Update (Either Fail.FailureStatus ())
+checkValidityWindow validFrom validUntil = do
+  startResult <- checkValidFrom validFrom
+  case startResult of
+    Left status -> pure (Left status)
+    Right () -> checkValidUntil validUntil
+
+checkValidFrom : Optional Time -> Update (Either Fail.FailureStatus ())
+checkValidFrom validFrom = case validFrom of
+  None -> pure (Right ())
+  Some start -> do
     hasStarted <- isLedgerTimeGE start
-    requireCondition (notYetValid start) hasStarted
+    pure (checkCondition (notYetValid start) hasStarted)
 
-requireValidUntil : Optional Time -> Update ()
-requireValidUntil validUntil =
-  Foldable.forA_ validUntil \end -> do
+checkValidUntil : Optional Time -> Update (Either Fail.FailureStatus ())
+checkValidUntil validUntil = case validUntil of
+  None -> pure (Right ())
+  Some end -> do
     hasNotExpired <- isLedgerTimeLT end
-    requireCondition (expired end) hasNotExpired
+    pure (checkCondition (expired end) hasNotExpired)
 
-requireCondition : Fail.FailureStatus -> Bool -> Update ()
-requireCondition status condition =
-  if condition then pure () else Fail.failWithStatus status
+checkCondition : Fail.FailureStatus -> Bool -> Either Fail.FailureStatus ()
+checkCondition status condition = if condition then Right () else Left status
+
+requireSuccess : Either Fail.FailureStatus () -> Update ()
+requireSuccess result = case result of
+  Left status -> Fail.failWithStatus status
+  Right () -> pure ()
 
 notYetValid : Time -> Fail.FailureStatus
 notYetValid start = Fail.FailureStatus with

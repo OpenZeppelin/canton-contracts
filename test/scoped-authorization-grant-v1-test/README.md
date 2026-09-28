@@ -11,7 +11,8 @@ package boundary used by an integrator.
 | Issuance and authority | Issuer-only creation and revocation; grantee-only use and renunciation; implicit Archive; authority/grantee equality |
 | Actor binding | Forged actors, stolen grants, disclosed contracts, and read access without controller authority |
 | Scope | Every field independently; combined mismatch metadata; exact CID, logical-only, and shared logical scopes |
-| Time | Unbounded and bounded windows; inclusive start and exclusive end through direct Use and the guard; malformed and empty intervals |
+| Time | Unbounded, one-sided, and bounded windows; inclusive start and exclusive end through checks, direct Use, and the guard; malformed and empty intervals |
+| Conditional checks | Returned failure IDs and metadata; first-mismatch order; no Use on checks; fallback records only the selected grant; unavailable CIDs still abort; checks do not authenticate the actor |
 | Lifecycle | Reuse, independent duplicate grants, revocation, renunciation, stale disclosures, atomic command ordering |
 | Use event | Nested exercise, direct-use limits, rollback after business failure, no issuer authority leaking into sibling effects |
 | Licensing | Issuance, visibility, administration, duplicate registry IDs, policy rotation, grant lifecycle, time bounds, license revocation |

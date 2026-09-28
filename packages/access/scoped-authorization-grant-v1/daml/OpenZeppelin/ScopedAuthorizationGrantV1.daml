@@ -1,7 +1,18 @@
 -- | A resource-scoped authorization credential for Canton applications.
 -- Protected choices bind the actor as controller and derive requirements from trusted state.
-module OpenZeppelin.ScopedAuthorizationGrantV1 where
+module OpenZeppelin.ScopedAuthorizationGrantV1
+  ( AuthorizationScope(..)
+  , AuthorizationRequirement(..)
+  , AuthorizationGrant(..)
+  , AuthorizationGrant_Use(..)
+  , AuthorizationGrant_Revoke(..)
+  , AuthorizationGrant_Renounce(..)
+  , Authorization(..)
+  , checkAuthorization
+  , requireAuthorization
+  ) where
 
+import qualified DA.Fail as Fail
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1.Internal as Internal
 
 -- | The resource and permission a grant covers. Every field matches exactly.
@@ -43,14 +54,14 @@ template AuthorizationGrant
     signatory authority
     observer grantee
 
-    -- | Records use within the validity window without consuming the grant.
+    -- Records use within the validity window without consuming the grant.
     -- Actor and policy matching belong to `requireAuthorization`;
     -- this event alone does not prove a protected effect.
     nonconsuming choice AuthorizationGrant_Use : ()
       controller grantee
       do
-        Internal.requireValidFrom validFrom
-        Internal.requireValidUntil validUntil
+        result <- Internal.checkValidityWindow validFrom validUntil
+        Internal.requireSuccess result
 
     choice AuthorizationGrant_Revoke : ()
       controller authority
@@ -67,18 +78,35 @@ data Authorization = Authorization with
     grantCid : ContractId AuthorizationGrant
   deriving (Eq, Show, Serializable)
 
+-- | Check the grant's actor, authority, scope, and validity window without recording use.
+-- Returns the first mismatch; unavailable or archived grants still abort on fetch.
+-- The protected choice must require the actor's authority and derive trusted policy.
+checkAuthorization
+  : Authorization -> AuthorizationRequirement -> Update (Either Fail.FailureStatus ())
+checkAuthorization authorization requirement = do
+  grant <- fetch authorization.grantCid
+  case checkGrantMatches authorization.actor requirement grant of
+    Left status -> pure (Left status)
+    Right () -> Internal.checkValidityWindow grant.validFrom grant.validUntil
+
 -- | Validate the grant and exercise Use. Call on the protected operation's
 -- committed path; a caught exception can roll back the use event.
 requireAuthorization : Authorization -> AuthorizationRequirement -> Update ()
 requireAuthorization authorization requirement = do
   grant <- fetch authorization.grantCid
-  Internal.requireCondition
+  Internal.requireSuccess (checkGrantMatches authorization.actor requirement grant)
+  exercise authorization.grantCid AuthorizationGrant_Use
+
+checkGrantMatches
+  : Party -> AuthorizationRequirement -> AuthorizationGrant -> Either Fail.FailureStatus ()
+checkGrantMatches actor requirement grant = do
+  Internal.checkCondition
     (Internal.authorityMismatch requirement.expectedAuthority grant.authority)
     (grant.authority == requirement.expectedAuthority)
-  Internal.requireCondition
-    (Internal.granteeMismatch authorization.actor grant.grantee)
-    (grant.grantee == authorization.actor)
-  Internal.requireCondition
+  Internal.checkCondition
+    (Internal.granteeMismatch actor grant.grantee)
+    (grant.grantee == actor)
+  Internal.checkCondition
     (Internal.scopeMismatch
       [ ("namespace", grant.scope.namespace == requirement.expectedScope.namespace)
       , ("resourceType", grant.scope.resourceType == requirement.expectedScope.resourceType)
@@ -88,4 +116,3 @@ requireAuthorization authorization requirement = do
       , ("resourceInstanceCid", grant.scope.resourceInstanceCid == requirement.expectedScope.resourceInstanceCid)
       ])
     (grant.scope == requirement.expectedScope)
-  exercise authorization.grantCid AuthorizationGrant_Use

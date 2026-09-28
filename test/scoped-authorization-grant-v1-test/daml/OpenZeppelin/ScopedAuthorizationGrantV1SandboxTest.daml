@@ -1,9 +1,11 @@
 module OpenZeppelin.ScopedAuthorizationGrantV1SandboxTest where
 
+import DA.Time (addRelTime, days)
 import Daml.Script (Script, script)
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as Core
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1UseTest as Use
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1BoundaryTest as Boundary
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1CheckTest as Check
 
 -- One runner preserves fresh party allocation across the shared ledger.
 sandboxAuthorization : Script ()
@@ -15,4 +17,10 @@ sandboxAuthorization = script do
   Use.test_businessFailureAfterUseRollsBackEffects
   Boundary.test_implicitArchiveAndStaleDisclosure
   Boundary.test_revocationOrderingIsAtomic
+  Check.test_checkReturnsMatchingFailures
+  Check.test_checkMatchesEveryScopeField
+  Check.test_checkFallbackRecordsOnlySelectedUse
+  Check.test_checkUnavailableGrantsAbort
+  Check.test_checkDoesNotAuthenticateActor
   Use.test_directUseRespectsValidityWindow
+  Check.checkValidityWindowsFrom (addRelTime Core.t1 (days 2))

@@ -14,7 +14,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 #### Added
 
 - Added Scoped Authorization Grant for authority-signed, resource-scoped
-  permissions with expiry, revocation, usage records, and structured failures.
+  permissions with expiry, revocation, conditional checks, usage records, and
+  structured failures.
 
 ### `openzeppelin-api-pausable-v1`
 
