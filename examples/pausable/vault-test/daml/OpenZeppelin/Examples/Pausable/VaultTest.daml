@@ -166,3 +166,23 @@ test_ownerCannotFlipOrDrain = script do
   vault <- submit admin do exerciseCmd vault Vault_Pause
   submitMustFail owner do exerciseCmd vault Vault_Unpause
   submitMustFail owner do exerciseCmd vault Vault_EmergencyDrain
+
+test_archiveRequiresBothSignatories : Script ()
+test_archiveRequiresBothSignatories = script do
+  Fixture{..} <- setup
+  AuthorizationError _ <- submitWithError admin do archiveCmd vault
+  AuthorizationError _ <- submitWithError owner do archiveCmd vault
+  submit (actAs [admin, owner]) do archiveCmd vault
+  queryContractId admin vault >>= (=== None)
+  queryContractId owner vault >>= (=== None)
+
+test_payoutArchiveRequiresPayer : Script ()
+test_payoutArchiveRequiresPayer = script do
+  Fixture{..} <- setup
+  (vault, payout) <- submit owner do exerciseCmd vault Vault_Withdraw with amount = 40.0
+  AuthorizationError _ <- submitWithError owner do archiveCmd payout
+  submit admin do archiveCmd payout
+  queryContractId admin payout >>= (=== None)
+  queryContractId owner payout >>= (=== None)
+  Some v <- queryContractId owner vault
+  v.balance === 60.0
