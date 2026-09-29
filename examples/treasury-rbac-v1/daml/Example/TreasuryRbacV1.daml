@@ -2,6 +2,7 @@
 -- Example-only 0.x contracts; migration and payment-ID uniqueness belong to the application.
 module Example.TreasuryRbacV1 where
 
+import DA.Functor (void)
 import qualified Example.TreasuryRbacV1.RolePolicy as RolePolicy
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
 
@@ -12,6 +13,10 @@ treasuryRolePolicy treasury = RolePolicy.TreasuryRolePolicy with
   approvalAuthority = treasury.approvalAuthority
   executionAuthority = treasury.executionAuthority
   policyEpoch = treasury.policyEpoch
+
+instance SAG.HasAuthorizationPolicy Treasury RolePolicy.TreasuryRole where
+  authorizationRequirement treasury cid =
+    RolePolicy.roleRequirement (treasuryRolePolicy treasury) cid
 
 -- | Treasury signed by the owner; role authorities and members need disclosure.
 -- Each role authority grants its role; guarded proposers start payments.
@@ -42,13 +47,11 @@ template Treasury
         validUntil : Optional Time
       controller RolePolicy.roleAuthority (treasuryRolePolicy this) role
       do
+        let requirement = SAG.authorizationRequirement this self role
         create SAG.AuthorizationGrant with
-          authority = RolePolicy.roleAuthority (treasuryRolePolicy this) role
+          authority = requirement.expectedAuthority
           grantee = member
-          scope = RolePolicy.roleScope
-            (treasuryRolePolicy this)
-            (coerceContractId self)
-            role
+          scope = requirement.expectedScope
           validFrom
           validUntil
 
@@ -61,11 +64,7 @@ template Treasury
         currency : Text
       controller authorization.actor
       do
-        RolePolicy.requireRole
-          authorization
-          (treasuryRolePolicy this)
-          (coerceContractId self)
-          RolePolicy.PaymentProposer
+        void $ SAG.requirePermission this self RolePolicy.PaymentProposer authorization
         assertMsg eAmountMustBePositive (amount > 0.0)
         create PaymentProposal with
           owner
@@ -112,11 +111,7 @@ template PaymentProposal
           (treasury.owner == owner
             && treasury.treasuryId == treasuryId
             && treasury.policyEpoch == policyEpoch)
-        RolePolicy.requireRole
-          authorization
-          (treasuryRolePolicy treasury)
-          (coerceContractId treasuryCid)
-          RolePolicy.PaymentApprover
+        void $ SAG.requirePermission treasury treasuryCid RolePolicy.PaymentApprover authorization
         assertMsg eProposerCannotApprove
           (proposer /= authorization.actor)
         create ApprovedPayment with
@@ -159,11 +154,7 @@ template ApprovedPayment
           (treasury.owner == owner
             && treasury.treasuryId == treasuryId
             && treasury.policyEpoch == policyEpoch)
-        RolePolicy.requireRole
-          authorization
-          (treasuryRolePolicy treasury)
-          (coerceContractId treasuryCid)
-          RolePolicy.PaymentExecutor
+        void $ SAG.requirePermission treasury treasuryCid RolePolicy.PaymentExecutor authorization
         assertMsg eExecutorMustBeIndependent
           (authorization.actor /= proposer
             && authorization.actor /= approver)

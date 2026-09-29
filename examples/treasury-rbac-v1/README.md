@@ -4,10 +4,11 @@ An application-specific role-based access-control example built from the Scoped
 Authorization Grant DAR. It records a payment workflow but does not transfer a
 token or holding.
 
-[`RolePolicy.daml`](daml/Example/TreasuryRbacV1/RolePolicy.daml) defines the roles,
-maps each role to its authority and scope, and applies the guard.
+[`RolePolicy.daml`](daml/Example/TreasuryRbacV1/RolePolicy.daml) defines the roles
+and maps each role to an authorization requirement.
 [`TreasuryRbacV1.daml`](daml/Example/TreasuryRbacV1.daml) defines the payment
-workflow, deriving the policy input only from trusted treasury state.
+workflow and the `HasAuthorizationPolicy` instance. Issuance and guarding use
+the same mapping, with policy input derived from trusted treasury state.
 
 ## Role policy
 
@@ -22,10 +23,10 @@ current Treasury contract ID, and the policy epoch. `Treasury_GrantRole` derives
 the role's authority from treasury state, and its controller is that authority.
 A caller cannot override which authority controls a role.
 
-Every protected choice derives the expected authority, treasury scope, and role
-from the `Treasury` contract before calling `requireAuthorization`. The caller
-supplies only its actor and live grant contract ID. The workflow also enforces
-separation of duties: a proposer cannot approve the same payment, and an
+Every protected choice selects its required role in code and uses
+`requirePermission` to derive the expected authority and scope from the `Treasury`
+contract. The caller supplies only its actor and live grant contract ID. The
+workflow also enforces separation of duties: a proposer cannot approve the same payment, and an
 executor must differ from both proposer and approver.
 
 Each stage keeps the earlier signatories and adds the party authorizing that

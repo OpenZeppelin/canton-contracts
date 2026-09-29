@@ -4,6 +4,7 @@ import DA.Assert ((===))
 import Daml.Script
 
 import Example.LicensingV1
+import qualified Example.LicensingV1.Policy as Policy
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
 
 discloseTo : forall t. Template t => Party -> ContractId t -> Script Disclosure
@@ -32,6 +33,11 @@ test_operatorIssuesLicense = script do
   grant <- submit licensor do
     exerciseCmd registry LicenseRegistry_AppointOperator with
       operator; validFrom = None; validUntil = None
+  Some registryData <- queryContractId licensor registry
+  Some grantData <- queryContractId operator grant
+  let requirement = SAG.authorizationRequirement registryData registry Policy.IssueLicense
+  grantData.authority === requirement.expectedAuthority
+  grantData.scope === requirement.expectedScope
   -- The non-stakeholder operator needs the registry disclosed.
   submitMustFail operator do
     exerciseCmd registry LicenseRegistry_Issue with

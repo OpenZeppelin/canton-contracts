@@ -13,6 +13,7 @@ package boundary used by an integrator.
 | Scope | Every field independently; combined mismatch metadata; exact CID, logical-only, and shared logical scopes; negative epoch rejection, zero epoch use, epoch reuse and future epochs |
 | Time | Unbounded, one-sided, and bounded windows; inclusive start and exclusive end; microsecond edges and windows; expired-at-creation grants; malformed and empty intervals |
 | Validation results | Both helpers return the fetched grant on success; returned failure IDs and metadata; first-mismatch order; no Use on checks; fallback records only the selected grant; unavailable CIDs still abort; checks do not authenticate the actor |
+| Typed policies | Permission-to-authority mapping; shared issuance and guard requirements; matching failures; logical and instance binding; consuming choices; returned grant and single Use event; conditional fallback |
 | Lifecycle | Reuse, independent duplicate grants, revocation, renunciation, stale disclosures, atomic command ordering |
 | Failures | All five guard failures remain uncatchable; first-mismatch order and metadata |
 | Use event | Nested exercise, direct-use limits, full-transaction and caught-exception rollback, rechecking after catch, no issuer authority leaking into sibling effects |

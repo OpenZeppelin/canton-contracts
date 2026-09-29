@@ -1,6 +1,7 @@
 module Example.TreasuryRbacV1Test where
 
 import DA.Assert ((===))
+import DA.Foldable (forA_)
 import Daml.Script
 
 import Example.TreasuryRbacV1
@@ -64,6 +65,17 @@ test_distinctRolesCompletePaymentWorkflow = script do
   proposerGrant <- grantRole owner treasury operationsAuthority proposer RolePolicy.PaymentProposer
   approverGrant <- grantRole owner treasury approvalAuthority approver RolePolicy.PaymentApprover
   executorGrant <- grantRole owner treasury executionAuthority executor RolePolicy.PaymentExecutor
+  Some treasuryData <- queryContractId owner treasury
+  forA_
+    [ (RolePolicy.PaymentProposer, operationsAuthority, proposerGrant)
+    , (RolePolicy.PaymentApprover, approvalAuthority, approverGrant)
+    , (RolePolicy.PaymentExecutor, executionAuthority, executorGrant)
+    ] \(role, authority, grant) -> do
+      Some grantData <- queryContractId authority grant
+      let requirement = SAG.authorizationRequirement treasuryData treasury role
+      requirement.expectedAuthority === authority
+      grantData.authority === requirement.expectedAuthority
+      grantData.scope === requirement.expectedScope
   treasuryDisclosure <- discloseTo @Treasury owner treasury
 
   proposal <- submitDisclosed proposer [treasuryDisclosure] do

@@ -3,9 +3,10 @@
 A licensor uses scoped authorization grants to let an operator issue licenses.
 
 The package imports the library through `data-dependencies`.
-[`Policy.daml`](daml/Example/LicensingV1/Policy.daml) defines the issuance scope
-and guard; [`LicensingV1.daml`](daml/Example/LicensingV1.daml) defines the registry,
-license, and choices that apply that policy.
+[`Policy.daml`](daml/Example/LicensingV1/Policy.daml) defines the permission type
+and issuance scope; [`LicensingV1.daml`](daml/Example/LicensingV1.daml) defines the
+registry's `HasAuthorizationPolicy` instance, license, and choices. Issuance and
+the `requirePermission` guard use the same requirement definition.
 
 ## Workflow
 

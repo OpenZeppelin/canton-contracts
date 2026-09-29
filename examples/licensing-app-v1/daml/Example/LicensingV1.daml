@@ -2,8 +2,14 @@
 -- Example-only 0.x contracts; no upgrade compatibility is promised.
 module Example.LicensingV1 where
 
+import DA.Functor (void)
 import qualified Example.LicensingV1.Policy as Policy
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+instance SAG.HasAuthorizationPolicy LicenseRegistry Policy.LicensingPermission where
+  authorizationRequirement registry cid Policy.IssueLicense = SAG.AuthorizationRequirement with
+    expectedAuthority = registry.licensor
+    expectedScope = Policy.issueLicenseScope cid registry.registryId registry.policyEpoch
 
 -- | Registry signed by the licensor, with no observers.
 -- The licensor appoints operators or rotates policy; the guarded actor issues licenses.
@@ -27,10 +33,11 @@ template LicenseRegistry
         validUntil : Optional Time
       controller licensor
       do
+        let requirement = SAG.authorizationRequirement this self Policy.IssueLicense
         create SAG.AuthorizationGrant with
-          authority = licensor
+          authority = requirement.expectedAuthority
           grantee = operator
-          scope = Policy.issueLicenseScope (coerceContractId self) registryId policyEpoch
+          scope = requirement.expectedScope
           validFrom
           validUntil
 
@@ -42,12 +49,7 @@ template LicenseRegistry
         productId : Text
       controller authorization.actor
       do
-        Policy.requireIssueLicense
-          authorization
-          licensor
-          (coerceContractId self)
-          registryId
-          policyEpoch
+        void $ SAG.requirePermission this self Policy.IssueLicense authorization
         create SoftwareLicense with
           licensor
           licensee

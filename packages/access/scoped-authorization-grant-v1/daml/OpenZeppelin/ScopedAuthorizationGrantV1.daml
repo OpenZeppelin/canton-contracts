@@ -3,6 +3,7 @@
 module OpenZeppelin.ScopedAuthorizationGrantV1
   ( AuthorizationScope(..)
   , AuthorizationRequirement(..)
+  , HasAuthorizationPolicy(..)
   , AuthorizationGrant(..)
   , AuthorizationGrant_Use(..)
   , AuthorizationGrant_Revoke(..)
@@ -10,6 +11,7 @@ module OpenZeppelin.ScopedAuthorizationGrantV1
   , Authorization(..)
   , checkAuthorization
   , requireAuthorization
+  , requirePermission
   ) where
 
 import qualified DA.Fail as Fail
@@ -34,6 +36,25 @@ data AuthorizationRequirement = AuthorizationRequirement with
     expectedAuthority : Party
     expectedScope : AuthorizationScope
   deriving (Eq, Show)
+
+-- | Derive a requirement from a resource and an application-defined permission.
+-- Use trusted state with its matching contract ID; the class does not fetch or authenticate it.
+class HasAuthorizationPolicy resource permission where
+  authorizationRequirement
+    : resource -> ContractId resource -> permission -> AuthorizationRequirement
+
+-- | Apply the resource's policy through `requireAuthorization`.
+-- Pass `this`/`self` or fetched state with its ID, and a permission selected by the choice.
+-- The protected choice must make `authorization.actor` a controller.
+requirePermission
+  : HasAuthorizationPolicy resource permission
+  => resource
+  -> ContractId resource
+  -> permission
+  -> Authorization
+  -> Update AuthorizationGrant
+requirePermission resource cid permission authorization =
+  requireAuthorization authorization (authorizationRequirement resource cid permission)
 
 -- | An authority-signed permission for one grantee and exact scope.
 -- The authority signs and revokes; the grantee observes, records use, or renounces.

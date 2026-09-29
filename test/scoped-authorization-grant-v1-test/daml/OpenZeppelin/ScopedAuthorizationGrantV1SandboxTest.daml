@@ -6,6 +6,7 @@ import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as Core
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1UseTest as Use
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1BoundaryTest as Boundary
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1CheckTest as Check
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1PolicyTest as Policy
 
 -- One runner preserves fresh party allocation across the shared ledger.
 sandboxAuthorization : Script ()
@@ -13,6 +14,11 @@ sandboxAuthorization = script do
   Core.test_wrongAuthorityFails
   Core.test_wrongScopeFails
   Core.test_negativeEpochFailsCreation
+  Policy.test_typedPolicySelectsAuthorityAndReturnsGrant
+  Policy.test_typedPolicyPreservesMatchingFailures
+  Policy.test_typedPolicySupportsSharedLogicalScope
+  Policy.test_typedPolicyGuardsConsumingChoice
+  Policy.test_typedPolicyCheckFallbackRecordsOnlySelectedUse
   Use.test_guardRecordsNestedUseAndPreservesGrant
   Use.test_nestedUseDoesNotLeakIssuerAuthority
   Use.test_businessFailureAfterUseRollsBackEffects

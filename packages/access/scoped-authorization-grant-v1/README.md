@@ -61,6 +61,42 @@ matches its grantee to the authorized actor. Keep the guard on the committed
 execution path of the protected operation. If a caught exception rolls back a
 successful check, call the guard again before continuing with protected work.
 
+### Typed resource policies
+
+Use `HasAuthorizationPolicy resource permission` to define a shared requirement
+for grant issuance and protected choices. The application defines its permission
+type and maps each permission to an authority and scope. In the licensing example:
+
+```daml
+instance SAG.HasAuthorizationPolicy LicenseRegistry Policy.LicensingPermission where
+  authorizationRequirement registry cid Policy.IssueLicense = SAG.AuthorizationRequirement with
+    expectedAuthority = registry.licensor
+    expectedScope = Policy.issueLicenseScope cid registry.registryId registry.policyEpoch
+```
+
+The guarded choice still uses `controller authorization.actor`. Its body calls:
+
+```daml
+void $ SAG.requirePermission this self Policy.IssueLicense authorization
+```
+
+Issuance uses `SAG.authorizationRequirement this self Policy.IssueLicense` to
+obtain the same authority and scope. The method can also supply a requirement to
+`checkAuthorization`. `requirePermission` delegates to `requireAuthorization`,
+returning the same grant and preserving its failures and usage record. The
+lower-level functions remain available without a type-class instance.
+
+Pass `this` and `self`, or trusted fetched state with the ID used to fetch it.
+The types keep the resource and CID template types aligned; they do not prove
+that the payload belongs to that CID or that the resource is still active.
+Select the required permission in the protected choice, not from unchecked
+caller input. The policy decides whether to include the CID in the scope.
+
+Keep the instance beside the resource template. Permission types and policy
+helpers can live in a separate module, as in both examples. The
+[treasury policy](../../../examples/treasury-rbac-v1/daml/Example/TreasuryRbacV1/RolePolicy.daml)
+also selects a different authority for each role.
+
 ## Conditional checks
 
 Use `checkAuthorization` to choose between candidate grants. It fetches the
@@ -170,8 +206,9 @@ not undo committed work.
 
 Every successful `requireAuthorization` call exercises
 `AuthorizationGrant_Use` after matching the actor, authority, and scope. The choice
-enforces the grant's validity window. The use event is visible only if the
-transaction commits and that exercise is not rolled back by a
+enforces the grant's validity window. `requirePermission` uses the same path.
+The use event is visible only if the transaction commits and that exercise is
+not rolled back by a
 [caught exception](https://docs.canton.network/appdev/reference/daml-language-reference#catch-exceptions).
 The authority, grantee, and other witnesses can read the exercise through the
 Ledger API with the appropriate party and event filters. On Canton 3.5, use
@@ -192,7 +229,8 @@ the authority does not necessarily see the enclosing operation's private details
 `checkAuthorization` returns failures as `Left FailureStatus`.
 `requireAuthorization` raises them with
 [`DA.Fail.failWithStatus`](https://docs.canton.network/appdev/reference/daml-standard-library/da-fail).
-Both use these stable IDs and metadata, checking in the order shown:
+`requirePermission` raises the same failures. Validation uses these stable IDs
+and metadata, checking in the order shown:
 
 | Error ID | Metadata |
 |---|---|
@@ -261,11 +299,16 @@ grant administration, transferability, counters, or an interface.
   to a protected choice.
 - `AuthorizationRequirement` carries the authority and exact scope expected by
   that choice.
+- `HasAuthorizationPolicy` defines `authorizationRequirement`, which derives
+  a requirement from a resource, its typed contract ID, and an application-defined
+  permission.
 - `checkAuthorization` returns `Right grant` after matching the actor, authority,
   scope, and validity window, or `Left FailureStatus`, without recording usage.
 - `requireAuthorization` fetches the grant and checks the actor, authority, and
   scope, then exercises `AuthorizationGrant_Use` to check the validity window
   and record usage, then returns the validated grant.
+- `requirePermission` derives the requirement through `HasAuthorizationPolicy`
+  and calls `requireAuthorization`.
 
 Only the entries above and the documented grant choices form the consumer API.
 Matching helpers and `OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contain
