@@ -100,9 +100,11 @@ data DropReason
 -- `Timelock_Apply` and `Timelock_Drop` call the `applyImpl` or `dropImpl`
 -- method. Implement these two methods with `applyOperation` and
 -- `dropOperation` from `OpenZeppelin.TimelockV1`. Those functions check the
--- operation, archive it, and then call the `apply` or `unschedule` method,
--- which creates the successor timelock. Both choices consume the timelock, so
--- its contract id changes on every schedule, apply, cancel, and cleanup.
+-- operation, archive it and the timelock, and then call the `apply` or
+-- `unschedule` method, which creates the successor timelock. The timelock's
+-- contract id changes on every schedule, apply, cancel, and cleanup. Both
+-- choices are nonconsuming, so the timelock's observers see the archive and
+-- the successor, but not the other effects of `apply`.
 --
 -- Requirements:
 --
@@ -141,7 +143,7 @@ interface Timelock where
 
   -- Apply a pending operation. `applyOperation` fails unless the operation is
   -- pending, the actor is an executor, and the operation is ready.
-  choice Timelock_Apply : ContractId Timelock
+  nonconsuming choice Timelock_Apply : ContractId Timelock
     with
       actor : Party
       op : ContractId Operation
@@ -151,7 +153,7 @@ interface Timelock where
 
   -- Remove a pending operation without applying it. `dropOperation` fails
   -- unless the operation is pending and the `reason` holds.
-  choice Timelock_Drop : ContractId Timelock
+  nonconsuming choice Timelock_Drop : ContractId Timelock
     with
       actor : Party
       op : ContractId Operation

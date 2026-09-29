@@ -71,17 +71,18 @@ import OpenZeppelin.TimelockV1.Internal
 -- operation, with `eInvalidAuthority` unless `authority` signs both contracts
 -- and every signatory of the operation signs `target`, with `eNotExecutor`
 -- unless `actor` is an executor, and with `eNotReady` or `eExpired` outside
--- the operation's time bounds. Then archives the operation, calls `apply` with
--- the reduced pending list, and fails with `ePendingMismatch` unless the
--- successor holds exactly that list.
+-- the operation's time bounds. Then archives the operation and `self`, calls
+-- `apply` with the reduced pending list, and fails with `ePendingMismatch`
+-- unless the successor holds exactly that list.
 applyOperation : Timelock -> ContractId Timelock -> Timelock_Apply -> Update (ContractId Timelock)
-applyOperation target _ Timelock_Apply{..} = do
+applyOperation target self Timelock_Apply{..} = do
   pending' <- takePending op (view target).pending
   opValue <- fetch op
   requireAuthority target opValue
   requireExecutor actor (view opValue)
   requireReady opValue
   archive op
+  archive self
   new <- apply target opValue pending'
   requireSuccessorPending pending' new
   pure new
@@ -93,11 +94,11 @@ applyOperation target _ Timelock_Apply{..} = do
 -- Fails as `applyOperation` does on the pending list and the authority. For
 -- `CancelOperation`, fails with `eNotCanceller` unless `actor` is a
 -- canceller. For `CleanupOperation`, fails with `eNotExpired` unless the
--- operation has expired. Then archives the operation, calls `unschedule` with
--- the reduced pending list, and fails with `ePendingMismatch` unless the
--- successor holds exactly that list.
+-- operation has expired. Then archives the operation and `self`, calls
+-- `unschedule` with the reduced pending list, and fails with
+-- `ePendingMismatch` unless the successor holds exactly that list.
 dropOperation : Timelock -> ContractId Timelock -> Timelock_Drop -> Update (ContractId Timelock)
-dropOperation target _ Timelock_Drop{..} = do
+dropOperation target self Timelock_Drop{..} = do
   pending' <- takePending op (view target).pending
   opValue <- fetch op
   requireAuthority target opValue
@@ -105,6 +106,7 @@ dropOperation target _ Timelock_Drop{..} = do
     CancelOperation -> requireCanceller actor (view opValue)
     CleanupOperation -> requireExpired opValue
   archive op
+  archive self
   new <- unschedule target pending'
   requireSuccessorPending pending' new
   pure new

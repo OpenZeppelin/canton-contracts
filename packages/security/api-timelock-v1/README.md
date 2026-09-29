@@ -340,8 +340,8 @@ have no pending entry. Match the results against the canonical timelock's
   `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`. A
   method that skips them lets an executor apply an operation without the
   delay.
-- Every choice that changes the pending list is consuming, so scheduling and
-  applying contend on the timelock. Two proposers scheduling in the same
+- Every choice that changes the pending list archives the timelock, so
+  scheduling and applying contend on the timelock. Two proposers scheduling in the same
   instant see one of them fail and resubmit against the successor. Keep the
   business state on a separate contract, so that business choices stay
   outside this contention.
@@ -355,6 +355,9 @@ have no pending entry. Match the results against the canonical timelock's
   set a `gracePeriod` so that cleanup can remove old entries.
 - Every stakeholder of an operation sees its parameters. Keep sensitive
   parameters off an operation that many parties observe.
+- `Timelock_Apply` and `Timelock_Drop` are nonconsuming, and the lifecycle
+  functions archive the timelock. The timelock's observers therefore see the
+  archive and the successor, but not the other effects of `apply`.
 - A `minDelay` of zero disables the delay. A `gracePeriod` of `None` keeps an
   operation executable until it is archived, as in `TimelockController.sol`.
   A negative `minDelay` or a `gracePeriod` of zero or less fails every schedule
