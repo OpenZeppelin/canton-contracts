@@ -19,6 +19,7 @@ sandboxAuthorization = script do
   Policy.test_typedPolicySupportsSharedLogicalScope
   Policy.test_typedPolicyGuardsConsumingChoice
   Policy.test_typedPolicyCheckFallbackRecordsOnlySelectedUse
+  Policy.test_typedCheckNativeFailuresAbort
   Use.test_guardRecordsNestedUseAndPreservesGrant
   Use.test_nestedUseDoesNotLeakIssuerAuthority
   Use.test_businessFailureAfterUseRollsBackEffects
@@ -38,3 +39,4 @@ sandboxAuthorization = script do
   Use.test_directUseRespectsValidityWindow
   Check.checkValidityWindowsFrom (addRelTime Core.t1 (days 2))
   Use.oneMicrosecondWindowFrom (addRelTime Core.t1 (days 5))
+  Policy.typedCheckValidityWindowsFrom (addRelTime Core.t1 (days 6))

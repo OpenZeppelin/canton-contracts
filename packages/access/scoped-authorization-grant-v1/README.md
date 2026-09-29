@@ -81,10 +81,11 @@ void $ SAG.requirePermission this self Policy.IssueLicense authorization
 ```
 
 Issuance uses `SAG.authorizationRequirement this self Policy.IssueLicense` to
-obtain the same authority and scope. The method can also supply a requirement to
-`checkAuthorization`. `requirePermission` delegates to `requireAuthorization`,
-returning the same grant and preserving its failures and usage record. The
-lower-level functions remain available without a type-class instance.
+obtain the same authority and scope. `checkPermission` and `requirePermission`
+take the same arguments and delegate to `checkAuthorization` and
+`requireAuthorization`, respectively. The check returns the grant or a failure
+without recording use; the guard enforces the requirement and records use.
+The lower-level functions remain available without a type-class instance.
 
 Pass `this` and `self`, or trusted fetched state with the ID used to fetch it.
 The types keep the resource and CID template types aligned; they do not prove
@@ -99,25 +100,27 @@ also selects a different authority for each role.
 
 ## Conditional checks
 
-Use `checkAuthorization` to choose between candidate grants. It fetches the
-grant and checks the actor, authority, exact scope, and validity window. It
-returns `Right grant` on success or `Left FailureStatus` with the first mismatch,
-without recording use. Call `requireAuthorization` for the selected grant
-before performing protected work:
+Use `checkPermission` with a typed policy, or `checkAuthorization` with an
+explicit requirement, to choose between candidate grants. Both fetch the grant
+and check the actor, authority, exact scope, and validity window. They return
+`Right grant` on success or `Left FailureStatus` with the first mismatch,
+without recording use. Call the corresponding `require` helper for the selected
+grant before performing protected work:
 
 ```daml
-result <- SAG.checkAuthorization preferred requirement
+result <- SAG.checkPermission this self Policy.IssueLicense preferred
 let selected = case result of
       Right _ -> preferred
       Left _ -> fallback
-void $ SAG.requireAuthorization selected requirement
+void $ SAG.requirePermission this self Policy.IssueLicense selected
 ```
 
 Use the choice's controller as the actor in both `Authorization` values, and
 derive the requirement from trusted policy. A successful check does not
 establish the actor's authority by itself. The
 [conditional-check tests](../../../test/scoped-authorization-grant-v1-test/daml/OpenZeppelin/ScopedAuthorizationGrantV1CheckTest.daml)
-include a complete choice using this pattern.
+and [typed-policy tests](../../../test/scoped-authorization-grant-v1-test/daml/OpenZeppelin/ScopedAuthorizationGrantV1PolicyTest.daml)
+include complete choices using both forms.
 
 Fetch visibility and authorization rules still apply. Archived or unavailable
 grant IDs still abort on fetch; they are not returned as `Left` and cannot be
@@ -222,15 +225,14 @@ validate the application's expected authority or scope.
 Check that the event came from the application's guarded choice before treating
 it as proof of a protected operation. Plain fetches are not usage records, and
 the authority does not necessarily see the enclosing operation's private details.
-`checkAuthorization` produces no `Use` event, whether its result is success or failure.
+Neither check helper produces a `Use` event, whether its result is success or failure.
 
 ## Validation results
 
-`checkAuthorization` returns failures as `Left FailureStatus`.
-`requireAuthorization` raises them with
+`checkAuthorization` and `checkPermission` return failures as `Left FailureStatus`.
+`requireAuthorization` and `requirePermission` raise them with
 [`DA.Fail.failWithStatus`](https://docs.canton.network/appdev/reference/daml-standard-library/da-fail).
-`requirePermission` raises the same failures. Validation uses these stable IDs
-and metadata, checking in the order shown:
+All four helpers use these stable IDs and metadata, checking in the order shown:
 
 | Error ID | Metadata |
 |---|---|
@@ -259,7 +261,7 @@ Matching starts only after a successful fetch. If neither the grant's authority
 nor its grantee authorizes that fetch, even a disclosed grant fails with a native
 authorization error before the grantee check runs. Unavailable or archived
 contracts and missing controller authority also retain Canton-native errors;
-`checkAuthorization` does not return these as `Left`.
+neither check helper returns these as `Left`.
 
 Creation rejects negative epochs and malformed validity windows through
 `ensure`, also with a Canton-native error.
@@ -307,6 +309,8 @@ grant administration, transferability, counters, or an interface.
 - `requireAuthorization` fetches the grant and checks the actor, authority, and
   scope, then exercises `AuthorizationGrant_Use` to check the validity window
   and record usage, then returns the validated grant.
+- `checkPermission` derives the requirement through `HasAuthorizationPolicy`
+  and calls `checkAuthorization`.
 - `requirePermission` derives the requirement through `HasAuthorizationPolicy`
   and calls `requireAuthorization`.
 

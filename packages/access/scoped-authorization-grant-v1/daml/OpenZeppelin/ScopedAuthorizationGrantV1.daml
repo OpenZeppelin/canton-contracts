@@ -11,6 +11,7 @@ module OpenZeppelin.ScopedAuthorizationGrantV1
   , Authorization(..)
   , checkAuthorization
   , requireAuthorization
+  , checkPermission
   , requirePermission
   ) where
 
@@ -42,6 +43,19 @@ data AuthorizationRequirement = AuthorizationRequirement with
 class HasAuthorizationPolicy resource permission where
   authorizationRequirement
     : resource -> ContractId resource -> permission -> AuthorizationRequirement
+
+-- | Apply the resource's policy through `checkAuthorization`, without recording use.
+-- Returns the grant or first mismatch; fetch failures still abort.
+-- Pass trusted state and its ID. Protected choices must require the actor's authority.
+checkPermission
+  : HasAuthorizationPolicy resource permission
+  => resource
+  -> ContractId resource
+  -> permission
+  -> Authorization
+  -> Update (Either Fail.FailureStatus AuthorizationGrant)
+checkPermission resource cid permission authorization =
+  checkAuthorization authorization (authorizationRequirement resource cid permission)
 
 -- | Apply the resource's policy through `requireAuthorization`.
 -- Pass `this`/`self` or fetched state with its ID, and a permission selected by the choice.
