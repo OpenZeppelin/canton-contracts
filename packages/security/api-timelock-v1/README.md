@@ -14,7 +14,7 @@ privileged operation and its execution.
 
 Three interfaces and their views. The package holds no logic:
 
-- `Timelock`: the timelock contract. Its view, `TimelockView`, carries the
+- `Timelock`: the interface for the timelock template. Its view, `TimelockView`, carries the
   `authority` that applies operations, the `TimelockConfig` in force, and the
   `Pending` list of scheduled operations. Its choices, `Timelock_Apply` and
   `Timelock_Drop`, call the `applyImpl` and `dropImpl` methods. You implement
@@ -23,12 +23,13 @@ Three interfaces and their views. The package holds no logic:
   pending membership, shared authority, permissions, and time bounds. They
   archive the operation before calling your `apply` or `unschedule` method.
   The method creates the successor with the reduced pending list.
-- `Operation`: a scheduled operation. Its view, `OperationView`, names the
+- `Operation`: the interface for each operation template. Its view, `OperationView`, names the
   `executors` and `cancellers`. Its choices, `Operation_Execute`,
   `Operation_Cancel`, and `Operation_Cleanup`, forward the authenticated actor
   to the timelock's lifecycle choice. `Operation` requires `Timelocked`.
-- `Timelocked`: the schedule of an operation, `readyAt` and `expiresAt`, for
-  the lifecycle choices and for off-ledger readers.
+- `Timelocked`: the interface for the schedule of an operation template,
+  `readyAt` and `expiresAt`, for the lifecycle choices and for off-ledger
+  readers.
 - `TimelockConfig`: the delay policy, `minDelay` and an optional
   `gracePeriod`.
 - `Pending`: the list of scheduled operations. The schedule choice adds to
