@@ -78,7 +78,7 @@ test_forgedAndStolenCredentialsCannotIssue = script do
   result <- submitWithError (actAs outsider <> discloseMany [s.disclosure, grantDisclosure])
     (issue s (SAG.Authorization with actor = outsider; grantCid = s.grant))
   case result of
-    FailureStatusError status -> status.errorId === "OZ_SAG_GRANTEE_MISMATCH"
+    FailureStatusError status -> status.errorId === "openzeppelin.com/scoped-authorization-grant-grantee-mismatch"
     other -> fail $ "expected grantee mismatch, got " <> show other
   result <- submitWithError (actAs outsider <> discloseMany [s.disclosure, grantDisclosure])
     (issue s (authorization s))
@@ -93,7 +93,7 @@ test_forgedAndStolenCredentialsCannotIssue = script do
   result <- submitWithError (actAs s.operator <> disclose s.disclosure)
     (issue s ((authorization s) with grantCid = forged))
   case result of
-    FailureStatusError status -> status.errorId === "OZ_SAG_AUTHORITY_MISMATCH"
+    FailureStatusError status -> status.errorId === "openzeppelin.com/scoped-authorization-grant-authority-mismatch"
     other -> fail $ "expected issuer mismatch, got " <> show other
   query @App.SoftwareLicense s.licensor >>= (=== [])
 
@@ -129,14 +129,14 @@ test_validityBoundsPropagateThroughTheApp = script do
   let auth = (authorization s) with grantCid = grant
   result <- submitWithError (actAs s.operator <> disclose s.disclosure) (issue s auth)
   case result of
-    FailureStatusError status -> status.errorId === "OZ_SAG_NOT_YET_VALID"
+    FailureStatusError status -> status.errorId === "openzeppelin.com/scoped-authorization-grant-not-yet-valid"
     other -> fail $ "expected lower-bound failure, got " <> show other
   setTime start
   _ <- F.submitDisclosed s.operator [s.disclosure] (issue s auth)
   setTime end
   result <- submitWithError (actAs s.operator <> disclose s.disclosure) (issue s auth)
   case result of
-    FailureStatusError status -> status.errorId === "OZ_SAG_EXPIRED"
+    FailureStatusError status -> status.errorId === "openzeppelin.com/scoped-authorization-grant-expired"
     other -> fail $ "expected expiry failure, got " <> show other
 
 test_licensePayloadDoesNotProveIssuanceThroughRegistry : Script ()

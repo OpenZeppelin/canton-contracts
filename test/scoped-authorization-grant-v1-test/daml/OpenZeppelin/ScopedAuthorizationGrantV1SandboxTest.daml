@@ -12,6 +12,7 @@ sandboxAuthorization : Script ()
 sandboxAuthorization = script do
   Core.test_wrongAuthorityFails
   Core.test_wrongScopeFails
+  Core.test_negativeEpochFailsCreation
   Use.test_guardRecordsNestedUseAndPreservesGrant
   Use.test_nestedUseDoesNotLeakIssuerAuthority
   Use.test_businessFailureAfterUseRollsBackEffects
@@ -22,6 +23,7 @@ sandboxAuthorization = script do
   Boundary.test_implicitArchiveAndStaleDisclosure
   Boundary.test_epochReuseAndFutureGrants
   Boundary.test_revocationOrderingIsAtomic
+  Check.test_returnsFetchedGrant
   Check.test_checkReturnsMatchingFailures
   Check.test_checkMatchesEveryScopeField
   Check.test_checkFallbackRecordsOnlySelectedUse

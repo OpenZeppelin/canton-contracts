@@ -17,6 +17,7 @@ renounced by the grantee.
 Import the library DAR through `data-dependencies` and use a qualified import:
 
 ```daml
+import DA.Functor (void)
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
 ```
 
@@ -43,9 +44,12 @@ nonconsuming choice ProtectedOperation : ()
     let requirement = SAG.AuthorizationRequirement with
           expectedAuthority = administrator
           expectedScope = scopeDerivedFromProtectedState
-    SAG.requireAuthorization authorization requirement
+    void $ SAG.requireAuthorization authorization requirement
     -- protected effects
 ```
+
+`requireAuthorization` returns the validated grant. Bind the result when its
+fields are needed, or use `void` to discard it.
 
 The requirement must be derived from protected contract state and application
 constants. Accepting the expected authority, resource, permission, or epoch
@@ -61,16 +65,16 @@ successful check, call the guard again before continuing with protected work.
 
 Use `checkAuthorization` to choose between candidate grants. It fetches the
 grant and checks the actor, authority, exact scope, and validity window. It
-returns `Right ()` on success or `Left FailureStatus` with the first mismatch,
+returns `Right grant` on success or `Left FailureStatus` with the first mismatch,
 without recording use. Call `requireAuthorization` for the selected grant
 before performing protected work:
 
 ```daml
 result <- SAG.checkAuthorization preferred requirement
 let selected = case result of
-      Right () -> preferred
+      Right _ -> preferred
       Left _ -> fallback
-SAG.requireAuthorization selected requirement
+void $ SAG.requireAuthorization selected requirement
 ```
 
 Use the choice's controller as the actor in both `Authorization` values, and
@@ -102,9 +106,10 @@ verify its template type. Including the ID does not grant read access to the
 resource. Derive the expected ID from trusted contract state.
 
 Every scope field must match: `None` does not match `Some`, and two different
-contract IDs do not match. To invalidate grants through `policyEpoch`, increase
-the expected value in the resource's trusted policy. Never reuse an earlier epoch
-for the same identity, including after migration: it can reactivate old grants.
+contract IDs do not match. Grants require a nonnegative `policyEpoch`. To invalidate
+grants through `policyEpoch`, increase the expected value in the resource's trusted
+policy. Never reuse an earlier epoch for the same identity, including after
+migration: it can reactivate old grants.
 Future-epoch grants become usable when the expected epoch matches, if all other
 checks pass. Other resources accepting the old scope remain unaffected.
 
@@ -150,7 +155,7 @@ These are ledger-time bounds, not exact wall-clock deadlines. Ledger time may
 differ from record time within the synchronizer's
 [configured tolerance](https://docs.canton.network/overview/reference/ledger-causality#guarantees).
 Allow a margin for real-world deadlines. A prepared transaction submitted too
-late can fail with `LEDGER_TIME_OUTSIDE_BOUNDS` instead of `OZ_SAG_EXPIRED`.
+late can fail with `LEDGER_TIME_OUTSIDE_BOUNDS` instead of the grant's expiration error.
 
 Expiration does not archive a grant. An active grant may be outside its validity
 window or fail the current policy, so discovery alone does not establish permission.
@@ -191,11 +196,11 @@ Both use these stable IDs and metadata, checking in the order shown:
 
 | Error ID | Metadata |
 |---|---|
-| `OZ_SAG_AUTHORITY_MISMATCH` | `expected`, `actual`: issuing parties |
-| `OZ_SAG_GRANTEE_MISMATCH` | `expected`, `actual`: actor and grant grantee |
-| `OZ_SAG_SCOPE_MISMATCH` | `fields`: comma-separated mismatched scope field names |
-| `OZ_SAG_NOT_YET_VALID` | `validFrom`: inclusive lower bound |
-| `OZ_SAG_EXPIRED` | `validUntil`: exclusive upper bound |
+| `openzeppelin.com/scoped-authorization-grant-authority-mismatch` | `expected`, `actual`: issuing parties |
+| `openzeppelin.com/scoped-authorization-grant-grantee-mismatch` | `expected`, `actual`: actor and grant grantee |
+| `openzeppelin.com/scoped-authorization-grant-scope-mismatch` | `fields`: comma-separated mismatched scope field names |
+| `openzeppelin.com/scoped-authorization-grant-not-yet-valid` | `validFrom`: inclusive lower bound |
+| `openzeppelin.com/scoped-authorization-grant-expired` | `validUntil`: exclusive upper bound |
 
 Direct `AuthorizationGrant_Use` calls raise the same validity-window failures.
 
@@ -214,12 +219,12 @@ record containing the error ID and metadata.
 
 Matching starts only after a successful fetch. If neither the grant's authority
 nor its grantee authorizes that fetch, even a disclosed grant fails with a native
-authorization error before `OZ_SAG_GRANTEE_MISMATCH`. Unavailable or archived
+authorization error before the grantee check runs. Unavailable or archived
 contracts and missing controller authority also retain Canton-native errors;
 `checkAuthorization` does not return these as `Left`.
 
-Creation rejects malformed validity windows through `ensure`, also with a
-Canton-native error.
+Creation rejects negative epochs and malformed validity windows through
+`ensure`, also with a Canton-native error.
 
 ## Authority rotation
 
@@ -256,11 +261,11 @@ grant administration, transferability, counters, or an interface.
   to a protected choice.
 - `AuthorizationRequirement` carries the authority and exact scope expected by
   that choice.
-- `checkAuthorization` fetches the grant and returns the result of matching
-  the actor, authority, scope, and validity window without recording usage.
+- `checkAuthorization` returns `Right grant` after matching the actor, authority,
+  scope, and validity window, or `Left FailureStatus`, without recording usage.
 - `requireAuthorization` fetches the grant and checks the actor, authority, and
   scope, then exercises `AuthorizationGrant_Use` to check the validity window
-  and record usage.
+  and record usage, then returns the validated grant.
 
 Only the entries above and the documented grant choices form the consumer API.
 Matching helpers and `OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contain

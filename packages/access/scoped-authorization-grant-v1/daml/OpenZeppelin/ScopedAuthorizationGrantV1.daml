@@ -24,6 +24,7 @@ data AuthorizationScope = AuthorizationScope with
     resourceId : Text
     permission : Text
     policyEpoch : Int
+      -- ^ Nonnegative policy version.
     resourceInstanceCid : Optional (ContractId ())
       -- ^ `Some` binds the scope to one contract; `None` uses logical identity only.
   deriving (Eq, Show, Serializable)
@@ -37,7 +38,8 @@ data AuthorizationRequirement = AuthorizationRequirement with
 -- | An authority-signed permission for one grantee and exact scope.
 -- The authority signs and revokes; the grantee observes, records use, or renounces.
 -- Use preserves the grant; revoke, renounce, and the authority's Archive consume it.
--- Other readers need disclosure. Creation rejects malformed validity windows.
+-- Other readers need disclosure. Creation requires a nonnegative epoch and
+-- a well-formed validity window.
 -- Consumers must bind the actor and derive trusted policy; see the package README.
 -- Validity bounds use ledger time, subject to synchronizer record-time tolerance.
 -- Unreleased 0.x API; no upgrade compatibility baseline is published.
@@ -51,7 +53,8 @@ template AuthorizationGrant
     validUntil : Optional Time
       -- ^ Exclusive upper ledger-time bound, or unbounded when `None`.
   where
-    ensure Internal.validityWindowIsWellFormed validFrom validUntil
+    ensure scope.policyEpoch >= 0
+      && Internal.validityWindowIsWellFormed validFrom validUntil
     signatory authority
     observer grantee
 
@@ -80,23 +83,28 @@ data Authorization = Authorization with
   deriving (Eq, Show, Serializable)
 
 -- | Check the grant's actor, authority, scope, and validity window without recording use.
--- Returns the first mismatch; unavailable or archived grants still abort on fetch.
+-- Returns the fetched grant or the first mismatch. Unavailable or archived grants abort on fetch.
 -- The protected choice must require the actor's authority and derive trusted policy.
 checkAuthorization
-  : Authorization -> AuthorizationRequirement -> Update (Either Fail.FailureStatus ())
+  : Authorization
+  -> AuthorizationRequirement
+  -> Update (Either Fail.FailureStatus AuthorizationGrant)
 checkAuthorization authorization requirement = do
   grant <- fetch authorization.grantCid
   case checkGrantMatches authorization.actor requirement grant of
     Left status -> pure (Left status)
-    Right () -> Internal.checkValidityWindow grant.validFrom grant.validUntil
+    Right () -> do
+      validity <- Internal.checkValidityWindow grant.validFrom grant.validUntil
+      pure (grant <$ validity)
 
--- | Validate the grant and exercise Use. Call on the protected operation's
--- committed path; a caught exception can roll back the use event.
-requireAuthorization : Authorization -> AuthorizationRequirement -> Update ()
+-- | Validate and return the fetched grant after exercising Use.
+-- Call on the protected operation's committed path; a caught exception can roll back the event.
+requireAuthorization : Authorization -> AuthorizationRequirement -> Update AuthorizationGrant
 requireAuthorization authorization requirement = do
   grant <- fetch authorization.grantCid
   Internal.requireSuccess (checkGrantMatches authorization.actor requirement grant)
   exercise authorization.grantCid AuthorizationGrant_Use
+  pure grant
 
 checkGrantMatches
   : Party -> AuthorizationRequirement -> AuthorizationGrant -> Either Fail.FailureStatus ()

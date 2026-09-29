@@ -3,6 +3,7 @@ module OpenZeppelin.ScopedAuthorizationGrantV1Test where
 import DA.Date (Month(Jan), date)
 import qualified DA.Fail as Fail
 import DA.Foldable (forA_)
+import DA.Functor (void)
 import qualified DA.TextMap as TextMap
 import DA.Time (time)
 import Daml.Script
@@ -24,7 +25,7 @@ template AuthorizationCheck
         let requirement = AuthorizationRequirement with
               expectedAuthority = authority
               expectedScope = requiredScope
-        requireAuthorization authorization requirement
+        void $ requireAuthorization authorization requirement
 
 template ScopeAnchor
   with authority : Party
@@ -137,7 +138,7 @@ test_wrongAuthorityFails = script do
   check <- submit authority do
     createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
   checkDisclosure <- discloseTo @AuthorizationCheck authority check
-  submitDisclosedMustFailWith "OZ_SAG_AUTHORITY_MISMATCH"
+  submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-authority-mismatch"
     [("expected", partyToText authority), ("actual", partyToText otherAuthority)]
     actor [checkDisclosure] do
       exerciseCmd check AuthorizationCheck_Run with
@@ -180,7 +181,7 @@ test_wrongScopeFails = script do
       createCmd AuthorizationGrant with
         authority; grantee = actor; scope = wrongScope
         validFrom = None; validUntil = None
-    submitDisclosedMustFailWith "OZ_SAG_SCOPE_MISMATCH" [("fields", fields)]
+    submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-scope-mismatch" [("fields", fields)]
       actor [checkDisclosure] do
         exerciseCmd check AuthorizationCheck_Run with
           authorization = Authorization with actor; grantCid = grant
@@ -194,7 +195,7 @@ test_wrongScopeFails = script do
   logicalCheck <- submit authority do
     createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
   logicalCheckDisclosure <- discloseTo @AuthorizationCheck authority logicalCheck
-  submitDisclosedMustFailWith "OZ_SAG_SCOPE_MISMATCH" [("fields", "resourceInstanceCid")]
+  submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-scope-mismatch" [("fields", "resourceInstanceCid")]
     actor [logicalCheckDisclosure] do
       exerciseCmd logicalCheck AuthorizationCheck_Run with
         authorization = Authorization with actor; grantCid = exactGrant
@@ -216,7 +217,7 @@ test_granteeBindingRejectsStolenGrant = script do
     createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
   checkDisclosure <- discloseTo @AuthorizationCheck authority check
   grantDisclosure <- discloseTo @AuthorizationGrant authority grant
-  submitDisclosedMustFailWith "OZ_SAG_GRANTEE_MISMATCH"
+  submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-grantee-mismatch"
     [("expected", partyToText bob), ("actual", partyToText alice)]
     bob [checkDisclosure, grantDisclosure] do
       exerciseCmd check AuthorizationCheck_Run with
@@ -258,7 +259,7 @@ test_notYetValidThenValidAtLowerBound = script do
   check <- submit authority do
     createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 1
   checkDisclosure <- discloseTo @AuthorizationCheck authority check
-  submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show t1)]
+  submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-not-yet-valid" [("validFrom", show t1)]
     actor [checkDisclosure] do
       exerciseCmd check AuthorizationCheck_Run with
         authorization = Authorization with actor; grantCid = grant
@@ -286,7 +287,7 @@ test_validThenExpiredAtUpperBound = script do
     exerciseCmd check AuthorizationCheck_Run with
       authorization = Authorization with actor; grantCid = grant
   setTime t1
-  submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show t1)]
+  submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-expired" [("validUntil", show t1)]
     actor [checkDisclosure] do
       exerciseCmd check AuthorizationCheck_Run with
         authorization = Authorization with actor; grantCid = grant
@@ -329,6 +330,25 @@ test_renounceArchivesGrant = script do
   checkDisclosure <- discloseTo @AuthorizationCheck authority check
   submit actor do exerciseCmd grant AuthorizationGrant_Renounce
   submitDisclosedMustFail actor [checkDisclosure] do
+    exerciseCmd check AuthorizationCheck_Run with
+      authorization = Authorization with actor; grantCid = grant
+
+test_negativeEpochFailsCreation : Script ()
+test_negativeEpochFailsCreation = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  submitMustFail authority do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = treasuryScope (-1)
+      validFrom = None; validUntil = None
+  grant <- submit authority do
+    createCmd AuthorizationGrant with
+      authority; grantee = actor; scope = treasuryScope 0
+      validFrom = None; validUntil = None
+  check <- submit authority do
+    createCmd AuthorizationCheck with authority; requiredScope = treasuryScope 0
+  disclosure <- discloseTo @AuthorizationCheck authority check
+  submitDisclosed actor [disclosure] do
     exerciseCmd check AuthorizationCheck_Run with
       authorization = Authorization with actor; grantCid = grant
 

@@ -27,7 +27,7 @@ test_closedWindowAndSelfGrant = script do
     exerciseCmd check F.AuthorizationCheck_Run with
       authorization = SAG.Authorization with actor = authority; grantCid = grant
   setTime F.t1
-  F.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show F.t1)] authority [] do
+  F.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-expired" [("validUntil", show F.t1)] authority [] do
     exerciseCmd check F.AuthorizationCheck_Run with
       authorization = SAG.Authorization with actor = authority; grantCid = grant
 
@@ -69,7 +69,7 @@ test_epochReuseAndFutureGrants = script do
       let command = exerciseCmd check F.AuthorizationCheck_Run with
             authorization = SAG.Authorization with actor; grantCid = grant
       if grantEpoch == epoch then F.submitDisclosed actor [disclosure] command
-      else F.submitDisclosedMustFailWith "OZ_SAG_SCOPE_MISMATCH" [("fields", "policyEpoch")]
+      else F.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-scope-mismatch" [("fields", "policyEpoch")]
         actor [disclosure] command
     submit authority do archiveCmd check
 

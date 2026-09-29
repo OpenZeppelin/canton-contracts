@@ -81,16 +81,16 @@ scopeMismatch fieldMatches = Fail.FailureStatus with
 
 -- Stable identifiers carried in guard failure responses.
 notYetValidErrorId : Text
-notYetValidErrorId = "OZ_SAG_NOT_YET_VALID"
+notYetValidErrorId = "openzeppelin.com/scoped-authorization-grant-not-yet-valid"
 
 expiredErrorId : Text
-expiredErrorId = "OZ_SAG_EXPIRED"
+expiredErrorId = "openzeppelin.com/scoped-authorization-grant-expired"
 
 authorityMismatchErrorId : Text
-authorityMismatchErrorId = "OZ_SAG_AUTHORITY_MISMATCH"
+authorityMismatchErrorId = "openzeppelin.com/scoped-authorization-grant-authority-mismatch"
 
 granteeMismatchErrorId : Text
-granteeMismatchErrorId = "OZ_SAG_GRANTEE_MISMATCH"
+granteeMismatchErrorId = "openzeppelin.com/scoped-authorization-grant-grantee-mismatch"
 
 scopeMismatchErrorId : Text
-scopeMismatchErrorId = "OZ_SAG_SCOPE_MISMATCH"
+scopeMismatchErrorId = "openzeppelin.com/scoped-authorization-grant-scope-mismatch"

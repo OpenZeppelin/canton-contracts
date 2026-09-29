@@ -1,6 +1,7 @@
 -- | Authorization policy for the licensing application.
 module Example.LicensingV1.Policy where
 
+import DA.Functor (void)
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
 
 licensingNamespace : Text
@@ -35,7 +36,7 @@ requireIssueLicense
     registryInstanceCid
     registryId
     policyEpoch =
-  SAG.requireAuthorization authorization
+  void $ SAG.requireAuthorization authorization
     (SAG.AuthorizationRequirement with
       expectedAuthority = licensor
       expectedScope = issueLicenseScope registryInstanceCid registryId policyEpoch)

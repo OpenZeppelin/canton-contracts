@@ -1,7 +1,9 @@
 module OpenZeppelin.ScopedAuthorizationGrantV1UseTest where
 
+import DA.Action (when)
 import DA.Exception (GeneralError(..), throw)
 import DA.Foldable (forA_)
+import DA.Functor (void)
 import DA.Time (addRelTime, days, microseconds)
 import Daml.Script
 
@@ -21,13 +23,13 @@ template UseProbe
       with authorization : Authorization
       controller authorization.actor
       do
-        requireAuthorization authorization (probeRequirement this)
+        void $ requireAuthorization authorization (probeRequirement this)
 
     nonconsuming choice UseProbe_CreateIssuerGrant : ContractId AuthorizationGrant
       with authorization : Authorization
       controller authorization.actor
       do
-        requireAuthorization authorization (probeRequirement this)
+        void $ requireAuthorization authorization (probeRequirement this)
         -- Authority available inside Use must not escape into this sibling create.
         create AuthorizationGrant with
           authority = grantAuthority
@@ -40,7 +42,7 @@ template UseProbe
       with authorization : Authorization
       controller authorization.actor
       do
-        requireAuthorization authorization (probeRequirement this)
+        void $ requireAuthorization authorization (probeRequirement this)
         _ <- create UseProbeEffect with consumer
         assertMsg "UseTest: deliberate business failure" False
 
@@ -49,7 +51,7 @@ template UseProbe
       controller authorization.actor
       do
         try do
-          requireAuthorization authorization (probeRequirement this)
+          void $ requireAuthorization authorization (probeRequirement this)
         catch
           (_ : AnyException) -> pure ()
 
@@ -60,11 +62,11 @@ template UseProbe
       controller authorization.actor
       do
         try do
-          requireAuthorization authorization (probeRequirement this)
+          void $ requireAuthorization authorization (probeRequirement this)
           throw (GeneralError "deliberate business failure")
         catch
           (GeneralError _) -> pure ()
-        if recheck then requireAuthorization authorization (probeRequirement this) else pure ()
+        when recheck $ void $ requireAuthorization authorization (probeRequirement this)
         create UseProbeEffect with consumer
 
 template GrantDelegate
@@ -201,10 +203,10 @@ test_directUseRespectsValidityWindow = script do
   (probe, disclosure) <- createProbe consumer issuer
   forA_ [Fixtures.t0, addRelTime Fixtures.t1 (microseconds (-1))] \now -> do
     setTime now
-    Fixtures.submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show Fixtures.t1)]
+    Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-not-yet-valid" [("validFrom", show Fixtures.t1)]
       actor [] do
         exerciseCmd grant AuthorizationGrant_Use
-    Fixtures.submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show Fixtures.t1)]
+    Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-not-yet-valid" [("validFrom", show Fixtures.t1)]
       actor [disclosure] do
         exerciseCmd probe UseProbe_Run with
           authorization = Authorization with actor; grantCid = grant
@@ -224,10 +226,10 @@ test_directUseRespectsValidityWindow = script do
 
   forA_ [validUntil, addRelTime validUntil (microseconds 1)] \now -> do
     setTime now
-    Fixtures.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show validUntil)]
+    Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-expired" [("validUntil", show validUntil)]
       actor [] do
         exerciseCmd grant AuthorizationGrant_Use
-    Fixtures.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show validUntil)]
+    Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-expired" [("validUntil", show validUntil)]
       actor [disclosure] do
         exerciseCmd probe UseProbe_Run with
           authorization = Authorization with actor; grantCid = grant
@@ -282,20 +284,20 @@ test_guardFailuresCannotBeCaught = script do
   let future = base with validFrom = Some Fixtures.t1
   -- Combined mismatches also pin down authority -> grantee -> scope -> time order.
   let cases =
-        [ ((base with authority = other), "OZ_SAG_AUTHORITY_MISMATCH",
+        [ ((base with authority = other), "openzeppelin.com/scoped-authorization-grant-authority-mismatch",
             [("expected", partyToText issuer), ("actual", partyToText other)])
-        , ((base with grantee = other), "OZ_SAG_GRANTEE_MISMATCH",
+        , ((base with grantee = other), "openzeppelin.com/scoped-authorization-grant-grantee-mismatch",
             [("expected", partyToText actor), ("actual", partyToText other)])
-        , ((base with scope = wrongScope), "OZ_SAG_SCOPE_MISMATCH", [("fields", "permission")])
-        , (future, "OZ_SAG_NOT_YET_VALID", [("validFrom", show Fixtures.t1)])
-        , ((base with validUntil = Some Fixtures.t0), "OZ_SAG_EXPIRED",
+        , ((base with scope = wrongScope), "openzeppelin.com/scoped-authorization-grant-scope-mismatch", [("fields", "permission")])
+        , (future, "openzeppelin.com/scoped-authorization-grant-not-yet-valid", [("validFrom", show Fixtures.t1)])
+        , ((base with validUntil = Some Fixtures.t0), "openzeppelin.com/scoped-authorization-grant-expired",
             [("validUntil", show Fixtures.t0)])
         , ((future with authority = other; grantee = other; scope = wrongScope),
-            "OZ_SAG_AUTHORITY_MISMATCH",
+            "openzeppelin.com/scoped-authorization-grant-authority-mismatch",
             [("expected", partyToText issuer), ("actual", partyToText other)])
-        , ((future with grantee = other; scope = wrongScope), "OZ_SAG_GRANTEE_MISMATCH",
+        , ((future with grantee = other; scope = wrongScope), "openzeppelin.com/scoped-authorization-grant-grantee-mismatch",
             [("expected", partyToText actor), ("actual", partyToText other)])
-        , ((future with scope = wrongScope), "OZ_SAG_SCOPE_MISMATCH", [("fields", "permission")])
+        , ((future with scope = wrongScope), "openzeppelin.com/scoped-authorization-grant-scope-mismatch", [("fields", "permission")])
         ]
   forA_ cases \(payload, errorId, metadata) -> do
     grant <- submit payload.authority do createCmd payload
@@ -377,14 +379,14 @@ oneMicrosecondWindowFrom start = do
         authority = issuer; grantee = actor; scope = Fixtures.treasuryScope 1
         validFrom = Some lower; validUntil = Some upper
   grant <- submit issuer do createCmd payload
-  Fixtures.submitDisclosedMustFailWith "OZ_SAG_NOT_YET_VALID" [("validFrom", show lower)] actor [] do
+  Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-not-yet-valid" [("validFrom", show lower)] actor [] do
     exerciseCmd grant AuthorizationGrant_Use
   setTime lower
   submit actor do exerciseCmd grant AuthorizationGrant_Use
   setTime upper
-  Fixtures.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show upper)] actor [] do
+  Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-expired" [("validUntil", show upper)] actor [] do
     exerciseCmd grant AuthorizationGrant_Use
   -- Creation validates the shape of a window, not whether it has already elapsed.
   expired <- submit issuer do createCmd payload
-  Fixtures.submitDisclosedMustFailWith "OZ_SAG_EXPIRED" [("validUntil", show upper)] actor [] do
+  Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-expired" [("validUntil", show upper)] actor [] do
     exerciseCmd expired AuthorizationGrant_Use

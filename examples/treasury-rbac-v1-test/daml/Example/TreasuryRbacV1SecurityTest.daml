@@ -156,7 +156,7 @@ test_correctAuthorityWrongPermissionFails = script do
     (approve (s with approverGrant = wrongGrant) proposal)
   case result of
     FailureStatusError status -> do
-      status.errorId === "OZ_SAG_SCOPE_MISMATCH"
+      status.errorId === "openzeppelin.com/scoped-authorization-grant-scope-mismatch"
       status.meta === TextMap.singleton "fields" "permission"
     other -> fail $ "expected permission mismatch, got " <> show other
 
@@ -178,12 +178,12 @@ test_proposerGrantMustBeWithinItsWindow = script do
             status.errorId === errorId
             status.meta === metadata
           other -> fail $ "expected proposer validity failure, got " <> show other
-  expectFailure "OZ_SAG_NOT_YET_VALID" (TextMap.singleton "validFrom" (show start))
+  expectFailure "openzeppelin.com/scoped-authorization-grant-not-yet-valid" (TextMap.singleton "validFrom" (show start))
   query @App.PaymentProposal s.owner >>= (=== [])
   setTime start
   proposal <- F.submitDisclosed s.proposer [s.disclosure] command
   setTime end
-  expectFailure "OZ_SAG_EXPIRED" (TextMap.singleton "validUntil" (show end))
+  expectFailure "openzeppelin.com/scoped-authorization-grant-expired" (TextMap.singleton "validUntil" (show end))
   proposals <- query @App.PaymentProposal s.owner
   map fst proposals === [proposal]
 
@@ -227,7 +227,7 @@ test_expiredGrantCannotExecuteApprovedPayment = script do
   result <- submitWithError (actAs s.executor <> discloseMany [s.disclosure, disclosure])
     (execute (s with executorGrant = grant) approved)
   case result of
-    FailureStatusError status -> status.errorId === "OZ_SAG_EXPIRED"
+    FailureStatusError status -> status.errorId === "openzeppelin.com/scoped-authorization-grant-expired"
     other -> fail $ "expected expiry failure, got " <> show other
   query @App.PaymentReceipt s.beneficiary >>= (=== [])
 

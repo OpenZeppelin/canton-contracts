@@ -1,6 +1,7 @@
 -- | Role and authorization policy for the treasury application.
 module Example.TreasuryRbacV1.RolePolicy where
 
+import DA.Functor (void)
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
 
 treasuryNamespace : Text
@@ -54,7 +55,7 @@ requireRole
   -> TreasuryRole
   -> Update ()
 requireRole authorization policy treasuryInstanceCid role =
-  SAG.requireAuthorization authorization
+  void $ SAG.requireAuthorization authorization
     (SAG.AuthorizationRequirement with
       expectedAuthority = roleAuthority policy role
       expectedScope = roleScope policy treasuryInstanceCid role)
