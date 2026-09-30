@@ -49,10 +49,11 @@ demo = script do
   submitMustFail admin do
     exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 250.0
 
-  -- A config that another party signs is refused.
+  -- A config that another party signs is refused. `admin` observes it, so the
+  -- fetch succeeds and the signatory check refuses it.
   other <- allocateParty "other"
   foreign <- submit other do
-    createCmd TreasuryConfig with admin = other; executor = other; limit = 1000.0
+    createCmd TreasuryConfig with admin = other; executor = admin; limit = 1000.0
   submitMustFail admin do
     exerciseCmd treasury Treasury_Pay with configCid = foreign, recipient = supplier, amount = 250.0
 

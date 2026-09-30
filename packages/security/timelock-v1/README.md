@@ -116,7 +116,9 @@ interface package stays at its frozen version.
 
 `Timelock_Apply` and `Timelock_Drop` run this package's code through your
 `applyImpl` and `dropImpl` methods. A fix to a lifecycle check reaches your
-existing contracts when you upgrade your package against the new DAR.
+existing contracts when you upgrade your package against the new DAR. While
+your old version stays vetted, a submission can still select it and run the
+old check. After a security fix, unvet the old version of your package.
 
 Your package binds to one package ID of this package at build time, and your
 schedule choices and lifecycle methods run its code, so every participant that
