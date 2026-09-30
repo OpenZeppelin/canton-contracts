@@ -1,0 +1,96 @@
+-- | Implementation details for OpenZeppelin.ScopedAuthorizationGrantV1.
+module OpenZeppelin.ScopedAuthorizationGrantV1.Internal where
+
+import qualified DA.Fail as Fail
+import qualified DA.Text as Text
+import qualified DA.TextMap as TextMap
+import DA.Time (isLedgerTimeGE, isLedgerTimeLT)
+
+validityWindowIsWellFormed : Optional Time -> Optional Time -> Bool
+validityWindowIsWellFormed (Some validFrom) (Some validUntil) =
+  validFrom < validUntil
+validityWindowIsWellFormed _ _ = True
+
+checkValidityWindow
+  : Optional Time -> Optional Time -> Update (Either Fail.FailureStatus ())
+checkValidityWindow validFrom validUntil = do
+  startResult <- checkValidFrom validFrom
+  case startResult of
+    Left status -> pure (Left status)
+    Right () -> checkValidUntil validUntil
+
+checkValidFrom : Optional Time -> Update (Either Fail.FailureStatus ())
+checkValidFrom validFrom = case validFrom of
+  None -> pure (Right ())
+  Some start -> do
+    hasStarted <- isLedgerTimeGE start
+    pure (checkCondition (notYetValid start) hasStarted)
+
+checkValidUntil : Optional Time -> Update (Either Fail.FailureStatus ())
+checkValidUntil validUntil = case validUntil of
+  None -> pure (Right ())
+  Some end -> do
+    hasNotExpired <- isLedgerTimeLT end
+    pure (checkCondition (expired end) hasNotExpired)
+
+checkCondition : Fail.FailureStatus -> Bool -> Either Fail.FailureStatus ()
+checkCondition status condition = if condition then Right () else Left status
+
+requireSuccess : Either Fail.FailureStatus () -> Update ()
+requireSuccess result = case result of
+  Left status -> Fail.failWithStatus status
+  Right () -> pure ()
+
+notYetValid : Time -> Fail.FailureStatus
+notYetValid start = Fail.FailureStatus with
+  errorId = notYetValidErrorId
+  category = Fail.failedPrecondition
+  message = "Grant is not yet valid"
+  meta = TextMap.singleton "validFrom" (show start)
+
+expired : Time -> Fail.FailureStatus
+expired end = Fail.FailureStatus with
+  errorId = expiredErrorId
+  category = Fail.failedPrecondition
+  message = "Grant has expired"
+  meta = TextMap.singleton "validUntil" (show end)
+
+authorityMismatch : Party -> Party -> Fail.FailureStatus
+authorityMismatch expected actual = Fail.FailureStatus with
+  errorId = authorityMismatchErrorId
+  category = Fail.failedPrecondition
+  message = "Unexpected grant authority"
+  meta = TextMap.fromList
+    [("expected", partyToText expected), ("actual", partyToText actual)]
+
+granteeMismatch : Party -> Party -> Fail.FailureStatus
+granteeMismatch expected actual = Fail.FailureStatus with
+  errorId = granteeMismatchErrorId
+  category = Fail.failedPrecondition
+  message = "Grant does not name the actor"
+  meta = TextMap.fromList
+    [("expected", partyToText expected), ("actual", partyToText actual)]
+
+scopeMismatch : [(Text, Bool)] -> Fail.FailureStatus
+scopeMismatch fieldMatches = Fail.FailureStatus with
+  errorId = scopeMismatchErrorId
+  category = Fail.failedPrecondition
+  message = "Grant scope does not match the requirement"
+  meta = TextMap.singleton "fields"
+    (Text.intercalate "," [field | (field, False) <- fieldMatches])
+
+-- Stable identifiers carried in guard failure responses.
+notYetValidErrorId : Text
+notYetValidErrorId = "openzeppelin.com/scoped-authorization-grant-not-yet-valid"
+
+expiredErrorId : Text
+expiredErrorId = "openzeppelin.com/scoped-authorization-grant-expired"
+
+authorityMismatchErrorId : Text
+authorityMismatchErrorId = "openzeppelin.com/scoped-authorization-grant-authority-mismatch"
+
+granteeMismatchErrorId : Text
+granteeMismatchErrorId = "openzeppelin.com/scoped-authorization-grant-grantee-mismatch"
+
+scopeMismatchErrorId : Text
+scopeMismatchErrorId = "openzeppelin.com/scoped-authorization-grant-scope-mismatch"

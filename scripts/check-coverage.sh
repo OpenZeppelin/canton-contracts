@@ -10,7 +10,7 @@ mkdir -p "$REPORTS"
 
 # Trees under policy as "<source tree>:<test tree>" pairs; keep in sync with
 # scripts/check.sh.
-TREES=("packages:test" "experiments:experiments/test")
+TREES=("packages:test" "experiments:experiments/test" "examples:examples")
 
 fail() {
 	printf 'coverage: %s\n' "$*" >&2
@@ -58,14 +58,39 @@ for tree_pair in "${TREES[@]}"; do
 	test_tree="${tree_pair##*:}"
 
 	[ -d "$source_tree" ] || continue
-	production_manifests="$(find "$source_tree" -type d -name .daml -prune -o -path "$test_tree" -prune -o -name daml.yaml -type f -print | sort)" ||
+	excluded_tree="$test_tree"
+	if [ "$source_tree" = "$test_tree" ]; then
+		excluded_tree="$source_tree/*-test"
+	fi
+	production_manifests="$(find "$source_tree" -type d -name .daml -prune -o -path "$excluded_tree" -prune -o -name daml.yaml -type f -print | sort)" ||
 		fail "failed to discover production package manifests under $source_tree"
 	[ -n "$production_manifests" ] || continue
 
 	while IFS= read -r manifest; do
 		package_dir="$(dirname "$manifest")"
 		component="$(basename "$package_dir")"
-		test_package="$test_tree/$component"
+		test_package="$test_tree/$component-test"
+		if [ "$source_tree" = "$test_tree" ]; then
+			test_package="$package_dir-test"
+			# Versioned upgrade examples can share a test package that imports
+			# both DARs instead of having one test package per version.
+			if [ ! -f "$test_package/daml.yaml" ]; then
+				test_package=""
+				while IFS= read -r candidate_manifest; do
+					candidate="$(dirname "$candidate_manifest")"
+					case "$candidate" in
+					*-test) ;;
+					*) continue ;;
+					esac
+					candidate_dar_dir="$(relpath "$candidate" "$package_dir")/.daml/dist/"
+					if grep -Fq "$candidate_dar_dir" "$candidate_manifest"; then
+						[ -z "$test_package" ] || fail "multiple test packages for $package_dir"
+						test_package="$candidate"
+					fi
+				done < <(find "$test_tree" -type d -name .daml -prune -o -name daml.yaml -type f -print | sort)
+				[ -n "$test_package" ] || fail "missing test package for $package_dir"
+			fi
+		fi
 		test_manifest="$test_package/daml.yaml"
 		coverage_report="$REPORTS/$component-coverage.txt"
 

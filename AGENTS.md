@@ -9,7 +9,8 @@ implementation.
 Research prototypes, local replicas of upstream standards, interoperability
 harnesses, and application-specific business logic belong in `canton-specs` or
 the relevant application repository. A component enters this repository only
-after its promotion boundary is accepted.
+after its promotion boundary is accepted. Focused integration examples under
+`examples/` demonstrate library usage and build separately from the library.
 
 ## Read order
 
@@ -58,8 +59,8 @@ policy, and omit a topic where the component adds nothing.
 ## Daml toolchain
 
 The repository is DPM-native. `multi-package.yaml` declares the workspace SDK,
-and every package manifest mirrors that version because Daml 3.4 requires the
-field locally; `scripts/check.sh` enforces consistency. Package manifests target
+and every package manifest mirrors that version for standalone builds;
+`scripts/check.sh` enforces consistency. Package manifests target
 Daml-LF `2.1`. Use `dpm build`, `dpm damlc lint`, `dpm test`, and
 `dpm upgrade-check`; do not introduce legacy Daml Assistant commands unless a
 documented toolchain decision changes this. For package-scoped commands run from
@@ -73,32 +74,38 @@ Run from the repository root:
 ```sh
 dpm build --all
 scripts/check.sh
-DAML_PACKAGE=experiments/access/access-control-v1 dpm damlc lint
-DAML_PACKAGE=experiments/access/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/access-control-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm damlc lint
+DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
-DAML_PACKAGE=test/api-pausable-v1 dpm damlc lint
-DAML_PACKAGE=test/pausable-v1 dpm damlc lint
-DAML_PACKAGE=examples/pausable/vault dpm damlc lint
-DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
+DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm damlc lint
+DAML_PACKAGE=test/api-pausable-v1-test dpm damlc lint
+DAML_PACKAGE=test/pausable-v1-test dpm damlc lint
+DAML_PACKAGE=examples/licensing-app-v1 dpm damlc lint
+DAML_PACKAGE=examples/licensing-app-v1-test dpm damlc lint
 DAML_PACKAGE=examples/pausable/registry dpm damlc lint
 DAML_PACKAGE=examples/pausable/registry-test dpm damlc lint
 DAML_PACKAGE=examples/pausable/retrofit-v1-0 dpm damlc lint
 DAML_PACKAGE=examples/pausable/retrofit-v1-1 dpm damlc lint
 DAML_PACKAGE=examples/pausable/retrofit-test dpm damlc lint
-DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/tokenCIP112-v1 dpm test --all --show-coverage
-DAML_PACKAGE=test/api-pausable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=test/pausable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=examples/pausable/vault-test dpm test --all
+DAML_PACKAGE=examples/pausable/vault dpm damlc lint
+DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
+DAML_PACKAGE=examples/treasury-rbac-v1 dpm damlc lint
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm damlc lint
+DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm damlc lint
+DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm damlc lint
+DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/api-pausable-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/pausable-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=examples/pausable/registry-test dpm test --all
 DAML_PACKAGE=examples/pausable/retrofit-test dpm test --all
+DAML_PACKAGE=examples/pausable/vault-test dpm test --all
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm test --all --show-coverage
 scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=authorization scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=licensing scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=treasury scripts/check-sandbox.sh
 ```
 
 `scripts/check.sh` enforces package boundaries. Component tests and production

@@ -1,0 +1,42 @@
+module OpenZeppelin.ScopedAuthorizationGrantV1SandboxTest where
+
+import DA.Time (addRelTime, days)
+import Daml.Script (Script, script)
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as Core
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1UseTest as Use
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1BoundaryTest as Boundary
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1CheckTest as Check
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1PolicyTest as Policy
+
+-- One runner preserves fresh party allocation across the shared ledger.
+sandboxAuthorization : Script ()
+sandboxAuthorization = script do
+  Core.test_wrongAuthorityFails
+  Core.test_wrongScopeFails
+  Core.test_negativeEpochFailsCreation
+  Policy.test_typedPolicySelectsAuthorityAndReturnsGrant
+  Policy.test_typedPolicyPreservesMatchingFailures
+  Policy.test_typedPolicySupportsSharedLogicalScope
+  Policy.test_typedPolicyGuardsConsumingChoice
+  Policy.test_typedPolicyCheckFallbackRecordsOnlySelectedUse
+  Policy.test_typedCheckNativeFailuresAbort
+  Use.test_guardRecordsNestedUseAndPreservesGrant
+  Use.test_nestedUseDoesNotLeakIssuerAuthority
+  Use.test_businessFailureAfterUseRollsBackEffects
+  Use.test_guardFailuresCannotBeCaught
+  Use.test_nonGranteeCanFailBeforeMatching
+  Use.test_consumerSignatoryCanDelegateGranteeAuthority
+  Use.test_caughtBusinessFailureRollsBackUse
+  Boundary.test_implicitArchiveAndStaleDisclosure
+  Boundary.test_epochReuseAndFutureGrants
+  Boundary.test_revocationOrderingIsAtomic
+  Check.test_returnsFetchedGrant
+  Check.test_checkReturnsMatchingFailures
+  Check.test_checkMatchesEveryScopeField
+  Check.test_checkFallbackRecordsOnlySelectedUse
+  Check.test_checkUnavailableGrantsAbort
+  Check.test_checkDoesNotAuthenticateActor
+  Use.test_directUseRespectsValidityWindow
+  Check.checkValidityWindowsFrom (addRelTime Core.t1 (days 2))
+  Use.oneMicrosecondWindowFrom (addRelTime Core.t1 (days 5))
+  Policy.typedCheckValidityWindowsFrom (addRelTime Core.t1 (days 6))

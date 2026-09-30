@@ -1,17 +1,24 @@
 # Examples
 
-This directory contains standalone consumer projects that integrate packaged
-DARs through `data-dependencies`.
+Integration examples show how to use the library in Daml applications.
+Each example builds separately and imports the library DAR through
+`data-dependencies`. Each example has a sibling `-test` package for Daml Script
+tests. See [CONTRIBUTING.md](../CONTRIBUTING.md) for build and test commands.
 
-Examples serve as executable documentation and integration evidence. Each one
-builds against a production DAR. Its templates live in one package, and its
-Daml Script tests live in a sibling `-test` package that data-depends on the
-example DAR, so the example DAR does not depend on `daml-script`. Examples are
-never released or uploaded.
+## Scoped Authorization Grant
 
-Directories group examples by component.
+Policy modules define trusted requirements; application choices bind the actor
+and apply the guard.
 
-## `pausable`
+- [Licensing](licensing-app-v1/): delegate issuance on a registry to an operator.
+- [Treasury RBAC](treasury-rbac-v1/): reusable role grants, separate authorities,
+  and a proposal–approval–execution workflow.
+
+Tests live in
+[`licensing-app-v1-test`](licensing-app-v1-test/) and
+[`treasury-rbac-v1-test`](treasury-rbac-v1-test/).
+
+## Pausable
 
 Consumers of `openzeppelin-api-pausable-v1` and `openzeppelin-pausable-v1`.
 

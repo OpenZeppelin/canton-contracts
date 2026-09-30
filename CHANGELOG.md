@@ -9,6 +9,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## Unreleased
 
+### `openzeppelin-scoped-authorization-grant-v1`
+
+#### Added
+
+- Added Scoped Authorization Grant for authority-signed, resource-scoped
+  permissions with typed policies, expiry, revocation, conditional checks,
+  usage records, and structured failures.
+
 ### `openzeppelin-api-pausable-v1`
 
 #### Added
@@ -39,17 +47,3 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   ERC-20 `approve` and `transferFrom` semantics, spent through the new
   `TokenRules_ApproveAllowance` and `TokenRules_TransferFrom` registry
   choices.
-
-### `openzeppelin-access-control-v1`
-
-#### Changed (Breaking)
-
-- Renamed the pre-release package and public module into the `v1` lineage
-  without changing contract behavior.
-
-### `openzeppelin-ownable-v1`
-
-#### Changed (Breaking)
-
-- Renamed the pre-release package and public module into the `v1` lineage
-  without changing contract behavior.
