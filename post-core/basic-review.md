@@ -60,11 +60,11 @@ list, the archive-before-apply order, and the successor check hold. The
 suite is broad: 49 scripts on the interfaces, 16 on the functions, and a
 runnable example.
 
-The four Medium findings are design residuals, not bugs. Two of them change
-the frozen API package (MED-1 tightens the authority rule and retires or
-demotes the `authority` field; MED-3 passes the actor, the operation, and the
-drop reason to `apply` and `unschedule`), so they must land before the first
-release, because a frozen interface cannot take them later. The other two
+The four Medium findings are design residuals, not bugs. MED-1 is closed by
+design and documented in the API README. MED-3 changes the frozen API package
+(it passes the actor, the operation, and the drop reason to `apply` and
+`unschedule`), so it must land before the first release, because a frozen
+interface cannot take it later. The other two
 can land any time: MED-4 adds a function to the upgradeable package, and
 MED-2 adds a conformance script to the test package.
 
@@ -108,7 +108,7 @@ Locations: `Api` is `packages/security/api-timelock-v1/daml/OpenZeppelin/Api/Tim
 | INV-7 An invalid policy (negative `minDelay`, non-positive `gracePeriod`) fails every schedule with `eInvalidConfig` | ✅ Yes | `Fn` 117-125, 136, 152 | The library cannot refuse a timelock created with an invalid policy; the consumer's `ensure` does, as the fixtures and example show |
 | INV-8 An operation outside the pending list (forged, sibling, already applied) fails with `eNotPending` | ✅ Yes | `Fn` 168-172 via 79, 102 | Tested for direct creation, sibling treasury, second execution |
 | INV-9 Only named executors execute and only named cancellers cancel; `executors = None` is open | ✅ Yes | `Int` 24-31 | `test_onlyNamedExecutorsMayExecute`, `test_openExecutor`, `test_onlyNamedCancellersMayCancel` |
-| INV-10 (inferred) The operation's signatories are signatories of the timelock, and `authority` signs both | ⚠️ Partial | `Int` 14-21 | Subset, not equality. An operation signed by a strict subset lets that subset archive it alone, a cancel without canceller permission, and strands the pending entry. See MED-1 |
+| INV-10 (inferred) The operation's signatories are signatories of the timelock, and `authority` signs both | ⚠️ Partial | `Int` 14-21 | Subset, not equality, by design. An operation signed by a strict subset lets that subset archive it alone, a removal without the canceller check, and strands the pending entry. Documented; see MED-1 |
 | INV-11 (inferred) The successor holds exactly the reduced pending list | ⚠️ Partial | `Int` 35-38 | Checks the list of whatever cid the method returns; cannot tell that it is the contract the method created. Documented; consumer bug only, see INFO-6 |
 | INV-12 (inferred) Every lifecycle choice runs the library checks | ⚠️ Partial | `Api` 146-163; consumer methods | Holds only when `applyImpl` and `dropImpl` call the lifecycle functions. The interface cannot enforce it. See MED-2 |
 | INV-13 (inferred) Guards read ledger-time bounds, never `getTime`, except `scheduleAfter` | ✅ Yes | `Fn` 137, 154, 180, 183, 194 | Prepared-ahead executions stay valid |
@@ -140,33 +140,32 @@ every signatory of the timelock to sign the operation. A timelock signed by
 `authority = admin1`.
 
 **Impact:** `admin1` can exercise the operation template's `Archive` choice
-alone. That cancels the operation without being a canceller and leaves a
-pending entry that the lifecycle functions cannot remove, because they fetch
-the operation. The API README's security caveats already ask the consumer to
-give the operation the timelock's full signatory set and to add a recovery
-choice; the library can enforce the first half, which makes the second half
-unnecessary when the timelock has more than one signatory (INFO-5). The
-`authority` field then does no work: with equal signatory
-sets, a spoofed `authority` in a false target's view is caught by the
-equality check, and the field's remaining use is display.
+alone. That removes the operation without the canceller check, even when
+`admin1` is not in `cancellers`, and leaves a pending entry that the
+lifecycle functions cannot remove, because they fetch the operation.
 
-**Recommendation:** Compare the two signatory sets as sets and drop
-`authority` from `TimelockView` before the API package freezes.
+**Resolution:** By design. The subset rule stays, for these reasons:
 
-```daml
--- Internal.daml
-requireAuthority : Timelock -> Operation -> Update ()
-requireAuthority target op =
-  unless (sort (dedup (signatory target)) == sort (dedup (signatory op)))
-    (failWithStatus eInvalidAuthority)
-```
+- Daml always lets a contract's signatories exercise its `Archive` choice,
+  so the library cannot block the direct archive. The signatory set is the
+  only control, and choosing it belongs to the protocol.
+- Scheduling creates the successor timelock with the authority of every
+  timelock signatory. The other signatories therefore consent to an
+  operation that a subset can archive alone.
+- A protocol can want a narrower operation signatory set, for example a
+  timelock signed by an operator and a DAO that schedules operations signed
+  by the DAO alone. Set equality would rule that design out.
+- `authority` keeps its role: requiring it to sign both contracts sets a
+  floor on the operation's signatories under the subset rule.
 
-If a display field is wanted, keep it out of the check. Add a fixture with a
-two-signatory timelock and an operation signed by one of them, and assert
-`eInvalidAuthority` on execute, cancel, and cleanup. The current
-`CosignedChange` fixture covers only the extra-signatory direction.
+The API README's security caveats now state that `cancellers` does not limit
+who can remove an operation, give the full signatory set as the measure for
+protocols in which no single signatory may remove an operation alone, and
+keep the recovery choice for stale entries (INFO-5). The two-signatory
+fixture in INFO-9 should assert that an operation signed by one admin can be
+archived by that admin alone, and that the recovery choice removes its entry.
 
-**Status:** Open
+**Status:** Won't fix (documented)
 
 #### MED-2: The interface choices give every observer an entry point whose safety depends on two consumer-written method bodies
 
@@ -266,8 +265,7 @@ signatures before the freeze:
 `reason` when they call the methods. With these arguments the example's
 `unschedule` can create an `OperationDropped` receipt observed by the
 proposer, and `apply` an `OperationApplied` receipt. An alternative is a
-choice observer drawn from the view, for example `observer (view this).authority`
-if MED-1 keeps that field, but that re-informs a fixed party of the whole subtree and reintroduces the
+choice observer drawn from the view, for example `observer (view this).authority`, but that re-informs a fixed party of the whole subtree and reintroduces the
 leak for that party; the method-argument route lets the consumer choose what
 to reveal. Add one sentence to the "nonconsuming" caveat in the API README:
 observers do not learn which choice archived the operation.
@@ -434,10 +432,10 @@ entries.
 **Recommendation:** Prevent stale entries, and keep the recovery choice for
 the single-signatory case.
 
-1. Prevention: MED-1. With set equality in `requireAuthority`, an operation
-   carries every signatory of the timelock, so with several signatories no
-   single party can archive it directly. A stale entry then needs all
-   signatories to create.
+1. Prevention: the consumer's choice of signatories (MED-1). If the
+   operation carries every signatory of the timelock, then with several
+   signatories no single party can archive it directly, and a stale entry
+   needs all signatories to create.
 2. Recovery: keep `TreasuryTimelock_Prune`, controlled by a party that is a
    canceller of every operation the timelock schedules, so that the choice
    grants no new power. Fix the comment: removing a live entry orphans the
@@ -512,8 +510,8 @@ operation signed by a subset. Neither is exercised.
 
 **Recommendation:** Add a `JointTreasury` fixture signed by two admins with
 operations signed by both, and tests for: a direct config create by one admin
-fails; a full lifecycle succeeds; an operation signed by one admin is refused
-(after MED-1) or can be archived by that admin alone (before MED-1).
+fails; a full lifecycle succeeds; an operation signed by one admin can be
+archived by that admin alone, and the recovery choice removes its entry.
 
 **Status:** Open
 
@@ -808,12 +806,12 @@ methods, an `ensure`, and a recovery choice.
 |---|---|---|---|---|
 | F1 | `applyImpl` or `dropImpl` does not call the lifecycle function | Any observer applies or drops at will | Doc comments, README requirement | Conformance script (MED-2) |
 | F2 | Schedule choice stores its own `readyAt` or `expiresAt`, or skips `addPending` | Delay bypass, no expiry, or `eNotPending` forever | README code | `scheduleOperation` verifies the view and records the entry (MED-4) |
-| F3 | Operation template lists fewer signatories than the timelock | One signatory archives it alone; stranded pending entry | README caveat, example `Prune` | Set equality in `requireAuthority` (MED-1) |
+| F3 | Operation template lists fewer signatories than the timelock | One signatory archives it alone; stranded pending entry | README caveat, example `Prune` | None; by design (MED-1) |
 | F4 | Executors or cancellers are not stakeholders of the operation, the timelock, or the governed config | `CONTRACT_NOT_FOUND` at execute time | README steps 1 and 3 | Stakeholder check in `scheduleOperation`; troubleshooting table (INFO-8) |
 | F5 | `executors = Some []` with `cancellers = []` and `gracePeriod = None` | Permanent pending entry | None | Refuse `Some []` in `scheduleOperation`; document `[]` cancellers |
 | F6 | Executor submits with a superseded `target` id | `CONTRACT_NOT_ACTIVE`; retry | README "Contract ids" | Automation guidance: read the current id from the `Timelock` interface filter before each submit |
 | F7 | `TimelockConfig` with `minDelay = 0` | No delay, no error | Documented; same as Solidity | None |
-| F8 | Recovery choice removes a live entry | Orphan operation visible in interface queries | Comment | Cannot be checked on-ledger; prevent stale entries with MED-1, fix the comment, and find stale entries off-ledger (INFO-5) |
+| F8 | Recovery choice removes a live entry | Orphan operation visible in interface queries | Comment | Cannot be checked on-ledger; prevent stale entries with the full signatory set where the protocol needs it (MED-1), fix the comment, and find stale entries off-ledger (INFO-5) |
 | F9 | `minDelay` or `gracePeriod` within twice the ledger-time tolerance | Effective delay or window collapses to zero | "Time on Canton" section | Keep; add a recommended minimum in the README, such as one hour |
 | F10 | `addPending` called twice for one operation | One stale entry after apply; harmless | None | Document |
 | F11 | Consumer's `apply` archives `this` | Double archive, transaction fails | None | One sentence in the `apply` doc comment: the lifecycle function has archived the timelock |
@@ -832,7 +830,7 @@ methods, an `ensure`, and a recovery choice.
 | 3.4a Admin layer | Pass | No Ownable, AccessControl, or Pausable in the component. The pending list is carried on the contract being exercised, never on a caller-supplied context, so it is not spoofable. Policy changes are gated by the same delay |
 | 3.5 Composability and contention | Pass | Every list change archives the timelock; two proposers contend; the three-contract layout keeps business choices out of it. Check-effects order: archive operation and timelock, then `apply`, then verify successor. Reassignment: no signatory set changes in the lifecycle |
 | 3.6 Economic security | Not applicable | No value flows in the library. The example's `Treasury_Pay` is limit-checked and refuses non-positive payouts via `Payout`'s `ensure` |
-| 3.7 Upgrade safety | Pass | API package has no templates; function package has no templates or interfaces; consumer templates upgrade under SCU with the instance retained. No `daml.lock` in the repository; `dars/manifest.yaml` and `RELEASING.md` carry package identity instead. MED-1 and MED-3 change the API package and must land before the freeze |
+| 3.7 Upgrade safety | Pass | API package has no templates; function package has no templates or interfaces; consumer templates upgrade under SCU with the instance retained. No `daml.lock` in the repository; `dars/manifest.yaml` and `RELEASING.md` carry package identity instead. MED-3 changes the API package and must land before the freeze |
 
 ## Test Coverage Assessment
 
@@ -906,13 +904,11 @@ and `b702402`. Drift is grouped by document.
 - **Overall verdict:** Needs fixes before the API package freezes. Ready for
   merge as a pre-release with the Medium findings tracked.
 - **Blocking before the first tagged release:**
-  - MED-1: signatory set equality in `requireAuthority`; retire
-    `TimelockView.authority` or demote it to display.
   - MED-3: `apply` and `unschedule` receive `actor`, the operation, and (for
     `unschedule`) the `DropReason`; README states that observers do not learn
     which choice archived the operation.
   - INFO-9: the two-signatory fixture. It changes only the test package, but
-    it tests the README's main security claim and MED-1.
+    it tests the README's main security claim and the MED-1 caveat.
 - **Suggested improvements (function package, examples, docs; any time):**
   - MED-4 `scheduleOperation`; MED-2 conformance script; INFO-1 `RolesChange`
     in the example; INFO-2 `operationStateAt`; INFO-3 reference
@@ -957,15 +953,13 @@ and `b702402`. Drift is grouped by document.
 
 ## Open Questions
 
-1. MED-1: keep `authority` as a display-only field, or remove it from
-   `TimelockView`? Removal is cleaner; keeping it costs one frozen field.
-2. MED-2 option 2: does the team want a fail-closed floor in the frozen
+1. MED-2 option 2: does the team want a fail-closed floor in the frozen
    choice bodies, accepting that a too-strict check needs a `-v2`?
-3. MED-3: method arguments (recommended) or a choice observer from the view?
-4. INFO-3: templates in `openzeppelin-timelock-v1`, or examples only?
-5. Should `TimelockView` carry a `roles` record before the freeze, so that
+2. MED-3: method arguments (recommended) or a choice observer from the view?
+3. INFO-3: templates in `openzeppelin-timelock-v1`, or examples only?
+4. Should `TimelockView` carry a `roles` record before the freeze, so that
    role changes have a uniform shape (INFO-1)?
-6. Carried from the proposal: `scheduledAt` or the proposer on a view for
+5. Carried from the proposal: `scheduledAt` or the proposer on a view for
    dashboards. This review recommends neither; the create event has both,
    and MED-3 gives the consumer a receipt path.
 

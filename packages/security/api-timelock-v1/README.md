@@ -368,10 +368,12 @@ have no pending entry. Match the results against the canonical timelock's
   Signatories can also call the operation template's `Archive` choice directly.
   That cancels the operation without a canceller check, and leaves a pending
   entry that the lifecycle choices cannot remove, because they fetch the
-  operation. Give the operation the timelock's full signatory set, so that no
-  single party can archive it alone. Also add a recovery choice that the
-  signatories control and that removes such entries, as
-  `TreasuryTimelock_Prune` in the example does.
+  operation. `cancellers` therefore does not limit who can remove an
+  operation: its signatories can always archive it directly. If no single
+  signatory may remove an operation alone, give the operation the timelock's
+  full signatory set, so that archiving it needs every signatory. Also add a
+  recovery choice that the signatories control and that removes stale
+  entries, as `TreasuryTimelock_Prune` in the example does.
 - The time bounds hold within the synchronizer's ledger-time tolerance, so the
   effective delay can be shorter than `minDelay`, and the execution window
   can be shorter than `gracePeriod`. Size both as
