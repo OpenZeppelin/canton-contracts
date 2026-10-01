@@ -36,7 +36,8 @@ Commitments this review built on, from the research, design, and proposal:
   timelock lineage through the pending list.
 - The lifecycle lives in interface choices whose bodies call consumer
   methods, and the consumer implements `applyImpl` and `dropImpl` with the
-  lifecycle functions.
+  lifecycle functions. Both methods return `Checked`, which only the
+  lifecycle functions construct.
 - Guards use ledger-time bounds; `scheduleAfter` is the one `getTime` reader.
 - No roles, no predecessor, no batch DSL, no automatic execution. A policy
   change is an operation like any other.
@@ -49,7 +50,7 @@ Commitments this review built on, from the research, design, and proposal:
 |---|---|
 | Critical | 0 |
 | High | 0 |
-| Medium | 4 |
+| Medium | 4 (2 open) |
 | Informational | 16 |
 
 **Overall assessment: needs fixes before the API package freezes.** No
@@ -61,12 +62,12 @@ suite is broad: 49 scripts on the interfaces, 16 on the functions, and a
 runnable example.
 
 The four Medium findings are design residuals, not bugs. MED-1 is closed by
-design and documented in the API README. MED-3 changes the frozen API package
-(it passes the actor, the operation, and the drop reason to `apply` and
-`unschedule`), so it must land before the first release, because a frozen
-interface cannot take it later. The other two
-can land any time: MED-4 adds a function to the upgradeable package, and
-MED-2 adds a conformance script to the test package.
+design and documented in the API README. MED-2 is fixed: a method body that
+skips the lifecycle functions no longer compiles. MED-3 changes the frozen
+API package (it passes the actor, the operation, and the drop reason to
+`apply` and `unschedule`), so it must land before the first release, because
+a frozen interface cannot take it later. MED-4 can land any time, because it
+adds a function to the upgradeable package.
 
 Verified on 2026-09-29 with SDK 3.4.11, `--target=2.1`, at `b702402`:
 
@@ -110,7 +111,7 @@ Locations: `Api` is `packages/security/api-timelock-v1/daml/OpenZeppelin/Api/Tim
 | INV-9 Only named executors execute and only named cancellers cancel; `executors = None` is open | ✅ Yes | `Int` 24-31 | `test_onlyNamedExecutorsMayExecute`, `test_openExecutor`, `test_onlyNamedCancellersMayCancel` |
 | INV-10 (inferred) The operation's signatories are signatories of the timelock, and `authority` signs both | ⚠️ Partial | `Int` 14-21 | Subset, not equality, by design. An operation signed by a strict subset lets that subset archive it alone, a removal without the canceller check, and strands the pending entry. Documented; see MED-1 |
 | INV-11 (inferred) The successor holds exactly the reduced pending list | ⚠️ Partial | `Int` 35-38 | Checks the list of whatever cid the method returns; cannot tell that it is the contract the method created. Documented; consumer bug only, see INFO-6 |
-| INV-12 (inferred) Every lifecycle choice runs the library checks | ⚠️ Partial | `Api` 146-163; consumer methods | Holds only when `applyImpl` and `dropImpl` call the lifecycle functions. The interface cannot enforce it. See MED-2 |
+| INV-12 (inferred) Every lifecycle choice runs the library checks | ✅ Yes | `Api` 146-163; consumer methods | `applyImpl` and `dropImpl` return `Checked`, which only the lifecycle functions construct, so a method body that skips them does not compile. See MED-2 |
 | INV-13 (inferred) Guards read ledger-time bounds, never `getTime`, except `scheduleAfter` | ✅ Yes | `Fn` 137, 154, 180, 183, 194 | Prepared-ahead executions stay valid |
 | INV-14 (inferred) The outcome of an operation (executed, cancelled, cleaned up) is observable by its stakeholders | ❌ Missing | `Api` 146, 156, 183-207 | Since `b702402` the exercise nodes are nonconsuming, so contract observers are not informees of them and see only `Archive` and `Create`. See MED-3 |
 | INV-15 (inferred) Every pending operation has an exit | ⚠️ Partial | consumer fields | `executors = Some []`, `cancellers = []`, `gracePeriod = None` has none; an operation archived directly strands its entry until a consumer recovery choice removes it. See MED-4 and footguns F5, F8 |
@@ -219,7 +220,22 @@ optional.
    frozen package; this review records the trade-off and recommends option 1
    as sufficient for a pre-release.
 
-**Status:** Open
+**Resolution:** `applyImpl` and `dropImpl` return
+`Checked (ContractId Timelock)`, a type from
+`OpenZeppelin.Api.TimelockV1.Internal`. Only `applyOperation` and
+`dropOperation` construct it, and `Timelock_Apply` and `Timelock_Drop`
+unwrap it. A method body that returns the result of `apply`, `create`, or
+`toInterfaceContractId` does not compile, so the body above is now a build
+error rather than a bypass. The frozen choice bodies hold no check, so the
+fixable copy stays in the function package.
+
+Neither option is needed any more. The conformance script's checks on
+pending membership, executors, cancellers, authority, and single execution
+only confirmed that the library ran, and the compiler now guarantees that.
+Its checks on `readyAt` and expiry test the schedule path, which MED-4
+covers. Option 2 is moot.
+
+**Status:** Fixed
 
 #### MED-3: Since `b702402`, the timelock's observers cannot tell an executed operation from a cancelled or cleaned-up one
 
@@ -753,9 +769,10 @@ about twelve lines; and a branch in `apply`. The timelock adds a view, four
 methods, an `ensure`, and a recovery choice.
 
 - `applyImpl self arg = applyOperation (toInterface @Timelock this) self arg`
-  and its `dropImpl` twin are pure ceremony, but the no-logic rule for the
+  and its `dropImpl` twin are ceremony, but the no-logic rule for the
   frozen package leaves no alternative, and Daml interfaces have no default
-  method bodies. The doc comments give the exact line. Keep them.
+  method bodies. The doc comments give the exact line, and the `Checked`
+  return type rejects any other body at compile time. Keep them.
 - The schedule choice is where the mistakes live (MED-4). `scheduleOperation`
   cuts it to three lines and turns four silent errors into named failures.
 - A reference `ConfigChange` (INFO-3) removes one template from every
@@ -791,8 +808,7 @@ methods, an `ensure`, and a recovery choice.
   tests; the suites show the pattern for every guard and both bounds.
 - The fixture helpers `execute`, `tryExecute`, `cancel`, `cleanup`,
   `expectFailure`, and `isFailureWith` are exactly what a consumer needs and
-  are not visible to them. Publish them as a copyable module, or as the
-  conformance script of MED-2.
+  are not visible to them. Publish them as a copyable module.
 - A consumer cannot test the privacy property of `b702402` in Daml Script,
   because `query` reflects stakeholders, not informees. Say so in the
   README's testing guidance and describe the expected projection instead.
@@ -804,7 +820,7 @@ methods, an `ensure`, and a recovery choice.
 
 | # | Footgun | Consequence | Current mitigation | Proposed |
 |---|---|---|---|---|
-| F1 | `applyImpl` or `dropImpl` does not call the lifecycle function | Any observer applies or drops at will | Doc comments, README requirement | Conformance script (MED-2) |
+| F1 | `applyImpl` or `dropImpl` does not call the lifecycle function | Any observer applies or drops at will | The `Checked` return type: such a body does not compile (MED-2) | None |
 | F2 | Schedule choice stores its own `readyAt` or `expiresAt`, or skips `addPending` | Delay bypass, no expiry, or `eNotPending` forever | README code | `scheduleOperation` verifies the view and records the entry (MED-4) |
 | F3 | Operation template lists fewer signatories than the timelock | One signatory archives it alone; stranded pending entry | README caveat, example `Prune` | None; by design (MED-1) |
 | F4 | Executors or cancellers are not stakeholders of the operation, the timelock, or the governed config | `CONTRACT_NOT_FOUND` at execute time | README steps 1 and 3 | Stakeholder check in `scheduleOperation`; troubleshooting table (INFO-8) |
@@ -910,7 +926,7 @@ and `b702402`. Drift is grouped by document.
   - INFO-9: the two-signatory fixture. It changes only the test package, but
     it tests the README's main security claim and the MED-1 caveat.
 - **Suggested improvements (function package, examples, docs; any time):**
-  - MED-4 `scheduleOperation`; MED-2 conformance script; INFO-1 `RolesChange`
+  - MED-4 `scheduleOperation`; INFO-1 `RolesChange`
     in the example; INFO-2 `operationStateAt`; INFO-3 reference
     `ConfigChange`; INFO-4 `failWithStatus` in the example; INFO-5 `Prune`
     comment fix and stale-entry detection; INFO-7 `meta`; INFO-8
@@ -953,13 +969,11 @@ and `b702402`. Drift is grouped by document.
 
 ## Open Questions
 
-1. MED-2 option 2: does the team want a fail-closed floor in the frozen
-   choice bodies, accepting that a too-strict check needs a `-v2`?
-2. MED-3: method arguments (recommended) or a choice observer from the view?
-3. INFO-3: templates in `openzeppelin-timelock-v1`, or examples only?
-4. Should `TimelockView` carry a `roles` record before the freeze, so that
+1. MED-3: method arguments (recommended) or a choice observer from the view?
+2. INFO-3: templates in `openzeppelin-timelock-v1`, or examples only?
+3. Should `TimelockView` carry a `roles` record before the freeze, so that
    role changes have a uniform shape (INFO-1)?
-5. Carried from the proposal: `scheduledAt` or the proposer on a view for
+4. Carried from the proposal: `scheduledAt` or the proposer on a view for
    dashboards. This review recommends neither; the create event has both,
    and MED-3 gives the consumer a receipt path.
 
