@@ -19,7 +19,8 @@ the time guards, and the failure statuses for the interfaces in
   your timelock template. They check pending membership, shared authority,
   executor or canceller permission, and the time bounds, archive the
   operation, call your `apply` or `unschedule` method, and check the
-  successor's pending list.
+  successor's pending list. They return the successor wrapped in `Checked`,
+  the type the two methods must return, which no other function constructs.
 - `scheduleAt` and `scheduleAfter`: compute the `TimelockedView` of a new
   operation from the policy, and refuse a delay shorter than `minDelay`.
 - `isValidConfig` and `requireValidConfig`: the policy validation. A policy

@@ -57,7 +57,11 @@ a check in the function is a new version of the implementation package, and the
 consumer picks it up through an SCU of its own package. A check in a frozen choice body cannot
 be fixed: SCU cannot remove an interface instance, so the faulty choice stays
 callable on every implementing contract. The cost is that the interface does not
-enforce the checks. They run because the consumer's method calls the function.
+run the checks. They run because the consumer's method calls the function.
+
+A method can return a type whose constructor only the implementation package
+uses, so that a body that skips the function does not compile; Timelock's
+[Checked](./packages/security/api-timelock-v1/daml/OpenZeppelin/Api/TimelockV1/Internal.daml) does this.
 
 ### Components without templates
 
