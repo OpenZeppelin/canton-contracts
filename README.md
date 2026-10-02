@@ -21,7 +21,6 @@ are tested in CI, but they are unaudited and have no release.
 
 | Component | Package | Public module | Status |
 |---|---|---|---|
-| [Allocation Request](packages/token/allocation-request-v1/) | `openzeppelin-allocation-request-v1` | `OpenZeppelin.AllocationRequestV1` | Pre-release; unaudited |
 | [Token CIP-0112 workflows](packages/token/tokenCIP112-workflows-v1/) | `openzeppelin-tokenCIP112-workflows-v1` | `OpenZeppelin.TokenCIP112WorkflowsV1` | Pre-release; unaudited |
 | [Token CIP-0112](packages/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | Pre-release; unaudited |
 

@@ -1,15 +1,14 @@
 # Token CIP-0112 Trading Example
 
-Minimal integration of `openzeppelin-tokenCIP112-v1` and
-`openzeppelin-allocation-request-v1`: an exchange settling trades between two
-traders, driven entirely through the Token Standard V2 interfaces the way a
-wallet or settlement app drives any compliant registry.
+Minimal integration of `openzeppelin-tokenCIP112-v1`: an exchange settling
+trades between two traders, driven entirely through the Token Standard V2
+interfaces the way a wallet or settlement app drives any compliant registry.
 
 | Field | Value |
 |---|---|
 | Package | `tokenCIP112-trading-example` |
 | Modules | `OpenZeppelin.Examples.TokenCIP112.Trading` |
-| Consumes | `openzeppelin-tokenCIP112-v1` `0.1.0` (with `openzeppelin-tokenCIP112-workflows-v1` `0.1.0`), `openzeppelin-allocation-request-v1` `0.1.0` |
+| Consumes | `openzeppelin-tokenCIP112-v1` `0.1.0` (with `openzeppelin-tokenCIP112-workflows-v1` `0.1.0`) |
 
 ## What it shows
 
@@ -19,9 +18,8 @@ wallet or settlement app drives any compliant registry.
   deployment.
 - Minting through the registry's evented path, so supply changes are visible
   to token-standard history parsers.
-- The exchange requesting one `TokenAllocationRequest` per trader, and each
-  trader accepting the request and funding the allocation in a single
-  transaction; only the trader's net debit is locked.
+- Each trader funding their own allocation through the standard factory;
+  only the trader's net debit is locked.
 - Atomic DvP through `SettlementFactory_SettleBatch`: a batch whose legs are
   not exactly covered by the presented allocations is refused.
 - The iterated-settlement deposit flow: traders deposit by reserving funding

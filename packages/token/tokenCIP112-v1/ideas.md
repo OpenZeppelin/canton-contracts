@@ -35,7 +35,7 @@ token today. The vendored utils ship `...V1...DefaultImplUsingV2` helpers for
 exactly this pattern: add the V1 `interface instance` blocks to the same
 templates (`TokenHolding`, `TokenTransferInstruction`, `TokenAllocation`,
 `TokenRules`), expressing V1 semantics in terms of the V2 implementations. The
-V1 DARs are already vendored under `dars/vendor/`. CIP-0112 §5 treats dual
+V1 interface packages already ship inside the vendored utils DAR. CIP-0112 §5 treats dual
 serving as the expected posture for a compliant V2 asset. Decide whether this
 lands in this package (SCU can add interface instances) or ships as an opt-in
 sibling.

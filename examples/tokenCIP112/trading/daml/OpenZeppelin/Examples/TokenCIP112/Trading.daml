@@ -1,6 +1,6 @@
--- | Integration demo for `openzeppelin-tokenCIP112-v1` and
--- `openzeppelin-allocation-request-v1`, driven through the Token Standard V2
--- interfaces the way a wallet or settlement app drives any compliant registry.
+-- | Integration demo for `openzeppelin-tokenCIP112-v1`, driven through the
+-- Token Standard V2 interfaces the way a wallet or settlement app drives any
+-- compliant registry.
 --
 -- Three scripts: `demoCreateToken` launches a token from the DAR — the
 -- intended consumption model; `demoDvpSettlement` runs an OTC
@@ -20,10 +20,8 @@ import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
-import Splice.Api.Token.AllocationRequestV2 qualified as AllocationRequestV2
 import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide, nonIteratedAllocation)
 
-import OpenZeppelin.AllocationRequestV1
 import OpenZeppelin.TokenCIP112WorkflowsV1.Holding (RegistryConfig(..))
 import OpenZeppelin.TokenCIP112V1.Holding
 import OpenZeppelin.TokenCIP112V1.Registry
@@ -141,27 +139,6 @@ allocate app trader spec inputs = do
     (allocateCmd app trader spec inputs)
   completedCid result
 
--- | The exchange requests an allocation; the trader's wallet accepts the
--- request and funds the allocation in a single transaction — the batching the
--- request package is designed for.
-requestAcceptAndAllocate
-  : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId HoldingV2.Holding]
-  -> Script (ContractId AllocationV2.Allocation)
-requestAcceptAndAllocate app@App{..} trader spec inputs = do
-  reqCid <- submit (actAs exchange) do
-    createCmd TokenAllocationRequest with
-      settlement
-      allocations = [spec]
-      requestedAt = t0
-      settleAt = Some t1
-  let acceptCmd = exerciseCmd (toInterfaceContractId @AllocationRequestV2.AllocationRequest reqCid)
-        AllocationRequestV2.AllocationRequest_Accept with
-          actors = [trader]
-          extraArgs = emptyExtraArgs
-  result <- submit (actAs trader <> discloseMany [rulesDisclosure])
-    (acceptCmd *> allocateCmd app trader spec inputs)
-  completedCid result
-
 settleBatchCmd
   : App -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation]
   -> Commands AllocationV2.SettlementFactory_SettleBatchResult
@@ -218,10 +195,10 @@ demoDvpSettlement = do
       aliceSpec = mkSpec app alice [senderSide legTok, receiverSide legUsd] None
       bobSpec = mkSpec app bob [receiverSide legTok, senderSide legUsd] None
 
-  -- One request per trader; each accepts and funds in one transaction. Only
-  -- net debits are locked: alice's 5 TOK change returns immediately.
-  aliceAllocCid <- requestAcceptAndAllocate app alice aliceSpec [aliceTok]
-  bobAllocCid <- requestAcceptAndAllocate app bob bobSpec [bobUsd]
+  -- Each trader funds their own allocation. Only net debits are locked:
+  -- alice's 5 TOK change returns immediately.
+  aliceAllocCid <- allocate app alice aliceSpec [aliceTok]
+  bobAllocCid <- allocate app bob bobSpec [bobUsd]
 
   -- FAILING: a batch whose legs are not exactly covered by the presented
   -- allocations is refused (bob's authorization is missing here).

@@ -8,7 +8,6 @@ are navigation only and never appear in a package name or module namespace.
 
 | Category | Component | Package | Public module |
 |---|---|---|---|
-| `token/` | [Allocation Request](token/allocation-request-v1/) | `openzeppelin-allocation-request-v1` | `OpenZeppelin.AllocationRequestV1` |
 | `token/` | [Token CIP-0112 workflows](token/tokenCIP112-workflows-v1/) | `openzeppelin-tokenCIP112-workflows-v1` | `OpenZeppelin.TokenCIP112WorkflowsV1` |
 | `token/` | [Token CIP-0112](token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` |
 
