@@ -146,6 +146,14 @@ test_auditorCannotPause = script do
   submitMustFail auditor do
     exerciseCmd registry Registry_Pause with reason = None, until = None
 
+test_archiveRequiresAdmin : Script ()
+test_archiveRequiresAdmin = script do
+  Fixture{..} <- setup
+  AuthorizationError _ <- submitWithError auditor do archiveCmd registry
+  submit admin do archiveCmd registry
+  queryContractId admin registry >>= (=== None)
+  queryContractId auditor registry >>= (=== None)
+
 -- | While paused, an empty entry fails with `eEnforcedPause`, because the
 -- guard runs before the registry's own check.
 test_pausedEmptyEntryReportsThePause : Script ()

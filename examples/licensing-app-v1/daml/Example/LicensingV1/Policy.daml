@@ -1,0 +1,26 @@
+-- | Authorization policy for the licensing application.
+module Example.LicensingV1.Policy where
+
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+data LicensingPermission = IssueLicense
+  deriving (Eq, Show)
+
+licensingNamespace : Text
+licensingNamespace = "com.example.licensing"
+
+licenseRegistryResourceType : Text
+licenseRegistryResourceType = "license-registry"
+
+issueLicensePermission : Text
+issueLicensePermission = "issue-license"
+
+issueLicenseScope : ContractId registry -> Text -> Int -> SAG.AuthorizationScope
+issueLicenseScope registryInstanceCid registryId policyEpoch =
+  SAG.AuthorizationScope with
+    namespace = licensingNamespace
+    resourceType = licenseRegistryResourceType
+    resourceId = registryId
+    resourceInstanceCid = Some (coerceContractId registryInstanceCid)
+    permission = issueLicensePermission
+    policyEpoch

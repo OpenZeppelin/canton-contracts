@@ -2,10 +2,10 @@
 
 ## Product boundary
 
-`canton-contracts` contains reusable, on-ledger Daml components. It does not
-contain grant evidence, reference-implementation business logic, research
-prototypes, interoperability experiments, or local lookalikes of upstream
-Canton standards.
+`canton-contracts` contains reusable, on-ledger Daml components and focused
+integration examples showing how to use them. Broader application implementations,
+research prototypes, interoperability experiments, and local lookalikes of
+upstream Canton standards belong in their own repositories.
 
 Code moves into this repository only after its research question and upstream
 dependency choices are settled. Promotion gives the component a final package
@@ -23,9 +23,9 @@ and vetting. Consequently:
 3. Test packages are separate and never released or uploaded.
 4. Categories such as `access/` and `security/` organize the source tree only.
 
-Access Control, Ownable, and Pausable remain separate packages even though they
-are often used together. Combining them would force every consumer and operator
-to accept the whole dependency, audit, upgrade, and vetting surface.
+Scoped Authorization Grant and Pausable have separate package boundaries.
+Combining them would force every consumer and operator to accept the whole
+dependency, audit, upgrade, and vetting surface.
 
 ## Interfaces and implementations
 
@@ -43,9 +43,6 @@ openzeppelin-<component>-v1-test   Daml Script tests; never released
 API packages may depend only on other API packages. A template-only component
 ships one implementation package; empty API packages add ceremony without an
 upgrade or interoperability benefit.
-
-The three components under `experiments/` define templates and functions but no
-Daml interfaces, so each has one production package.
 
 An interface choice body calls a method of the implementing template, and the
 template implements that method with a call to a function in the
@@ -111,7 +108,7 @@ Production package names use an organization prefix and an explicit
 contract-model generation:
 
 ```text
-openzeppelin-ownable-v1
+openzeppelin-scoped-authorization-grant-v1
 openzeppelin-api-rbac-v1
 openzeppelin-rbac-v1
 ```
@@ -119,10 +116,10 @@ openzeppelin-rbac-v1
 Public modules use matching major-version namespaces:
 
 ```daml
-OpenZeppelin.OwnableV1
-OpenZeppelin.Api.RbacV1
+OpenZeppelin.ScopedAuthorizationGrantV1
 OpenZeppelin.RbacV1
 OpenZeppelin.RbacV1.Internal
+OpenZeppelin.Api.RbacV1
 ```
 
 An API package places its modules under `OpenZeppelin.Api`, the same way the
@@ -133,7 +130,7 @@ exception definitions.
 Compatible SCU releases keep the same package name and increment the package
 version. A breaking change creates a sibling `-v2` package and a `V2` module
 suffix so both generations can coexist while consumers migrate. Template names
-remain stable component terms such as `Ownership` and `RoleGrant`.
+remain stable component terms such as `AuthorizationGrant` and `RoleGrant`.
 
 `exposed-modules` is not used as an API boundary: export information is not
 preserved when a consumer imports a compiled DAR through `data-dependencies`.
@@ -145,10 +142,12 @@ Every supported release records the production DAR, source commit, package name
 and version, main and dependency package IDs, SDK and LF versions, SHA-256,
 signature/provenance, license information, changelog, and audit status.
 
-Release DARs are distributed through GitHub Releases and retained under
-`dars/released/` as immutable compatibility baselines. `dars/manifest.yaml` is
-the reviewable package-ID and provenance index. CI verifies a candidate against
-the previous released DAR before claiming SCU compatibility.
+Supported releases must distribute DARs through GitHub Releases and retain them
+under `dars/released/` as immutable compatibility baselines. `dars/manifest.yaml`
+records package IDs and provenance. Any SCU compatibility claim requires CI
+verification against the previous released DAR. The current CI has no released
+baseline or upgrade-compatibility check; the release process is tracked in
+[RELEASING.md](RELEASING.md).
 
 Participant vetting behavior varies by Canton version and topology. Publishing
 the exact package closure lets each operator review and vet the package IDs its

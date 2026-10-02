@@ -1,4 +1,4 @@
-sdk-version: 3.4.11
+sdk-version: 3.5.8
 name: pausable-retrofit-example
 source: daml
 version: 1.0.0

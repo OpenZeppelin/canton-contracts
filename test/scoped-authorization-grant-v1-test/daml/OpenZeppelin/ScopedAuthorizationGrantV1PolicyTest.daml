@@ -1,0 +1,251 @@
+module OpenZeppelin.ScopedAuthorizationGrantV1PolicyTest where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.Time (addRelTime, days)
+import Daml.Script
+
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1CheckTest as Check
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as Fixtures
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1UseTest as Use
+
+data Permission = Operate | Review
+  deriving (Eq, Show, Serializable)
+
+template PolicyResource
+  with
+    owner : Party
+    reviewer : Party
+    instanceBound : Bool
+  where
+    signatory owner
+
+    nonconsuming choice PolicyResource_Operate : SAG.AuthorizationGrant
+      with authorization : SAG.Authorization
+      controller authorization.actor
+      do SAG.requirePermission this self Operate authorization
+
+    nonconsuming choice PolicyResource_Review : SAG.AuthorizationGrant
+      with authorization : SAG.Authorization
+      controller authorization.actor
+      do SAG.requirePermission this self Review authorization
+
+    choice PolicyResource_Close : SAG.AuthorizationGrant
+      with authorization : SAG.Authorization
+      controller authorization.actor
+      do SAG.requirePermission this self Operate authorization
+
+    nonconsuming choice PolicyResource_Check : Either Check.CheckFailure SAG.AuthorizationGrant
+      with
+        authorization : SAG.Authorization
+        permission : Permission
+      controller authorization.actor
+      do Check.reportResult <$> SAG.checkPermission this self permission authorization
+
+    nonconsuming choice PolicyResource_UseEither : SAG.AuthorizationGrant
+      with
+        preferred : SAG.Authorization
+        fallback : ContractId SAG.AuthorizationGrant
+      controller preferred.actor
+      do
+        result <- SAG.checkPermission this self Operate preferred
+        let selected = case result of
+              Right _ -> preferred
+              Left _ -> preferred with grantCid = fallback
+        SAG.requirePermission this self Operate selected
+
+instance SAG.HasAuthorizationPolicy PolicyResource Permission where
+  authorizationRequirement resource cid permission = SAG.AuthorizationRequirement with
+    expectedAuthority = case permission of
+      Operate -> resource.owner
+      Review -> resource.reviewer
+    expectedScope = (Fixtures.treasuryScope 1) with
+      permission = case permission of
+        Operate -> "operate"
+        Review -> "review"
+      resourceInstanceCid = if resource.instanceBound then Some (coerceContractId cid) else None
+
+createResource : Bool -> Script (PolicyResource, ContractId PolicyResource, Disclosure, Party)
+createResource instanceBound = do
+  owner <- allocateParty "owner"
+  reviewer <- allocateParty "reviewer"
+  actor <- allocateParty "actor"
+  let resource = PolicyResource with owner; reviewer; instanceBound
+  cid <- submit owner do createCmd resource
+  disclosure <- Fixtures.discloseTo @PolicyResource owner cid
+  pure (resource, cid, disclosure, actor)
+
+grantFor : PolicyResource -> ContractId PolicyResource -> Permission -> Party -> SAG.AuthorizationGrant
+grantFor resource cid permission grantee =
+  let requirement = SAG.authorizationRequirement resource cid permission
+  in SAG.AuthorizationGrant with
+    authority = requirement.expectedAuthority
+    scope = requirement.expectedScope
+    grantee
+    validFrom = None
+    validUntil = None
+
+issue : SAG.AuthorizationGrant -> Script (ContractId SAG.AuthorizationGrant)
+issue grant = submit grant.authority do createCmd grant
+
+assertSingleUse : ContractId SAG.AuthorizationGrant -> TransactionTree -> Script ()
+assertSingleUse grant tree = case tree.rootEvents of
+  [ExercisedEvent outer] -> case outer.childEvents of
+    [ExercisedEvent use] -> Use.assertUseEvent grant use
+    _ -> fail "expected exactly one nested Use"
+  _ -> fail "expected one protected operation"
+
+checkWithoutUse
+  : SubmitOptions -> ContractId PolicyResource -> Permission -> SAG.Authorization
+  -> Check.ExpectedResult -> Script ()
+checkWithoutUse options cid permission authorization expected = do
+  let command = exerciseCmd cid PolicyResource_Check with authorization; permission
+  result <- submit options command
+  Check.assertResult expected result
+  case result of
+    Right grant -> do
+      payload <- queryContractId authorization.actor authorization.grantCid
+      payload === Some grant
+    Left _ -> pure ()
+  tree <- submitTree options command
+  case tree.rootEvents of
+    [ExercisedEvent outer] -> do
+      outer.choice === "PolicyResource_Check"
+      fromAnyContractId @PolicyResource outer.contractId === Some cid
+      case outer.childEvents of
+        [] -> pure ()
+        _ -> fail "check emitted an exercise or create"
+    _ -> fail "expected one check exercise"
+
+test_typedPolicySelectsAuthorityAndReturnsGrant : Script ()
+test_typedPolicySelectsAuthorityAndReturnsGrant = script do
+  (resource, cid, disclosure, actor) <- createResource True
+  forA_ [Operate, Review] \permission -> do
+    let payload = grantFor resource cid permission actor
+    payload.authority === (case permission of
+      Operate -> resource.owner
+      Review -> resource.reviewer)
+    payload.scope.permission === (case permission of
+      Operate -> "operate"
+      Review -> "review")
+    grant <- issue payload
+    let authorization = SAG.Authorization actor grant
+    checkWithoutUse (actAs actor <> disclose disclosure) cid permission authorization (Right ())
+    let command = case permission of
+          Operate -> exerciseCmd cid PolicyResource_Operate with authorization
+          Review -> exerciseCmd cid PolicyResource_Review with authorization
+    returned <- Fixtures.submitDisclosed actor [disclosure] command
+    returned === payload
+    tree <- submitTree (actAs actor <> disclose disclosure) command
+    assertSingleUse grant tree
+    Use.assertGrantActive actor grant
+
+test_typedPolicyPreservesMatchingFailures : Script ()
+test_typedPolicyPreservesMatchingFailures = script do
+  (resource, cid, disclosure, actor) <- createResource True
+  duplicate <- submit resource.owner do createCmd resource
+  let valid = grantFor resource cid Operate actor
+  let cases =
+        [ ((valid with authority = resource.reviewer),
+            "openzeppelin.com/scoped-authorization-grant-authority-mismatch",
+            [("expected", partyToText resource.owner), ("actual", partyToText resource.reviewer)])
+        , ((valid with grantee = resource.reviewer),
+            "openzeppelin.com/scoped-authorization-grant-grantee-mismatch",
+            [("expected", partyToText actor), ("actual", partyToText resource.reviewer)])
+        , ((valid with scope = valid.scope with permission = "review"),
+            "openzeppelin.com/scoped-authorization-grant-scope-mismatch", [("fields", "permission")])
+        , ((valid with scope = valid.scope with policyEpoch = 2),
+            "openzeppelin.com/scoped-authorization-grant-scope-mismatch", [("fields", "policyEpoch")])
+        , (grantFor resource duplicate Operate actor,
+            "openzeppelin.com/scoped-authorization-grant-scope-mismatch", [("fields", "resourceInstanceCid")])
+        ]
+  forA_ cases \(payload, errorId, metadata) -> do
+    grant <- issue payload
+    grantDisclosure <- Fixtures.discloseTo @SAG.AuthorizationGrant payload.authority grant
+    checkWithoutUse (actAs actor <> discloseMany [disclosure, grantDisclosure]) cid Operate
+      (SAG.Authorization actor grant) (Left (errorId, metadata))
+    Fixtures.submitDisclosedMustFailWith errorId metadata actor [disclosure, grantDisclosure] do
+      exerciseCmd cid PolicyResource_Operate with authorization = SAG.Authorization actor grant
+    Use.assertGrantActive payload.authority grant
+
+test_typedPolicySupportsSharedLogicalScope : Script ()
+test_typedPolicySupportsSharedLogicalScope = script do
+  (resource, cid, disclosure, actor) <- createResource False
+  duplicate <- submit resource.owner do createCmd resource
+  duplicateDisclosure <- Fixtures.discloseTo @PolicyResource resource.owner duplicate
+  let payload = grantFor resource cid Operate actor
+  payload.scope.resourceInstanceCid === None
+  SAG.authorizationRequirement resource cid Operate === SAG.authorizationRequirement resource duplicate Operate
+  grant <- issue payload
+  forA_ [(cid, disclosure), (duplicate, duplicateDisclosure)] \(target, targetDisclosure) -> do
+    checkWithoutUse (actAs actor <> disclose targetDisclosure) target Operate
+      (SAG.Authorization actor grant) (Right ())
+    returned <- Fixtures.submitDisclosed actor [targetDisclosure] do
+      exerciseCmd target PolicyResource_Operate with authorization = SAG.Authorization actor grant
+    returned === payload
+
+test_typedPolicyGuardsConsumingChoice : Script ()
+test_typedPolicyGuardsConsumingChoice = script do
+  (resource, cid, disclosure, actor) <- createResource True
+  let payload = grantFor resource cid Operate actor
+  grant <- issue payload
+  tree <- submitTree (actAs actor <> disclose disclosure) do
+    exerciseCmd cid PolicyResource_Close with authorization = SAG.Authorization actor grant
+  assertSingleUse grant tree
+  remaining <- queryContractId resource.owner cid
+  remaining === None
+  Use.assertGrantActive actor grant
+
+test_typedPolicyCheckFallbackRecordsOnlySelectedUse : Script ()
+test_typedPolicyCheckFallbackRecordsOnlySelectedUse = script do
+  (resource, cid, disclosure, actor) <- createResource True
+  rejected <- issue (grantFor resource cid Review actor)
+  selected <- issue (grantFor resource cid Operate actor)
+  archived <- issue (grantFor resource cid Operate actor)
+  submit resource.owner do exerciseCmd archived SAG.AuthorizationGrant_Revoke
+  forA_ [(rejected, selected), (selected, archived)] \(preferred, fallback) -> do
+    tree <- submitTree (actAs actor <> disclose disclosure) do
+      exerciseCmd cid PolicyResource_UseEither with
+        preferred = SAG.Authorization actor preferred
+        fallback
+    assertSingleUse selected tree
+  Use.assertGrantActive actor rejected
+  Use.assertGrantActive actor selected
+
+test_typedCheckValidityWindows : Script ()
+test_typedCheckValidityWindows = script do typedCheckValidityWindowsFrom Fixtures.t0
+
+typedCheckValidityWindowsFrom : Time -> Script ()
+typedCheckValidityWindowsFrom start = do
+  setTime start
+  (resource, cid, disclosure, actor) <- createResource True
+  let lower = addRelTime start (days 1)
+  let upper = addRelTime lower (days 1)
+  grant <- issue ((grantFor resource cid Operate actor) with validFrom = Some lower; validUntil = Some upper)
+  forA_
+    [ (start, Left ("openzeppelin.com/scoped-authorization-grant-not-yet-valid", [("validFrom", show lower)]))
+    , (lower, Right ())
+    , (upper, Left ("openzeppelin.com/scoped-authorization-grant-expired", [("validUntil", show upper)]))
+    ] \(now, expected) -> do
+      setTime now
+      checkWithoutUse (actAs actor <> disclose disclosure) cid Operate (SAG.Authorization actor grant) expected
+  Use.assertGrantActive actor grant
+
+test_typedCheckNativeFailuresAbort : Script ()
+test_typedCheckNativeFailuresAbort = script do
+  (resource, cid, disclosure, actor) <- createResource True
+  archived <- issue (grantFor resource cid Operate actor)
+  staleDisclosure <- Fixtures.discloseTo @SAG.AuthorizationGrant resource.owner archived
+  submit resource.owner do exerciseCmd archived SAG.AuthorizationGrant_Revoke
+  Fixtures.submitDisclosedMustFail actor [disclosure, staleDisclosure] do
+    exerciseCmd cid PolicyResource_Check with authorization = SAG.Authorization actor archived; permission = Operate
+  hidden <- issue ((grantFor resource cid Operate resource.reviewer) with authority = resource.reviewer)
+  hiddenDisclosure <- Fixtures.discloseTo @SAG.AuthorizationGrant resource.reviewer hidden
+  Fixtures.submitDisclosedMustFail actor [disclosure] do
+    exerciseCmd cid PolicyResource_Check with authorization = SAG.Authorization actor hidden; permission = Operate
+  Use.expectAuthorizationFailure (actAs actor <> discloseMany [disclosure, hiddenDisclosure]) do
+    exerciseCmd cid PolicyResource_Check with authorization = SAG.Authorization actor hidden; permission = Operate
+  valid <- issue (grantFor resource cid Operate actor)
+  Use.expectAuthorizationFailure (actAs resource.owner) do
+    exerciseCmd cid PolicyResource_Check with authorization = SAG.Authorization actor valid; permission = Operate

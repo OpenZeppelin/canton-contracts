@@ -202,3 +202,18 @@ demo = script do
       newLimit = 600.0, readyAt = addRelTime now (hours 6)
 
   pure ()
+
+-- | `admin` archives a payout and the treasury.
+test_adminArchives : Script ()
+test_adminArchives = script do
+  admin <- allocateParty "admin"
+  executor <- allocateParty "executor"
+  supplier <- allocateParty "supplier"
+  cfg <- submit admin do
+    createCmd TreasuryConfig with admin; executor; limit = 100.0
+  treasury <- submit admin do
+    createCmd Treasury with admin; balance = 1000.0
+  (treasury, payout) <- submit admin do
+    exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 10.0
+  submit admin do archiveCmd payout
+  submit admin do archiveCmd treasury
