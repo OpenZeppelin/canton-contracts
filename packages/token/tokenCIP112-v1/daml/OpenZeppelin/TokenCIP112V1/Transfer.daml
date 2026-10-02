@@ -1,0 +1,44 @@
+-- | The default transfer-instruction template: a `TransferInstructionState`
+-- payload whose choices delegate to the workflows package.
+module OpenZeppelin.TokenCIP112V1.Transfer where
+
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+
+import OpenZeppelin.TokenCIP112WorkflowsV1.Holding
+import OpenZeppelin.TokenCIP112WorkflowsV1.Transfer
+import OpenZeppelin.TokenCIP112V1.Holding
+
+-- | A funded transfer offer awaiting the receiver's decision. The admin and
+-- the sender's account parties sign; the receiver's account parties observe
+-- so their wallet can render and answer the offer. Every terminal choice is
+-- witnessed by the receiver parties even when they are not the actor.
+template TokenTransferInstruction with
+    state : TransferInstructionState
+  where
+    signatory state.transfer.instrumentId.admin, senderParties state.transfer
+    observer receiverParties state.transfer
+    ensure isValidTransferInstructionState state
+
+    interface instance TransferInstructionV2.TransferInstruction for TokenTransferInstruction where
+      view = transferInstructionView state
+      transferInstruction_acceptExtraObservers _ = observer this
+      transferInstruction_rejectExtraObservers _ = observer this
+      transferInstruction_withdrawExtraObservers _ = observer this
+      transferInstruction_acceptImpl self arg = transferAcceptImpl (instructionOps state) self state arg
+      transferInstruction_rejectImpl self arg = transferRejectImpl (instructionOps state) self state arg
+      transferInstruction_withdrawImpl self arg = transferWithdrawImpl (instructionOps state) self state arg
+
+    choice TokenTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
+      -- ^ Admin expiry of a stale instruction: the storage bound has passed
+      -- and the locked funds return to the sender.
+      controller state.transfer.instrumentId.admin
+      do transferExpireImpl (instructionOps state) state
+
+    choice TokenTransferInstruction_AdminGC : ()
+      -- ^ Last-resort admin cleanup for an instruction whose funding was
+      -- already reclaimed. Creates nothing.
+      controller state.transfer.instrumentId.admin
+      do transferGcImpl state
+
+instructionOps : TransferInstructionState -> HoldingOps
+instructionOps s = defaultHoldingOps s.transfer.instrumentId.admin

@@ -1,0 +1,288 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+-- | Holding operations shared by every CIP-0112 workflow.
+--
+-- This package names no template. Everything that creates, consumes, or
+-- emits an event through a contract goes through a `HoldingOps` record the
+-- template owner builds inside a choice body. The record holds functions, so
+-- it cannot be stored in a contract payload: a template that completes a
+-- workflow later (accept, settle, expire) re-supplies its ops when that
+-- choice runs.
+--
+-- Trust boundary: the workflows trust nothing they did not just create. A
+-- caller-supplied holding id only ever enters through `consumeHolding`,
+-- which must establish that the contract is an accepted implementation
+-- before the workflow credits its amount. `consumeByArchive` is the safe
+-- default; an interface `fetch` followed by an interface `archive` is not.
+module OpenZeppelin.TokenCIP112WorkflowsV1.Holding where
+
+import DA.Assert (assertDeadlineExceeded)
+import DA.Foldable (forA_)
+import DA.List (dedupSort)
+import DA.Optional (isNone, isSome)
+import DA.TextMap qualified as TextMap
+import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime)
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.TokenStandard.Utils
+
+-- Registry configuration
+--------------------------
+
+-- | Registry policy every factory workflow reads. A rules contract stores it
+-- or builds it in a choice body from its own fields.
+--
+-- Storing this record in a template binds that template to this package's
+-- upgrade lineage; a later version of this package may only append
+-- `Optional` fields to it. A consumer who wants to keep this package freely
+-- swappable stores the three fields itself and builds the record per call.
+data RegistryConfig = RegistryConfig with
+    admin : Party
+      -- ^ The instrument admin: signs every holding and every pending
+      -- workflow contract, and controls supply and cleanup.
+    maxTTL : RelTime
+      -- ^ Upper bound on how long an allocation or transfer instruction may
+      -- occupy storage. Workflow deadlines beyond it are rejected outright.
+    lockGrace : RelTime
+      -- ^ How long a funding lock outlives its workflow contract's
+      -- `expiresAt`: the window in which the admin's expiry path is
+      -- guaranteed to succeed.
+  deriving (Eq, Show)
+
+-- | The `ensure` predicate of a rules contract holding a `RegistryConfig`.
+isValidRegistryConfig : RegistryConfig -> Bool
+isValidRegistryConfig c =
+  c.maxTTL > convertMicrosecondsToRelTime 0
+  && c.lockGrace > convertMicrosecondsToRelTime 0
+
+-- Operations supplied by the template owner
+--------------------------------------------
+
+-- | What a workflow needs from the template owner. Not serializable.
+data HoldingOps = HoldingOps with
+    createHolding : HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
+      -- ^ Create a holding from its standard view. Law: the created
+      -- contract's `Holding` view equals the argument, and its signatories
+      -- include `view.instrumentId.admin` and the account parties. Extra
+      -- template fields come from the closure that builds the record.
+    consumeHolding : ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
+      -- ^ Remove a holding from the ledger and return the view it had. Law:
+      -- fails unless the contract is an accepted implementation. This is the
+      -- accepted-implementation policy and the spend hook in one place:
+      -- archive by default, or a custom spend choice.
+    withEventLog : (ContractId TransferEventsV2.EventLog -> Update ()) -> Update ()
+      -- ^ Run one emission against an `EventLog` host. The default templates
+      -- supply a transient host created and archived within the transaction.
+    eventObservers : HoldingV2.Account -> [Party]
+      -- ^ Extra informees of every `EventLog_HoldingsChange` the workflows
+      -- emit for the account, added to the account parties and any
+      -- executors. An auditor or regulator who must see the standard event
+      -- stream, not only the holdings, goes here. `const []` adds nobody.
+
+-- | Consume by archiving, pinned to template `t`: `fetchFromInterface @t`
+-- fails on every other implementation, so a foreign `Holding` whose view
+-- claims this admin never reaches the workflow's accounting.
+consumeByArchive
+  : forall t. (HasFromInterface t HoldingV2.Holding, HasToInterface t HoldingV2.Holding, HasArchive t)
+  => ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
+consumeByArchive cid = do
+  fetched <- fetchFromInterface @t cid
+  case fetched of
+    None -> fail "holding is not an accepted implementation"
+    Some (tcid, t) -> do
+      archive tcid
+      pure (view (toInterface @HoldingV2.Holding t))
+
+-- Creation-time invariants
+---------------------------
+
+-- | The `ensure` predicate of a holding template: positive amount, a regular
+-- (owned) account, and no `expiresAfter` lock, whose earlier-of-two-bounds
+-- expiry this package does not model.
+isValidHoldingView : HoldingV2.HoldingView -> Bool
+isValidHoldingView holding =
+  holding.amount > 0.0
+  && isSome holding.account.owner
+  && optional True (isNone . (.expiresAfter)) holding.lock
+
+lockHolders : Optional HoldingV2.Lock -> [Party]
+lockHolders lock = case lock of
+  None -> []
+  Some l -> l.holders
+
+mkHoldingView
+  : Party -> HoldingV2.Account -> Text -> Decimal -> Optional HoldingV2.Lock
+  -> HoldingV2.HoldingView
+mkHoldingView admin account instrumentId amount lock = HoldingV2.HoldingView with
+  account
+  instrumentId = HoldingV2.InstrumentId with admin; id = instrumentId
+  amount
+  lock
+  meta = emptyMetadata
+
+-- | Create a holding through the owner's constructor.
+newHolding
+  : HoldingOps -> Party -> HoldingV2.Account -> Text -> Decimal -> Optional HoldingV2.Lock
+  -> Update (ContractId HoldingV2.Holding)
+newHolding ops admin account instrumentId amount lock =
+  ops.createHolding (mkHoldingView admin account instrumentId amount lock)
+
+-- Choice bodies
+----------------
+
+-- | Body of a consuming owner-unlock choice on a holding template: the lock
+-- has expired, so recreate the holding unlocked and emit an account-local
+-- `EventLog_HoldingsChange` naming the consumed holding and its replacement.
+-- `self` is the holding being exercised; the choice itself archives it.
+holdingOwnerUnlockImpl
+  : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
+  -> Update (ContractId HoldingV2.Holding)
+holdingOwnerUnlockImpl ops self holding = do
+  lock <- case holding.lock of
+    None -> fail "holding is not locked"
+    Some l -> pure l
+  case lock.expiresAt of
+    None -> fail "holding is locked indefinitely and cannot be unlocked by its owner"
+    Some expiresAt -> assertDeadlineExceeded "lock expiresAt" expiresAt
+  newCid <- ops.createHolding (holding with lock = None)
+  emitHoldingsChange ops holding.instrumentId.admin holding.account [] [self] [newCid] []
+    "expired lock released by owner"
+  pure newCid
+
+-- Consumption
+--------------
+
+-- | Consume a locked input holding after validating its identity.
+consumeLockedHolding
+  : HoldingOps -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
+  -> Update HoldingV2.HoldingView
+consumeLockedHolding ops admin expectedAccount cid = do
+  h <- ops.consumeHolding cid
+  require' ("inputHolding.instrumentId.admin", h.instrumentId.admin) isEqualR ("admin", admin)
+  require' ("inputHolding.account", h.account) isEqualR ("expectedAccount", expectedAccount)
+  require "input holding must be locked" (isSome h.lock)
+  pure h
+
+-- | Consume an unlocked input holding after validating its identity. A
+-- holding whose lock has expired is accepted, giving a combined
+-- unlock-and-use; unexpired or indefinite locks are rejected.
+consumeUnlockedHolding
+  : HoldingOps -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
+  -> Update HoldingV2.HoldingView
+consumeUnlockedHolding ops admin expectedAccount cid = do
+  h <- ops.consumeHolding cid
+  require' ("inputHolding.instrumentId.admin", h.instrumentId.admin) isEqualR ("admin", admin)
+  require' ("inputHolding.account", h.account) isEqualR ("expectedAccount", expectedAccount)
+  forA_ h.lock $ \lock -> case lock.expiresAt of
+    None -> fail "input holding is locked indefinitely and cannot fund an allocation"
+    Some expiresAt -> assertDeadlineExceeded "input holding lock expiresAt" expiresAt
+  pure h
+
+-- | Consume input holdings and tally the value they carried per instrument.
+debitHoldings
+  : (ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView)
+  -> [ContractId HoldingV2.Holding]
+  -> Update (TextMap.TextMap Decimal)
+debitHoldings consume cids = do
+  amounts <- forA cids $ \cid -> do
+    h <- consume cid
+    pure (h.instrumentId.id, h.amount)
+  pure (TextMap.fromListWithR (+) amounts)
+
+-- | Release locked holdings back to their account, returning the new unlocked
+-- holdings keyed by instrument id.
+unlockHoldings
+  : HoldingOps -> Party -> HoldingV2.Account -> [ContractId HoldingV2.Holding]
+  -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
+unlockHoldings ops admin expectedAccount cids = do
+  unlocked <- forA cids $ \cid -> do
+    h <- consumeLockedHolding ops admin expectedAccount cid
+    newCid <- ops.createHolding (h with lock = None)
+    pure (h.instrumentId.id, [newCid])
+  pure (TextMap.fromListWithR (++) unlocked)
+
+-- Events and bounds
+--------------------
+
+-- | Emit a holdings-change event. `logHoldingsChange` suppresses events that
+-- are empty or on special (mint/burn) accounts.
+emitHoldingsChange
+  : HoldingOps -> Party -> HoldingV2.Account -> [Party]
+  -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
+  -> [TransferEventsV2.TransferLegSide] -> Text
+  -> Update ()
+emitHoldingsChange ops admin account executors inputs outputs legSides reason =
+  ops.withEventLog $ \eventLogCid ->
+    logHoldingsChange eventLogCid TransferEventsV2.EventLog_HoldingsChange with
+      admin
+      account
+      inputHoldingCids = inputs
+      outputHoldingCids = outputs
+      transferLegSides = legSides
+      observers = eventObserversFor ops admin account <> executors
+      extraArgs = ExtraArgs with
+        context = emptyChoiceContext
+        meta = reasonToMeta reason emptyMetadata
+
+-- | The informees of an event on an account: the account parties plus the
+-- owner's extra observers, deduplicated.
+eventObserversFor : HoldingOps -> Party -> HoldingV2.Account -> [Party]
+eventObserversFor ops admin account =
+  dedupSort (accountParties admin account <> ops.eventObservers account)
+
+-- | The standard mint event (a receiver-side leg from the mint account), as
+-- the vendored `logMint`, with the owner's extra observers.
+logMintEvent
+  : HoldingOps -> ContractId TransferEventsV2.EventLog -> HoldingV2.Account -> Decimal
+  -> HoldingV2.InstrumentId -> Metadata -> [ContractId HoldingV2.Holding]
+  -> Update ()
+logMintEvent ops eventLogCid receiver amount instrumentId meta outputHoldingCids =
+  logHoldingsChange eventLogCid TransferEventsV2.EventLog_HoldingsChange with
+    admin = instrumentId.admin
+    account = receiver
+    inputHoldingCids = []
+    transferLegSides =
+      [ TransferEventsV2.TransferLegSide with
+          transferLegId = "mint"
+          side = TransferEventsV2.ReceiverSide
+          otherside = mintAccount
+          instrumentId = instrumentId.id
+          amount
+          meta ]
+    outputHoldingCids
+    observers = eventObserversFor ops instrumentId.admin receiver
+    extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- | The standard burn event, as the vendored `logBurn`, with the owner's
+-- extra observers.
+logBurnEvent
+  : HoldingOps -> ContractId TransferEventsV2.EventLog -> HoldingV2.Account -> Decimal
+  -> HoldingV2.InstrumentId -> Metadata -> [ContractId HoldingV2.Holding]
+  -> Update ()
+logBurnEvent ops eventLogCid sender amount instrumentId meta inputHoldingCids =
+  logHoldingsChange eventLogCid TransferEventsV2.EventLog_HoldingsChange with
+    admin = instrumentId.admin
+    account = sender
+    inputHoldingCids
+    transferLegSides =
+      [ TransferEventsV2.TransferLegSide with
+          transferLegId = "burn"
+          side = TransferEventsV2.SenderSide
+          otherside = burnAccount
+          instrumentId = instrumentId.id
+          amount
+          meta ]
+    outputHoldingCids = []
+    observers = eventObserversFor ops instrumentId.admin sender
+    extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- | Storage bound for a pending contract: at most `maxTTL` from now, capped
+-- by the workflow deadline, saturating at `maxTime` instead of overflowing.
+computeStorageExpiry : RelTime -> Time -> Optional Time -> Time
+computeStorageExpiry maxTTL now deadline =
+    optional identity min deadline candidate
+  where
+    candidate
+      | maxTime `subTime` now <= maxTTL = maxTime
+      | otherwise = now `addRelTime` maxTTL

@@ -1,0 +1,367 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+-- | Allocation workflow: the allocation-factory body and the choice bodies of
+-- an allocation, over an `AllocationState` payload and a `HoldingOps` record
+-- supplied by the template owner.
+--
+-- An allocation is born ready to settle: its funding is locked when the
+-- contract is created. Settlement consumes the locked holdings and nets the
+-- authorizer's credit per instrument across the effective transfer legs;
+-- every per-instrument total must be non-negative and must cover any
+-- requested next-iteration reserve, so a settle can never create or strand
+-- value within the allocation.
+module OpenZeppelin.TokenCIP112WorkflowsV1.Allocation where
+
+import DA.Assert (assertDeadlineExceeded, assertWithinDeadline)
+import DA.Foldable (forA_)
+import DA.List (dedupSort)
+import DA.Map qualified as Map
+import DA.Optional (fromOptional, isNone, isSome)
+import DA.TextMap qualified as TextMap
+import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime)
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.TokenCIP112WorkflowsV1.Holding
+
+-- | Payload of an allocation. A template running these workflows stores
+-- this record plus its own fields, or stores the fields separately and
+-- builds the record per call; see `RegistryConfig` on what storing it binds
+-- the template to.
+data AllocationState = AllocationState with
+    originalAllocationCid : Optional (ContractId AllocationV2.Allocation)
+      -- ^ The chain's first allocation, for iteration successors.
+    settlement : AllocationV2.SettlementInfo
+    allocation : AllocationV2.AllocationSpecification
+    lockedHoldingCids : [ContractId HoldingV2.Holding]
+      -- ^ The locked funding backing the allocation.
+    requestedAt : Time
+      -- ^ The wallet-supplied request time.
+    createdAt : Time
+      -- ^ When the original allocation was created; carried onto successors.
+    numIterations : Int
+      -- ^ Settlement iterations executed so far; zero for the original.
+    expiresAt : Time
+      -- ^ Storage bound; the admin may cancel the allocation after it.
+    lockExpiresAt : Time
+      -- ^ When the funding lock expires. Strictly after `expiresAt`.
+    maxTTL : RelTime
+      -- ^ The registry's storage bound, snapshotted at allocation time.
+    lockGrace : RelTime
+      -- ^ The registry's lock grace, snapshotted at allocation time.
+  deriving (Eq, Show)
+
+-- | Constructor of the owner's allocation template. Also used for iteration
+-- successors, so an allocation template passes its own constructor.
+type CreateAllocation = AllocationState -> Update (ContractId AllocationV2.Allocation)
+
+-- | Accepted-implementation policy for allocations that a registry choice
+-- exercises with the admin's authority. An interface-typed id may point at
+-- any template implementing `Allocation`, whose choice bodies the registry
+-- does not control; the policy fails on every implementation the owner did
+-- not accept and returns the view otherwise.
+type PinAllocation = ContractId AllocationV2.Allocation -> Update AllocationV2.AllocationView
+
+-- | The policy that accepts exactly template `t`.
+pinAllocationTo
+  : forall t. (HasFromInterface t AllocationV2.Allocation, HasToInterface t AllocationV2.Allocation)
+  => ContractId AllocationV2.Allocation -> Update AllocationV2.AllocationView
+pinAllocationTo cid = do
+  fetched <- fetchFromInterface @t cid
+  case fetched of
+    None -> fail "allocation is not an accepted implementation"
+    Some (_, t) -> pure (view (toInterface @AllocationV2.Allocation t))
+
+-- | The `ensure` predicate of an allocation template.
+isValidAllocationState : AllocationState -> Bool
+isValidAllocationState s =
+  isValidSettlementInfoV2 s.settlement
+  && isValidAllocationSpecificationV2 (const True) s.allocation
+  -- A reservation draws on a regular account's holdings; special (mint/burn)
+  -- accounts hold nothing to reserve.
+  && (isNone s.allocation.nextIterationFunding || isRegularAccount s.allocation.authorizer)
+  && s.numIterations >= 0
+  && s.expiresAt < s.lockExpiresAt
+  && s.maxTTL > convertMicrosecondsToRelTime 0
+  && s.lockGrace > convertMicrosecondsToRelTime 0
+  -- A committed allocation with no settlement deadline can never be
+  -- withdrawn, so refuse to create that shape at all.
+  && (not s.allocation.committed || isSome s.allocation.settlementDeadline)
+
+-- | The standard view of an allocation.
+allocationView : AllocationState -> AllocationV2.AllocationView
+allocationView s = AllocationV2.AllocationView with
+  originalAllocationCid = s.originalAllocationCid
+  settlement = s.settlement
+  allocation = s.allocation
+  holdingCids = s.lockedHoldingCids
+  createdAt = s.createdAt
+  numIterations = s.numIterations
+  expiresAt = Some s.expiresAt
+  availableActions = allocationAvailableActions s
+  meta = emptyMetadata
+
+-- | Actions wallets may take, reported to exactly match what the choice
+-- bodies accept. Withdraw is advertised statically: for a committed
+-- allocation the choice body still refuses it until the settlement deadline
+-- has passed.
+allocationAvailableActions : AllocationState -> Map.Map AllocationV2.AllocationAction [[Party]]
+allocationAvailableActions s = Map.fromList $
+  [ (AllocationV2.AA_Cancel, [dedupSort s.settlement.executors])
+  , (AllocationV2.AA_Settle, [dedupSort (s.allocation.admin :: s.settlement.executors)])
+  ] <>
+  [ (AllocationV2.AA_Withdraw, [accountParties s.allocation.admin s.allocation.authorizer])
+  | not s.allocation.committed || isSome s.allocation.settlementDeadline
+  ]
+
+-- Allocation choice bodies
+---------------------------
+
+-- | `allocation_settleImpl`. Re-checks the deadline and iteration arguments
+-- even when driven by the settlement factory: this choice is also directly
+-- callable by admin plus executors, and a direct settle bypasses the
+-- factory's exact-cover check.
+allocationSettleImpl
+  : HoldingOps -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
+  -> AllocationV2.Allocation_Settle
+  -> Update AllocationV2.AllocationResult
+allocationSettleImpl ops createSuccessor self s arg = do
+  archiveAndCheckActors self arg.actors [s.allocation.admin :: s.settlement.executors]
+  forA_ s.allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
+  validateNextIterationArgs "Allocation_Settle" (isSome s.allocation.nextIterationFunding)
+    arg.extraTransferLegSides arg.nextIterationFunding
+  settleAllocation ops createSuccessor self s arg.extraTransferLegSides arg.nextIterationFunding
+
+-- | `allocation_withdrawImpl`.
+allocationWithdrawImpl
+  : HoldingOps -> ContractId AllocationV2.Allocation -> AllocationState
+  -> AllocationV2.Allocation_Withdraw
+  -> Update AllocationV2.AllocationResult
+allocationWithdrawImpl ops self s arg = do
+  archiveAndCheckActors self arg.actors [accountParties s.allocation.admin s.allocation.authorizer]
+  ensureWithdrawIsAllowed s.allocation
+  holdings <- unlockAndLog ops s "allocation withdrawn"
+  pure AllocationV2.AllocationResult with
+    output = AllocationV2.AllocationResult_Withdrawn
+    authorizerHoldingCids = holdings
+    meta = emptyMetadata
+
+-- | `allocation_cancelImpl`. Executors may cancel any time; the admin only
+-- once `expiresAt` has passed (checked by the vendored default, which reads
+-- the interface value of the contract being exercised).
+allocationCancelImpl
+  : HoldingOps -> ContractId AllocationV2.Allocation -> AllocationState
+  -> AllocationV2.Allocation_Cancel
+  -> Update AllocationV2.AllocationResult
+allocationCancelImpl ops self s arg = do
+  this <- fetch self
+  allocationV2_cancelDefaultImpl this self arg $ do
+    holdings <- unlockAndLog ops s "allocation cancelled"
+    pure (holdings, emptyMetadata)
+
+-- | Body of a consuming last-resort admin cleanup choice for an allocation
+-- whose funding was already reclaimed. Creates nothing.
+allocationGcImpl : AllocationState -> Update ()
+allocationGcImpl s = assertDeadlineExceeded "allocation lockExpiresAt" s.lockExpiresAt
+
+-- Factory body
+---------------
+
+-- | `allocationFactory_allocateImpl`: validate, lock net funding plus any
+-- next-iteration reserve, return the completed allocation and any change.
+allocationFactoryImpl
+  : RegistryConfig -> HoldingOps -> CreateAllocation
+  -> AllocationInstructionV2.AllocationFactory_Allocate
+  -> Update AllocationInstructionV2.AllocationInstructionResult
+allocationFactoryImpl config ops createAllocation arg = do
+  let admin = config.admin
+      allocation = arg.allocation
+      authorizer = allocation.authorizer
+  checkActors arg.actors [accountParties admin authorizer]
+  requireMatchExpected ("allocation.admin", allocation.admin) admin
+  -- Special (mint/burn) accounts cannot author allocations: the netting
+  -- helper zeroes their leg sides, so such an allocation would lock nothing
+  -- and settle as an unevented supply change.
+  require "allocation authorizer must be a regular account" (isRegularAccount authorizer)
+  require "allocation must authorize at least one transfer-leg side or enable iterated settlement"
+    (not (null allocation.transferLegSides) || isSome allocation.nextIterationFunding)
+  forA_ allocation.nextIterationFunding $ \reserve ->
+    forA_ (TextMap.toList reserve) $ \(instrumentId, amount) ->
+      require' ("allocation.nextIterationFunding for " <> instrumentId, amount)
+        isGreaterR ("zero", 0.0)
+  require "a committed allocation requires a settlement deadline"
+    (not allocation.committed || isSome allocation.settlementDeadline)
+  assertDeadlineExceeded "requestedAt" arg.requestedAt
+  forA_ allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
+
+  now <- getTime
+  forA_ allocation.settlementDeadline $ \deadline ->
+    require "settlement deadline exceeds the registry's maximum TTL"
+      (deadline <= now `addRelTime` config.maxTTL)
+  require "requestedAt is older than the registry's maximum TTL"
+    (now `subTime` arg.requestedAt <= config.maxTTL)
+
+  -- Net funding: only the negative part of the authorizer's net credit needs
+  -- to be locked, plus any next-iteration reserve.
+  let expiresAt = computeStorageExpiry config.maxTTL now allocation.settlementDeadline
+      lockExpiresAt = expiresAt `addRelTime` config.lockGrace
+      netAmounts = netAllocationCreditAmounts authorizer allocation.transferLegSides
+      reserveAmounts = fromOptional TextMap.empty allocation.nextIterationFunding
+      requiredAmounts = textMapUnionWith (+)
+        (fmap (\net -> max 0.0 (negate net)) netAmounts)
+        reserveAmounts
+      lock = HoldingV2.Lock with
+        holders = dedupSort (admin :: arg.settlement.executors)
+        expiresAt = Some lockExpiresAt
+        expiresAfter = None
+        context = Some ("allocation for settlement " <> arg.settlement.id)
+
+  inputAmounts <- debitHoldings (consumeUnlockedHolding ops admin authorizer) arg.inputHoldingCids
+
+  lockedAndChange <- forA (TextMap.toList (textMapMergeWithDefault (0.0, 0.0) inputAmounts requiredAmounts)) $
+    \(instrumentId, (inputAmount, requiredAmount)) -> do
+      require' ("funding for " <> instrumentId, inputAmount)
+        isGreaterOrEqualR ("required lock amount", requiredAmount)
+      lockedCids <-
+        if requiredAmount > 0.0
+          then (:: []) <$> newHolding ops admin authorizer instrumentId requiredAmount (Some lock)
+          else pure []
+      changeCids <-
+        if inputAmount - requiredAmount > 0.0
+          then do
+            cid <- newHolding ops admin authorizer instrumentId (inputAmount - requiredAmount) None
+            pure [(instrumentId, [cid])]
+          else pure []
+      pure (lockedCids, changeCids)
+
+  let lockedHoldingCids = concatMap fst lockedAndChange
+      authorizerChangeCids = TextMap.fromListWithR (++) (concatMap snd lockedAndChange)
+
+  allocationCid <- createAllocation AllocationState with
+    originalAllocationCid = None
+    settlement = arg.settlement
+    allocation
+    lockedHoldingCids
+    requestedAt = arg.requestedAt
+    createdAt = now
+    numIterations = 0
+    expiresAt
+    lockExpiresAt
+    maxTTL = config.maxTTL
+    lockGrace = config.lockGrace
+
+  emitHoldingsChange ops admin authorizer arg.settlement.executors
+    arg.inputHoldingCids
+    (lockedHoldingCids <> concat (textMapValues authorizerChangeCids))
+    []
+    "lock holdings for allocation"
+
+  pure AllocationInstructionV2.AllocationInstructionResult with
+    output = AllocationInstructionV2.AllocationInstructionResult_Completed with allocationCid
+    authorizerChangeCids
+    meta = emptyMetadata
+
+-- Settlement internals
+-----------------------
+
+-- | Net settlement of one allocation: consume the locked funds, add the
+-- authorizer's net credit per instrument across the effective legs, require
+-- every total to be non-negative, reserve the requested next-iteration
+-- funding as freshly locked holdings, and pay out the remainder unlocked.
+-- When a reservation is requested a successor allocation is created through
+-- the owner's constructor.
+settleAllocation
+  : HoldingOps -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
+  -> [AllocationV2.TransferLegSide] -> Optional (TextMap.TextMap Decimal)
+  -> Update AllocationV2.AllocationResult
+settleAllocation ops createSuccessor self s extraTransferLegSides nextIterationFunding = do
+  let admin = s.allocation.admin
+      authorizer = s.allocation.authorizer
+      effectiveLegSides = s.allocation.transferLegSides <> extraTransferLegSides
+      reserveAmounts = fromOptional TextMap.empty nextIterationFunding
+  lockedAmounts <- debitHoldings (consumeLockedHolding ops admin authorizer) s.lockedHoldingCids
+  let netAmounts = netAllocationCreditAmounts authorizer effectiveLegSides
+      totalAmounts = textMapUnionWith (+) lockedAmounts netAmounts
+
+  now <- getTime
+  let newExpiresAt = computeStorageExpiry s.maxTTL now s.allocation.settlementDeadline
+      newLockExpiresAt = newExpiresAt `addRelTime` s.lockGrace
+      lock = HoldingV2.Lock with
+        holders = dedupSort (admin :: s.settlement.executors)
+        expiresAt = Some newLockExpiresAt
+        expiresAfter = None
+        context = Some ("allocation for settlement " <> s.settlement.id)
+
+  lockedAndPayouts <- forA (TextMap.toList (textMapMergeWithDefault (0.0, 0.0) totalAmounts reserveAmounts)) $
+    \(instrumentId, (total, reserve)) -> do
+      require' ("locked funds plus net credit for " <> instrumentId, total)
+        isGreaterOrEqualR ("zero", 0.0)
+      require' ("locked funds plus net credit for " <> instrumentId, total)
+        isGreaterOrEqualR ("requested next-iteration funding", reserve)
+      newLockedCids <-
+        if reserve > 0.0
+          then (:: []) <$> newHolding ops admin authorizer instrumentId reserve (Some lock)
+          else pure []
+      payoutCids <-
+        if total - reserve > 0.0
+          then do
+            cid <- newHolding ops admin authorizer instrumentId (total - reserve) None
+            pure [(instrumentId, [cid])]
+          else pure []
+      pure (newLockedCids, payoutCids)
+
+  let newLockedHoldingCids = concatMap fst lockedAndPayouts
+      payoutCids = TextMap.fromListWithR (++) (concatMap snd lockedAndPayouts)
+
+  nextIterationAllocationCid <- case nextIterationFunding of
+    None -> pure None
+    Some reserve -> do
+      successorCid <- createSuccessor s with
+        originalAllocationCid = Some (fromOptional self s.originalAllocationCid)
+        allocation = s.allocation with
+          transferLegSides = []
+          nextIterationFunding = Some reserve
+        lockedHoldingCids = newLockedHoldingCids
+        numIterations = s.numIterations + 1
+        expiresAt = newExpiresAt
+        lockExpiresAt = newLockExpiresAt
+      pure (Some successorCid)
+
+  emitHoldingsChange ops admin authorizer s.settlement.executors
+    s.lockedHoldingCids
+    (newLockedHoldingCids <> concat (textMapValues payoutCids))
+    (map toEventLegSide effectiveLegSides)
+    "allocation settled"
+  pure AllocationV2.AllocationResult with
+    output = AllocationV2.AllocationResult_Settled with nextIterationAllocationCid
+    authorizerHoldingCids = payoutCids
+    meta = emptyMetadata
+
+-- | Release the locked holdings to the authorizer and log the change.
+unlockAndLog
+  : HoldingOps -> AllocationState -> Text
+  -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
+unlockAndLog ops s reason = do
+  let admin = s.allocation.admin
+  holdings <- unlockHoldings ops admin s.allocation.authorizer s.lockedHoldingCids
+  emitHoldingsChange ops admin s.allocation.authorizer s.settlement.executors
+    s.lockedHoldingCids
+    (concat (textMapValues holdings))
+    []
+    reason
+  pure holdings
+
+toEventLegSide : AllocationV2.TransferLegSide -> TransferEventsV2.TransferLegSide
+toEventLegSide l = TransferEventsV2.TransferLegSide with
+  transferLegId = l.transferLegId
+  side = case l.side of
+    AllocationV2.SenderSide -> TransferEventsV2.SenderSide
+    AllocationV2.ReceiverSide -> TransferEventsV2.ReceiverSide
+  otherside = l.otherside
+  amount = l.amount
+  instrumentId = l.instrumentId
+  meta = l.meta

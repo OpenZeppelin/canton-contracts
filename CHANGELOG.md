@@ -34,16 +34,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   `whenPaused`, `isPaused`, and the failure statuses `eEnforcedPause` and
   `eExpectedPause`. It depends on `openzeppelin-api-pausable-v1`.
 
+### `openzeppelin-tokenCIP112-workflows-v1`
+
+#### Added
+
+- Added the CIP-0112 workflows package `openzeppelin-tokenCIP112-workflows-v1`
+  (public module namespace `OpenZeppelin.TokenCIP112WorkflowsV1`): the
+  transfer, allocation, settlement, mint, burn, and expiry choice bodies as
+  functions parameterised over the caller's templates through a `HoldingOps`
+  record and constructor and pinning operations, plus the `RegistryConfig`,
+  `TransferInstructionState`, and `AllocationState` records a template
+  stores. Built against the official Splice Token Standard V2 DARs (release
+  `0.8.3`) vendored under `dars/vendor/`.
+
 ### `openzeppelin-tokenCIP112-v1`
 
 #### Added
 
-- Added the experimental CIP-0112-compliant token package
-  `openzeppelin-tokenCIP112-v1` with public module namespace
-  `OpenZeppelin.TokenCIP112V1`. It implements the Token Standard V2 interfaces
-  and builds against the 13 vendored Token Standard V2 DARs under
-  `dars/vendor/`, with provenance recorded in `dars/manifest.yaml`.
-- Added the CIP-86 allowance component: the `TokenAllowance` template with
-  ERC-20 `approve` and `transferFrom` semantics, spent through the new
-  `TokenRules_ApproveAllowance` and `TokenRules_TransferFrom` registry
-  choices.
+- Added the CIP-0112 token package `openzeppelin-tokenCIP112-v1` (public
+  module namespace `OpenZeppelin.TokenCIP112V1`): ready-to-use templates over
+  the workflows package with holdings with expiring locks and owner recovery,
+  one-step and two-step transfers, allocations with exact-cover batch
+  settlement and iterated settlement, and registry rules with evented mint
+  and burn.

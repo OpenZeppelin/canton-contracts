@@ -72,12 +72,37 @@ means the template implements both interfaces for life; dropping the `-v1`
 instance needs a new template version outside SCU and an offline contract
 migration that copies the flag.
 
+### Workflows and templates
+
+A component whose choice bodies consumers want to reuse with templates of
+their own ships two production packages:
+
+```text
+<component>-workflows-v1   Choice bodies as functions, parameterised over the
+                           templates through constructor and policy
+                           operations; the serializable records its templates
+                           store; no templates, no interfaces
+<component>-v1             Ready-to-use templates delegating to the workflows
+```
+
+Nothing executable is stored on the ledger: a pending contract holds records
+only and rebuilds its operations when its choice runs. A consumer who owns
+their templates depends on the workflows package alone and keeps their own
+upgrade lineage; they may move to a later compatible workflows version, or
+to a fork, because no contract references its functions. Storing the
+workflows package's records binds a template to that package's lineage, so
+those records only ever gain `Optional` fields; a consumer who stores the
+fields separately and builds the record per call avoids even that.
+
 ## Dependency policy
 
-- Implementation packages do not depend on other implementation packages.
+- Implementation packages do not depend on other implementation packages,
+  except a component's templates package on its own workflows package.
   Compose through stable interfaces or in a consuming application instead.
 - Shared pure helpers belong in a utility package that defines no templates,
-  interfaces, exceptions, or serializable public state.
+  interfaces, exceptions, or serializable public state. A workflows package
+  is the one utility package allowed to define serializable records, the
+  payloads its templates store.
 - Adding a production dependency requires explicit architecture review because
   an SCU lineage cannot later drop or downgrade a dependency other than a
   utility package.

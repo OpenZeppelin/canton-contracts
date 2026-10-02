@@ -1,0 +1,100 @@
+-- | The holding-side counterpart of the foreign-allocation tests. Once
+-- holdings are addressed by interface id, a template that implements
+-- `HoldingV2.Holding` with attacker-only signatories and a view naming this
+-- registry's admin would pass every field check in the workflows and be
+-- credited as funding. The `consumeHolding` operation is the guard: the
+-- default templates pass `consumeByArchive @TokenHolding`, which fails on any
+-- other implementation before the workflow reads the amount.
+--
+-- Each script builds the attack in full and asserts the refusal carries the
+-- guard's message, so it cannot pass for an unrelated reason.
+module OpenZeppelin.TokenCIP112V1ForeignHoldingTest where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount, senderSide)
+
+import OpenZeppelin.TokenCIP112V1.Registry
+import OpenZeppelin.TokenCIP112V1TestFixtures
+import OpenZeppelin.TokenCIP112V1ForeignAllocationTest (mustFailWith)
+
+-- | The attacker's holding: any view they like, signed by them alone.
+template ForeignHolding with
+    attacker : Party
+    claimedView : HoldingV2.HoldingView
+  where
+    signatory attacker
+
+    interface instance HoldingV2.Holding for ForeignHolding where
+      view = claimedView
+
+forgedHolding : Party -> Party -> Decimal -> HoldingV2.HoldingView
+forgedHolding admin attacker amount = HoldingV2.HoldingView with
+  account = basicAccount attacker
+  instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+  amount
+  lock = None
+  meta = emptyMetadata
+
+-- | The message `consumeByArchive` fails with.
+notAcceptedHolding : Text
+notAcceptedHolding = "holding is not an accepted implementation"
+
+-- | A one-step self-transfer funded by a forged holding. Unguarded, the
+-- workflow would archive the forgery (the attacker signs it), credit its
+-- amount, and create a genuine `TokenHolding` for the attacker: a mint.
+testForeignHoldingAsTransferInput : Script ()
+testForeignHoldingAsTransferInput = do
+  s@Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+  forgedCid <- submit attacker do
+    createCmd ForeignHolding with attacker; claimedView = forgedHolding admin attacker 1000000.0
+  mustFailWith notAcceptedHolding (actAs attacker <> discloseMany [rulesDisclosure]) $
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+      TransferInstructionV2.TransferFactory_Transfer with
+        transfer = (mkTransfer s attacker attacker 1000000.0 []) with
+          inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding forgedCid]
+        actors = [attacker]
+        extraArgs = emptyExtraArgs
+  after <- holdingAmounts attacker
+  after === []
+
+-- | A forged holding as allocation funding. Unguarded, the allocation would
+-- lock a genuine `TokenHolding` created from the forged amount.
+testForeignHoldingAsAllocationInput : Script ()
+testForeignHoldingAsAllocationInput = do
+  Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+  forgedCid <- submit attacker do
+    createCmd ForeignHolding with attacker; claimedView = forgedHolding admin attacker 1000000.0
+  let leg = mkTransferLeg "leg-x" attacker bob 1000000.0
+  mustFailWith notAcceptedHolding (actAs attacker <> discloseMany [rulesDisclosure]) $
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = mkAllocationSpec admin attacker [senderSide leg]
+        requestedAt = t0
+        inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding forgedCid]
+        extraArgs = emptyExtraArgs
+        actors = [attacker]
+  after <- holdingAmounts attacker
+  after === []
+
+-- | The burn path pins the template too, so the guard is uniform: every
+-- caller-supplied holding id in the package goes through `consumeHolding`.
+testForeignHoldingBurn : Script ()
+testForeignHoldingBurn = do
+  Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+  forgedCid <- submit attacker do
+    createCmd ForeignHolding with attacker; claimedView = forgedHolding admin attacker 5.0
+  mustFailWith notAcceptedHolding (actAs admin <> actAs attacker <> discloseMany [rulesDisclosure]) $
+    exerciseCmd rulesCid TokenRules_Burn with
+      holdingCid = toInterfaceContractId @HoldingV2.Holding forgedCid
+      account = basicAccount attacker
+      reason = "burn forged"

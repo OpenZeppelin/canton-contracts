@@ -1,0 +1,28 @@
+-- | The event-log host shared by the default templates.
+module OpenZeppelin.TokenCIP112V1.Base where
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.TokenStandard.Utils
+
+-- | Event-log host. `EventLog_HoldingsChange` is an interface choice, so an
+-- emission needs a contract to exercise it on; this host is created and
+-- archived within the emitting transaction.
+template TokenEventLog with
+    admin : Party
+  where
+    signatory admin
+
+    interface instance TransferEventsV2.EventLog for TokenEventLog where
+      view = TransferEventsV2.EventLogView with admin; meta = emptyMetadata
+      eventLog_holdingsChangeImpl = eventLog_holdingsChangeDefaultImpl admin
+
+-- | Run an action with a temporary event-log host. Requires `admin`
+-- authority: every caller emits from a choice on a contract that has the
+-- admin as signatory.
+withTempEventLog : Party -> (ContractId TransferEventsV2.EventLog -> Update a) -> Update a
+withTempEventLog admin f = do
+  cid <- create TokenEventLog with admin
+  result <- f (toInterfaceContractId cid)
+  archive cid
+  pure result

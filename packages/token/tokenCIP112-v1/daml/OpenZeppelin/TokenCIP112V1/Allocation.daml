@@ -1,0 +1,44 @@
+-- | The default allocation template: an `AllocationState` payload whose
+-- choices delegate to the workflows package.
+module OpenZeppelin.TokenCIP112V1.Allocation where
+
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.TokenCIP112WorkflowsV1.Holding
+import OpenZeppelin.TokenCIP112WorkflowsV1.Allocation
+import OpenZeppelin.TokenCIP112V1.Holding
+
+-- | A ready-to-settle allocation backed by locked holdings. The admin and the
+-- authorizer's account parties sign so that neither side can create or drop
+-- an allocation alone; the settlement executors observe so they can drive
+-- settlement.
+template TokenAllocation with
+    state : AllocationState
+  where
+    signatory state.allocation.admin, accountParties state.allocation.admin state.allocation.authorizer
+    observer state.settlement.executors
+    ensure isValidAllocationState state
+
+    interface instance AllocationV2.Allocation for TokenAllocation where
+      view = allocationView state
+      allocation_settleExtraObservers _ = observer this
+      allocation_cancelExtraObservers _ = observer this
+      allocation_withdrawExtraObservers _ = observer this
+      allocation_settleImpl self arg =
+        allocationSettleImpl (allocationOps state) (createSuccessor this) self state arg
+      allocation_withdrawImpl self arg = allocationWithdrawImpl (allocationOps state) self state arg
+      allocation_cancelImpl self arg = allocationCancelImpl (allocationOps state) self state arg
+
+    choice TokenAllocation_AdminGC : ()
+      -- ^ Last-resort admin cleanup for an allocation whose funding was
+      -- already reclaimed. Creates nothing.
+      controller state.allocation.admin
+      do allocationGcImpl state
+
+allocationOps : AllocationState -> HoldingOps
+allocationOps s = defaultHoldingOps s.allocation.admin
+
+-- | Iteration successors are the same template with a new payload.
+createSuccessor : TokenAllocation -> CreateAllocation
+createSuccessor this s = toInterfaceContractId <$> create this with state = s
