@@ -81,9 +81,9 @@ The package implements Token Standard V2 (CIP-0112).
 The V2 interface hierarchy is parallel to V1: the two share only
 `splice-api-token-metadata-v1`, so V1 tooling cannot see this token. When a
 deployment target requires V1 visibility, add the V1 interface instances to
-the same templates: the V1 DARs are vendored under
-[`dars/vendor/`](../../../dars/vendor/), and the vendored utils ship
-`...V1...DefaultImplUsingV2` helpers for exactly this pattern.
+the same templates: the V1 interface packages ship inside the vendored
+`splice-token-standard-utils` DAR, whose `...V1...DefaultImplUsingV2`
+helpers exist for exactly this pattern.
 
 ## Compatibility
 

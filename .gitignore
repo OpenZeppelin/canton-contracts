@@ -33,3 +33,6 @@ test-reports/
 # Dev3 Results
 artifacts/
 post-core/
+
+# Extension ideas for CIP112
+packages/token/tokenCIP112-v1/ideas.md
