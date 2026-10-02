@@ -15,14 +15,10 @@
 -- `apply` and `unschedule` methods, and implements `applyImpl` and `dropImpl`
 -- with the lifecycle functions of the `openzeppelin-timelock-v1` package,
 -- module `OpenZeppelin.TimelockV1`. That package also holds the schedule
--- functions, the time guards, and the failure statuses. The methods return
--- `Checked` from `OpenZeppelin.Api.TimelockV1.Internal`, which only the
--- lifecycle functions construct.
+-- functions, the time guards, and the failure statuses.
 module OpenZeppelin.Api.TimelockV1 where
 
 import DA.Time (RelTime)
-
-import OpenZeppelin.Api.TimelockV1.Internal (Checked (..))
 
 -- | When a scheduled operation may execute.
 data TimelockedView = TimelockedView with
@@ -110,14 +106,10 @@ data DropReason
 -- choices are nonconsuming, so the timelock's observers see the archive and
 -- the successor, but not the other effects of `apply`.
 --
--- The two methods return `Checked (ContractId Timelock)`, which only the
--- lifecycle functions construct, so a method body that skips them does not
--- compile.
---
 -- Requirements:
 --
 -- * `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`.
---   The interface does not run the checks itself.
+--   The interface does not enforce the checks itself.
 -- * `authority` signs the timelock and every operation. The lifecycle
 --   functions fail with `eInvalidAuthority` otherwise.
 -- * Every signatory of the operation is a signatory of the timelock. The
@@ -141,11 +133,11 @@ interface Timelock where
     --   `dropOperation` calls it after it checks the operation and archives
     --   it.
 
-  applyImpl : ContractId Timelock -> Timelock_Apply -> Update (Checked (ContractId Timelock))
+  applyImpl : ContractId Timelock -> Timelock_Apply -> Update (ContractId Timelock)
     -- ^ The body of `Timelock_Apply`. Implement it as
     --   `applyImpl self arg = applyOperation (toInterface @Timelock this) self arg`.
 
-  dropImpl : ContractId Timelock -> Timelock_Drop -> Update (Checked (ContractId Timelock))
+  dropImpl : ContractId Timelock -> Timelock_Drop -> Update (ContractId Timelock)
     -- ^ The body of `Timelock_Drop`. Implement it as
     --   `dropImpl self arg = dropOperation (toInterface @Timelock this) self arg`.
 
@@ -157,8 +149,7 @@ interface Timelock where
       op : ContractId Operation
     controller actor
     do
-      checked <- applyImpl this self arg
-      pure checked.successor
+      applyImpl this self arg
 
   -- Remove a pending operation without applying it. `dropOperation` fails
   -- unless the operation is pending and the `reason` holds.
@@ -169,8 +160,7 @@ interface Timelock where
       reason : DropReason
     controller actor
     do
-      checked <- dropImpl this self arg
-      pure checked.successor
+      dropImpl this self arg
 
 -- | A scheduled operation. Implement it, with `Timelocked`, on one template
 -- per operation kind. The template's fields are the operation's typed

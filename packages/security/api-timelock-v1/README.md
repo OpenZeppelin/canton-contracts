@@ -23,10 +23,6 @@ Three interfaces and their views. The package holds no logic:
   pending membership, shared authority, permissions, and time bounds. They
   archive the operation before calling your `apply` or `unschedule` method.
   The method creates the successor with the reduced pending list.
-- `Checked`, in module `OpenZeppelin.Api.TimelockV1.Internal`: the return
-  type of `applyImpl` and `dropImpl`. Only the lifecycle functions construct
-  it, so a method body that returns a contract id from `apply` or `create`
-  does not compile. Your package does not import the module.
 - `Operation`: the interface for each operation template. Its view, `OperationView`, names the
   `executors` and `cancellers`. Its choices, `Operation_Execute`,
   `Operation_Cancel`, and `Operation_Cleanup`, forward the authenticated actor
@@ -341,10 +337,10 @@ have no pending entry. Match the results against the canonical timelock's
   `Timelock_Drop` keep their names, arguments, and bodies for the life of
   `openzeppelin-api-timelock-v1`. The bodies only forward to methods, so the
   checks upgrade with `openzeppelin-timelock-v1`.
-- The interface does not run the checks. They run because your `applyImpl`
-  and `dropImpl` call `applyOperation` and `dropOperation`. The methods must
-  return `Checked`, which only those functions construct, so a body that
-  skips them does not compile.
+- The interface does not enforce the checks. They run because your
+  `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`. A
+  method that skips them lets an executor apply an operation without the
+  delay.
 - Every choice that changes the pending list archives the timelock, so
   scheduling and applying contend on the timelock. Two proposers scheduling in the same
   instant see one of them fail and resubmit against the successor. Keep the
