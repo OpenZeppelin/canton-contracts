@@ -24,6 +24,7 @@ import Splice.Api.Token.AllocationRequestV2 qualified as AllocationRequestV2
 import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.AllocationRequestV1
+import OpenZeppelin.TokenCIP112WorkflowsV1.Holding (RegistryConfig(..))
 import OpenZeppelin.TokenCIP112V1.Holding
 import OpenZeppelin.TokenCIP112V1.Registry
 
@@ -57,9 +58,10 @@ setup = do
   setTime t1
   rulesCid <- submit admin do
     createCmd TokenRules with
-      admin
-      maxTTL = days 90
-      lockGrace = hours 1
+      config = RegistryConfig with
+        admin
+        maxTTL = days 90
+        lockGrace = hours 1
   Some rulesDisclosure <- queryDisclosure @TokenRules admin rulesCid
   pure App with
     admin; exchange; alice; bob; rulesCid; rulesDisclosure
@@ -71,7 +73,7 @@ setup = do
 
 -- | Issue holdings through the registry's evented mint path, so the supply
 -- change is visible to token-standard history parsers.
-mint : App -> Party -> Text -> Decimal -> Script (ContractId TokenHolding)
+mint : App -> Party -> Text -> Decimal -> Script (ContractId HoldingV2.Holding)
 mint App{..} owner instrumentId amount =
   submit (actAs [admin, owner] <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_Mint with
@@ -118,7 +120,7 @@ completedCid result = case result.output of
   other -> abort ("expected completed allocation, got: " <> show other)
 
 allocateCmd
-  : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId TokenHolding]
+  : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId HoldingV2.Holding]
   -> Commands AllocationInstructionV2.AllocationInstructionResult
 allocateCmd App{..} trader spec inputs =
   exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
@@ -126,13 +128,13 @@ allocateCmd App{..} trader spec inputs =
       settlement
       allocation = spec
       requestedAt = t0
-      inputHoldingCids = map (toInterfaceContractId @HoldingV2.Holding) inputs
+      inputHoldingCids = inputs
       extraArgs = emptyExtraArgs
       actors = [trader]
 
 -- | The trader funds an allocation directly through the standard factory.
 allocate
-  : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId TokenHolding]
+  : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId HoldingV2.Holding]
   -> Script (ContractId AllocationV2.Allocation)
 allocate app trader spec inputs = do
   result <- submit (actAs trader <> discloseMany [app.rulesDisclosure])
@@ -143,7 +145,7 @@ allocate app trader spec inputs = do
 -- request and funds the allocation in a single transaction — the batching the
 -- request package is designed for.
 requestAcceptAndAllocate
-  : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId TokenHolding]
+  : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId HoldingV2.Holding]
   -> Script (ContractId AllocationV2.Allocation)
 requestAcceptAndAllocate app@App{..} trader spec inputs = do
   reqCid <- submit (actAs exchange) do

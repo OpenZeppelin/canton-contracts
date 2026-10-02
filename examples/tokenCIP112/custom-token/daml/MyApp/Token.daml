@@ -1,0 +1,358 @@
+-- | A compliance-grade token that owns every template it deploys and reuses
+-- the OpenZeppelin CIP-0112 workflows unchanged. It depends on the workflows
+-- package only, never on the default templates, so it has its own upgrade
+-- lineage.
+--
+-- What it adds over the defaults, and the mechanism each addition uses:
+--
+-- - Roles. A pauser and a compliance officer hold delegated powers as the
+--   controllers of consumer choices. The admin stays the signatory of every
+--   contract and holds neither power.
+-- - An auditor who observes every holding, instruction, and allocation, and
+--   is an informee of every holdings-change event. A consumer field on each
+--   template, reached through the closure that builds the operations
+--   record, plus the `eventObservers` operation.
+-- - A compliance freeze on holdings. A template field plus two choices, and
+--   the `MyHolding_Spend` hook refuses a frozen holding, so every workflow
+--   path (transfer, allocation, burn, unlock) refuses it without the
+--   workflows knowing what a freeze is.
+-- - A pause switch on the registry. A template field plus two choices,
+--   checked before each factory delegates to the workflow.
+-- - A fee on every transfer, paid to the admin's treasury account. The
+--   factory composes two workflow calls: a one-step fee transfer, then the
+--   main transfer funded by the fee leg's change.
+-- - An executor allowlist on the registry, checked before delegating.
+--
+-- Nothing here changes a workflow body. The four templates are the unit a
+-- consumer forks: the pending contracts decide which holding is created when
+-- they complete, and a function cannot be stored in a payload, so a custom
+-- holding needs custom instruction and allocation templates too.
+module MyApp.Token where
+
+import DA.Foldable (forA_)
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.TokenCIP112WorkflowsV1.Holding
+import OpenZeppelin.TokenCIP112WorkflowsV1.Transfer
+import OpenZeppelin.TokenCIP112WorkflowsV1.Allocation
+import OpenZeppelin.TokenCIP112WorkflowsV1.Registry
+
+-- Roles
+--------
+
+-- | Parties with delegated powers, carried by every contract so the powers
+-- follow the token rather than the registry contract's lifetime.
+data AppRoles = AppRoles with
+    auditor : Party
+      -- ^ Observes every contract; holds no power.
+    complianceOfficer : Party
+      -- ^ Freezes and unfreezes holdings.
+  deriving (Eq, Show)
+
+-- Event-log host
+-----------------
+
+template MyEventLog with
+    admin : Party
+  where
+    signatory admin
+
+    interface instance TransferEventsV2.EventLog for MyEventLog where
+      view = TransferEventsV2.EventLogView with admin; meta = emptyMetadata
+      eventLog_holdingsChangeImpl = eventLog_holdingsChangeDefaultImpl admin
+
+-- The operations record
+------------------------
+
+-- | Built inside every choice body from the template's own fields. The
+-- closure over `roles` is how consumer fields reach `createHolding` without
+-- the workflows knowing about them. New holdings are never frozen.
+myOps : Party -> AppRoles -> HoldingOps
+myOps admin roles = HoldingOps with
+  createHolding = \v -> toInterfaceContractId <$> create MyHolding with holding = v; roles; frozen = False
+  consumeHolding = \cid -> do
+    -- Pin the template first: a foreign `Holding` never reaches the spend.
+    fetched <- fetchFromInterface @MyHolding cid
+    case fetched of
+      None -> fail "holding is not a MyHolding"
+      Some (tcid, _) -> exercise tcid MyHolding_Spend
+  withEventLog = \emit -> do
+    cid <- create MyEventLog with admin
+    emit (toInterfaceContractId cid)
+    archive cid
+  -- The auditor is an informee of every holdings-change event, so it can
+  -- follow the standard event stream, not only the contracts.
+  eventObservers = const [roles.auditor]
+
+-- Holding
+----------
+
+-- | A holding with a compliance freeze. The standard view is unchanged, so
+-- wallets see a frozen holding as an ordinary one; the freeze shows up when
+-- they try to spend it.
+template MyHolding with
+    holding : HoldingV2.HoldingView
+    roles : AppRoles
+    frozen : Bool
+  where
+    signatory holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+    observer lockHolders holding.lock, roles.auditor, roles.complianceOfficer
+    ensure isValidHoldingView holding
+
+    -- | The only way value leaves this holding. Controlled by the parties
+    -- whose authority a plain archive would need, so the authorization
+    -- model is unchanged; what changes is that the spend is a named choice
+    -- the auditor sees, with a consumer rule inside it.
+    choice MyHolding_Spend : HoldingV2.HoldingView
+      controller holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+      do
+        require "holding is frozen" (not frozen)
+        pure holding
+
+    choice MyHolding_Freeze : ContractId MyHolding
+      controller roles.complianceOfficer
+      do
+        require "holding is already frozen" (not frozen)
+        create this with frozen = True
+
+    choice MyHolding_Unfreeze : ContractId MyHolding
+      controller roles.complianceOfficer
+      do
+        require "holding is not frozen" frozen
+        create this with frozen = False
+
+    -- | Refused while frozen: the workflow recreates the holding through
+    -- `createHolding`, which would drop the freeze. Any consumer choice that
+    -- recreates a holding has to make the same check.
+    choice MyHolding_OwnerUnlock : ContractId HoldingV2.Holding
+      controller accountParties holding.instrumentId.admin holding.account
+      do
+        require "holding is frozen" (not frozen)
+        holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
+
+    interface instance HoldingV2.Holding for MyHolding where
+      view = holding
+
+-- Transfer instruction
+-----------------------
+
+template MyTransferInstruction with
+    state : TransferInstructionState
+    roles : AppRoles
+  where
+    signatory state.transfer.instrumentId.admin, senderParties state.transfer
+    observer receiverParties state.transfer, roles.auditor
+    ensure isValidTransferInstructionState state
+
+    interface instance TransferInstructionV2.TransferInstruction for MyTransferInstruction where
+      view = transferInstructionView state
+      transferInstruction_acceptExtraObservers _ = observer this
+      transferInstruction_rejectExtraObservers _ = observer this
+      transferInstruction_withdrawExtraObservers _ = observer this
+      transferInstruction_acceptImpl self arg = transferAcceptImpl (ops this) self state arg
+      transferInstruction_rejectImpl self arg = transferRejectImpl (ops this) self state arg
+      transferInstruction_withdrawImpl self arg = transferWithdrawImpl (ops this) self state arg
+
+    choice MyTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
+      controller state.transfer.instrumentId.admin
+      do transferExpireImpl (ops this) state
+
+    choice MyTransferInstruction_AdminGC : ()
+      controller state.transfer.instrumentId.admin
+      do transferGcImpl state
+
+-- Allocation
+-------------
+
+template MyAllocation with
+    state : AllocationState
+    roles : AppRoles
+  where
+    signatory state.allocation.admin, accountParties state.allocation.admin state.allocation.authorizer
+    observer state.settlement.executors, roles.auditor
+    ensure isValidAllocationState state
+
+    interface instance AllocationV2.Allocation for MyAllocation where
+      view = allocationView state
+      allocation_settleExtraObservers _ = observer this
+      allocation_cancelExtraObservers _ = observer this
+      allocation_withdrawExtraObservers _ = observer this
+      allocation_settleImpl self arg =
+        allocationSettleImpl (ops this) (\s -> toInterfaceContractId <$> create this with state = s) self state arg
+      allocation_withdrawImpl self arg = allocationWithdrawImpl (ops this) self state arg
+      allocation_cancelImpl self arg = allocationCancelImpl (ops this) self state arg
+
+    choice MyAllocation_AdminGC : ()
+      controller state.allocation.admin
+      do allocationGcImpl state
+
+-- Registry
+-----------
+
+-- | The registry rules contract: the three standard factories behind a pause
+-- switch, a fee on transfers, an executor allowlist, and supply operations.
+-- Pausing replaces the contract, so wallets need the new disclosure after
+-- a pause or unpause, as with any change to the rules contract.
+template MyRules with
+    config : RegistryConfig
+    roles : AppRoles
+    pauser : Party
+      -- ^ Flips the pause switch. Holds no other power.
+    paused : Bool
+    transferFeeBps : Int
+      -- ^ Basis points of every transfer amount paid to the treasury when
+      -- the transfer is instructed. Zero disables the fee leg.
+    allowedExecutors : [Party]
+      -- ^ The only settlement executors this registry accepts.
+  where
+    signatory config.admin
+    observer pauser, roles.auditor
+    ensure isValidRegistryConfig config
+      && transferFeeBps >= 0 && transferFeeBps <= 10000
+
+    choice MyRules_Pause : ContractId MyRules
+      controller pauser
+      do
+        require "registry is already paused" (not paused)
+        create this with paused = True
+
+    choice MyRules_Unpause : ContractId MyRules
+      controller pauser
+      do
+        require "registry is not paused" paused
+        create this with paused = False
+
+    interface instance AllocationV2.SettlementFactory for MyRules where
+      view = AllocationV2.SettlementFactoryView with admin = config.admin; meta = emptyMetadata
+      settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
+      settlementFactory_settleBatchExtraObservers _ = []
+      settlementFactory_settleBatchImpl self arg = do
+        whenNotPaused this
+        requireAllowedExecutors this arg.settlement.executors
+        settleBatchImpl (pinAllocationTo @MyAllocation) config.admin self arg
+
+    interface instance AllocationInstructionV2.AllocationFactory for MyRules where
+      view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
+      allocationFactory_publicFetchImpl = publicFetchDefaultImpl this
+      allocationFactory_allocateExtraObservers = allocationFactoryV2_privateAsset_allocateExtraObserversDefaultImpl
+      allocationFactory_allocateImpl _self arg = do
+        whenNotPaused this
+        requireAllowedExecutors this arg.settlement.executors
+        allocationFactoryImpl config (ops this) (createAllocation this) arg
+
+    interface instance TransferInstructionV2.TransferFactory for MyRules where
+      view = TransferInstructionV2.TransferFactoryView with admin = config.admin; meta = emptyMetadata
+      transferFactory_publicFetchImpl = publicFetchDefaultImpl this
+      transferFactory_transferExtraObservers = transferFactoryV2_privateAsset_transferExtraObserversDefaultImpl
+      transferFactory_transferImpl _self arg = do
+        whenNotPaused this
+        transferWithFee this arg
+
+    nonconsuming choice MyRules_Mint : ContractId HoldingV2.Holding
+      with
+        account : HoldingV2.Account
+        instrumentId : Text
+        amount : Decimal
+        reason : Text
+      controller config.admin :: accountParties config.admin account
+      do
+        whenNotPaused this
+        mintImpl (ops this) config.admin account instrumentId amount reason
+
+    -- | Not behind the pause switch: holders can always redeem. Which
+    -- operations a pause covers is the consumer's call.
+    nonconsuming choice MyRules_Burn : ()
+      with
+        holdingCid : ContractId HoldingV2.Holding
+        account : HoldingV2.Account
+        reason : Text
+      controller config.admin :: accountParties config.admin account
+      do burnImpl (ops this) config.admin holdingCid account reason
+
+    nonconsuming choice MyRules_ExpireAllocations : ()
+      with
+        cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
+      controller config.admin
+      do expireAllocationsImpl (pinAllocationTo @MyAllocation) config.admin cancelArgs
+
+    nonconsuming choice MyRules_ExpireTransferInstructions : ()
+      with
+        instructionCids : [ContractId MyTransferInstruction]
+      controller config.admin
+      do
+        forA_ instructionCids $ \cid -> do
+          instr <- fetch cid
+          requireMatchExpected ("transfer.instrumentId.admin", instr.state.transfer.instrumentId.admin) config.admin
+          _ <- exercise cid MyTransferInstruction_Expire
+          pure ()
+
+-- Registry policy
+------------------
+
+whenNotPaused : MyRules -> Update ()
+whenNotPaused rules = require "registry is paused" (not rules.paused)
+
+requireAllowedExecutors : MyRules -> [Party] -> Update ()
+requireAllowedExecutors rules executors =
+  require "a settlement executor is not approved by this registry"
+    (all (`elem` rules.allowedExecutors) executors)
+
+-- | The fee account: a regular account owned by the admin. A one-step
+-- transfer into it needs the admin's authority on the receiving side, which
+-- the rules contract's signatory supplies.
+treasury : MyRules -> HoldingV2.Account
+treasury rules = basicAccount rules.config.admin
+
+feeFor : MyRules -> Decimal -> Decimal
+feeFor rules amount = amount * intToDecimal rules.transferFeeBps / 10000.0
+
+-- | The transfer factory as two workflow calls. The fee leg is an ordinary
+-- one-step transfer of the fee to the treasury funded by the sender's
+-- inputs; it consumes them and returns the sender's change. The main
+-- transfer then runs on that change, exactly as the default factory would
+-- on the original inputs. Both legs emit their standard events, so history
+-- parsers see the fee as a transfer to the treasury. Inputs that cover the
+-- amount but not the fee fail on the main leg's funding check.
+transferWithFee
+  : MyRules -> TransferInstructionV2.TransferFactory_Transfer
+  -> Update TransferInstructionV2.TransferInstructionResult
+transferWithFee rules arg = do
+  let transfer = arg.transfer
+      fee = feeFor rules transfer.amount
+  inputs <-
+    if fee > 0.0
+      then do
+        feeResult <- executeTransfer rules.config (ops rules) (createInstruction rules) True
+          (transfer with receiver = treasury rules; amount = fee)
+        pure feeResult.senderChangeCids
+      else pure transfer.inputHoldingCids
+  transferFactoryImpl rules.config (ops rules) (createInstruction rules)
+    (arg with transfer = (transfer with inputHoldingCids = inputs))
+
+createInstruction : MyRules -> CreateTransferInstruction
+createInstruction rules s =
+  toInterfaceContractId <$> create MyTransferInstruction with state = s; roles = rules.roles
+
+createAllocation : MyRules -> CreateAllocation
+createAllocation rules s =
+  toInterfaceContractId <$> create MyAllocation with state = s; roles = rules.roles
+
+-- | One class so every template builds its ops the same way.
+class HasOps t where
+  ops : t -> HoldingOps
+
+instance HasOps MyTransferInstruction where
+  ops this = myOps this.state.transfer.instrumentId.admin this.roles
+
+instance HasOps MyAllocation where
+  ops this = myOps this.state.allocation.admin this.roles
+
+instance HasOps MyRules where
+  ops this = myOps this.config.admin this.roles

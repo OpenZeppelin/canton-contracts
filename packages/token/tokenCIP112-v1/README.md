@@ -2,12 +2,15 @@
 
 A CIP-0112-compliant token implementation built against the Token Standard V2
 (TSv2) interfaces. It provides holdings, transfer instructions, allocations,
-registry rules, and event logging.
+registry rules, and event logging as ready-to-use templates. The choice
+bodies live in `openzeppelin-tokenCIP112-workflows-v1`, which these templates
+delegate to and which a consumer who owns their own templates reuses directly.
 
 | Field | Value |
 |---|---|
 | Package | `openzeppelin-tokenCIP112-v1` |
-| Public module | `OpenZeppelin.TokenCIP112V1` |
+| Public modules | `OpenZeppelin.TokenCIP112V1.Holding`, `.Transfer`, `.Allocation`, `.Registry`, `.Base` |
+| Depends on | `openzeppelin-tokenCIP112-workflows-v1` |
 | Version | `0.1.0` |
 | Status | Pre-release; unaudited |
 | Standard | [CIP-0112](https://github.com/global-synchronizer-foundation/cips) / Token Standard V2 |
@@ -24,19 +27,28 @@ registry rules, and event logging.
 ## What it provides
 
 - `TokenHolding` (`Holding`): an asset holding maintained jointly by the
-  instrument admin and the account parties, with optional locks.
+  instrument admin and the account parties, with optional locks and an
+  owner-unlock choice.
 - `TokenTransferInstruction` (`Transfer`): the TSv2 transfer-instruction
-  lifecycle, including accept, reject, withdraw, and expiry paths.
-- `TokenAllocation` (`Allocation`): ready-to-settle allocations backed by
-  locked holdings, with exact-cover batch settlement and CIP-0112 iterated
-  settlement.
-- `TokenRules` (`Registry`): the registry rules contract implementing the TSv2
-  transfer, allocation, and settlement factories.
+  lifecycle over a `TransferInstructionState` payload, including accept,
+  reject, withdraw, and expiry paths.
+- `TokenAllocation` (`Allocation`): ready-to-settle allocations over an
+  `AllocationState` payload, backed by locked holdings, with exact-cover batch
+  settlement and CIP-0112 iterated settlement.
+- `TokenRules` (`Registry`): the registry rules contract over a
+  `RegistryConfig` payload, implementing the TSv2 transfer, allocation, and
+  settlement factories plus mint, burn, and expiry.
 - `TokenEventLog` (`Base`): the holdings-change event-log host.
+- `defaultHoldingOps` (`Holding`): the operations record these templates run
+  the workflows with. A consumer that keeps `TokenHolding` but owns another
+  template starts from it.
 
 Each public module implements the matching upstream `Splice.Api.Token.*V2`
-interfaces. The package defines no Daml interfaces or exceptions of its own, so
-it ships as a single implementation package.
+interfaces. Every choice body is a function of
+`openzeppelin-tokenCIP112-workflows-v1` applied to these templates; the
+templates add signatories, observers, `ensure` clauses, and the constructors
+and policies the workflows are parameterised over. The package defines no
+Daml interfaces or exceptions of its own.
 
 ## Authority and lifecycle
 
@@ -79,8 +91,10 @@ The package builds with the workspace SDK declared in
 [`multi-package.yaml`](../../../multi-package.yaml) and targets Daml-LF 2.1.
 It is the first release of the `openzeppelin-tokenCIP112-v1` SCU lineage and
 depends on the official Splice Token Standard V2 packages (see the note
-above). Later versions of the lineage that keep those dependencies can upgrade
-its templates in place.
+above) and on `openzeppelin-tokenCIP112-workflows-v1`, whose records its
+templates store. Later versions of the lineage that keep those dependencies
+can upgrade its templates in place; the workflows package may be bumped to a
+compatible later version independently.
 
 ## Build
 
@@ -142,9 +156,15 @@ forward.
 
 ```yaml
 data-dependencies:
+  - ../canton-contracts/packages/token/tokenCIP112-workflows-v1/.daml/dist/openzeppelin-tokenCIP112-workflows-v1-0.1.0.dar
   - ../canton-contracts/packages/token/tokenCIP112-v1/.daml/dist/openzeppelin-tokenCIP112-v1-0.1.0.dar
 ```
 
 ```daml
-import OpenZeppelin.TokenCIP112V1.Holding
+import OpenZeppelin.TokenCIP112V1.Registry
 ```
+
+`examples/tokenCIP112/trading` launches a registry from this package and
+drives it through the standard interfaces. To own the templates instead and
+reuse only the workflows, see the workflows package `README.md` and
+`examples/tokenCIP112/custom-token`.

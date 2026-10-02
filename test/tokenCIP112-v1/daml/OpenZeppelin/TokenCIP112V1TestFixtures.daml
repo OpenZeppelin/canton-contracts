@@ -19,6 +19,7 @@ import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils (basicAccount, nonIteratedAllocation)
 
+import OpenZeppelin.TokenCIP112WorkflowsV1.Holding (RegistryConfig(..))
 import OpenZeppelin.TokenCIP112V1.Holding
 import OpenZeppelin.TokenCIP112V1.Registry
 
@@ -99,8 +100,7 @@ completedCid result = case result.output of
   AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
   other -> abort ("expected completed allocation, got: " <> show other)
 
--- | Settle a batch through the factory, which is the only path that mints the
--- per-allocation authorization proof.
+-- | Settle a batch through the factory.
 settleBatch
   : Scenario -> [AllocationV2.TransferLeg] -> [ContractId AllocationV2.Allocation] -> ExtraArgs
   -> Script AllocationV2.SettlementFactory_SettleBatchResult
@@ -132,9 +132,10 @@ setupPrefixed prefix = do
   setTime t1
   rulesCid <- submit admin do
     createCmd TokenRules with
-      admin
-      maxTTL = days 90
-      lockGrace = hours 1
+      config = RegistryConfig with
+        admin
+        maxTTL = days 90
+        lockGrace = hours 1
   Some rulesDisclosure <- queryDisclosure @TokenRules admin rulesCid
   let settlement = AllocationV2.SettlementInfo with
         executors = [app]

@@ -1,7 +1,8 @@
 # Integration guide
 
-How to deploy `openzeppelin-tokenCIP112-v1` across participants and drive it
-from wallets and settlement apps. Adoption basics — build, dependency, module
+How to deploy `openzeppelin-tokenCIP112-v1`, together with the
+`openzeppelin-tokenCIP112-workflows-v1` package it depends on, across
+participants and drive it from wallets and settlement apps. Adoption basics — build, dependency, module
 imports — are in [`README.md`](README.md).
 
 ## Topology
@@ -11,7 +12,7 @@ Three roles interact with the package:
 - The **registry operator** hosts the `admin` party. Its participant uploads
   the Token Standard V2 DARs from [`dars/vendor/`](../../../dars/vendor/)
   first (a participant that already runs Splice has these exact packages),
-  then the package DAR. The
+  then the workflows DAR and the package DAR. The
   operator creates one `TokenRules` contract per registry configuration and
   serves it to consumers by explicit disclosure.
 - **Wallet users** hold accounts. Their participants upload the same DARs.

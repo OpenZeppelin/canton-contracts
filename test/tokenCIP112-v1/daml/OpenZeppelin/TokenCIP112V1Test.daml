@@ -1,7 +1,6 @@
--- | Tests for the CIP-0112-compliant token package
--- (packages/token/tokenCIP112-v1), driven through the standard interfaces.
--- Scenario setup and interface-driving helpers live in
--- `OpenZeppelin.TokenCIP112V1TestFixtures`.
+-- | Tests for the CIP-0112 token package (packages/token/tokenCIP112-v1),
+-- driven through the standard interfaces. Scenario setup and
+-- interface-driving helpers live in `OpenZeppelin.TokenCIP112V1TestFixtures`.
 module OpenZeppelin.TokenCIP112V1Test where
 
 import DA.Assert ((===), (=/=))
@@ -23,6 +22,7 @@ import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, senderSide, receiverSide, nonIteratedAllocation)
 
+import OpenZeppelin.TokenCIP112WorkflowsV1.Holding (RegistryConfig(..))
 import OpenZeppelin.TokenCIP112V1.Allocation
 import OpenZeppelin.TokenCIP112V1.Holding
 import OpenZeppelin.TokenCIP112V1.Registry
@@ -493,13 +493,9 @@ testTransferAdminExpiry = do
 -- Adversarial and boundary scenarios
 ------------------------------------
 
--- | `Allocation_Settle` outside the batch factory currently succeeds for
--- admin plus executors, bypassing the factory's exact-cover check: settling a
--- lone receiver-side allocation credits the authorizer with no matching debit
--- anywhere. This documents the behavior since the batch-settlement
--- authorization guard was removed; see the package `ideas.md` on
--- reintroducing it. Until then, exact cover holds only for settlements driven
--- through `SettlementFactory_SettleBatch`.
+-- | `Allocation_Settle` outside the batch factory succeeds for admin plus
+-- executors, bypassing the factory's exact-cover check. Unchanged from the
+-- single-package version: this documents the admin trust assumption.
 testDirectSettleAllowed : Script ()
 testDirectSettleAllowed = do
   s@Scenario{..} <- setup
@@ -625,7 +621,7 @@ testOwnerUnlockEmitsHoldingsChange = do
   ev.admin === admin
   ev.account === basicAccount alice
   ev.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding lockedCid]
-  ev.outputHoldingCids === [toInterfaceContractId @HoldingV2.Holding newCid]
+  ev.outputHoldingCids === [newCid]
   ev.transferLegSides === []
   assertMsg "the account parties must observe the event" (alice `elem` ev.observers)
   assertNoLocks alice
@@ -759,9 +755,10 @@ testHousekeepingArchives = do
   setTime t1
   rulesCid <- submit admin do
     createCmd TokenRules with
-      admin
-      maxTTL = days 90
-      lockGrace = hours 1
+      config = RegistryConfig with
+        admin
+        maxTTL = days 90
+        lockGrace = hours 1
   submit admin do archiveCmd rulesCid
 
 -- | Registry misconfiguration is refused: a non-positive maxTTL or lockGrace
@@ -770,12 +767,12 @@ testRulesConfigValidated : Script ()
 testRulesConfigValidated = do
   admin <- allocateParty "admin"
   setTime t1
-  let base = TokenRules with
+  let base = RegistryConfig with
         admin
         maxTTL = days 90
         lockGrace = hours 1
-  submitMustFail admin do createCmd base with maxTTL = minutes 0
-  submitMustFail admin do createCmd base with lockGrace = minutes 0
+  submitMustFail admin do createCmd TokenRules with config = base with maxTTL = minutes 0
+  submitMustFail admin do createCmd TokenRules with config = base with lockGrace = minutes 0
 
 -- | Issuance has an evented path, so supply changes are visible to standard
 -- history parsers instead of appearing as bare creates. Each supply change is
@@ -795,7 +792,7 @@ testMintAndBurnEmitEvents = do
   mintEvent <- expectOneHoldingsChange mintTree
   mintEvent.account === basicAccount alice
   mintEvent.inputHoldingCids === []
-  mintEvent.outputHoldingCids === [toInterfaceContractId @HoldingV2.Holding holdingCid]
+  mintEvent.outputHoldingCids === [holdingCid]
   map (.side) mintEvent.transferLegSides === [TransferEventsV2.ReceiverSide]
   map (.otherside) mintEvent.transferLegSides === [mintAccount]
   map (.amount) mintEvent.transferLegSides === [25.0]
@@ -821,7 +818,7 @@ testMintAndBurnEmitEvents = do
   aliceFinal === []
   burnEvent <- expectOneHoldingsChange burnTree
   burnEvent.account === basicAccount alice
-  burnEvent.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding holdingCid]
+  burnEvent.inputHoldingCids === [holdingCid]
   burnEvent.outputHoldingCids === []
   map (.side) burnEvent.transferLegSides === [TransferEventsV2.SenderSide]
   map (.otherside) burnEvent.transferLegSides === [burnAccount]
@@ -833,6 +830,6 @@ testMintAndBurnEmitEvents = do
   forA_ lockedCids $ \lockedCid ->
     submitMustFail (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
       exerciseCmd rulesCid TokenRules_Burn with
-        holdingCid = lockedCid
+        holdingCid = toInterfaceContractId @HoldingV2.Holding lockedCid
         account = basicAccount alice
         reason = "burn locked"

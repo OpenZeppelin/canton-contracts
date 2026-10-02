@@ -9,7 +9,7 @@ wallet or settlement app drives any compliant registry.
 |---|---|
 | Package | `tokenCIP112-trading-example` |
 | Modules | `OpenZeppelin.Examples.TokenCIP112.Trading` |
-| Consumes | `openzeppelin-tokenCIP112-v1` `0.1.0`, `openzeppelin-allocation-request-v1` `0.1.0` |
+| Consumes | `openzeppelin-tokenCIP112-v1` `0.1.0` (with `openzeppelin-tokenCIP112-workflows-v1` `0.1.0`), `openzeppelin-allocation-request-v1` `0.1.0` |
 
 ## What it shows
 

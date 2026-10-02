@@ -10,7 +10,11 @@ packages:
   - experiments/test/ownable-v1
   - experiments/test/pausable-v1
   - packages/token/allocation-request-v1
+  - packages/token/tokenCIP112-workflows-v1
   - packages/token/tokenCIP112-v1
   - test/allocation-request-v1
+  - test/tokenCIP112-workflows-v1
   - test/tokenCIP112-v1
   - examples/tokenCIP112/trading
+  - examples/tokenCIP112/custom-token
+  - examples/tokenCIP112/custom-token-test

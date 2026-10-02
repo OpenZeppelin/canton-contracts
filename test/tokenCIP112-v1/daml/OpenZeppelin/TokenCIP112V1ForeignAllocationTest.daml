@@ -16,10 +16,11 @@
 -- `TokenHolding`.
 --
 -- The three attack scripts build each attack in full and assert that the
--- registry refuses it. Without `requireTokenAllocation` in `Registry.daml`
--- every one of them goes through; the doc comments record the balances that
--- resulted. The final script pins the other side of the guard: genuine
--- `TokenAllocation`s pass through both guarded choices unchanged.
+-- registry refuses it. The guard is the `PinAllocation` policy `TokenRules`
+-- passes to the workflows package (`pinAllocationTo @TokenAllocation`);
+-- without it every attack goes through, and the doc comments record the
+-- balances that resulted. The final script pins the other side of the guard:
+-- genuine `TokenAllocation`s pass through both guarded choices unchanged.
 module OpenZeppelin.TokenCIP112V1ForeignAllocationTest where
 
 import DA.Action (unless)
@@ -140,9 +141,9 @@ expireCmd Scenario{..} cids =
       | cid <- cids ]
     observers = []
 
--- | The message `requireTokenAllocation` in `Registry.daml` fails with.
+-- | The message `pinAllocationTo` fails with.
 notTokenAllocation : Text
-notTokenAllocation = "allocation is not a TokenAllocation of this package"
+notTokenAllocation = "allocation is not an accepted implementation"
 
 -- | Like `submitMustFail`, but also requires the rejection to carry the given
 -- text, so the test cannot pass because of some unrelated failure.
@@ -262,8 +263,8 @@ testForeignCancelViaAdminExpiryMints = do
 -- Guard acceptance
 -------------------
 
--- | `requireTokenAllocation` accepts this package's allocations and rejects
--- only the foreign contract, in both guarded choices. A forged contract with
+-- | `pinAllocationTo @TokenAllocation` accepts this package's allocations
+-- and rejects only the foreign contract, in both guarded choices. A forged contract with
 -- an empty view claims no leg sides, so the default's exact-cover check would
 -- not object to it; the guard is what refuses it. The refusal is atomic and
 -- leaves the genuine allocations untouched, so the same call without the

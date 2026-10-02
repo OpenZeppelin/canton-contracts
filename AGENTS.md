@@ -28,7 +28,10 @@ workspace files exist.
 
 - One independently released unit equals one package and one DAR.
 - Package names use `openzeppelin-<component>-vN`; module names use
-  `OpenZeppelin.<Component>VN`.
+  `OpenZeppelin.<Component>VN`. A component's reusable choice bodies live in
+  `openzeppelin-<component>-workflows-vN` under
+  `OpenZeppelin.<Component>WorkflowsVN`; that package defines no templates or
+  interfaces, and the component's templates package may depend on it.
 - A component that defines Daml interfaces or exceptions uses a frozen
   `-api-vN` package containing no templates. Template-only components do not get
   empty API packages.
@@ -74,16 +77,22 @@ DAML_PACKAGE=experiments/test/access-control-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
 DAML_PACKAGE=experiments/test/pausable-v1 dpm damlc lint
 DAML_PACKAGE=packages/token/allocation-request-v1 dpm damlc lint
+DAML_PACKAGE=packages/token/tokenCIP112-workflows-v1 dpm damlc lint
 DAML_PACKAGE=packages/token/tokenCIP112-v1 dpm damlc lint
 DAML_PACKAGE=test/allocation-request-v1 dpm damlc lint
+DAML_PACKAGE=test/tokenCIP112-workflows-v1 dpm damlc lint
 DAML_PACKAGE=test/tokenCIP112-v1 dpm damlc lint
 DAML_PACKAGE=examples/tokenCIP112/trading dpm damlc lint
+DAML_PACKAGE=examples/tokenCIP112/custom-token dpm damlc lint
+DAML_PACKAGE=examples/tokenCIP112/custom-token-test dpm damlc lint
 DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=experiments/test/pausable-v1 dpm test --all --show-coverage
 DAML_PACKAGE=test/allocation-request-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/tokenCIP112-workflows-v1 dpm test --all --show-coverage
 DAML_PACKAGE=test/tokenCIP112-v1 dpm test --all --show-coverage
 DAML_PACKAGE=examples/tokenCIP112/trading dpm test
+DAML_PACKAGE=examples/tokenCIP112/custom-token-test dpm test
 scripts/check-sandbox.sh
 ```
 

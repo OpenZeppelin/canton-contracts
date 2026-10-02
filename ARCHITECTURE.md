@@ -45,18 +45,43 @@ ships one implementation package; empty API packages add ceremony without an
 upgrade or interoperability benefit.
 
 The components currently in the repository define templates and functions but
-no Daml interfaces, so each has one production package. Token CIP-0112 is the
-model: its templates implement the vendored upstream Token Standard V2
-interfaces through `interface instance` blocks, which an implementation
-package may do freely; only defining new interfaces or exceptions forces the
-frozen API-package split.
+no Daml interfaces, so none has an API package. Token CIP-0112 is the model:
+its templates implement the vendored upstream Token Standard V2 interfaces
+through `interface instance` blocks, which an implementation package may do
+freely; only defining new interfaces or exceptions forces the frozen
+API-package split.
+
+## Workflows and templates
+
+A component whose choice bodies consumers want to reuse with templates of
+their own ships two production packages:
+
+```text
+<component>-workflows-v1   Choice bodies as functions, parameterised over the
+                           templates through constructor and policy
+                           operations; the serializable records its templates
+                           store; no templates, no interfaces
+<component>-v1             Ready-to-use templates delegating to the workflows
+```
+
+Nothing executable is stored on the ledger: a pending contract holds records
+only and rebuilds its operations when its choice runs. A consumer who owns
+their templates depends on the workflows package alone and keeps their own
+upgrade lineage; they may move to a later compatible workflows version, or
+to a fork, because no contract references its functions. Storing the
+workflows package's records binds a template to that package's lineage, so
+those records only ever gain `Optional` fields; a consumer who stores the
+fields separately and builds the record per call avoids even that.
 
 ## Dependency policy
 
-- Implementation packages do not depend on other implementation packages.
+- Implementation packages do not depend on other implementation packages,
+  except a component's templates package on its own workflows package.
   Compose through stable interfaces or in a consuming application instead.
 - Shared pure helpers belong in a utility package that defines no templates,
-  interfaces, exceptions, or serializable public state.
+  interfaces, exceptions, or serializable public state. A workflows package
+  is the one utility package allowed to define serializable records, the
+  payloads its templates store.
 - Adding a production dependency requires explicit architecture review because
   an SCU lineage cannot later drop or downgrade that dependency.
 - Third-party DARs are pinned by source, version, package IDs, SHA-256, and

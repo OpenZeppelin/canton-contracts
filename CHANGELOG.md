@@ -19,26 +19,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   implements the Token Standard V2 `AllocationRequest` interface with accept,
   reject, and withdraw, independent of any token registry.
 
+### `openzeppelin-tokenCIP112-workflows-v1`
+
+#### Added
+
+- Added the CIP-0112 workflows package `openzeppelin-tokenCIP112-workflows-v1`
+  (public module namespace `OpenZeppelin.TokenCIP112WorkflowsV1`): the
+  transfer, allocation, settlement, mint, burn, and expiry choice bodies as
+  functions parameterised over the caller's templates through a `HoldingOps`
+  record and constructor and pinning operations, plus the `RegistryConfig`,
+  `TransferInstructionState`, and `AllocationState` records a template
+  stores. Built against the official Splice Token Standard V2 DARs (release
+  `0.8.3`) vendored under `dars/vendor/`.
+
 ### `openzeppelin-tokenCIP112-v1`
 
 #### Added
 
-- Added the CIP-0112-compliant token package
-  `openzeppelin-tokenCIP112-v1` with public module namespace
-  `OpenZeppelin.TokenCIP112V1`. It implements the Token Standard V2 interfaces
-  and builds against the 13 official Token Standard V2 DARs released by Splice
-  (tag `0.8.3`), vendored under `dars/vendor/` with provenance recorded in
-  `dars/manifest.yaml`.
-- `TokenHolding_OwnerUnlock` emits an `EventLog_HoldingsChange` for the
-  archived holding and its unlocked replacement, so owner recovery of an
-  expired lock is visible to Token Standard history parsers.
-- Added CIP-0112 iterated settlement: allocations created with
-  `nextIterationFunding` accept executor-supplied extra transfer legs per
-  settlement iteration, bounded by the locked reserve, and can roll proceeds
-  into a successor allocation returned as `nextIterationAllocationCid`.
-- `AllocationFactory_Allocate` rejects allocations whose authorizer is not a
-  regular (owned) account; the special mint and burn accounts cannot author
-  allocations.
+- Added the CIP-0112 token package `openzeppelin-tokenCIP112-v1` (public
+  module namespace `OpenZeppelin.TokenCIP112V1`): ready-to-use templates over
+  the workflows package with holdings with expiring locks and owner recovery,
+  one-step and two-step transfers, allocations with exact-cover batch
+  settlement and iterated settlement, and registry rules with evented mint
+  and burn.
 
 ### `openzeppelin-access-control-v1`
 

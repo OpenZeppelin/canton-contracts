@@ -1,0 +1,274 @@
+-- | Unit tests for the workflows package on its own: the pure predicates and
+-- bounds, the event-observer merge, and the two pinning builders, each run
+-- against a minimal local template it accepts and a foreign template it must
+-- refuse. The full workflows run under `test/tokenCIP112-v1` through the
+-- default templates and under `examples/tokenCIP112/custom-token-test`
+-- through a consumer's templates.
+module OpenZeppelin.TokenCIP112WorkflowsV1Test where
+
+import DA.Action (unless)
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.List (dedupSort)
+import DA.Map qualified as Map
+import DA.Text (isInfixOf)
+import DA.TextMap qualified as TextMap
+import DA.Time (addRelTime, days, hours, minutes, time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (accountParties, basicAccount, maxTime)
+
+import OpenZeppelin.TokenCIP112WorkflowsV1.Holding
+import OpenZeppelin.TokenCIP112WorkflowsV1.Transfer
+import OpenZeppelin.TokenCIP112WorkflowsV1.Allocation
+
+t0, t1, t2 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+t1 = time (date 2026 Jan 1) 0 10 0
+t2 = time (date 2026 Jan 1) 0 20 0
+
+-- Local templates
+------------------
+
+-- | The smallest holding the builders accept.
+template UnitHolding with
+    holding : HoldingV2.HoldingView
+  where
+    signatory holding.instrumentId.admin, basicOwner holding
+    ensure isValidHoldingView holding
+
+    interface instance HoldingV2.Holding for UnitHolding where
+      view = holding
+
+-- | A holding signed by someone else entirely, claiming any view it likes.
+template ForeignHolding with
+    attacker : Party
+    claimedView : HoldingV2.HoldingView
+  where
+    signatory attacker
+    interface instance HoldingV2.Holding for ForeignHolding where
+      view = claimedView
+
+-- | The smallest allocation `pinAllocationTo` accepts; its choices are never
+-- exercised here.
+template UnitAllocation with
+    claimedView : AllocationV2.AllocationView
+    admin : Party
+  where
+    signatory admin
+    interface instance AllocationV2.Allocation for UnitAllocation where
+      view = claimedView
+      allocation_settleExtraObservers _ = []
+      allocation_cancelExtraObservers _ = []
+      allocation_withdrawExtraObservers _ = []
+      allocation_settleImpl _ _ = fail "not exercised in this test"
+      allocation_withdrawImpl _ _ = fail "not exercised in this test"
+      allocation_cancelImpl _ _ = fail "not exercised in this test"
+
+template ForeignAllocation with
+    claimedView : AllocationV2.AllocationView
+    attacker : Party
+  where
+    signatory attacker
+    interface instance AllocationV2.Allocation for ForeignAllocation where
+      view = claimedView
+      allocation_settleExtraObservers _ = []
+      allocation_cancelExtraObservers _ = []
+      allocation_withdrawExtraObservers _ = []
+      allocation_settleImpl _ _ = fail "not exercised in this test"
+      allocation_withdrawImpl _ _ = fail "not exercised in this test"
+      allocation_cancelImpl _ _ = fail "not exercised in this test"
+
+-- | Runs a builder inside a choice, since builders are `Update` functions.
+-- Signed by the admin and the owner so the consumption authority matches.
+-- The choices take `actors` like the standard ones, so a caller's own
+-- authority is in scope for the fetch, as an attacker's is when they act on
+-- a factory.
+template Harness with
+    admin : Party
+    owner : Party
+  where
+    signatory admin, owner
+
+    nonconsuming choice Harness_ConsumeByArchive : HoldingV2.HoldingView
+      with cid : ContractId HoldingV2.Holding; actors : [Party]
+      controller actors
+      do consumeByArchive @UnitHolding cid
+
+    nonconsuming choice Harness_PinAllocation : AllocationV2.AllocationView
+      with cid : ContractId AllocationV2.Allocation; actors : [Party]
+      controller actors
+      do pinAllocationTo @UnitAllocation cid
+
+basicOwner : HoldingV2.HoldingView -> Party
+basicOwner v = case v.account.owner of
+  Some p -> p
+  None -> error "regular accounts only"
+
+mustFailWith : Text -> SubmitOptions -> Commands a -> Script ()
+mustFailWith expected options cmds = do
+  result <- trySubmit options cmds
+  case result of
+    Right _ -> abort "submission succeeded but was expected to fail"
+    Left err -> unless (expected `isInfixOf` show err) $
+      abort ("submission failed for an unexpected reason: " <> show err)
+
+data Fixture = Fixture with
+    admin : Party
+    alice : Party
+    attacker : Party
+    harnessCid : ContractId Harness
+
+setup : Script Fixture
+setup = do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  attacker <- allocateParty "attacker"
+  setTime t1
+  harnessCid <- submit (actAs [admin, alice]) do createCmd Harness with admin; owner = alice
+  pure Fixture with ..
+
+-- Builders
+-----------
+
+-- | `consumeByArchive` archives the pinned template and returns its view.
+testConsumeByArchive : Script ()
+testConsumeByArchive = do
+  Fixture{..} <- setup
+  cid <- submit (actAs [admin, alice]) do
+    createCmd UnitHolding with holding = mkHoldingView admin (basicAccount alice) "TOK" 5.0 None
+  v <- submit (actAs admin) do
+    exerciseCmd harnessCid Harness_ConsumeByArchive with cid = toInterfaceContractId @HoldingV2.Holding cid; actors = [admin]
+  v.amount === 5.0
+  queryContractId alice cid >>= (=== None)
+
+-- | The builder refuses a foreign template before reading its view, even
+-- when the attacker's authority is present and the view claims this admin.
+testBuilderRefusesForeignHolding : Script ()
+testBuilderRefusesForeignHolding = do
+  Fixture{..} <- setup
+  foreignCid <- submit attacker do
+    createCmd ForeignHolding with
+      attacker
+      claimedView = mkHoldingView admin (basicAccount attacker) "TOK" 1000000.0 None
+  mustFailWith "holding is not an accepted implementation" (actAs [admin, attacker]) $
+    exerciseCmd harnessCid Harness_ConsumeByArchive with
+      cid = toInterfaceContractId @HoldingV2.Holding foreignCid
+      actors = [admin, attacker]
+  -- The forgery is untouched: the refusal happened before any archive.
+  Some _ <- queryContractId attacker foreignCid
+  pure ()
+
+testPinAllocation : Script ()
+testPinAllocation = do
+  Fixture{..} <- setup
+  let v = AllocationV2.AllocationView with
+        originalAllocationCid = None
+        settlement = AllocationV2.SettlementInfo with executors = [admin]; id = "s"; cid = None; meta = emptyMetadata
+        allocation = AllocationV2.AllocationSpecification with
+          admin
+          authorizer = basicAccount alice
+          transferLegSides = []
+          settlementDeadline = Some t2
+          nextIterationFunding = Some TextMap.empty
+          committed = False
+          meta = emptyMetadata
+        holdingCids = []
+        createdAt = t1
+        numIterations = 0
+        expiresAt = Some t2
+        availableActions = Map.empty
+        meta = emptyMetadata
+  genuine <- submit admin do createCmd UnitAllocation with claimedView = v; admin
+  pinned <- submit admin do
+    exerciseCmd harnessCid Harness_PinAllocation with
+      cid = toInterfaceContractId @AllocationV2.Allocation genuine
+      actors = [admin]
+  pinned.allocation.authorizer === basicAccount alice
+  foreign <- submit attacker do createCmd ForeignAllocation with claimedView = v; attacker
+  mustFailWith "allocation is not an accepted implementation" (actAs [admin, attacker]) $
+    exerciseCmd harnessCid Harness_PinAllocation with
+      cid = toInterfaceContractId @AllocationV2.Allocation foreign
+      actors = [admin, attacker]
+
+-- Predicates and bounds
+------------------------
+
+testHoldingViewPredicate : Script ()
+testHoldingViewPredicate = do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  let ok = mkHoldingView admin (basicAccount alice) "TOK" 1.0 None
+  isValidHoldingView ok === True
+  isValidHoldingView (ok with amount = 0.0) === False
+  isValidHoldingView (ok with account = HoldingV2.Account with owner = None; provider = None; id = "cip-112/mint") === False
+  let relLock = HoldingV2.Lock with holders = [admin]; expiresAt = None; expiresAfter = Some (hours 1); context = None
+  isValidHoldingView (ok with lock = Some relLock) === False
+  isValidHoldingView (ok with lock = Some (relLock with expiresAfter = None)) === True
+
+testRegistryConfigPredicate : Script ()
+testRegistryConfigPredicate = do
+  admin <- allocateParty "admin"
+  let c = RegistryConfig with admin; maxTTL = days 90; lockGrace = hours 1
+  isValidRegistryConfig c === True
+  isValidRegistryConfig (c with maxTTL = minutes 0) === False
+  isValidRegistryConfig (c with lockGrace = minutes 0) === False
+
+testTransferInstructionStatePredicate : Script ()
+testTransferInstructionStatePredicate = do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  h <- submit (actAs [admin, alice]) do
+    createCmd UnitHolding with holding = mkHoldingView admin (basicAccount alice) "TOK" 7.0 None
+  let transfer = TransferInstructionV2.Transfer with
+        sender = basicAccount alice
+        receiver = basicAccount bob
+        amount = 7.0
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        requestedAt = t0
+        executeBefore = t2
+        inputHoldingCids = []
+        meta = emptyMetadata
+      s = TransferInstructionState with
+        transfer
+        originalInputHoldingCids = []
+        lockedHoldingCids = [toInterfaceContractId @HoldingV2.Holding h]
+        expiresAt = t2
+        lockExpiresAt = t2 `addRelTime` hours 1
+  isValidTransferInstructionState s === True
+  isValidTransferInstructionState (s with lockedHoldingCids = []) === False
+  isValidTransferInstructionState (s with lockExpiresAt = t2) === False
+  -- The view advertises each side's account parties as the actor set.
+  let v = transferInstructionView s
+  Map.lookup TransferInstructionV2.TIA_Accept v.availableActions === Some [[bob]]
+  Map.lookup TransferInstructionV2.TIA_Withdraw v.availableActions === Some [[alice]]
+
+-- | Storage bound: capped by the deadline, saturating at `maxTime`.
+testComputeStorageExpiry : Script ()
+testComputeStorageExpiry = do
+  computeStorageExpiry (days 90) t1 (Some t2) === t2
+  computeStorageExpiry (minutes 5) t1 (Some t2) === (t1 `addRelTime` minutes 5)
+  computeStorageExpiry (days 90) t1 None === (t1 `addRelTime` days 90)
+  computeStorageExpiry (days 3000000) t1 None === maxTime
+
+-- | Event informees are the account parties plus the owner's extra
+-- observers, deduplicated, so listing an account party twice is harmless.
+testEventObserversFor : Script ()
+testEventObserversFor = do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  provider <- allocateParty "provider"
+  auditor <- allocateParty "auditor"
+  let account = HoldingV2.Account with owner = Some alice; provider = Some provider; id = "custody"
+      ops = HoldingOps with
+        createHolding = \_ -> fail "unused"
+        consumeHolding = \_ -> fail "unused"
+        withEventLog = \_ -> fail "unused"
+        eventObservers = const [auditor, alice]
+  eventObserversFor ops admin account === dedupSort (accountParties admin account <> [auditor])
+  eventObserversFor (ops with eventObservers = const []) admin account === dedupSort [alice, provider]

@@ -22,6 +22,7 @@ are tested in CI, but they are unaudited and have no release.
 | Component | Package | Public module | Status |
 |---|---|---|---|
 | [Allocation Request](packages/token/allocation-request-v1/) | `openzeppelin-allocation-request-v1` | `OpenZeppelin.AllocationRequestV1` | Pre-release; unaudited |
+| [Token CIP-0112 workflows](packages/token/tokenCIP112-workflows-v1/) | `openzeppelin-tokenCIP112-workflows-v1` | `OpenZeppelin.TokenCIP112WorkflowsV1` | Pre-release; unaudited |
 | [Token CIP-0112](packages/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | Pre-release; unaudited |
 
 The components below are early-stage candidates under
@@ -120,6 +121,8 @@ release lineage.
 - Components defining Daml interfaces use a frozen `-api-vN` package and a
   separate upgradeable implementation package. Template-only components use one
   implementation package.
+- A component whose choice bodies consumers reuse with their own templates
+  ships them in a `-workflows-vN` package beside its templates package.
 - Breaking changes create a sibling `-v2` package and `V2` module suffix;
   compatible SCU releases retain the existing package name.
 - Composition between implementations happens through interfaces or in the
