@@ -164,7 +164,7 @@ data-dependencies:
 import OpenZeppelin.TokenCIP112V1.Registry
 ```
 
-`examples/tokenCIP112/trading` launches a registry from this package and
+`examples/tokenCIP112/trading-test` launches a registry from this package and
 drives it through the standard interfaces. To own the templates instead and
 reuse only the workflows, see the workflows package `README.md` and
 `examples/tokenCIP112/custom-token`.

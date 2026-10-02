@@ -34,7 +34,7 @@ vetted Splice's Token Standard V2 packages can vet this package alongside them.
 
 The operator creates `TokenRules` and issues supply with `TokenRules_Mint`,
 which requires the admin and the receiving account's parties as controllers.
-The example package `examples/tokenCIP112/trading` runs this under `dpm test`.
+The example package `examples/tokenCIP112/trading-test` runs this under `dpm test`.
 
 Authorization: the admin signs the rules contract; admin plus account parties
 control mint and burn.
@@ -45,7 +45,7 @@ A sender exercises `TransferFactory_Transfer` with their account parties as
 actors. When the actors also cover the receiver's account parties — including
 any self-transfer — the transfer completes in one step; otherwise a
 `TokenTransferInstruction` is created and the receiver accepts, rejects, or
-lets it expire. `examples/tokenCIP112/trading` and the test scripts
+lets it expire. `examples/tokenCIP112/trading-test` and the test scripts
 `testTransferOneStep`, `testTransferTwoStep`, and
 `testTransferRejectAndWithdraw` cover the paths.
 
@@ -58,7 +58,7 @@ bound.
 Each trader allocates their side of the legs through
 `AllocationFactory_Allocate`; the settlement app settles all allocations in
 one transaction through `SettlementFactory_SettleBatch`, which checks that the
-batch's legs are covered exactly. `examples/tokenCIP112/trading` runs a full
+batch's legs are covered exactly. `examples/tokenCIP112/trading-test` runs a full
 DvP.
 
 Authorization: each authorizer's account parties allocate; the executors alone

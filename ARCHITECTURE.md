@@ -2,10 +2,10 @@
 
 ## Product boundary
 
-`canton-contracts` contains reusable, on-ledger Daml components. It does not
-contain grant evidence, reference-implementation business logic, research
-prototypes, interoperability experiments, or local lookalikes of upstream
-Canton standards.
+`canton-contracts` contains reusable, on-ledger Daml components and focused
+integration examples showing how to use them. Broader application implementations,
+research prototypes, interoperability experiments, and local lookalikes of
+upstream Canton standards belong in their own repositories.
 
 Code moves into this repository only after its research question and upstream
 dependency choices are settled. Promotion gives the component a final package
@@ -23,9 +23,9 @@ and vetting. Consequently:
 3. Test packages are separate and never released or uploaded.
 4. Categories such as `access/` and `security/` organize the source tree only.
 
-Access Control, Ownable, and Pausable remain separate packages even though they
-are often used together. Combining them would force every consumer and operator
-to accept the whole dependency, audit, upgrade, and vetting surface.
+Scoped Authorization Grant and Pausable have separate package boundaries.
+Combining them would force every consumer and operator to accept the whole
+dependency, audit, upgrade, and vetting surface.
 
 ## Interfaces and implementations
 
@@ -35,23 +35,44 @@ them beside templates prevents those templates from benefiting from SCU.
 When a component defines an interface, use two production packages:
 
 ```text
-<component>-api-v1     Frozen interfaces, exceptions, and API types; no templates
-<component>-v1         Templates implementing the API
-<component>-test       Daml Script tests; never released
+openzeppelin-api-<component>-v1    Frozen interfaces, exceptions, API types
+openzeppelin-<component>-v1        Templates or functions implementing the API
+openzeppelin-<component>-v1-test   Daml Script tests; never released
 ```
 
 API packages may depend only on other API packages. A template-only component
 ships one implementation package; empty API packages add ceremony without an
 upgrade or interoperability benefit.
 
-The components currently in the repository define templates and functions but
-no Daml interfaces, so none has an API package. Token CIP-0112 is the model:
-its templates implement the vendored upstream Token Standard V2 interfaces
-through `interface instance` blocks, which an implementation package may do
-freely; only defining new interfaces or exceptions forces the frozen
-API-package split.
+### Components without templates
 
-## Workflows and templates
+Some components ship no template of their own. Pausable is the model: the
+pause flag is a field of the consumer's template, because a guard that reads
+the contract being exercised is sound and a guard that fetches a separate
+switch contract is not, since a caller can substitute or omit a contract it
+supplies. The implementing templates live in consuming packages.
+
+The component is still two packages. `openzeppelin-api-pausable-v1` holds the
+interface and its view and nothing else, because that is the one part Daml
+cannot upgrade. `openzeppelin-pausable-v1` holds the guards and the failure
+statuses. A bug fix in `whenNotPaused` is a new version of the function
+package, and the frozen interface package does not move. The Splice token
+standard follows the same split, keeping its helper functions in
+`splice-token-standard-utils` beside its frozen interface packages.
+
+The API package follows the `openzeppelin-api-<component>-vN` freeze rule: no
+templates, no SCU, and a breaking change ships as a sibling `-v2` package. The
+function package depends on the API package alone, and a consumer data-depends
+on both DARs. The consumer's implementing template upgrades through SCU
+independently, because the interface instance is declared on the template and
+the API package does not move. SCU can only add an interface instance to that
+template, never remove one, and adding one needs the `damlc` option
+`-Wno-template-has-new-interface-instance`. So adopting an API `-v2` package
+means the template implements both interfaces for life; dropping the `-v1`
+instance needs a new template version outside SCU and an offline contract
+migration that copies the flag.
+
+### Workflows and templates
 
 A component whose choice bodies consumers want to reuse with templates of
 their own ships two production packages:
@@ -83,7 +104,8 @@ fields separately and builds the record per call avoids even that.
   is the one utility package allowed to define serializable records, the
   payloads its templates store.
 - Adding a production dependency requires explicit architecture review because
-  an SCU lineage cannot later drop or downgrade that dependency.
+  an SCU lineage cannot later drop or downgrade a dependency other than a
+  utility package.
 - Third-party DARs are pinned by source, version, package IDs, SHA-256, and
   license in `dars/manifest.yaml`; binaries live in `dars/vendor/` when
   vendoring is needed.
@@ -95,23 +117,29 @@ Production package names use an organization prefix and an explicit
 contract-model generation:
 
 ```text
-openzeppelin-ownable-v1
-openzeppelin-rbac-api-v1
+openzeppelin-scoped-authorization-grant-v1
+openzeppelin-api-rbac-v1
 openzeppelin-rbac-v1
 ```
 
 Public modules use matching major-version namespaces:
 
 ```daml
-OpenZeppelin.OwnableV1
+OpenZeppelin.ScopedAuthorizationGrantV1
 OpenZeppelin.RbacV1
 OpenZeppelin.RbacV1.Internal
+OpenZeppelin.Api.RbacV1
 ```
+
+An API package places its modules under `OpenZeppelin.Api`, the same way the
+Splice token standard places its interface modules under `Splice.Api`. The
+namespace tells a consumer that the module holds only frozen interface and
+exception definitions.
 
 Compatible SCU releases keep the same package name and increment the package
 version. A breaking change creates a sibling `-v2` package and a `V2` module
 suffix so both generations can coexist while consumers migrate. Template names
-remain stable component terms such as `Ownership` and `RoleGrant`.
+remain stable component terms such as `AuthorizationGrant` and `RoleGrant`.
 
 `exposed-modules` is not used as an API boundary: export information is not
 preserved when a consumer imports a compiled DAR through `data-dependencies`.
@@ -123,10 +151,12 @@ Every supported release records the production DAR, source commit, package name
 and version, main and dependency package IDs, SDK and LF versions, SHA-256,
 signature/provenance, license information, changelog, and audit status.
 
-Release DARs are distributed through GitHub Releases and retained under
-`dars/released/` as immutable compatibility baselines. `dars/manifest.yaml` is
-the reviewable package-ID and provenance index. CI verifies a candidate against
-the previous released DAR before claiming SCU compatibility.
+Supported releases must distribute DARs through GitHub Releases and retain them
+under `dars/released/` as immutable compatibility baselines. `dars/manifest.yaml`
+records package IDs and provenance. Any SCU compatibility claim requires CI
+verification against the previous released DAR. The current CI has no released
+baseline or upgrade-compatibility check; the release process is tracked in
+[RELEASING.md](RELEASING.md).
 
 Participant vetting behavior varies by Canton version and topology. Publishing
 the exact package closure lets each operator review and vet the package IDs its

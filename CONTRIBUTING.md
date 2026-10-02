@@ -15,7 +15,7 @@ scripts/check.sh
 Lint an affected package directly with DPM:
 
 ```sh
-DAML_PACKAGE=experiments/access/access-control-v1 dpm damlc lint
+DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm damlc lint
 ```
 
 Use the corresponding package path from `multi-package.yaml` for another
@@ -24,7 +24,7 @@ production or test package.
 Run an affected component's isolated test package directly with DPM:
 
 ```sh
-DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
+DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
 ```
 
 `--all` includes the production DAR dependency in the coverage report.
@@ -32,23 +32,64 @@ Production templates and choices appear under `Modules external to this
 package`; test fixtures appear under `Modules internal to this package`. Daml
 reports template and choice coverage rather than source-line or branch coverage.
 CI validates every production package and requires each production template to
-be created and each production choice to be exercised.
+be created and each production choice to be exercised. For a package without
+templates, such as `packages/security/api-pausable-v1` or
+`packages/security/pausable-v1`, that report shows zero production templates
+and zero production choices, so it proves nothing about the package. The
+isolated test package is the whole evidence for such a package, and its
+fixtures appear under `Modules internal to this package`.
+
+## API documentation
+
+Every public module carries doc comments that `damlc docs` renders. Generate the
+reference for a package from the repository root, for example:
+
+```sh
+DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc docs \
+  --output build/docs/api-pausable-v1 --format md --doc-ext md \
+  packages/security/api-pausable-v1/daml/OpenZeppelin/Api/PausableV1.daml
+```
+
+Pass every source file of the package, because a file renders only its own
+module. Run it after changing a doc comment and read the output. The tool
+rejects a leading `-- |` comment on an interface method; document a method
+with a trailing `-- ^` comment under its signature instead. A parse error
+there produces no output for the whole module.
+
+`examples/` contains integration examples showing how to use the library.
+Each example builds separately and imports the library DAR. Its isolated test
+package lives beside it at `examples/<example>-vN-test`. Run the grant examples with:
+
+```sh
+DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
+```
+
+Coverage includes the dependency DARs and implicit Archive choices.
+See [the authorization test matrix](test/scoped-authorization-grant-v1-test/README.md)
+for behavioral and security coverage beyond those metrics.
+
+Run `scripts/check-sandbox.sh` for the token sandbox gate. Set
+`OZ_SANDBOX_SUITE` to `authorization`, `licensing`, or `treasury` for the grant
+and integration-example Ledger API checks. CI runs all four suites on separate fresh
+static-time ledgers.
 
 ## Choosing the right repository
 
-This repository accepts reusable Daml library components. Research prototypes,
-reference implementations, interoperability experiments, and local replicas of
-upstream standards belong elsewhere until their promotion criteria are met.
+This repository accepts reusable Daml library components and focused integration
+examples. Broader application implementations, research prototypes,
+interoperability experiments, and local replicas of upstream standards belong
+elsewhere until their promotion criteria are met.
 
 ## Adding or changing a component
 
 - Select one permanent component/SCU lineage per production package.
 - Place it under the most useful navigation category without putting the
   category in its package name or module namespace.
-- Use a frozen `-api-vN` package only when the component defines Daml interfaces
-  or exceptions.
+- Use a frozen `openzeppelin-api-<component>-vN` package only when the component
+  defines Daml interfaces or exceptions.
 - Keep implementation packages independent of other implementation packages.
-- Add an isolated package under `test/<component>-vN`, name it with a `-test`
+- Add an isolated package under `test/<component>-vN-test`, name it with a `-test`
   suffix, and give it no production release path.
 - Add or update the package README, authority/privacy documentation, and tests.
   Add a changelog entry only for a user-visible production package or public API

@@ -1,0 +1,58 @@
+-- | Tests for `OpenZeppelin.Api.PausableV1`: the view, read through the
+-- interface with no dependency on the function package.
+module OpenZeppelin.Api.PausableV1Test where
+
+import DA.Assert ((===))
+import Daml.Script
+
+import OpenZeppelin.Api.PausableV1
+import OpenZeppelin.Api.PausableV1TestFixtures
+
+data Fixture = Fixture with
+  admin : Party
+  holder : Party
+  vault : ContractId Vault
+
+setup : Script Fixture
+setup = do
+  admin <- allocateParty "admin"
+  holder <- allocateParty "holder"
+  vault <- submit admin do
+    createCmd Vault with admin, holder, paused = False, balance = 100
+  pure Fixture with ..
+
+readOf : ContractId Vault -> ContractId Pausable
+readOf = toInterfaceContractId
+
+-- | An observer reads the view off-ledger, with no choice involved.
+test_viewReadableByObserver : Script ()
+test_viewReadableByObserver = script do
+  Fixture{..} <- setup
+  Some v <- queryInterfaceContractId holder (readOf vault)
+  v === PausableView with paused = False
+
+-- | The flag is exactly as visible as the implementing contract.
+test_viewHiddenFromStranger : Script ()
+test_viewHiddenFromStranger = script do
+  Fixture{..} <- setup
+  stranger <- allocateParty "stranger"
+  hidden <- queryInterfaceContractId stranger (readOf vault)
+  hidden === None
+
+-- | The view tracks the flag across a flip.
+test_viewTracksTheFlag : Script ()
+test_viewTracksTheFlag = script do
+  Fixture{..} <- setup
+  paused <- submit admin do exerciseCmd vault Vault_SetPaused with flag = True
+  Some v <- queryInterfaceContractId holder (readOf paused)
+  v === PausableView with paused = True
+
+-- | The implicit `Archive` choice is reachable through the interface, and
+-- only the template's signatories can exercise it.
+test_archiveThroughTheInterfaceIsSignatoryOnly : Script ()
+test_archiveThroughTheInterfaceIsSignatoryOnly = script do
+  Fixture{..} <- setup
+  submitMustFail holder do exerciseCmd (readOf vault) Archive
+  submit admin do exerciseCmd (readOf vault) Archive
+  gone <- queryContractId admin vault
+  gone === None

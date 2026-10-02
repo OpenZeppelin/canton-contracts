@@ -1,0 +1,316 @@
+module OpenZeppelin.ScopedAuthorizationGrantV1CheckTest where
+
+import DA.Assert ((===))
+import qualified DA.Fail as Fail
+import DA.Foldable (forA_)
+import DA.Functor (void)
+import qualified DA.TextMap as TextMap
+import DA.Time (addRelTime, days, seconds)
+import Daml.Script
+
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as Fixtures
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1UseTest as Use
+
+-- FailureStatus is not serializable as a choice result.
+data CheckFailure = CheckFailure with
+    errorId : Text
+    category : Text
+    message : Text
+    meta : TextMap.TextMap Text
+  deriving (Eq, Show)
+
+reportResult : Either Fail.FailureStatus a -> Either CheckFailure a
+reportResult result = case result of
+  Right value -> Right value
+  Left status -> Left CheckFailure with
+    errorId = status.errorId
+    category = show status.category
+    message = status.message
+    meta = status.meta
+
+template CheckProbe
+  with
+    consumer : Party
+    grantAuthority : Party
+    requiredScope : SAG.AuthorizationScope
+  where
+    signatory consumer
+
+    nonconsuming choice CheckProbe_Check : Either CheckFailure SAG.AuthorizationGrant
+      with authorization : SAG.Authorization
+      controller authorization.actor
+      do reportResult <$> SAG.checkAuthorization authorization (probeRequirement this)
+
+    nonconsuming choice CheckProbe_Require : SAG.AuthorizationGrant
+      with authorization : SAG.Authorization
+      controller authorization.actor
+      do SAG.requireAuthorization authorization (probeRequirement this)
+
+    -- Reading a result is separate from authorizing a protected operation.
+    nonconsuming choice CheckProbe_Inspect : Either CheckFailure SAG.AuthorizationGrant
+      with
+        reader : Party
+        authorization : SAG.Authorization
+      controller reader
+      do reportResult <$> SAG.checkAuthorization authorization (probeRequirement this)
+
+    nonconsuming choice CheckProbe_UseEither : ()
+      with
+        actor : Party
+        preferred : ContractId SAG.AuthorizationGrant
+        fallback : ContractId SAG.AuthorizationGrant
+      controller actor
+      do
+        let requirement = probeRequirement this
+        result <- SAG.checkAuthorization (SAG.Authorization actor preferred) requirement
+        let selected = case result of
+              Right _ -> preferred
+              Left _ -> fallback
+        void $ SAG.requireAuthorization (SAG.Authorization actor selected) requirement
+
+probeRequirement : CheckProbe -> SAG.AuthorizationRequirement
+probeRequirement probe = SAG.AuthorizationRequirement with
+  expectedAuthority = probe.grantAuthority
+  expectedScope = probe.requiredScope
+
+createProbe : Party -> SAG.AuthorizationScope -> Script (ContractId CheckProbe, Disclosure)
+createProbe grantAuthority requiredScope = do
+  consumer <- allocateParty "consumer"
+  createProbeFor consumer grantAuthority requiredScope
+
+createProbeFor
+  : Party -> Party -> SAG.AuthorizationScope -> Script (ContractId CheckProbe, Disclosure)
+createProbeFor consumer grantAuthority requiredScope = do
+  probe <- submit consumer do createCmd CheckProbe with consumer; grantAuthority; requiredScope
+  disclosure <- Fixtures.discloseTo @CheckProbe consumer probe
+  pure (probe, disclosure)
+
+grantData : Party -> Party -> SAG.AuthorizationGrant
+grantData authority grantee = SAG.AuthorizationGrant with
+  authority; grantee; scope = Fixtures.treasuryScope 1
+  validFrom = None; validUntil = None
+
+issue : SAG.AuthorizationGrant -> Script (ContractId SAG.AuthorizationGrant)
+issue grant = submit grant.authority do createCmd grant
+
+type ExpectedResult = Either (Text, [(Text, Text)]) ()
+
+assertResult : ExpectedResult -> Either CheckFailure SAG.AuthorizationGrant -> Script ()
+assertResult expected actual = case (expected, actual) of
+  (Right (), Right _) -> pure ()
+  (Left (errorId, metadata), Left status) -> do
+    assertMsg "unexpected error ID" (status.errorId == errorId)
+    assertMsg "unexpected error category" (status.category == show Fail.failedPrecondition)
+    assertMsg "missing error message" (status.message /= "")
+    assertMsg "unexpected error metadata" (status.meta == TextMap.fromList metadata)
+  _ -> fail $ "expected " <> show expected <> ", got " <> show actual
+
+checkWithoutUse
+  : SubmitOptions -> ContractId CheckProbe -> SAG.Authorization -> ExpectedResult -> Script ()
+checkWithoutUse options probe authorization expected = do
+  result <- submit options do exerciseCmd probe CheckProbe_Check with authorization
+  assertResult expected result
+  case result of
+    Right grant -> do
+      payload <- queryContractId authorization.actor authorization.grantCid
+      assertMsg "check returned a different grant" (payload == Some grant)
+    Left _ -> pure ()
+  tree <- submitTree options do exerciseCmd probe CheckProbe_Check with authorization
+  case tree.rootEvents of
+    [ExercisedEvent outer] -> do
+      assertMsg "expected check choice" (outer.choice == "CheckProbe_Check")
+      assertMsg "unexpected check contract"
+        (fromAnyContractId @CheckProbe outer.contractId == Some probe)
+      case outer.childEvents of
+        [] -> pure ()
+        _ -> fail "check emitted an exercise or create"
+    _ -> fail "expected one check exercise"
+
+test_returnsFetchedGrant : Script ()
+test_returnsFetchedGrant = script do
+  setTime Fixtures.t0
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  anchor <- submit authority do createCmd Fixtures.ScopeAnchor with authority
+  let scope = (Fixtures.treasuryScope 0) with resourceInstanceCid = Some (coerceContractId anchor)
+  (probe, disclosure) <- createProbe authority scope
+  let options = actAs actor <> disclose disclosure
+  forA_ [(None, None), (Some Fixtures.t0, None), (None, Some Fixtures.t1),
+      (Some Fixtures.t0, Some Fixtures.t1)] \(validFrom, validUntil) -> do
+    let payload = (grantData authority actor) with scope; validFrom; validUntil
+    grant <- issue payload
+    let authorization = SAG.Authorization actor grant
+    checked <- submit options do exerciseCmd probe CheckProbe_Check with authorization
+    checked === Right payload
+    required <- submit options do exerciseCmd probe CheckProbe_Require with authorization
+    required === payload
+    tree <- submitTree options do exerciseCmd probe CheckProbe_Require with authorization
+    case tree.rootEvents of
+      [ExercisedEvent outer] -> case outer.childEvents of
+        [ExercisedEvent use] -> Use.assertUseEvent grant use
+        _ -> fail "expected exactly one Use for the returned grant"
+      _ -> fail "expected one protected operation"
+    Use.assertGrantActive actor grant
+
+test_checkReturnsMatchingFailures : Script ()
+test_checkReturnsMatchingFailures = script do
+  setTime Fixtures.t0
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  other <- allocateParty "other"
+  let base = grantData authority actor
+  let wrongScope = base.scope with permission = "other"
+  let cases =
+        [ (base, Right ())
+        , ((base with authority = other),
+            Left ("openzeppelin.com/scoped-authorization-grant-authority-mismatch",
+              [("expected", partyToText authority), ("actual", partyToText other)]))
+        , ((base with grantee = other),
+            Left ("openzeppelin.com/scoped-authorization-grant-grantee-mismatch",
+              [("expected", partyToText actor), ("actual", partyToText other)]))
+        , ((base with authority = other; grantee = other; scope = wrongScope),
+            Left ("openzeppelin.com/scoped-authorization-grant-authority-mismatch",
+              [("expected", partyToText authority), ("actual", partyToText other)]))
+        , ((base with grantee = other; scope = wrongScope),
+            Left ("openzeppelin.com/scoped-authorization-grant-grantee-mismatch",
+              [("expected", partyToText actor), ("actual", partyToText other)]))
+        , ((base with scope = wrongScope; validUntil = Some Fixtures.t0),
+            Left ("openzeppelin.com/scoped-authorization-grant-scope-mismatch", [("fields", "permission")]))
+        ]
+  forA_ cases \(payload, expected) -> do
+    -- Supply fetch authority even when both the actor and expected issuer mismatch.
+    (probe, disclosure) <- createProbeFor payload.authority authority base.scope
+    grant <- issue payload
+    grantDisclosure <- Fixtures.discloseTo @SAG.AuthorizationGrant payload.authority grant
+    checkWithoutUse (actAs actor <> discloseMany [disclosure, grantDisclosure])
+      probe (SAG.Authorization actor grant) expected
+    Use.assertGrantActive payload.authority grant
+
+test_checkMatchesEveryScopeField : Script ()
+test_checkMatchesEveryScopeField = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  anchor <- submit authority do createCmd Fixtures.ScopeAnchor with authority
+  otherAnchor <- submit authority do createCmd Fixtures.ScopeAnchor with authority
+  let scope = (Fixtures.treasuryScope 1) with resourceInstanceCid = Some (coerceContractId anchor)
+  (probe, disclosure) <- createProbe authority scope
+  let variants =
+        [ ("namespace", scope with namespace = "other")
+        , ("resourceType", scope with resourceType = "other")
+        , ("resourceId", scope with resourceId = "other")
+        , ("permission", scope with permission = "other")
+        , ("policyEpoch", scope with policyEpoch = 2)
+        , ("resourceInstanceCid", scope with resourceInstanceCid = None)
+        , ("resourceInstanceCid", scope with resourceInstanceCid = Some (coerceContractId otherAnchor))
+        , ("namespace,permission", scope with namespace = "other"; permission = "other")
+        ]
+  forA_ variants \(fields, wrongScope) -> do
+    grant <- issue ((grantData authority actor) with scope = wrongScope)
+    checkWithoutUse (actAs actor <> disclose disclosure) probe (SAG.Authorization actor grant)
+      (Left ("openzeppelin.com/scoped-authorization-grant-scope-mismatch", [("fields", fields)]))
+  exact <- issue ((grantData authority actor) with scope)
+  checkWithoutUse (actAs actor <> disclose disclosure) probe (SAG.Authorization actor exact) (Right ())
+  (logicalProbe, logicalDisclosure) <- createProbe authority (Fixtures.treasuryScope 1)
+  checkWithoutUse (actAs actor <> disclose logicalDisclosure) logicalProbe (SAG.Authorization actor exact)
+    (Left ("openzeppelin.com/scoped-authorization-grant-scope-mismatch", [("fields", "resourceInstanceCid")]))
+
+test_checkValidityWindows : Script ()
+test_checkValidityWindows = script do checkValidityWindowsFrom Fixtures.t0
+
+-- The sandbox runs this after other time-sensitive scripts.
+checkValidityWindowsFrom : Time -> Script ()
+checkValidityWindowsFrom start = do
+  setTime start
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  let lower = addRelTime start (days 1)
+  let upper = addRelTime lower (days 1)
+  let future = Left ("openzeppelin.com/scoped-authorization-grant-not-yet-valid", [("validFrom", show lower)])
+  let expired = Left ("openzeppelin.com/scoped-authorization-grant-expired", [("validUntil", show upper)])
+  (probe, disclosure) <- createProbe authority (Fixtures.treasuryScope 1)
+  grants <- forA [(None, None), (Some lower, None), (None, Some upper), (Some lower, Some upper)]
+    \(validFrom, validUntil) -> issue ((grantData authority actor) with validFrom; validUntil)
+  forA_
+    [ (start, future, Right ())
+    , (addRelTime lower (seconds (-1)), future, Right ())
+    , (lower, Right (), Right ())
+    , (addRelTime upper (seconds (-1)), Right (), Right ())
+    , (upper, Right (), expired)
+    , (addRelTime upper (seconds 1), Right (), expired)
+    ] \(now, lowerResult, upperResult) -> do
+      setTime now
+      forA_ (zip grants [Right (), lowerResult, upperResult, lowerResult >> upperResult])
+        \(grant, expected) ->
+          checkWithoutUse (actAs actor <> disclose disclosure) probe (SAG.Authorization actor grant) expected
+
+test_checkFallbackRecordsOnlySelectedUse : Script ()
+test_checkFallbackRecordsOnlySelectedUse = script do
+  setTime Fixtures.t0
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  let base = grantData authority actor
+  valid <- issue base
+  wrongScope <- issue (base with scope = base.scope with permission = "other")
+  expired <- issue (base with validUntil = Some Fixtures.t0)
+  archived <- issue base
+  submit authority do exerciseCmd archived SAG.AuthorizationGrant_Revoke
+  (probe, disclosure) <- createProbe authority base.scope
+  forA_ [(wrongScope, valid), (expired, valid), (valid, archived)] \(preferred, fallback) -> do
+    tree <- submitTree (actAs actor <> disclose disclosure) do
+      exerciseCmd probe CheckProbe_UseEither with actor; preferred; fallback
+    case tree.rootEvents of
+      [ExercisedEvent outer] -> case outer.childEvents of
+        [ExercisedEvent use] -> Use.assertUseEvent valid use
+        _ -> fail "expected exactly one Use for the selected grant"
+      _ -> fail "expected one protected operation"
+    Use.assertGrantActive actor valid
+  Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-expired" [("validUntil", show Fixtures.t0)]
+    actor [disclosure] do
+      exerciseCmd probe CheckProbe_UseEither with actor; preferred = wrongScope; fallback = expired
+
+test_checkUnavailableGrantsAbort : Script ()
+test_checkUnavailableGrantsAbort = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  other <- allocateParty "other"
+  let base = grantData authority actor
+  valid <- issue base
+  hidden <- issue (base with grantee = other)
+  archived <- issue base
+  staleDisclosure <- Fixtures.discloseTo @SAG.AuthorizationGrant authority archived
+  submit authority do exerciseCmd archived SAG.AuthorizationGrant_Revoke
+  (probe, disclosure) <- createProbe authority base.scope
+  forA_ [archived, hidden] \grant ->
+    Fixtures.submitDisclosedMustFail actor [disclosure] do
+      exerciseCmd probe CheckProbe_Check with authorization = SAG.Authorization actor grant
+  Fixtures.submitDisclosedMustFail actor [disclosure, staleDisclosure] do
+    exerciseCmd probe CheckProbe_Check with authorization = SAG.Authorization actor archived
+  Fixtures.submitDisclosedMustFail actor [disclosure] do
+    exerciseCmd probe CheckProbe_UseEither with actor; preferred = archived; fallback = valid
+  -- A successful check cannot be reused after the grant is consumed.
+  Fixtures.submitDisclosedMustFail actor [disclosure]
+    (exerciseCmd probe (CheckProbe_Check with authorization = SAG.Authorization actor valid)
+      *> exerciseCmd valid SAG.AuthorizationGrant_Renounce
+      *> exerciseCmd probe (CheckProbe_UseEither with actor; preferred = valid; fallback = valid))
+  Use.assertGrantActive actor valid
+
+test_checkDoesNotAuthenticateActor : Script ()
+test_checkDoesNotAuthenticateActor = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  outsider <- allocateParty "outsider"
+  grant <- issue (grantData authority actor)
+  grantDisclosure <- Fixtures.discloseTo @SAG.AuthorizationGrant authority grant
+  (probe, disclosure) <- createProbe authority (Fixtures.treasuryScope 1)
+  let reader = authority
+  let options = actAs reader <> discloseMany [disclosure, grantDisclosure]
+  let authorization = SAG.Authorization actor grant
+  Use.expectAuthorizationFailure (actAs outsider <> discloseMany [disclosure, grantDisclosure]) do
+    exerciseCmd probe CheckProbe_Inspect with reader = outsider; authorization
+  result <- submit options do exerciseCmd probe CheckProbe_Inspect with reader; authorization
+  assertResult (Right ()) result
+  Use.expectAuthorizationFailure options do
+    exerciseCmd probe CheckProbe_Check with authorization
+  Use.expectAuthorizationFailure options do
+    exerciseCmd probe CheckProbe_UseEither with actor; preferred = grant; fallback = grant

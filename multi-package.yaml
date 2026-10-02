@@ -1,18 +1,32 @@
 # Workspace-only coordinator. Every listed directory owns one Daml package and
 # produces one DAR; category directories are navigation only.
-sdk-version: 3.4.11
+sdk-version: 3.5.8
 
 packages:
-  - experiments/access/access-control-v1
-  - experiments/access/ownable-v1
-  - experiments/security/pausable-v1
-  - experiments/test/access-control-v1
-  - experiments/test/ownable-v1
-  - experiments/test/pausable-v1
+  # Library
+  - packages/access/scoped-authorization-grant-v1
+  - test/scoped-authorization-grant-v1-test
+  - packages/security/api-pausable-v1
+  - test/api-pausable-v1-test
+  - packages/security/pausable-v1
+  - test/pausable-v1-test
   - packages/token/tokenCIP112-workflows-v1
+  - test/tokenCIP112-workflows-v1-test
   - packages/token/tokenCIP112-v1
-  - test/tokenCIP112-workflows-v1
-  - test/tokenCIP112-v1
-  - examples/tokenCIP112/trading
+  - test/tokenCIP112-v1-test
+
+  # Integration examples
+  - examples/licensing-app-v1
+  - examples/licensing-app-v1-test
+  - examples/pausable/registry
+  - examples/pausable/registry-test
+  - examples/pausable/retrofit-v1-0
+  - examples/pausable/retrofit-v1-1
+  - examples/pausable/retrofit-test
+  - examples/pausable/vault
+  - examples/pausable/vault-test
+  - examples/treasury-rbac-v1
+  - examples/treasury-rbac-v1-test
+  - examples/tokenCIP112/trading-test
   - examples/tokenCIP112/custom-token
   - examples/tokenCIP112/custom-token-test

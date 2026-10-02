@@ -1,0 +1,38 @@
+module OpenZeppelin.Examples.Pausable.Retrofit where
+
+import DA.Optional (fromOptional)
+import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
+import qualified OpenZeppelin.PausableV1 as Pausable
+
+template Account
+  with
+    admin : Party
+    holder : Party
+    balance : Decimal
+    paused : Optional Bool
+  where
+    signatory admin
+    observer holder
+
+    interface instance Pausable for Account where
+      view = PausableView with paused = fromOptional False paused
+
+    choice Account_Withdraw : ContractId Account
+      with
+        amount : Decimal
+      controller holder
+      do
+        Pausable.whenNotPaused this
+        create this with balance = balance - amount
+
+    choice Account_Pause : ContractId Account
+      controller admin
+      do
+        Pausable.whenNotPaused this
+        create this with paused = Some True
+
+    choice Account_Unpause : ContractId Account
+      controller admin
+      do
+        Pausable.whenPaused this
+        create this with paused = Some False

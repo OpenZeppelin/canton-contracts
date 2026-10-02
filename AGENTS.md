@@ -9,7 +9,8 @@ implementation.
 Research prototypes, local replicas of upstream standards, interoperability
 harnesses, and application-specific business logic belong in `canton-specs` or
 the relevant application repository. A component enters this repository only
-after its promotion boundary is accepted.
+after its promotion boundary is accepted. Focused integration examples under
+`examples/` demonstrate library usage and build separately from the library.
 
 ## Read order
 
@@ -28,19 +29,22 @@ workspace files exist.
 
 - One independently released unit equals one package and one DAR.
 - Package names use `openzeppelin-<component>-vN`; module names use
-  `OpenZeppelin.<Component>VN`. A component's reusable choice bodies live in
+  `OpenZeppelin.<Component>VN`. API packages use
+  `openzeppelin-api-<component>-vN` and place their modules under
+  `OpenZeppelin.Api.<Component>VN`. A component's reusable choice bodies live in
   `openzeppelin-<component>-workflows-vN` under
   `OpenZeppelin.<Component>WorkflowsVN`; that package defines no templates or
   interfaces, and the component's templates package may depend on it.
 - A component that defines Daml interfaces or exceptions uses a frozen
-  `-api-vN` package containing no templates. Template-only components do not get
+  `openzeppelin-api-<component>-vN` package containing no templates. Template-only components do not get
   empty API packages.
 - API packages may depend only on API packages. Implementation packages must not
   depend on other implementation packages without an accepted architecture
   decision; prefer interface composition or consumer-side wiring.
 - Production packages must not depend on `daml-script`.
-- Test code lives in an isolated `-test` package under the root `test/` and 
-  `experiments/test/` directories and is never released or uploaded.
+- Test code lives in an isolated `-test` package under the root `test/`,
+  `experiments/test/` and `examples/*-test` directories and is never released
+  or uploaded.
 - Do not use `exposed-modules` as an API boundary. Use documented public modules
   and `.Internal` naming for implementation details.
 - Category directories under `packages/` and `experiments/` are navigation only
@@ -48,15 +52,18 @@ workspace files exist.
 - Do not publish upstream Canton or Splice interfaces under an OpenZeppelin
   namespace. Consume exact, verified upstream DARs.
 
-Every production template or interface must document signatories, observers,
-controllers, choices, disclosure and privacy expectations, authorization
-assumptions, archival behavior, failure modes, and upgrade/migration assumptions.
+Every production template or interface must document what it adds to
+signatories, observers, controllers, choices, disclosure and privacy
+expectations, authorization assumptions, archival behavior, failure modes, and
+upgrade/migration assumptions. Document only what the component defines or
+changes. Do not restate standard Daml or Canton semantics or repository release
+policy, and omit a topic where the component adds nothing.
 
 ## Daml toolchain
 
 The repository is DPM-native. `multi-package.yaml` declares the workspace SDK,
-and every package manifest mirrors that version because Daml 3.4 requires the
-field locally; `scripts/check.sh` enforces consistency. Package manifests target
+and every package manifest mirrors that version for standalone builds;
+`scripts/check.sh` enforces consistency. Package manifests target
 Daml-LF `2.1`. Use `dpm build`, `dpm damlc lint`, `dpm test`, and
 `dpm upgrade-check`; do not introduce legacy Daml Assistant commands unless a
 documented toolchain decision changes this. For package-scoped commands run from
@@ -70,27 +77,46 @@ Run from the repository root:
 ```sh
 dpm build --all
 scripts/check.sh
-DAML_PACKAGE=experiments/access/access-control-v1 dpm damlc lint
-DAML_PACKAGE=experiments/access/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/security/pausable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/access-control-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/ownable-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/pausable-v1 dpm damlc lint
+DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm damlc lint
+DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc lint
+DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
 DAML_PACKAGE=packages/token/tokenCIP112-workflows-v1 dpm damlc lint
 DAML_PACKAGE=packages/token/tokenCIP112-v1 dpm damlc lint
-DAML_PACKAGE=test/tokenCIP112-workflows-v1 dpm damlc lint
-DAML_PACKAGE=test/tokenCIP112-v1 dpm damlc lint
-DAML_PACKAGE=examples/tokenCIP112/trading dpm damlc lint
+DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm damlc lint
+DAML_PACKAGE=test/api-pausable-v1-test dpm damlc lint
+DAML_PACKAGE=test/pausable-v1-test dpm damlc lint
+DAML_PACKAGE=test/tokenCIP112-workflows-v1-test dpm damlc lint
+DAML_PACKAGE=test/tokenCIP112-v1-test dpm damlc lint
+DAML_PACKAGE=examples/licensing-app-v1 dpm damlc lint
+DAML_PACKAGE=examples/licensing-app-v1-test dpm damlc lint
+DAML_PACKAGE=examples/pausable/registry dpm damlc lint
+DAML_PACKAGE=examples/pausable/registry-test dpm damlc lint
+DAML_PACKAGE=examples/pausable/retrofit-v1-0 dpm damlc lint
+DAML_PACKAGE=examples/pausable/retrofit-v1-1 dpm damlc lint
+DAML_PACKAGE=examples/pausable/retrofit-test dpm damlc lint
+DAML_PACKAGE=examples/pausable/vault dpm damlc lint
+DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
+DAML_PACKAGE=examples/treasury-rbac-v1 dpm damlc lint
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm damlc lint
+DAML_PACKAGE=examples/tokenCIP112/trading-test dpm damlc lint
 DAML_PACKAGE=examples/tokenCIP112/custom-token dpm damlc lint
 DAML_PACKAGE=examples/tokenCIP112/custom-token-test dpm damlc lint
-DAML_PACKAGE=experiments/test/access-control-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/ownable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/pausable-v1 dpm test --all --show-coverage
-DAML_PACKAGE=test/tokenCIP112-workflows-v1 dpm test --all --show-coverage
-DAML_PACKAGE=test/tokenCIP112-v1 dpm test --all --show-coverage
-DAML_PACKAGE=examples/tokenCIP112/trading dpm test
-DAML_PACKAGE=examples/tokenCIP112/custom-token-test dpm test
+DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/api-pausable-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/pausable-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/tokenCIP112-workflows-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/tokenCIP112-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/pausable/registry-test dpm test --all
+DAML_PACKAGE=examples/pausable/retrofit-test dpm test --all
+DAML_PACKAGE=examples/pausable/vault-test dpm test --all
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/tokenCIP112/trading-test dpm test --all
+DAML_PACKAGE=examples/tokenCIP112/custom-token-test dpm test --all
 scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=authorization scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=licensing scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=treasury scripts/check-sandbox.sh
 ```
 
 `scripts/check.sh` enforces package boundaries. Component tests and production
@@ -125,6 +151,7 @@ caveats.
 packages and their public APIs. Exclude repository organization, CI, tests,
 tooling, and documentation-only changes.
 
-The CI-only `scripts/check-lint.sh` and `scripts/check-coverage.sh` discover and
-validate workspace packages. Public and contributor documentation shows native
-DPM commands instead of presenting those helpers as the development interface.
+The CI-only `scripts/check-lint.sh`, `scripts/check-coverage.sh`, and
+`scripts/check-examples.sh` discover and validate workspace packages. Public
+and contributor documentation shows native DPM commands instead of presenting
+those helpers as the development interface.

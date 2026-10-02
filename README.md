@@ -15,27 +15,15 @@ upload, and vet only the DARs they need.
 
 ## Packages
 
-No component has been released yet. The components under
-[`packages/`](packages/) have passed their implementation phase; they build and
-are tested in CI, but they are unaudited and have no release.
+The library provides the following packages under [`packages/`](packages/):
 
-| Component | Package | Public module | Status |
-|---|---|---|---|
-| [Token CIP-0112 workflows](packages/token/tokenCIP112-workflows-v1/) | `openzeppelin-tokenCIP112-workflows-v1` | `OpenZeppelin.TokenCIP112WorkflowsV1` | Pre-release; unaudited |
-| [Token CIP-0112](packages/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | Pre-release; unaudited |
-
-The components below are early-stage candidates under
-[`experiments/`](experiments/). They build and are tested in CI, but they will
-be redesigned before they move into `packages/`, and that redesign will change
-module names, template and choice signatures, and package identity. Read
-[`experiments/README.md`](experiments/README.md) before depending on any of
-them.
-
-| Component | Package | Public module | Status |
-|---|---|---|---|
-| [Access Control](experiments/access/access-control-v1/) | `openzeppelin-access-control-v1` | `OpenZeppelin.AccessControlV1` | Experimental; unaudited |
-| [Ownable](experiments/access/ownable-v1/) | `openzeppelin-ownable-v1` | `OpenZeppelin.OwnableV1` | Experimental; unaudited |
-| [Pausable](experiments/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` | Experimental; unaudited |
+| Component | Package | Public module |
+|---|---|---|
+| [Scoped Authorization Grant](packages/access/scoped-authorization-grant-v1/) | `openzeppelin-scoped-authorization-grant-v1` | `OpenZeppelin.ScopedAuthorizationGrantV1` |
+| [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
+| [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` |
+| [Token CIP-0112 workflows](packages/token/tokenCIP112-workflows-v1/) | `openzeppelin-tokenCIP112-workflows-v1` | `OpenZeppelin.TokenCIP112WorkflowsV1` |
+| [Token CIP-0112](packages/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching
@@ -50,7 +38,8 @@ package IDs.
 
 The workspace declares its Daml SDK in
 [`multi-package.yaml`](multi-package.yaml). Package manifests mirror that value
-for Daml 3.4 compatibility, and repository checks keep them synchronized.
+for standalone builds, and repository checks keep them synchronized. The SDK is
+3.5.8; packages target LF 2.1.
 
 The [Canton building and packaging guide](https://docs.canton.network/appdev/modules/m3-building-packaging)
 explains DPM workspaces, DARs, and `data-dependencies`.
@@ -65,14 +54,13 @@ dpm build --all
 To build one component independently:
 
 ```sh
-cd experiments/access/ownable-v1
-dpm build
+DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm build
 ```
 
-The resulting evaluation DAR is written to:
+The resulting DAR is written to:
 
 ```text
-experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+packages/access/scoped-authorization-grant-v1/.daml/dist/openzeppelin-scoped-authorization-grant-v1-0.1.0.dar
 ```
 
 ## Consume a local build
@@ -85,27 +73,27 @@ dependencies:
   - daml-prim
   - daml-stdlib
 data-dependencies:
-  - ../canton-contracts/experiments/access/ownable-v1/.daml/dist/openzeppelin-ownable-v1-0.1.0.dar
+  - ../canton-contracts/packages/access/scoped-authorization-grant-v1/.daml/dist/openzeppelin-scoped-authorization-grant-v1-0.1.0.dar
 ```
 
 ```daml
-import OpenZeppelin.OwnableV1
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
 ```
+
+Each package `README.md` shows the consumer code for that component, and
+[`examples/`](examples/) holds runnable consumer projects.
 
 ## Repository layout
 
-```text
-packages/
+packages/                 Library components and release candidates
+  access/                 Authorization components
+  security/               Emergency-stop and safety components
   token/                  Category for token standard and settlement components
-test/                     Isolated component test packages
-experiments/
-  access/                 Category for authorization and ownership components
-  security/               Category for operational security components
-  test/                   Isolated component test packages
+test/                     Isolated library test packages
 dars/
   released/               Immutable OpenZeppelin release baselines
   vendor/                 Verified third-party DAR inputs
-examples/                 Standalone projects that consume packaged DARs
+examples/                 Integration examples and sibling -test packages
 audits/                   Reports keyed to exact package releases
 scripts/                  Repository validation tooling
 ```
@@ -117,8 +105,9 @@ release lineage.
 ## Package and compatibility model
 
 - One independently released unit is one Daml package and one DAR.
-- Components defining Daml interfaces use a frozen `-api-vN` package and a
-  separate upgradeable implementation package. Template-only components use one
+- Components defining Daml interfaces use a frozen
+  `openzeppelin-api-<component>-vN` package and a separate upgradeable package
+  for templates or helper functions. Template-only components use one
   implementation package.
 - A component whose choice bodies consumers reuse with their own templates
   ships them in a `-workflows-vN` package beside its templates package.

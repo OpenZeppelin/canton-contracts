@@ -5,10 +5,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Trees under policy, as "<source tree>:<test tree>" pairs. Candidates live in
-# experiments/ and move to packages/ one component at a time, so both trees are
-# checked identically and a tree holding no packages is skipped.
-TREES=("packages:test" "experiments:experiments/test")
+# Source/test tree pairs. Shared trees distinguish tests by their -test directories.
+TREES=("packages:test" "experiments:experiments/test" "examples:examples")
 
 fail() {
 	printf 'check: %s\n' "$*" >&2
@@ -44,7 +42,8 @@ for file in \
 	SECURITY.md AGENTS.md LICENSE multi-package.yaml dars/README.md \
 	dars/manifest.yaml audits/README.md examples/README.md \
 	experiments/README.md \
-	scripts/check-coverage.sh scripts/check-lint.sh scripts/check-sandbox.sh; do
+	scripts/check-coverage.sh scripts/check-lint.sh scripts/check-examples.sh \
+	scripts/check-sandbox.sh; do
 	require_file "$file"
 done
 
@@ -65,18 +64,30 @@ for tree_pair in "${TREES[@]}"; do
 	source_tree="${tree_pair%%:*}"
 	test_tree="${tree_pair##*:}"
 
-	production_manifests+="$(find_manifests "$source_tree" "$test_tree")"$'\n'
-	test_manifests+="$(find_manifests "$test_tree")"$'\n'
+	if [ "$source_tree" = "$test_tree" ]; then
+		while IFS= read -r manifest; do
+			case "$(basename "$(dirname "$manifest")")" in
+			*-test) test_manifests+="$manifest"$'\n' ;;
+			*) production_manifests+="$manifest"$'\n' ;;
+			esac
+		done <<< "$(find_manifests "$source_tree")"
+	else
+		production_manifests+="$(find_manifests "$source_tree" "$test_tree")"$'\n'
+		test_manifests+="$(find_manifests "$test_tree")"$'\n'
+	fi
 done
 
 production_manifests="$(printf '%s' "$production_manifests" | sed '/^$/d' | sort)"
 [ -n "$production_manifests" ] || fail "no production package manifests found"
 
-test_manifests="$(printf '%s' "$test_manifests" | sed '/^$/d' | sort)"
+test_manifests="$(printf '%s' "$test_manifests" | sed '/^$/d' | sort -u)"
 [ -n "$test_manifests" ] || fail "no test package manifests found"
 
-for manifest_list in "$production_manifests" "$test_manifests"; do
+example_manifests="$(find_manifests examples | sort)"
+
+for manifest_list in "$production_manifests" "$test_manifests" "$example_manifests"; do
 	while IFS= read -r manifest; do
+		[ -n "$manifest" ] || continue
 		package_sdk="$(sed -n 's/^sdk-version:[[:space:]]*//p' "$manifest")"
 		[ "$package_sdk" = "$workspace_sdk" ] ||
 			fail "${manifest#"$ROOT/"} sdk-version must match multi-package.yaml"
@@ -103,7 +114,7 @@ while IFS= read -r manifest; do
 
 	case "$package_name" in
 	*-test)
-		fail "test package ${manifest#"$ROOT/"} must live under a test tree"
+		fail "test package ${manifest#"$ROOT/"} must use a supported test-package location"
 		;;
 	esac
 
@@ -111,7 +122,7 @@ while IFS= read -r manifest; do
 		fail "production package ${manifest#"$ROOT/"} depends on daml-script"
 	fi
 
-	if [[ "$package_name" == *-api-v* ]]; then
+	if [[ "$package_name" == openzeppelin-api-* ]]; then
 		if grep -R -n -E --include='*.daml' '^[[:space:]]*template[[:space:]]+' "$package_dir/daml"; then
 			fail "API package ${manifest#"$ROOT/"} defines templates"
 		fi
@@ -120,7 +131,7 @@ while IFS= read -r manifest; do
 		# allowed; only new interface or exception definitions are not.
 		if grep -R -n -E --include='*.daml' '^[[:space:]]*(interface|exception)[[:space:]]+' "$package_dir/daml" |
 			grep -v -E 'interface[[:space:]]+instance[[:space:]]'; then
-			fail "implementation package ${manifest#"$ROOT/"} defines interfaces or exceptions; create a frozen -api-vN package"
+			fail "implementation package ${manifest#"$ROOT/"} defines interfaces or exceptions; create a frozen openzeppelin-api-<component>-vN package"
 		fi
 	fi
 
@@ -131,11 +142,19 @@ while IFS= read -r manifest; do
 	package_name="$(sed -n 's/^name:[[:space:]]*//p' "$manifest")"
 	package_version="$(sed -n 's/^version:[[:space:]]*//p' "$manifest")"
 
+	case "$(basename "$(dirname "$manifest")")" in
+	*-test)
+		;;
+	*)
+		fail "test package ${manifest#"$ROOT/"} must use a -test directory name"
+		;;
+	esac
+
 	case "$package_name" in
 	*-test)
 		;;
 	*)
-		fail "package ${manifest#"$ROOT/"} under a test tree must use a -test name"
+		fail "test package ${manifest#"$ROOT/"} must use a -test name"
 		;;
 	esac
 
@@ -145,8 +164,25 @@ while IFS= read -r manifest; do
 	grep -Eq '(^|[[:space:]-])daml-script($|[[:space:]])' "$manifest" ||
 		fail "test package ${manifest#"$ROOT/"} must depend on daml-script"
 
-	grep -Eq '^[[:space:]]*-[[:space:]]*\.\./\.\./.+\.dar$' "$manifest" ||
+	grep -Eq '^[[:space:]]*-[[:space:]]*(\.\./)+.+\.dar$' "$manifest" ||
 		fail "test package ${manifest#"$ROOT/"} must data-depend on a production DAR"
 done <<< "$test_manifests"
+
+# An example keeps its Daml Script tests in a sibling -test package, so the
+# example DAR itself stays free of daml-script.
+while IFS= read -r manifest; do
+	[ -n "$manifest" ] || continue
+	package_name="$(sed -n 's/^name:[[:space:]]*//p' "$manifest")"
+
+	case "$package_name" in
+	*-test)
+		;;
+	*)
+		if grep -Eq '(^|[[:space:]-])daml-script($|[[:space:]])' "$manifest"; then
+			fail "example package ${manifest#"$ROOT/"} depends on daml-script; move its tests to a -test package"
+		fi
+		;;
+	esac
+done <<< "$example_manifests"
 
 printf 'check: OK\n'

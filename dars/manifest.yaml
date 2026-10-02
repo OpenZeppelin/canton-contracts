@@ -17,9 +17,9 @@
 #
 # Entry shape:
 # - kind: release
-#   package: openzeppelin-ownable-v1
+#   package: openzeppelin-scoped-authorization-grant-v1
 #   version: 1.0.0
-#   file: dars/released/openzeppelin-ownable-v1/1.0.0/openzeppelin-ownable-v1-1.0.0.dar
+#   file: dars/released/openzeppelin-scoped-authorization-grant-v1/1.0.0/openzeppelin-scoped-authorization-grant-v1-1.0.0.dar
 #   main-package-id: <package-id>
 #   package-ids:
 #     - <main-package-id>
