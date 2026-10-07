@@ -16,6 +16,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Added Scoped Authorization Grant for authority-signed, resource-scoped
   permissions with typed policies, expiry, revocation, conditional checks,
   usage records, and structured failures.
+- Added `requireAuthorityOrGrant`, which accepts the expected authority acting
+  directly or validates a presented grant, and `authorizationContextKey` for
+  passing grant contract IDs through extensible choice contexts such as Splice
+  `ExtraArgs`.
 
 ### `openzeppelin-api-pausable-v1`
 

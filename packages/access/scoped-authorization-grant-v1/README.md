@@ -128,6 +128,47 @@ skipped this way. Fetching a rejected candidate also makes it a transaction
 dependency. Prefer selecting a grant in the backend
 when the choice does not need to evaluate alternatives itself.
 
+## Direct authority and choice contexts
+
+A generic interface can accept a grant without depending on this package. Its
+choice takes an extensible context, such as Splice's `ExtraArgs`, and its
+implementations read an optional grant contract ID from that context. Store the
+ID under `authorizationContextKey`, which is
+`openzeppelin.com/scoped-authorization-grant`, so backends can build the context
+the same way for every implementation.
+
+`requireAuthorityOrGrant` handles both callers of such a choice:
+
+- If no grant is presented, the actor must be the expected authority. The guard
+  fetches nothing and records no use.
+- If a grant is presented, the guard calls `requireAuthorization`, even when the
+  actor is the authority. It records use and returns the grant.
+
+An implementation reading Splice's `ChoiceContext` passes the looked-up ID to the
+guard:
+
+```daml
+presentedGrant <- case TextMap.lookup SAG.authorizationContextKey extraArgs.context.values of
+  None -> pure None
+  Some (AV_ContractId cid) -> pure (Some (coerceContractId cid))
+  Some _ -> fail "scoped authorization grant context value must be a contract id"
+void $ SAG.requireAuthorityOrGrant actor presentedGrant requirement
+```
+
+The interface choice must take the actor as an argument and make it the
+controller, because Daml interfaces fix each choice's controller. Every
+implementation must then call the guard; otherwise any party can exercise the
+choice. Take the actor from the controller, never from the context. Derive the
+requirement from trusted state, as for any guard, and never from the context
+values or metadata. With a typed policy, pass
+`SAG.authorizationRequirement this self permission`.
+
+The direct path adds no power: the authority can already issue itself a grant
+and present it. It does leave no `AuthorizationGrant_Use` event. Use
+`requireAuthorization` when every protected operation must produce a usage record.
+The [authority-or-grant tests](../../../test/scoped-authorization-grant-v1-test/daml/OpenZeppelin/ScopedAuthorizationGrantV1AuthorityOrGrantTest.daml)
+model such a choice with a context map.
+
 ## Resource identity
 
 `resourceId` is a stable application identifier represented as `Text`.
@@ -209,7 +250,9 @@ not undo committed work.
 
 Every successful `requireAuthorization` call exercises
 `AuthorizationGrant_Use` after matching the actor, authority, and scope. The choice
-enforces the grant's validity window. `requirePermission` uses the same path.
+enforces the grant's validity window. `requirePermission` uses the same path,
+as does `requireAuthorityOrGrant` when a grant is presented. Its direct authority
+path records no use.
 The use event is visible only if the transaction commits and that exercise is
 not rolled back by a
 [caught exception](https://docs.canton.network/appdev/reference/daml-language-reference#catch-exceptions).
@@ -243,6 +286,10 @@ All four helpers use these stable IDs and metadata, checking in the order shown:
 | `openzeppelin.com/scoped-authorization-grant-expired` | `validUntil`: exclusive upper bound |
 
 Direct `AuthorizationGrant_Use` calls raise the same validity-window failures.
+`requireAuthorityOrGrant` raises `openzeppelin.com/scoped-authorization-grant-required`
+when no grant is presented and the actor is not the expected authority. Its
+`expected` and `actual` metadata hold the expected authority and the actor. With a
+grant, it raises the failures above.
 
 All statuses use `failedPrecondition` (`FAILED_PRECONDITION`). For a returned
 status, inspect `errorId` and `meta`; returning `Left` does not fail the transaction.
@@ -313,6 +360,11 @@ grant administration, transferability, counters, or an interface.
   and calls `checkAuthorization`.
 - `requirePermission` derives the requirement through `HasAuthorizationPolicy`
   and calls `requireAuthorization`.
+- `requireAuthorityOrGrant` accepts the expected authority acting without a
+  grant, or calls `requireAuthorization` for a presented grant. It returns the
+  validated grant, or `None` on the direct path.
+- `authorizationContextKey` is the key for a grant contract ID in an extensible
+  choice context.
 
 Only the entries above and the documented grant choices form the consumer API.
 Matching helpers and `OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contain

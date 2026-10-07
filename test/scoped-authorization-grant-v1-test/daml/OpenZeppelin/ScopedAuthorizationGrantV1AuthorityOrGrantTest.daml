@@ -1,0 +1,180 @@
+module OpenZeppelin.ScopedAuthorizationGrantV1AuthorityOrGrantTest where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.Functor (void)
+import qualified DA.TextMap as TextMap
+import Daml.Script
+
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as Fixtures
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1UseTest as Use
+
+-- Stands in for an interface choice that reads an optional grant from an
+-- extensible context. Separate consumer and grant authorities expose
+-- authorization-context mistakes.
+template ContextProbe
+  with
+    consumer : Party
+    grantAuthority : Party
+    requiredScope : SAG.AuthorizationScope
+  where
+    signatory consumer
+
+    nonconsuming choice ContextProbe_Run : Optional SAG.AuthorizationGrant
+      with
+        actor : Party
+        context : TextMap.TextMap (ContractId SAG.AuthorizationGrant)
+      controller actor
+      do
+        SAG.requireAuthorityOrGrant actor
+          (TextMap.lookup SAG.authorizationContextKey context) (probeRequirement this)
+
+    nonconsuming choice ContextProbe_TryRun : ()
+      with
+        actor : Party
+        context : TextMap.TextMap (ContractId SAG.AuthorizationGrant)
+      controller actor
+      do
+        try do
+          void $ SAG.requireAuthorityOrGrant actor
+            (TextMap.lookup SAG.authorizationContextKey context) (probeRequirement this)
+        catch
+          (_ : AnyException) -> pure ()
+
+probeRequirement : ContextProbe -> SAG.AuthorizationRequirement
+probeRequirement probe = SAG.AuthorizationRequirement with
+  expectedAuthority = probe.grantAuthority
+  expectedScope = probe.requiredScope
+
+createProbe : Party -> Script (ContractId ContextProbe, Disclosure)
+createProbe grantAuthority = do
+  consumer <- allocateParty "consumer"
+  probe <- submit consumer do
+    createCmd ContextProbe with
+      consumer; grantAuthority; requiredScope = Fixtures.treasuryScope 1
+  disclosure <- Fixtures.discloseTo @ContextProbe consumer probe
+  pure (probe, disclosure)
+
+grantData : Party -> Party -> SAG.AuthorizationGrant
+grantData authority grantee = SAG.AuthorizationGrant with
+  authority; grantee; scope = Fixtures.treasuryScope 1
+  validFrom = None; validUntil = None
+
+issue : SAG.AuthorizationGrant -> Script (ContractId SAG.AuthorizationGrant)
+issue grant = submit grant.authority do createCmd grant
+
+withGrant : ContractId SAG.AuthorizationGrant -> TextMap.TextMap (ContractId SAG.AuthorizationGrant)
+withGrant = TextMap.singleton SAG.authorizationContextKey
+
+grantRequiredId : Text
+grantRequiredId = "openzeppelin.com/scoped-authorization-grant-required"
+
+test_contextKeyIsStable : Script ()
+test_contextKeyIsStable = script do
+  SAG.authorizationContextKey === "openzeppelin.com/scoped-authorization-grant"
+
+test_authorityActsWithoutGrant : Script ()
+test_authorityActsWithoutGrant = script do
+  authority <- allocateParty "authority"
+  other <- allocateParty "other"
+  unrelated <- issue (grantData authority other)
+  (probe, disclosure) <- createProbe authority
+  -- A grant under another key is not presented.
+  forA_ [TextMap.empty, TextMap.singleton "other-key" unrelated] \context -> do
+    result <- Fixtures.submitDisclosed authority [disclosure] do
+      exerciseCmd probe ContextProbe_Run with actor = authority; context
+    result === None
+    tree <- submitTree (actAs authority <> disclose disclosure) do
+      exerciseCmd probe ContextProbe_Run with actor = authority; context
+    case tree.rootEvents of
+      [ExercisedEvent outer] -> case outer.childEvents of
+        [] -> pure ()
+        _ -> fail "direct authority path emitted an exercise or create"
+      _ -> fail "expected one protected operation"
+  Use.assertGrantActive authority unrelated
+
+test_nonAuthorityWithoutGrantFails : Script ()
+test_nonAuthorityWithoutGrantFails = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  grant <- issue (grantData authority actor)
+  (probe, disclosure) <- createProbe authority
+  forA_ [TextMap.empty, TextMap.singleton "other-key" grant] \context ->
+    Fixtures.submitDisclosedMustFailWith grantRequiredId
+      [("expected", partyToText authority), ("actual", partyToText actor)]
+      actor [disclosure] do
+        exerciseCmd probe ContextProbe_Run with actor; context
+  Use.assertGrantActive actor grant
+
+test_presentedGrantRecordsUse : Script ()
+test_presentedGrantRecordsUse = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  let payload = grantData authority actor
+  grant <- issue payload
+  (probe, disclosure) <- createProbe authority
+  result <- Fixtures.submitDisclosed actor [disclosure] do
+    exerciseCmd probe ContextProbe_Run with actor; context = withGrant grant
+  result === Some payload
+  tree <- submitTree (actAs actor <> disclose disclosure) do
+    exerciseCmd probe ContextProbe_Run with actor; context = withGrant grant
+  case tree.rootEvents of
+    [ExercisedEvent outer] -> case outer.childEvents of
+      [ExercisedEvent use] -> Use.assertUseEvent grant use
+      _ -> fail "expected exactly one Use for the presented grant"
+    _ -> fail "expected one protected operation"
+  Use.assertGrantActive actor grant
+
+test_presentedGrantIsAlwaysValidated : Script ()
+test_presentedGrantIsAlwaysValidated = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  other <- allocateParty "other"
+  let base = grantData authority actor
+  (probe, disclosure) <- createProbe authority
+  wrongScope <- issue (base with scope = base.scope with permission = "other")
+  Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-scope-mismatch"
+    [("fields", "permission")] actor [disclosure] do
+      exerciseCmd probe ContextProbe_Run with actor; context = withGrant wrongScope
+  -- The authority could act directly, but a presented grant must still match.
+  selfWrongScope <- issue (base with grantee = authority; scope = base.scope with permission = "other")
+  Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-scope-mismatch"
+    [("fields", "permission")] authority [disclosure] do
+      exerciseCmd probe ContextProbe_Run with actor = authority; context = withGrant selfWrongScope
+  wrongAuthority <- issue (base with authority = other; grantee = authority)
+  Fixtures.submitDisclosedMustFailWith "openzeppelin.com/scoped-authorization-grant-authority-mismatch"
+    [("expected", partyToText authority), ("actual", partyToText other)]
+    authority [disclosure] do
+      exerciseCmd probe ContextProbe_Run with actor = authority; context = withGrant wrongAuthority
+  let selfPayload = base with grantee = authority
+  selfGrant <- issue selfPayload
+  result <- Fixtures.submitDisclosed authority [disclosure] do
+    exerciseCmd probe ContextProbe_Run with actor = authority; context = withGrant selfGrant
+  result === Some selfPayload
+
+test_grantRequiredCannotBeCaught : Script ()
+test_grantRequiredCannotBeCaught = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  (probe, disclosure) <- createProbe authority
+  Fixtures.submitDisclosedMustFailWith grantRequiredId
+    [("expected", partyToText authority), ("actual", partyToText actor)]
+    actor [disclosure] do
+      exerciseCmd probe ContextProbe_TryRun with actor; context = TextMap.empty
+  Fixtures.submitDisclosed authority [disclosure] do
+    exerciseCmd probe ContextProbe_TryRun with actor = authority; context = TextMap.empty
+
+test_controllerStillAuthenticatesActor : Script ()
+test_controllerStillAuthenticatesActor = script do
+  authority <- allocateParty "authority"
+  actor <- allocateParty "actor"
+  outsider <- allocateParty "outsider"
+  grant <- issue (grantData authority actor)
+  (probe, disclosure) <- createProbe authority
+  let options = actAs outsider <> disclose disclosure
+  Use.expectAuthorizationFailure options do
+    exerciseCmd probe ContextProbe_Run with actor = authority; context = TextMap.empty
+  Use.expectAuthorizationFailure options do
+    exerciseCmd probe ContextProbe_Run with actor; context = withGrant grant
+  Use.assertGrantActive actor grant
