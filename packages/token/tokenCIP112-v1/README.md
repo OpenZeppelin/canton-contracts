@@ -55,6 +55,9 @@ Daml interfaces or exceptions of its own.
 - The instrument admin and the account parties jointly maintain holdings.
 - Wallets act through the TSv2 interface choices; the choice bodies validate
   identity, funding, and expiry before they move value.
+- A transfer completes in one step when the receiver's account parties
+  authorize the same transaction. Otherwise the receiver accepts a pending
+  instruction.
 - A two-step transfer locks the transfer amount in a sender holding whose
   lock holders are the admin and the receiver's account parties, so the
   receiver's parties see that holding while the offer is pending. Accept
