@@ -1,0 +1,399 @@
+-- | One test per guard in the default templates' workflows. Each test drives
+-- a request to the guard and matches the guard's own message, so it fails if
+-- the guard is removed even when a later check or a missing authorization
+-- would also refuse the request.
+module OpenZeppelin.TokenCIP112V1GuardTest where
+
+import DA.Assert ((===))
+import DA.Date (date, Month(Sep))
+import DA.Optional (optionalToList)
+import DA.TextMap qualified as TextMap
+import DA.Time (addRelTime, days, hours, minutes, time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount, mintAccount, senderSide, receiverSide, nonIteratedAllocation)
+
+import OpenZeppelin.TokenCIP112WorkflowsV1.Holding (RegistryConfig(..))
+import OpenZeppelin.TokenCIP112WorkflowsV1.Transfer (TransferInstructionState(..))
+import OpenZeppelin.TokenCIP112V1.Holding
+import OpenZeppelin.TokenCIP112V1.Registry
+import OpenZeppelin.TokenCIP112V1.Transfer
+import OpenZeppelin.TokenCIP112V1ForeignAllocationTest (mustFailWith)
+import OpenZeppelin.TokenCIP112V1TestFixtures
+
+-- | Older than the registry's 90-day `maxTTL` at `t1`.
+staleTime : Time
+staleTime = time (date 2025 Sep 1) 0 0 0
+
+-- | The message of every actor-set check.
+actorsMismatch : Text
+actorsMismatch = "'actors' does not have the same elements as one of"
+
+-- | A holding created directly with the admin's and the owner's authority.
+holdingIn : Party -> HoldingV2.Account -> Text -> Decimal -> Optional HoldingV2.Lock -> Script (ContractId TokenHolding)
+holdingIn admin account instrumentId amount lock =
+  submit (actAs (admin :: optionalToList account.owner)) do
+    createCmd TokenHolding with
+      holding = HoldingV2.HoldingView with
+        account
+        instrumentId = HoldingV2.InstrumentId with admin; id = instrumentId
+        amount
+        lock
+        meta = emptyMetadata
+
+lockedBy : [Party] -> Optional Time -> Optional HoldingV2.Lock
+lockedBy holders expiresAt = Some HoldingV2.Lock with holders; expiresAt; expiresAfter = None; context = None
+
+-- | A second regular account owned by the same party.
+savingsAccount : Party -> HoldingV2.Account
+savingsAccount owner = HoldingV2.Account with owner = Some owner; provider = None; id = "savings"
+
+transferCmd
+  : Scenario -> [Party] -> TransferInstructionV2.Transfer
+  -> Commands TransferInstructionV2.TransferInstructionResult
+transferCmd Scenario{..} actors transfer =
+  exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+    TransferInstructionV2.TransferFactory_Transfer with transfer; actors; extraArgs = emptyExtraArgs
+
+allocateCmd
+  : Scenario -> [Party] -> AllocationV2.AllocationSpecification -> Time -> [ContractId TokenHolding]
+  -> Commands AllocationInstructionV2.AllocationInstructionResult
+allocateCmd Scenario{..} actors spec requestedAt inputs =
+  exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+    AllocationInstructionV2.AllocationFactory_Allocate with
+      settlement
+      allocation = spec
+      requestedAt
+      inputHoldingCids = map (toInterfaceContractId @HoldingV2.Holding) inputs
+      extraArgs = emptyExtraArgs
+      actors
+
+settleCmd
+  : ContractId AllocationV2.Allocation -> [Party] -> [AllocationV2.TransferLegSide]
+  -> Commands AllocationV2.AllocationResult
+settleCmd cid actors extraTransferLegSides =
+  exerciseCmd cid AllocationV2.Allocation_Settle with
+    actors
+    extraTransferLegSides
+    nextIterationFunding = None
+    extraArgs = emptyExtraArgs
+
+-- Holdings
+-----------
+
+testOwnerUnlockRefusesUnlockedHolding : Script ()
+testOwnerUnlockRefusesUnlockedHolding = do
+  Scenario{..} <- setup
+  cid <- mint admin alice 10.0
+  mustFailWith "holding is not locked" (actAs alice) do
+    exerciseCmd cid TokenHolding_OwnerUnlock
+
+-- | An indefinite lock never expires, so its owner can never release it.
+testOwnerUnlockRefusesIndefiniteLock : Script ()
+testOwnerUnlockRefusesIndefiniteLock = do
+  Scenario{..} <- setup
+  cid <- holdingIn admin (basicAccount alice) "TOK" 10.0 (lockedBy [admin] None)
+  setTime t4
+  mustFailWith "holding is locked indefinitely" (actAs alice) do
+    exerciseCmd cid TokenHolding_OwnerUnlock
+
+-- Transfer factory
+-------------------
+
+-- | The actors must be exactly the sender's parties, or both sides' parties.
+-- An extra actor is refused even when its authority would be harmless.
+testTransferRefusesExtraActor : Script ()
+testTransferRefusesExtraActor = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  mustFailWith actorsMismatch (actAs [alice, admin] <> discloseMany [rulesDisclosure])
+    (transferCmd s [alice, admin] (mkTransfer s alice bob 7.0 [input]))
+
+testTransferRefusesOtherAdmin : Script ()
+testTransferRefusesOtherAdmin = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let transfer = mkTransfer s alice bob 7.0 [input]
+  mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd s [alice] (transfer with instrumentId = transfer.instrumentId with admin = bob))
+
+testTransferRefusesZeroAmount : Script ()
+testTransferRefusesZeroAmount = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  mustFailWith "transfer must be well formed" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd s [alice] (mkTransfer s alice bob 0.0 [input]))
+
+-- | Special (mint and burn) accounts hold nothing, so they never take part
+-- in a transfer; supply changes go through mint and burn.
+testTransferRefusesSpecialAccount : Script ()
+testTransferRefusesSpecialAccount = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let transfer = mkTransfer s alice bob 7.0 [input]
+  mustFailWith "transfer accounts must be regular accounts" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd s [alice] (transfer with receiver = mintAccount))
+
+testTransferRefusesFutureRequestedAt : Script ()
+testTransferRefusesFutureRequestedAt = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let transfer = mkTransfer s alice bob 7.0 [input]
+  mustFailWith "strictly before deadline 'transfer.requestedAt'" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd s [alice] (transfer with requestedAt = t1 `addRelTime` minutes 5))
+
+testTransferRefusesWindowBeyondMaxTTL : Script ()
+testTransferRefusesWindowBeyondMaxTTL = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let transfer = mkTransfer s alice bob 7.0 [input]
+  mustFailWith "transfer execution window exceeds the registry's maximum TTL" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd s [alice] (transfer with executeBefore = t1 `addRelTime` days 91))
+
+testTransferRefusesStaleRequestedAt : Script ()
+testTransferRefusesStaleRequestedAt = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let transfer = mkTransfer s alice bob 7.0 [input]
+  mustFailWith "transfer requestedAt is older than the registry's maximum TTL" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd s [alice] (transfer with requestedAt = staleTime))
+
+testTransferRefusesNoInputs : Script ()
+testTransferRefusesNoInputs = do
+  s@Scenario{..} <- setup
+  mustFailWith "transfer requires input holdings to fund it" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd s [alice] (mkTransfer s alice bob 7.0 []))
+
+testTransferRefusesMixedInstruments : Script ()
+testTransferRefusesMixedInstruments = do
+  s@Scenario{..} <- setup
+  tok <- mint admin alice 10.0
+  usd <- holdingIn admin (basicAccount alice) "USD" 10.0 None
+  mustFailWith "input holdings must all match the transfer's instrument" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd s [alice] (mkTransfer s alice bob 7.0 [tok, usd]))
+
+-- | Funding must come from the sender's account, not another account of the
+-- same owner.
+testTransferRefusesInputFromOtherAccount : Script ()
+testTransferRefusesInputFromOtherAccount = do
+  s@Scenario{..} <- setup
+  input <- holdingIn admin (savingsAccount alice) "TOK" 10.0 None
+  mustFailWith "'inputHolding.account' is not equal to" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd s [alice] (mkTransfer s alice bob 7.0 [input]))
+
+-- Transfer instructions
+------------------------
+
+pendingTransfer : Scenario -> Script (ContractId TransferInstructionV2.TransferInstruction)
+pendingTransfer s@Scenario{..} = do
+  input <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [input])
+  pendingCid result
+
+testAcceptRefusesExtraActor : Script ()
+testAcceptRefusesExtraActor = do
+  s@Scenario{..} <- setup
+  instrCid <- pendingTransfer s
+  mustFailWith actorsMismatch (actAs [bob, admin]) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob, admin]; extraArgs = emptyExtraArgs
+
+testRejectRefusesExtraActor : Script ()
+testRejectRefusesExtraActor = do
+  s@Scenario{..} <- setup
+  instrCid <- pendingTransfer s
+  mustFailWith actorsMismatch (actAs [bob, admin]) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Reject with
+      actors = [bob, admin]; extraArgs = emptyExtraArgs
+
+testWithdrawRefusesExtraActor : Script ()
+testWithdrawRefusesExtraActor = do
+  s@Scenario{..} <- setup
+  instrCid <- pendingTransfer s
+  mustFailWith actorsMismatch (actAs [alice, admin]) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [alice, admin]; extraArgs = emptyExtraArgs
+
+-- | The factory always locks exactly the transfer amount, so only an
+-- instruction the admin and the sender create directly can lock less.
+-- Accepting it must not pay out more than is locked.
+testAcceptRefusesUnderfundedLock : Script ()
+testAcceptRefusesUnderfundedLock = do
+  s@Scenario{..} <- setup
+  locked <- holdingIn admin (basicAccount alice) "TOK" 5.0 (lockedBy [admin, bob] (Some t4))
+  instrCid <- submit (actAs [admin, alice]) do
+    createCmd TokenTransferInstruction with
+      state = TransferInstructionState with
+        transfer = mkTransfer s alice bob 7.0 [locked]
+        originalInputHoldingCids = []
+        lockedHoldingCids = [toInterfaceContractId locked]
+        expiresAt = t2
+        lockExpiresAt = t4
+  mustFailWith "'locked funding for TOK' is less than 'transfer.amount'" (actAs bob) do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferInstruction instrCid)
+      TransferInstructionV2.TransferInstruction_Accept with actors = [bob]; extraArgs = emptyExtraArgs
+
+-- | Admin cleanup waits until the funding lock has expired, so the sender
+-- can always recover the funds first.
+testTransferAdminGCWaitsForLockExpiry : Script ()
+testTransferAdminGCWaitsForLockExpiry = do
+  s@Scenario{..} <- setup
+  instrCid <- pendingTransfer s
+  setTime t3
+  mustFailWith "strictly before deadline 'lockExpiresAt'" (actAs admin) do
+    exerciseCmd (fromInterfaceContractId @TokenTransferInstruction instrCid) TokenTransferInstruction_AdminGC
+
+-- Allocation factory
+---------------------
+
+testAllocateRefusesExtraActor : Script ()
+testAllocateRefusesExtraActor = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  mustFailWith actorsMismatch (actAs [alice, admin] <> discloseMany [rulesDisclosure])
+    (allocateCmd s [alice, admin] (mkAllocationSpec admin alice [senderSide legAliceToBob]) t0 [input])
+
+testAllocateRefusesOtherAdmin : Script ()
+testAllocateRefusesOtherAdmin = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  mustFailWith "'allocation.admin' is not equal to" (actAs alice <> discloseMany [rulesDisclosure])
+    (allocateCmd s [alice] (mkAllocationSpec bob alice [senderSide legAliceToBob]) t0 [input])
+
+testAllocateRefusesNoLegsWithoutIteration : Script ()
+testAllocateRefusesNoLegsWithoutIteration = do
+  s@Scenario{..} <- setup
+  mustFailWith "allocation must authorize at least one transfer-leg side" (actAs alice <> discloseMany [rulesDisclosure])
+    (allocateCmd s [alice] (mkAllocationSpec admin alice []) t0 [])
+
+testAllocateRefusesFutureRequestedAt : Script ()
+testAllocateRefusesFutureRequestedAt = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  mustFailWith "strictly before deadline 'requestedAt'" (actAs alice <> discloseMany [rulesDisclosure])
+    (allocateCmd s [alice] (mkAllocationSpec admin alice [senderSide legAliceToBob]) (t1 `addRelTime` minutes 5) [input])
+
+testAllocateRefusesPastDeadline : Script ()
+testAllocateRefusesPastDeadline = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let spec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with settlementDeadline = Some t0
+  mustFailWith "at or past deadline 'allocation.settlementDeadline'" (actAs alice <> discloseMany [rulesDisclosure])
+    (allocateCmd s [alice] spec t0 [input])
+
+testAllocateRefusesStaleRequestedAt : Script ()
+testAllocateRefusesStaleRequestedAt = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  mustFailWith "requestedAt is older than the registry's maximum TTL" (actAs alice <> discloseMany [rulesDisclosure])
+    (allocateCmd s [alice] (mkAllocationSpec admin alice [senderSide legAliceToBob]) staleTime [input])
+
+-- Allocations
+--------------
+
+-- | Settling outside the batch factory skips the exact-cover check, so it
+-- needs the admin as well as the executors. An executor alone is refused.
+testSettleRefusesExecutorWithoutAdmin : Script ()
+testSettleRefusesExecutorWithoutAdmin = do
+  s@Scenario{..} <- setup
+  bobAlloc <- completedCid =<< allocate s bob [receiverSide legAliceToBob] []
+  mustFailWith actorsMismatch (actAs app) (settleCmd bobAlloc [app] [])
+
+testSettleRefusesAfterDeadline : Script ()
+testSettleRefusesAfterDeadline = do
+  s@Scenario{..} <- setup
+  bobAlloc <- completedCid =<< allocate s bob [receiverSide legAliceToBob] []
+  setTime t3
+  mustFailWith "at or past deadline 'allocation.settlementDeadline'" (actAs [admin, app]) (settleCmd bobAlloc [admin, app] [])
+
+-- | A settlement can never leave the authorizer with less than nothing: an
+-- extra leg larger than the locked funds is refused.
+testSettleRefusesNegativeTotal : Script ()
+testSettleRefusesNegativeTotal = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 5.0
+  let spec = (mkAllocationSpec admin alice []) with nextIterationFunding = Some (TextMap.fromList [("TOK", 5.0)])
+  aliceAlloc <- completedCid =<< allocateSpec s alice spec [input]
+  let extra = senderSide (mkTransferLeg "it-1" alice bob 8.0)
+  mustFailWith "'locked funds plus net credit for TOK' is less than 'zero'" (actAs [admin, app])
+    (settleCmd aliceAlloc [admin, app] [extra])
+
+testAllocationWithdrawRefusesExtraActor : Script ()
+testAllocationWithdrawRefusesExtraActor = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  aliceAlloc <- completedCid =<< allocate s alice [senderSide legAliceToBob] [input]
+  mustFailWith actorsMismatch (actAs [alice, admin]) do
+    exerciseCmd aliceAlloc AllocationV2.Allocation_Withdraw with
+      actors = [alice, admin]; extraArgs = emptyExtraArgs
+
+-- | A committed allocation stays available to its executors until the
+-- settlement deadline; after it, the authorizer can withdraw.
+testCommittedAllocationWithdrawWaitsForDeadline : Script ()
+testCommittedAllocationWithdrawWaitsForDeadline = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let spec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with committed = True
+  aliceAlloc <- completedCid =<< allocateSpec s alice spec [input]
+  let withdraw = exerciseCmd aliceAlloc AllocationV2.Allocation_Withdraw with
+        actors = [alice]; extraArgs = emptyExtraArgs
+  mustFailWith "Cannot withdraw a committed allocation before its settlement deadline" (actAs alice) withdraw
+  setTime t3
+  _ <- submit (actAs alice) withdraw
+  holdingAmounts alice >>= (=== [10.0])
+
+-- Registry
+-----------
+
+testSettleBatchRefusesExtraActor : Script ()
+testSettleBatchRefusesExtraActor = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  aliceAlloc <- completedCid =<< allocate s alice [senderSide legAliceToBob] [input]
+  bobAlloc <- completedCid =<< allocate s bob [receiverSide legAliceToBob] []
+  mustFailWith actorsMismatch (actAs [app, bob] <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob]
+        allocations = map nonIteratedAllocation [aliceAlloc, bobAlloc]
+        actors = [app, bob]
+        extraArgs = emptyExtraArgs
+
+testMintRefusesSpecialAccount : Script ()
+testMintRefusesSpecialAccount = do
+  Scenario{..} <- setup
+  mustFailWith "mint target must be a regular account" (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Mint with
+      account = mintAccount; instrumentId = "TOK"; amount = 10.0; reason = "mint"
+
+testBurnRefusesOtherAccount : Script ()
+testBurnRefusesOtherAccount = do
+  Scenario{..} <- setup
+  savings <- holdingIn admin (savingsAccount alice) "TOK" 10.0 None
+  mustFailWith "'holding.account' is not equal to" (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_Burn with
+      holdingCid = toInterfaceContractId savings; account = basicAccount alice; reason = "burn"
+
+-- | The registry only expires its own instructions. Its admin can fetch
+-- another registry's instruction when it is the receiver of that transfer.
+testExpireTransferInstructionsRefusesOtherRegistry : Script ()
+testExpireTransferInstructionsRefusesOtherRegistry = do
+  s@Scenario{..} <- setup
+  otherAdmin <- allocateParty "otherAdmin"
+  otherRulesCid <- submit otherAdmin do
+    createCmd TokenRules with
+      config = RegistryConfig with admin = otherAdmin; maxTTL = days 90; lockGrace = hours 1
+  Some otherDisclosure <- queryDisclosure @TokenRules otherAdmin otherRulesCid
+  let other = s with admin = otherAdmin; rulesCid = otherRulesCid; rulesDisclosure = otherDisclosure
+  input <- mint otherAdmin alice 10.0
+  instrCid <- pendingCid =<< instructTransfer other [alice] (mkTransfer other alice admin 7.0 [input])
+  setTime t3
+  mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs admin) do
+    exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
+      instructionCids = [fromInterfaceContractId @TokenTransferInstruction instrCid]; observers = []

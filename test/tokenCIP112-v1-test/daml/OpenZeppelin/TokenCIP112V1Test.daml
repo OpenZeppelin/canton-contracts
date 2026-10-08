@@ -27,6 +27,7 @@ import OpenZeppelin.TokenCIP112V1.Allocation
 import OpenZeppelin.TokenCIP112V1.Holding
 import OpenZeppelin.TokenCIP112V1.Registry
 import OpenZeppelin.TokenCIP112V1.Transfer
+import OpenZeppelin.TokenCIP112V1ForeignAllocationTest (mustFailWith)
 import OpenZeppelin.TokenCIP112V1TestFixtures
 
 -- | Happy path: two-leg DvP with net funding. Alice sends 10 and receives 4,
@@ -440,6 +441,25 @@ testTransferRejectAndWithdraw = do
   aliceAfter <- holdingAmounts alice
   sum aliceAfter === 10.0
 
+-- | Withdraw has no deadline. After `executeBefore`, while the lock is still
+-- live, the sender's parties recover the funds alone; accept already fails
+-- here (`testTransferGuards`).
+testTransferWithdrawAfterDeadline : Script ()
+testTransferWithdrawAfterDeadline = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  instrCid <- pendingCid result
+  -- Past executeBefore (t2), before the lock expires at t2 plus lockGrace.
+  setTime t3
+  _ <- submit (actAs alice) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  sum aliceAfter === 10.0
+
 -- | Guards: underfunded transfers and expired execution windows fail closed.
 testTransferGuards : Script ()
 testTransferGuards = do
@@ -540,7 +560,7 @@ testCommittedRequiresDeadline = do
   let badSpec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
         committed = True
         settlementDeadline = None
-  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+  mustFailWith "a committed allocation requires a settlement deadline" (actAs alice <> discloseMany [rulesDisclosure]) do
     exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
       AllocationInstructionV2.AllocationFactory_Allocate with
         settlement
@@ -687,7 +707,7 @@ testSpecialAuthorizerRefused = do
         meta = emptyMetadata
   -- `accountParties` resolves a special account to the admin, so the admin is
   -- the only plausible actor — and even the admin is refused.
-  submitMustFail (actAs admin <> discloseMany [rulesDisclosure]) do
+  mustFailWith "allocation authorizer must be a regular account" (actAs admin <> discloseMany [rulesDisclosure]) do
     exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
       AllocationInstructionV2.AllocationFactory_Allocate with
         settlement
@@ -797,7 +817,7 @@ testMintAndBurnEmitEvents = do
   map (.otherside) mintEvent.transferLegSides === [mintAccount]
   map (.amount) mintEvent.transferLegSides === [25.0]
   -- Minting a non-positive amount is refused.
-  submitMustFail (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+  mustFailWith "mint amount must be positive" (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_Mint with
       account = basicAccount alice
       instrumentId = "TOK"
