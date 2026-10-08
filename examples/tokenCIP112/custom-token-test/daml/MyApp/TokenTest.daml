@@ -399,6 +399,14 @@ testFrozenHoldingCannotBeFrozenAgain = do
   mustFailWith "holding is already frozen" (actAs complianceOfficer) do
     exerciseCmd frozenCid MyHolding_Freeze
 
+-- | A holding that is not frozen cannot be unfrozen.
+testUnfrozenHoldingCannotBeUnfrozen : Script ()
+testUnfrozenHoldingCannotBeUnfrozen = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  mustFailWith "holding is not frozen" (actAs complianceOfficer) do
+    exerciseCmd (fromInterfaceContractId @MyHolding aliceTok) MyHolding_Unfreeze
+
 -- | Owner unlock recreates the holding through `createHolding`, which would
 -- drop the freeze, so a frozen holding whose lock has expired is refused.
 -- Once unfrozen, the same unlock goes through.
