@@ -3,15 +3,16 @@
 -- runs `MyHolding_Spend`, a late acceptance creates a `MyHolding`, iteration
 -- successors are `MyAllocation`s, a frozen holding cannot move on any path,
 -- the pause switch blocks the factories, the fee leg pays the treasury, the
--- executor allowlist is enforced, roles are separate, and a foreign holding
--- is refused.
+-- executor allowlist is enforced, roles are separate, expired funding is
+-- reclaimed, and a foreign holding is refused.
 module MyApp.TokenTest where
 
 import DA.Action (unless)
 import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
+import DA.Foldable (forA_)
 import DA.List (sort)
-import DA.Optional (isSome, optionalToList)
+import DA.Optional (isNone, isSome, optionalToList)
 import DA.Text (isInfixOf)
 import DA.TextMap qualified as TextMap
 import DA.Time (days, hours, time)
@@ -28,10 +29,12 @@ import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide, nonIt
 import OpenZeppelin.TokenCIP112WorkflowsV1.Holding (RegistryConfig(..))
 import MyApp.Token
 
-t0, t1, t2 : Time
+t0, t1, t2, t3, t4 : Time
 t0 = time (date 2026 Jan 1) 0 0 0
 t1 = time (date 2026 Jan 1) 0 10 0
 t2 = time (date 2026 Jan 1) 0 20 0
+t3 = time (date 2026 Jan 1) 0 30 0
+t4 = time (date 2026 Jan 1) 2 0 0
 
 emptyExtraArgs : ExtraArgs
 emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
@@ -477,6 +480,71 @@ testExecutorAllowlist = do
     (allocateCmd app rogueSettlement alice (mkSpec app alice [senderSide leg] None) [aliceTok])
   _ <- allocate app alice (mkSpec app alice [senderSide leg] None) [aliceTok]
   pure ()
+
+-- Expiry and cleanup
+---------------------
+
+-- | Alice's pending transfer of 7 to bob and her allocation of 5. Both expire
+-- at t2, and both funding locks expire one lock grace later.
+lockAliceFunds : App -> Script (ContractId TransferInstructionV2.TransferInstruction, ContractId AllocationV2.Allocation)
+lockAliceFunds app@App{..} = do
+  transferInput <- mint app alice 10.0
+  allocationInput <- mint app alice 5.0
+  result <- submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [transferInput]))
+  instrCid <- pendingCid result
+  allocCid <- allocate app alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 5.0)] None) [allocationInput]
+  pure (instrCid, allocCid)
+
+-- | All of `owner`'s holdings are unlocked.
+assertNoLocks : Party -> Script ()
+assertNoLocks owner = do
+  holdings <- query @MyHolding owner
+  all (\(_, h) -> isNone h.holding.lock) holdings === True
+
+-- | Past t2 the admin expires the instruction and the allocation in batches
+-- through the rules contract, and the locked funds return to alice.
+testAdminExpiryReturnsFunds : Script ()
+testAdminExpiryReturnsFunds = do
+  app@App{..} <- setup
+  (instrCid, allocCid) <- lockAliceFunds app
+  setTime t3
+  submit (actAs admin) do
+    exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
+      instructionCids = [fromInterfaceContractId @MyTransferInstruction instrCid]
+  submit (actAs admin) do
+    exerciseCmd rulesCid MyRules_ExpireAllocations with
+      cancelArgs = [(allocCid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)]
+  balanceSeenBy alice alice >>= (=== [3.0, 5.0, 7.0])
+  assertNoLocks alice
+
+-- | Once the funding locks expire, alice unlocks her own holdings and the
+-- admin removes the instruction and allocation that still reference them.
+testOwnerUnlockThenAdminGC : Script ()
+testOwnerUnlockThenAdminGC = do
+  app@App{..} <- setup
+  (instrCid, allocCid) <- lockAliceFunds app
+  setTime t4
+  holdings <- query @MyHolding alice
+  forA_ [cid | (cid, h) <- holdings, isSome h.holding.lock] $ \cid ->
+    submit (actAs alice) do exerciseCmd cid MyHolding_OwnerUnlock
+  balanceSeenBy alice alice >>= (=== [3.0, 5.0, 7.0])
+  assertNoLocks alice
+  let instrTemplateCid = fromInterfaceContractId @MyTransferInstruction instrCid
+      allocTemplateCid = fromInterfaceContractId @MyAllocation allocCid
+  submit (actAs admin) do exerciseCmd instrTemplateCid MyTransferInstruction_AdminGC
+  submit (actAs admin) do exerciseCmd allocTemplateCid MyAllocation_AdminGC
+  queryContractId admin instrTemplateCid >>= (=== None)
+  queryContractId admin allocTemplateCid >>= (=== None)
+
+-- | The signatories can archive a holding and the rules contract directly.
+testSignatoriesArchive : Script ()
+testSignatoriesArchive = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  submit (actAs [admin, alice]) do archiveCmd (fromInterfaceContractId @MyHolding aliceTok)
+  submit (actAs admin) do archiveCmd rulesCid
+  balanceSeenBy alice alice >>= (=== [])
 
 -- Trust boundary
 -----------------
