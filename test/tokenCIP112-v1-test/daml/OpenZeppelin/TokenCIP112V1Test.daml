@@ -27,6 +27,7 @@ import OpenZeppelin.TokenCIP112V1.Allocation
 import OpenZeppelin.TokenCIP112V1.Holding
 import OpenZeppelin.TokenCIP112V1.Registry
 import OpenZeppelin.TokenCIP112V1.Transfer
+import OpenZeppelin.TokenCIP112V1ForeignAllocationTest (mustFailWith)
 import OpenZeppelin.TokenCIP112V1TestFixtures
 
 -- | Happy path: two-leg DvP with net funding. Alice sends 10 and receives 4,
@@ -559,7 +560,7 @@ testCommittedRequiresDeadline = do
   let badSpec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
         committed = True
         settlementDeadline = None
-  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
+  mustFailWith "a committed allocation requires a settlement deadline" (actAs alice <> discloseMany [rulesDisclosure]) do
     exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
       AllocationInstructionV2.AllocationFactory_Allocate with
         settlement
@@ -706,7 +707,7 @@ testSpecialAuthorizerRefused = do
         meta = emptyMetadata
   -- `accountParties` resolves a special account to the admin, so the admin is
   -- the only plausible actor — and even the admin is refused.
-  submitMustFail (actAs admin <> discloseMany [rulesDisclosure]) do
+  mustFailWith "allocation authorizer must be a regular account" (actAs admin <> discloseMany [rulesDisclosure]) do
     exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
       AllocationInstructionV2.AllocationFactory_Allocate with
         settlement
@@ -816,7 +817,7 @@ testMintAndBurnEmitEvents = do
   map (.otherside) mintEvent.transferLegSides === [mintAccount]
   map (.amount) mintEvent.transferLegSides === [25.0]
   -- Minting a non-positive amount is refused.
-  submitMustFail (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
+  mustFailWith "mint amount must be positive" (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_Mint with
       account = basicAccount alice
       instrumentId = "TOK"

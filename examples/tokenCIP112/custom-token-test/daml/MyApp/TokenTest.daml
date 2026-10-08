@@ -4,7 +4,7 @@
 -- successors are `MyAllocation`s, a frozen holding cannot move on any path,
 -- the pause switch blocks the factories, the fee leg pays the treasury, the
 -- executor allowlist is enforced, roles are separate, expired funding is
--- reclaimed, and a foreign holding is refused.
+-- reclaimed, and a foreign holding or allocation is refused.
 module MyApp.TokenTest where
 
 import DA.Action (unless)
@@ -12,6 +12,7 @@ import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
 import DA.Foldable (forA_)
 import DA.List (sort)
+import DA.Map qualified as Map
 import DA.Optional (isNone, isSome, optionalToList)
 import DA.Text (isInfixOf)
 import DA.TextMap qualified as TextMap
@@ -180,16 +181,19 @@ allocate app trader spec inputs = do
     AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
     other -> abort ("expected completed allocation, got: " <> show other)
 
+settleBatchCmd : App -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation] -> Commands AllocationV2.SettlementFactory_SettleBatchResult
+settleBatchCmd App{..} legs finalizedAllocs =
+  exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+    AllocationV2.SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = legs
+      allocations = finalizedAllocs
+      actors = [exchange]
+      extraArgs = emptyExtraArgs
+
 settleBatch : App -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation] -> Script AllocationV2.SettlementFactory_SettleBatchResult
-settleBatch App{..} legs finalizedAllocs =
-  submit (actAs exchange <> discloseMany [rulesDisclosure]) do
-    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
-      AllocationV2.SettlementFactory_SettleBatch with
-        settlement
-        transferLegs = legs
-        allocations = finalizedAllocs
-        actors = [exchange]
-        extraArgs = emptyExtraArgs
+settleBatch app legs finalizedAllocs =
+  submit (actAs app.exchange <> discloseMany [app.rulesDisclosure]) (settleBatchCmd app legs finalizedAllocs)
 
 -- | `MyHolding_Spend` exercises anywhere in a transaction tree.
 countSpends : TransactionTree -> Int
@@ -462,6 +466,34 @@ testPauseBlocksFactories = do
     (transferCmd app2 [alice, bob] (mkTransfer app2 alice bob 7.0 [aliceTok]))
   balanceSeenBy bob bob >>= (=== [7.0])
 
+-- | The settlement factory is paused too, so allocations made before the
+-- pause cannot settle until the registry is unpaused.
+testPauseBlocksSettlement : Script ()
+testPauseBlocksSettlement = do
+  app0@App{..} <- setup
+  aliceTok <- mint app0 alice 10.0
+  let leg = mkLeg "leg-1" alice bob 10.0
+  aliceAlloc <- allocate app0 alice (mkSpec app0 alice [senderSide leg] None) [aliceTok]
+  bobAlloc <- allocate app0 bob (mkSpec app0 bob [receiverSide leg] None) []
+  app <- pauseRegistry app0
+  mustFailWith "registry is paused" (actAs exchange <> discloseMany [app.rulesDisclosure])
+    (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]))
+
+-- | A paused registry cannot be paused again.
+testPausedRegistryCannotBePausedAgain : Script ()
+testPausedRegistryCannotBePausedAgain = do
+  app0 <- setup
+  app <- pauseRegistry app0
+  mustFailWith "registry is already paused" (actAs app.pauser) do
+    exerciseCmd app.rulesCid MyRules_Pause
+
+-- | A registry that is not paused cannot be unpaused.
+testUnpausedRegistryCannotBeUnpaused : Script ()
+testUnpausedRegistryCannotBeUnpaused = do
+  App{..} <- setup
+  mustFailWith "registry is not paused" (actAs pauser) do
+    exerciseCmd rulesCid MyRules_Unpause
+
 -- Fee on transfer
 ------------------
 
@@ -499,6 +531,17 @@ testFeeComposesTwoWorkflowCalls = do
   balanceSeenBy alice alice >>= (=== [49.5])
   balanceSeenBy bob bob >>= (=== [50.0])
 
+-- | The fee is a share of the transfer amount, so it must lie between 0 and
+-- 10000 basis points inclusive.
+testTransferFeeMustBeInRange : Script ()
+testTransferFeeMustBeInRange = do
+  App{..} <- setup
+  Some rules <- queryContractId admin rulesCid
+  submitMustFail admin do createCmd rules with transferFeeBps = -1
+  submitMustFail admin do createCmd rules with transferFeeBps = 10001
+  _ <- submit admin do createCmd rules with transferFeeBps = 10000
+  pure ()
+
 -- Registry policy
 ------------------
 
@@ -515,6 +558,23 @@ testExecutorAllowlist = do
     (allocateCmd app rogueSettlement alice (mkSpec app alice [senderSide leg] None) [aliceTok])
   _ <- allocate app alice (mkSpec app alice [senderSide leg] None) [aliceTok]
   pure ()
+
+-- | The allowlist is checked again at settlement, so allocations made before
+-- the admin dropped an executor cannot settle through the new rules.
+testSettlementChecksExecutorAllowlist : Script ()
+testSettlementChecksExecutorAllowlist = do
+  app0@App{..} <- setup
+  aliceTok <- mint app0 alice 10.0
+  let leg = mkLeg "leg-1" alice bob 10.0
+  aliceAlloc <- allocate app0 alice (mkSpec app0 alice [senderSide leg] None) [aliceTok]
+  bobAlloc <- allocate app0 bob (mkSpec app0 bob [receiverSide leg] None) []
+  Some rules <- queryContractId admin rulesCid
+  submit admin do archiveCmd rulesCid
+  newRulesCid <- submit admin do createCmd rules with allowedExecutors = []
+  Some disclosure <- queryDisclosure @MyRules admin newRulesCid
+  let app = app0 with rulesCid = newRulesCid; rulesDisclosure = disclosure
+  mustFailWith "a settlement executor is not approved" (actAs exchange <> discloseMany [disclosure])
+    (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]))
 
 -- Expiry and cleanup
 ---------------------
@@ -611,3 +671,83 @@ testForeignHoldingRefused = do
     (transferCmd app [attacker] (mkTransfer app attacker attacker 1000000.0
       [toInterfaceContractId @HoldingV2.Holding forgedCid]))
   balanceSeenBy attacker attacker >>= (=== [])
+
+-- | An `Allocation` the registry never created, whose view claims this
+-- registry. Its choice bodies fail, so a refusal from the registry shows the
+-- registry never ran them with its authority.
+template ForeignAllocation with
+    attacker : Party
+    claimedView : AllocationV2.AllocationView
+    observers : [Party]
+  where
+    signatory attacker
+    observer observers
+    interface instance AllocationV2.Allocation for ForeignAllocation where
+      view = claimedView
+      allocation_settleExtraObservers _ = []
+      allocation_cancelExtraObservers _ = []
+      allocation_withdrawExtraObservers _ = []
+      allocation_settleImpl _ _ = fail "foreign settle body ran"
+      allocation_withdrawImpl _ _ = fail "foreign withdraw body ran"
+      allocation_cancelImpl _ _ = fail "foreign cancel body ran"
+
+-- | A forged allocation by `attacker` for `sides`, visible to the admin and
+-- the exchange, and already expired.
+forgeAllocation : App -> Party -> [AllocationV2.TransferLegSide] -> Script (ContractId AllocationV2.Allocation)
+forgeAllocation app@App{..} attacker sides = do
+  cid <- submit attacker do
+    createCmd ForeignAllocation with
+      attacker
+      observers = [admin, exchange]
+      claimedView = AllocationV2.AllocationView with
+        originalAllocationCid = None
+        settlement
+        allocation = mkSpec app attacker sides None
+        holdingCids = []
+        createdAt = t0
+        numIterations = 0
+        expiresAt = Some t0
+        availableActions = Map.empty
+        meta = emptyMetadata
+  pure (toInterfaceContractId cid)
+
+-- | A forged sender-side allocation would pay bob from funds the attacker
+-- never locked. Settlement accepts only `MyAllocation`s.
+testForeignAllocationRefusedAtSettlement : Script ()
+testForeignAllocationRefusedAtSettlement = do
+  app@App{..} <- setup
+  attacker <- allocateParty "attacker"
+  let leg = mkLeg "leg-1" attacker bob 10.0
+  forged <- forgeAllocation app attacker [senderSide leg]
+  bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
+  mustFailWith "allocation is not an accepted implementation" (actAs exchange <> discloseMany [rulesDisclosure])
+    (settleBatchCmd app [leg] (map nonIteratedAllocation [forged, bobAlloc]))
+
+-- | Expiry would run the forged allocation's cancel body with the admin's
+-- authority. It accepts only `MyAllocation`s.
+testForeignAllocationRefusedAtExpiry : Script ()
+testForeignAllocationRefusedAtExpiry = do
+  app@App{..} <- setup
+  attacker <- allocateParty "attacker"
+  forged <- forgeAllocation app attacker [senderSide (mkLeg "leg-1" attacker bob 10.0)]
+  mustFailWith "allocation is not an accepted implementation" (actAs admin) do
+    exerciseCmd rulesCid MyRules_ExpireAllocations with
+      cancelArgs = [(forged, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)]
+
+-- | The registry only expires its own instructions. Its admin can fetch
+-- another registry's instruction when it is the receiver of that transfer.
+testExpireTransferInstructionsRefusesOtherRegistry : Script ()
+testExpireTransferInstructionsRefusesOtherRegistry = do
+  app@App{..} <- setup
+  otherAdmin <- allocateParty "otherAdmin"
+  Some rules <- queryContractId admin rulesCid
+  otherRulesCid <- submit otherAdmin do createCmd rules with config = rules.config with admin = otherAdmin
+  Some otherDisclosure <- queryDisclosure @MyRules otherAdmin otherRulesCid
+  let other = app with admin = otherAdmin; rulesCid = otherRulesCid; rulesDisclosure = otherDisclosure
+  aliceTok <- mint other alice 10.0
+  instrCid <- pendingCid =<< submit (actAs alice <> discloseMany [otherDisclosure])
+    (transferCmd other [alice] (mkTransfer other alice admin 7.0 [aliceTok]))
+  setTime t3
+  mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs admin) do
+    exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
+      instructionCids = [fromInterfaceContractId @MyTransferInstruction instrCid]
