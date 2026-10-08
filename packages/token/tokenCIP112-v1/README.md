@@ -55,6 +55,14 @@ Daml interfaces or exceptions of its own.
 - The instrument admin and the account parties jointly maintain holdings.
 - Wallets act through the TSv2 interface choices; the choice bodies validate
   identity, funding, and expiry before they move value.
+- A two-step transfer locks the transfer amount in a sender holding whose
+  lock holders are the admin and the receiver's account parties, so the
+  receiver's parties see that holding while the offer is pending. Accept
+  fails after `executeBefore`. Reject and withdraw have no deadline. Until
+  the lock expires at `executeBefore` plus `lockGrace`, withdraw is the only
+  recovery the sender's parties can perform alone. After `executeBefore`, the
+  admin alone may also return the funds to the sender through
+  `TokenTransferInstruction_Expire`.
 - An allocation created with `nextIterationFunding` set enables iterated
   settlement: the executors supply extra transfer legs per settlement
   iteration, bounded by the locked reserve plus incoming credits, and may

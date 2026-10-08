@@ -440,6 +440,25 @@ testTransferRejectAndWithdraw = do
   aliceAfter <- holdingAmounts alice
   sum aliceAfter === 10.0
 
+-- | Withdraw has no deadline. After `executeBefore`, while the lock is still
+-- live, the sender's parties recover the funds alone; accept already fails
+-- here (`testTransferGuards`).
+testTransferWithdrawAfterDeadline : Script ()
+testTransferWithdrawAfterDeadline = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  result <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
+  instrCid <- pendingCid result
+  -- Past executeBefore (t2), before the lock expires at t2 plus lockGrace.
+  setTime t3
+  _ <- submit (actAs alice) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  sum aliceAfter === 10.0
+
 -- | Guards: underfunded transfers and expired execution windows fail closed.
 testTransferGuards : Script ()
 testTransferGuards = do
