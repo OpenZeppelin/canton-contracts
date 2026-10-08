@@ -353,9 +353,9 @@ testAuditorObservesEvents = do
 --------------------
 
 -- | Only the compliance officer can freeze. A frozen holding is refused on
--- every consumption path, transfer, allocation, and burn, and on owner
--- unlock, while the standard view still shows it as an ordinary holding.
--- After unfreezing, the same transfer goes through.
+-- every consumption path, transfer, allocation, and burn, while the standard
+-- view still shows it as an ordinary holding. After unfreezing, the same
+-- transfer goes through.
 testFrozenHoldingCannotMove : Script ()
 testFrozenHoldingCannotMove = do
   app@App{..} <- setup
@@ -377,7 +377,6 @@ testFrozenHoldingCannotMove = do
       holdingCid = frozenIface
       account = basicAccount alice
       reason = "redeem"
-  submitMustFail (actAs alice) do exerciseCmd frozenCid MyHolding_OwnerUnlock
 
   -- Wallets reading the standard interface see nothing unusual.
   Some v <- queryInterfaceContractId @HoldingV2.Holding alice frozenIface
@@ -389,6 +388,24 @@ testFrozenHoldingCannotMove = do
     (transferCmd app [alice, bob] (mkTransfer app alice bob 7.0 [toInterfaceContractId @HoldingV2.Holding thawedCid]))
   balanceSeenBy bob bob >>= (=== [7.0])
   balanceSeenBy alice alice >>= (=== [3.0])
+
+-- | Owner unlock recreates the holding through `createHolding`, which would
+-- drop the freeze, so a frozen holding whose lock has expired is refused.
+-- Once unfrozen, the same unlock goes through.
+testFrozenHoldingCannotUnlock : Script ()
+testFrozenHoldingCannotUnlock = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  _ <- submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
+  [(lockedCid, _)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock)
+  -- t4 is past the lock's expiry: t2 plus the one-hour lock grace.
+  setTime t4
+  frozenCid <- submit (actAs complianceOfficer) do exerciseCmd lockedCid MyHolding_Freeze
+  mustFailWith "holding is frozen" (actAs alice) do exerciseCmd frozenCid MyHolding_OwnerUnlock
+  thawedCid <- submit (actAs complianceOfficer) do exerciseCmd frozenCid MyHolding_Unfreeze
+  _ <- submit (actAs alice) do exerciseCmd thawedCid MyHolding_OwnerUnlock
+  assertNoLocks alice
 
 -- Pause switch
 ---------------
