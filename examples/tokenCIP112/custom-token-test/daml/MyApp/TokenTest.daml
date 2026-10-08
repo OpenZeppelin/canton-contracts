@@ -389,6 +389,16 @@ testFrozenHoldingCannotMove = do
   balanceSeenBy bob bob >>= (=== [7.0])
   balanceSeenBy alice alice >>= (=== [3.0])
 
+-- | A frozen holding cannot be frozen again.
+testFrozenHoldingCannotBeFrozenAgain : Script ()
+testFrozenHoldingCannotBeFrozenAgain = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  frozenCid <- submit (actAs complianceOfficer) do
+    exerciseCmd (fromInterfaceContractId @MyHolding aliceTok) MyHolding_Freeze
+  mustFailWith "holding is already frozen" (actAs complianceOfficer) do
+    exerciseCmd frozenCid MyHolding_Freeze
+
 -- | Owner unlock recreates the holding through `createHolding`, which would
 -- drop the freeze, so a frozen holding whose lock has expired is refused.
 -- Once unfrozen, the same unlock goes through.
