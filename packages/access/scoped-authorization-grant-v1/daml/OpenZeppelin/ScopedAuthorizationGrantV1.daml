@@ -14,7 +14,6 @@ module OpenZeppelin.ScopedAuthorizationGrantV1
   , checkPermission
   , requirePermission
   , requireAuthorityOrGrant
-  , authorizationContextKey
   ) where
 
 import qualified DA.Fail as Fail
@@ -182,9 +181,3 @@ checkGrantMatches actor requirement grant = do
       , ("resourceInstanceCid", grant.scope.resourceInstanceCid == requirement.expectedScope.resourceInstanceCid)
       ])
     (grant.scope == requirement.expectedScope)
-
--- | Key for a grant contract ID in an extensible choice context, such as a
--- Splice `ChoiceContext`. The value is caller input: convert it to
--- `ContractId AuthorizationGrant` and validate it through a guard.
-authorizationContextKey : Text
-authorizationContextKey = "openzeppelin.com/scoped-authorization-grant"

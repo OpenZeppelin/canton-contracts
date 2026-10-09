@@ -17,9 +17,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   permissions with typed policies, expiry, revocation, conditional checks,
   usage records, and structured failures.
 - Added `requireAuthorityOrGrant`, which accepts the expected authority acting
-  directly or validates a presented grant, and `authorizationContextKey` for
-  passing grant contract IDs through extensible choice contexts such as Splice
-  `ExtraArgs`.
+  directly or validates a presented grant.
 
 ### `openzeppelin-api-pausable-v1`
 

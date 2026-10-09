@@ -132,15 +132,14 @@ when the choice does not need to evaluate alternatives itself.
 
 A generic interface can accept a grant without depending on this package. Its
 choice takes an extensible context, such as Splice's `ExtraArgs`, and its
-implementations read a grant contract ID from that context. Store the ID under
-`authorizationContextKey`, which is `openzeppelin.com/scoped-authorization-grant`,
-so backends can build the context the same way for every implementation.
+implementations read a grant contract ID from that context under a key the
+protocol defines.
 
 An implementation reading Splice's `ChoiceContext` converts the looked-up value
 and passes it to a guard:
 
 ```daml
-grantCid <- case TextMap.lookup SAG.authorizationContextKey extraArgs.context.values of
+grantCid <- case TextMap.lookup grantContextKey extraArgs.context.values of
   Some (AV_ContractId cid) -> pure (coerceContractId cid)
   Some _ -> fail "scoped authorization grant context value must be a contract id"
   None -> fail "scoped authorization grant required"
@@ -352,8 +351,6 @@ grant administration, transferability, counters, or an interface.
 - `requireAuthorityOrGrant` accepts the expected authority acting without a
   grant, or calls `requireAuthorization` for a presented grant. It returns the
   validated grant, or `None` on the direct path.
-- `authorizationContextKey` is the key for a grant contract ID in an extensible
-  choice context.
 
 Only the entries above and the documented grant choices form the consumer API.
 Matching helpers and `OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contain
