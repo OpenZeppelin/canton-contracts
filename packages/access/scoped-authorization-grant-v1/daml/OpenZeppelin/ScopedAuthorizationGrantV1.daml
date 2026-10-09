@@ -136,6 +136,8 @@ checkAuthorization authorization requirement = do
 
 -- | Validate and return the fetched grant after exercising Use.
 -- Call on the protected operation's committed path; a caught exception can roll back the event.
+-- Every success records Use. If the expected authority must also act without a grant,
+-- use `requireAuthorityOrGrant`.
 requireAuthorization : Authorization -> AuthorizationRequirement -> Update AuthorizationGrant
 requireAuthorization authorization requirement = do
   grant <- fetch authorization.grantCid
