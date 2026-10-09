@@ -70,3 +70,15 @@ import OpenZeppelin.TokenCIP112WorkflowsV1.Holding
 The ready-to-use templates over these workflows are
 `openzeppelin-tokenCIP112-v1`. `examples/tokenCIP112/custom-token` is a
 complete consumer that owns its templates and reuses these workflows.
+
+## License
+
+`OpenZeppelin.TokenCIP112WorkflowsV1.Holding`, `.Transfer`, and `.Allocation`
+contain code derived from the Splice
+[TestTokenV2](https://github.com/canton-network/splice/tree/ac51c32b66e1a3d7f8e4f845bfb6ca41ceda4439/token-standard/examples/splice-test-token-v2)
+example, Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or its
+affiliates, licensed under the Apache License 2.0
+([`LICENSES/Apache-2.0.txt`](../../../LICENSES/Apache-2.0.txt)). Those
+modules are licensed `MIT AND Apache-2.0`, and each carries its copyright and
+license notice. The rest of the package is licensed under the repository's
+MIT [`LICENSE`](../../../LICENSE).

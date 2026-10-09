@@ -1,3 +1,13 @@
+-- Copyright (c) 2026 OpenZeppelin
+-- Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or its affiliates. All rights reserved.
+-- SPDX-License-Identifier: MIT AND Apache-2.0
+--
+-- Portions of this file are derived from `Splice.Testing.Tokens.TestTokenV2.Holding`
+-- in the Splice TestTokenV2 example
+-- (https://github.com/canton-network/splice/tree/ac51c32b66e1a3d7f8e4f845bfb6ca41ceda4439/token-standard/examples/splice-test-token-v2),
+-- licensed under the Apache License 2.0 (`LICENSES/Apache-2.0.txt`).
+-- OpenZeppelin modified those portions.
+
 -- | The default holding template and the operations record the other
 -- default templates pass to the workflows.
 module OpenZeppelin.TokenCIP112V1.Holding where
