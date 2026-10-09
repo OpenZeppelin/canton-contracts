@@ -128,46 +128,35 @@ skipped this way. Fetching a rejected candidate also makes it a transaction
 dependency. Prefer selecting a grant in the backend
 when the choice does not need to evaluate alternatives itself.
 
-## Direct authority and choice contexts
+## Choice contexts
 
 A generic interface can accept a grant without depending on this package. Its
 choice takes an extensible context, such as Splice's `ExtraArgs`, and its
-implementations read an optional grant contract ID from that context. Store the
-ID under `authorizationContextKey`, which is
-`openzeppelin.com/scoped-authorization-grant`, so backends can build the context
-the same way for every implementation.
+implementations read a grant contract ID from that context. Store the ID under
+`authorizationContextKey`, which is `openzeppelin.com/scoped-authorization-grant`,
+so backends can build the context the same way for every implementation.
 
-`requireAuthorityOrGrant` handles both callers of such a choice:
-
-- If no grant is presented, the actor must be the expected authority. The guard
-  fetches nothing and records no use.
-- If a grant is presented, the guard calls `requireAuthorization`, even when the
-  actor is the authority. It records use and returns the grant.
-
-An implementation reading Splice's `ChoiceContext` passes the looked-up ID to the
-guard:
+An implementation reading Splice's `ChoiceContext` converts the looked-up value
+and passes it to a guard:
 
 ```daml
-presentedGrant <- case TextMap.lookup SAG.authorizationContextKey extraArgs.context.values of
-  None -> pure None
-  Some (AV_ContractId cid) -> pure (Some (coerceContractId cid))
+grantCid <- case TextMap.lookup SAG.authorizationContextKey extraArgs.context.values of
+  Some (AV_ContractId cid) -> pure (coerceContractId cid)
   Some _ -> fail "scoped authorization grant context value must be a contract id"
-void $ SAG.requireAuthorityOrGrant actor presentedGrant requirement
+  None -> fail "scoped authorization grant required"
+void $ SAG.requireAuthorization (SAG.Authorization with actor; grantCid) requirement
 ```
 
-The interface choice must take the actor as an argument and make it the
-controller, because Daml interfaces fix each choice's controller. Every
-implementation must then call the guard; otherwise any party can exercise the
-choice. Take the actor from the controller, never from the context. Derive the
-requirement from trusted state, as for any guard, and never from the context
-values or metadata. With a typed policy, pass
-`SAG.authorizationRequirement this self permission`.
+To also accept the expected authority acting without a grant, map a missing key
+to `None` and pass the `Optional` to `requireAuthorityOrGrant`.
 
-The direct path adds no power: the authority can already issue itself a grant
-and present it. It does leave no `AuthorizationGrant_Use` event. Use
-`requireAuthorization` when every protected operation must produce a usage record.
-The [authority-or-grant tests](../../../test/scoped-authorization-grant-v1-test/daml/OpenZeppelin/ScopedAuthorizationGrantV1AuthorityOrGrantTest.daml)
-model such a choice with a context map.
+Daml interfaces fix each choice's controller, so the interface choice takes the
+actor as an argument and makes it the controller. Every implementation must then
+call a guard; otherwise any party can exercise the choice. Take the actor from
+the controller and derive the requirement from trusted state, never from the
+context values or metadata. The
+[authority-or-grant tests](../../../test/scoped-authorization-grant-v1-test/daml/OpenZeppelin/ScopedAuthorizationGrantV1AuthorityOrGrantTest.daml)
+model such a choice with a Splice `ChoiceContext`.
 
 ## Resource identity
 
