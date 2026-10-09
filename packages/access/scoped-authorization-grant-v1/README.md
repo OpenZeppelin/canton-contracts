@@ -261,23 +261,22 @@ Neither check helper produces a `Use` event, whether its result is success or fa
 ## Validation results
 
 `checkAuthorization` and `checkPermission` return failures as `Left FailureStatus`.
-`requireAuthorization` and `requirePermission` raise them with
+`requireAuthorization`, `requirePermission`, and `requireAuthorityOrGrant` raise
+them with
 [`DA.Fail.failWithStatus`](https://docs.canton.network/appdev/reference/daml-standard-library/da-fail).
-All four helpers use these stable IDs and metadata, checking in the order shown:
+The helpers use these stable IDs and metadata. Grant checks run in the order
+shown and stop at the first mismatch:
 
-| Error ID | Metadata |
-|---|---|
-| `openzeppelin.com/scoped-authorization-grant-authority-mismatch` | `expected`, `actual`: issuing parties |
-| `openzeppelin.com/scoped-authorization-grant-grantee-mismatch` | `expected`, `actual`: actor and grant grantee |
-| `openzeppelin.com/scoped-authorization-grant-scope-mismatch` | `fields`: comma-separated mismatched scope field names |
-| `openzeppelin.com/scoped-authorization-grant-not-yet-valid` | `validFrom`: inclusive lower bound |
-| `openzeppelin.com/scoped-authorization-grant-expired` | `validUntil`: exclusive upper bound |
+| Error ID | Metadata | Raised by |
+|---|---|---|
+| `openzeppelin.com/scoped-authorization-grant-authority-mismatch` | `expected`, `actual`: issuing parties | All helpers |
+| `openzeppelin.com/scoped-authorization-grant-grantee-mismatch` | `expected`, `actual`: actor and grant grantee | All helpers |
+| `openzeppelin.com/scoped-authorization-grant-scope-mismatch` | `fields`: comma-separated mismatched scope field names | All helpers |
+| `openzeppelin.com/scoped-authorization-grant-not-yet-valid` | `validFrom`: inclusive lower bound | All helpers |
+| `openzeppelin.com/scoped-authorization-grant-expired` | `validUntil`: exclusive upper bound | All helpers |
+| `openzeppelin.com/scoped-authorization-grant-required` | `expected`, `actual`: expected authority and actor | `requireAuthorityOrGrant` without a grant, when the actor is not the expected authority |
 
 Direct `AuthorizationGrant_Use` calls raise the same validity-window failures.
-`requireAuthorityOrGrant` raises `openzeppelin.com/scoped-authorization-grant-required`
-when no grant is presented and the actor is not the expected authority. Its
-`expected` and `actual` metadata hold the expected authority and the actor. With a
-grant, it raises the failures above.
 
 All statuses use `failedPrecondition` (`FAILED_PRECONDITION`). For a returned
 status, inspect `errorId` and `meta`; returning `Left` does not fail the transaction.
