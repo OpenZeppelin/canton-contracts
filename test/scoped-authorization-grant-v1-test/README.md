@@ -14,7 +14,7 @@ package boundary used by an integrator.
 | Time | Unbounded, one-sided, and bounded windows; inclusive start and exclusive end; microsecond edges and windows; expired-at-creation grants; malformed and empty intervals |
 | Validation results | Helpers return the fetched grant on success; returned failure IDs and metadata; first-mismatch order; no Use on checks; fallback records only the selected grant; unavailable CIDs still abort; checks do not authenticate the actor |
 | Typed policies | Permission-to-authority mapping; shared issuance and guard requirements; logical and instance binding; consuming choices; check results and all five failure IDs; no Use on checks; selected-grant usage; unused fallback is not fetched; native fetch and controller failures still abort |
-| Authority or grant | Direct authority access without fetch or Use; missing-grant failure and metadata; grants under other context keys are ignored; presented grants are validated even for the authority and record Use; controller still authenticates the actor; stable context key |
+| Authority or grant | Direct authority access without fetch or Use; missing-grant failure and metadata; grants under other context keys are ignored; presented grants are validated even for the authority and record Use; controller still authenticates the actor |
 | Lifecycle | Reuse, independent duplicate grants, revocation, renunciation, stale disclosures, atomic command ordering |
 | Failures | All six guard failures remain uncatchable; first-mismatch order and metadata |
 | Use event | Nested exercise, direct-use limits, full-transaction and caught-exception rollback, rechecking after catch, no issuer authority leaking into sibling effects |

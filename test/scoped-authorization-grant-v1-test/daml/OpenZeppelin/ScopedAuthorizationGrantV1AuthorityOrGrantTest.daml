@@ -6,12 +6,14 @@ import DA.Functor (void)
 import qualified DA.TextMap as TextMap
 import Daml.Script
 
+import Splice.Api.Token.MetadataV1 (AnyValue(..), ChoiceContext(..))
+
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1Test as Fixtures
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1UseTest as Use
 
--- Stands in for an interface choice that reads an optional grant from an
--- extensible context. Separate consumer and grant authorities expose
+-- Stands in for an interface choice that reads an optional grant from a Splice
+-- choice context. Separate consumer and grant authorities expose
 -- authorization-context mistakes.
 template ContextProbe
   with
@@ -24,23 +26,32 @@ template ContextProbe
     nonconsuming choice ContextProbe_Run : Optional SAG.AuthorizationGrant
       with
         actor : Party
-        context : TextMap.TextMap (ContractId SAG.AuthorizationGrant)
+        context : ChoiceContext
       controller actor
       do
-        SAG.requireAuthorityOrGrant actor
-          (TextMap.lookup SAG.authorizationContextKey context) (probeRequirement this)
+        grantCid <- presentedGrant context
+        SAG.requireAuthorityOrGrant actor grantCid (probeRequirement this)
 
     nonconsuming choice ContextProbe_TryRun : ()
       with
         actor : Party
-        context : TextMap.TextMap (ContractId SAG.AuthorizationGrant)
+        context : ChoiceContext
       controller actor
       do
+        grantCid <- presentedGrant context
         try do
-          void $ SAG.requireAuthorityOrGrant actor
-            (TextMap.lookup SAG.authorizationContextKey context) (probeRequirement this)
+          void $ SAG.requireAuthorityOrGrant actor grantCid (probeRequirement this)
         catch
           (_ : AnyException) -> pure ()
+
+grantContextKey : Text
+grantContextKey = "example.com/authorization-grant"
+
+presentedGrant : ChoiceContext -> Update (Optional (ContractId SAG.AuthorizationGrant))
+presentedGrant context = case TextMap.lookup grantContextKey context.values of
+  Some (AV_ContractId cid) -> pure (Some (coerceContractId cid))
+  Some _ -> fail "scoped authorization grant context value must be a contract id"
+  None -> pure None
 
 probeRequirement : ContextProbe -> SAG.AuthorizationRequirement
 probeRequirement probe = SAG.AuthorizationRequirement with
@@ -64,15 +75,18 @@ grantData authority grantee = SAG.AuthorizationGrant with
 issue : SAG.AuthorizationGrant -> Script (ContractId SAG.AuthorizationGrant)
 issue grant = submit grant.authority do createCmd grant
 
-withGrant : ContractId SAG.AuthorizationGrant -> TextMap.TextMap (ContractId SAG.AuthorizationGrant)
-withGrant = TextMap.singleton SAG.authorizationContextKey
+contextWith : Text -> ContractId SAG.AuthorizationGrant -> ChoiceContext
+contextWith key grant = ChoiceContext with
+  values = TextMap.singleton key (AV_ContractId (coerceContractId grant))
+
+withGrant : ContractId SAG.AuthorizationGrant -> ChoiceContext
+withGrant = contextWith grantContextKey
+
+emptyContext : ChoiceContext
+emptyContext = ChoiceContext with values = TextMap.empty
 
 grantRequiredId : Text
 grantRequiredId = "openzeppelin.com/scoped-authorization-grant-required"
-
-test_contextKeyIsStable : Script ()
-test_contextKeyIsStable = script do
-  SAG.authorizationContextKey === "openzeppelin.com/scoped-authorization-grant"
 
 test_authorityActsWithoutGrant : Script ()
 test_authorityActsWithoutGrant = script do
@@ -81,7 +95,7 @@ test_authorityActsWithoutGrant = script do
   unrelated <- issue (grantData authority other)
   (probe, disclosure) <- createProbe authority
   -- A grant under another key is not presented.
-  forA_ [TextMap.empty, TextMap.singleton "other-key" unrelated] \context -> do
+  forA_ [emptyContext, contextWith "other-key" unrelated] \context -> do
     result <- Fixtures.submitDisclosed authority [disclosure] do
       exerciseCmd probe ContextProbe_Run with actor = authority; context
     result === None
@@ -100,7 +114,7 @@ test_nonAuthorityWithoutGrantFails = script do
   actor <- allocateParty "actor"
   grant <- issue (grantData authority actor)
   (probe, disclosure) <- createProbe authority
-  forA_ [TextMap.empty, TextMap.singleton "other-key" grant] \context ->
+  forA_ [emptyContext, contextWith "other-key" grant] \context ->
     Fixtures.submitDisclosedMustFailWith grantRequiredId
       [("expected", partyToText authority), ("actual", partyToText actor)]
       actor [disclosure] do
@@ -161,9 +175,9 @@ test_grantRequiredCannotBeCaught = script do
   Fixtures.submitDisclosedMustFailWith grantRequiredId
     [("expected", partyToText authority), ("actual", partyToText actor)]
     actor [disclosure] do
-      exerciseCmd probe ContextProbe_TryRun with actor; context = TextMap.empty
+      exerciseCmd probe ContextProbe_TryRun with actor; context = emptyContext
   Fixtures.submitDisclosed authority [disclosure] do
-    exerciseCmd probe ContextProbe_TryRun with actor = authority; context = TextMap.empty
+    exerciseCmd probe ContextProbe_TryRun with actor = authority; context = emptyContext
 
 test_controllerStillAuthenticatesActor : Script ()
 test_controllerStillAuthenticatesActor = script do
@@ -174,7 +188,7 @@ test_controllerStillAuthenticatesActor = script do
   (probe, disclosure) <- createProbe authority
   let options = actAs outsider <> disclose disclosure
   Use.expectAuthorizationFailure options do
-    exerciseCmd probe ContextProbe_Run with actor = authority; context = TextMap.empty
+    exerciseCmd probe ContextProbe_Run with actor = authority; context = emptyContext
   Use.expectAuthorizationFailure options do
     exerciseCmd probe ContextProbe_Run with actor; context = withGrant grant
   Use.assertGrantActive actor grant
