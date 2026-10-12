@@ -72,37 +72,47 @@ means the template implements both interfaces for life; dropping the `-v1`
 instance needs a new template version outside SCU and an offline contract
 migration that copies the flag.
 
-### Workflows and templates
+### Utilities, types, and templates
 
 A component whose choice bodies consumers want to reuse with templates of
-their own ships two production packages:
+their own ships three production packages:
 
 ```text
-<component>-workflows-v1   Choice bodies as functions, parameterised over the
-                           templates through constructor and policy
-                           operations; the serializable records its templates
-                           store; no templates, no interfaces
-<component>-v1             Ready-to-use templates delegating to the workflows
+<component>-types-v1   The serializable records its templates store; no
+                       templates, no interfaces
+<component>-utils      Choice bodies as functions, parameterised over the
+                       templates through constructor and policy operations;
+                       nothing serializable
+<component>-v1         Ready-to-use templates delegating to the utils
 ```
 
 Nothing executable is stored on the ledger: a pending contract holds records
 only and rebuilds its operations when its choice runs. A consumer who owns
-their templates depends on the workflows package alone and keeps their own
-upgrade lineage; they may move to a later compatible workflows version, or
-to a fork, because no contract references its functions. Storing the
-workflows package's records binds a template to that package's lineage, so
-those records only ever gain `Optional` fields; a consumer who stores the
-fields separately and builds the record per call avoids even that.
+their templates depends on the types and utils packages and keeps their own
+upgrade lineage. SCU ignores the utils package because it defines nothing
+serializable, so the consumer may move to any later utils version, switch to
+a fork, or drop it; no contract references its functions. Storing the types
+package's records binds a template to that package's lineage, so those
+records only ever gain `Optional` fields; a consumer who stores the fields
+separately and builds the record per call avoids even that.
+
+A utils package carries no `vN` suffix and versions by semver alone. When an
+API or types `-v2` package ships, one utils lineage carries helpers for both
+generations, and the generation shows in qualified imports rather than in
+the package name. `splice-token-standard-utils` 2.0.0 follows the same
+model: it depends on the `-v1` and `-v2` token standard API packages and
+bridges them in functions. The cost is that a consumer who takes a utils
+release adding `-v2` support also depends on and vets the `-v2` package; a
+fix needed by a `-v1`-only consumer is backported on a `1.x` branch.
 
 ## Dependency policy
 
 - Implementation packages do not depend on other implementation packages,
-  except a component's templates package on its own workflows package.
+  except a component's templates package on its own types package.
   Compose through stable interfaces or in a consuming application instead.
-- Shared pure helpers belong in a utility package that defines no templates,
-  interfaces, exceptions, or serializable public state. A workflows package
-  is the one utility package allowed to define serializable records, the
-  payloads its templates store.
+- Shared pure helpers belong in an `openzeppelin-<component>-utils` package
+  that defines no templates, interfaces, exceptions, or serializable types.
+  A component's templates package may depend on its own utils package.
 - Adding a production dependency requires explicit architecture review because
   an SCU lineage cannot later drop or downgrade a dependency other than a
   utility package.
@@ -113,22 +123,25 @@ fields separately and builds the record per call avoids even that.
 
 ## Naming and public modules
 
-Production package names use an organization prefix and an explicit
-contract-model generation:
+Production package names use an organization prefix and, except for utils
+packages, an explicit contract-model generation:
 
 ```text
 openzeppelin-scoped-authorization-grant-v1
 openzeppelin-api-rbac-v1
 openzeppelin-rbac-v1
+openzeppelin-cip112-token-utils
 ```
 
-Public modules use matching major-version namespaces:
+Public modules use matching major-version namespaces, and a utils package
+places its modules under `.Utils`:
 
 ```daml
 OpenZeppelin.ScopedAuthorizationGrantV1
 OpenZeppelin.RbacV1
 OpenZeppelin.RbacV1.Internal
 OpenZeppelin.Api.RbacV1
+OpenZeppelin.CIP112Token.Utils
 ```
 
 An API package places its modules under `OpenZeppelin.Api`, the same way the
@@ -138,8 +151,10 @@ exception definitions.
 
 Compatible SCU releases keep the same package name and increment the package
 version. A breaking change creates a sibling `-v2` package and a `V2` module
-suffix so both generations can coexist while consumers migrate. Template names
-remain stable component terms such as `AuthorizationGrant` and `RoleGrant`.
+suffix so both generations can coexist while consumers migrate. A utils
+package keeps its name across breaking changes and signals them with a new
+semver major version. Template names remain stable component terms such as
+`AuthorizationGrant` and `RoleGrant`.
 
 `exposed-modules` is not used as an API boundary: export information is not
 preserved when a consumer imports a compiled DAR through `data-dependencies`.

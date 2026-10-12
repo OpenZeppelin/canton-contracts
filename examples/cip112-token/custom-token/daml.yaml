@@ -1,0 +1,21 @@
+sdk-version: 3.5.8
+name: cip112-token-example
+source: daml
+version: 0.1.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  # A consumer that owns its templates depends on the types and utils
+  # packages only, never on the default templates.
+  - ../../../packages/token/cip112-token-types-v1/.daml/dist/openzeppelin-cip112-token-types-v1-0.1.0.dar
+  - ../../../packages/token/cip112-token-utils/.daml/dist/openzeppelin-cip112-token-utils-0.1.0.dar
+  - ../../../dars/vendor/splice-api-token-metadata-v1-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-holding-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-transfer-events-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-transfer-instruction-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-allocation-instruction-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-token-standard-utils-2.0.0.dar
+build-options:
+  - --target=2.1

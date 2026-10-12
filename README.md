@@ -22,8 +22,9 @@ The library provides the following packages under [`packages/`](packages/):
 | [Scoped Authorization Grant](packages/access/scoped-authorization-grant-v1/) | `openzeppelin-scoped-authorization-grant-v1` | `OpenZeppelin.ScopedAuthorizationGrantV1` |
 | [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
 | [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` |
-| [Token CIP-0112 workflows](packages/token/tokenCIP112-workflows-v1/) | `openzeppelin-tokenCIP112-workflows-v1` | `OpenZeppelin.TokenCIP112WorkflowsV1` |
-| [Token CIP-0112](packages/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` |
+| [Token CIP-0112 types](packages/token/cip112-token-types-v1/) | `openzeppelin-cip112-token-types-v1` | `OpenZeppelin.CIP112Token.TypesV1` |
+| [Token CIP-0112 utils](packages/token/cip112-token-utils/) | `openzeppelin-cip112-token-utils` | `OpenZeppelin.CIP112Token.Utils` |
+| [Token CIP-0112](packages/token/cip112-token-v1/) | `openzeppelin-cip112-token-v1` | `OpenZeppelin.CIP112TokenV1` |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching
@@ -110,7 +111,11 @@ release lineage.
   for templates or helper functions. Template-only components use one
   implementation package.
 - A component whose choice bodies consumers reuse with their own templates
-  ships them in a `-workflows-vN` package beside its templates package.
+  ships them in an `openzeppelin-<component>-utils` package that defines no
+  templates, interfaces, exceptions, or serializable types, and ships the
+  records its templates store in an `openzeppelin-<component>-types-vN`
+  package. SCU ignores a utils package, so it versions by semver alone, and a
+  consumer can move to any later version or drop it.
 - Breaking changes create a sibling `-v2` package and `V2` module suffix;
   compatible SCU releases retain the existing package name.
 - Composition between implementations happens through interfaces or in the

@@ -28,16 +28,21 @@ workspace files exist.
 ## Package rules
 
 - One independently released unit equals one package and one DAR.
-- Package names use `openzeppelin-<component>-vN`; module names use
-  `OpenZeppelin.<Component>VN`. API packages use
-  `openzeppelin-api-<component>-vN` and place their modules under
-  `OpenZeppelin.Api.<Component>VN`. A component's reusable choice bodies live in
-  `openzeppelin-<component>-workflows-vN` under
-  `OpenZeppelin.<Component>WorkflowsVN`; that package defines no templates or
-  interfaces, and the component's templates package may depend on it.
+- Package names follow these patterns:
+  - `openzeppelin-api-<component>-vN`, with modules under
+    `OpenZeppelin.Api.<Component>VN`, holds frozen interfaces.
+  - `openzeppelin-<component>-vN`, with modules under
+    `OpenZeppelin.<Component>VN`, holds templates and serializable types.
+  - `openzeppelin-<component>-utils`, with modules under
+    `OpenZeppelin.<Component>.Utils`, holds pure functions, failure statuses,
+    and reusable `Update` functions such as choice bodies. It is versioned by
+    semver only and defines no templates, interfaces, exceptions, or
+    serializable types.
+  - `openzeppelin-<component>-types-vN`, with modules under `OpenZeppelin.<Component>.TypesVN`, holds records that `-utils` functions read and that templates store.
+- A component's templates package may depend on its `-utils` package.
+- A component's templates package and its `-utils` package may both depend on its `-types` package.
 - A component that defines Daml interfaces or exceptions uses a frozen
-  `openzeppelin-api-<component>-vN` package containing no templates. Template-only components do not get
-  empty API packages.
+  `openzeppelin-api-<component>-vN` package containing no templates. Template-only components do not get empty API packages.
 - API packages may depend only on API packages. Implementation packages must not
   depend on other implementation packages without an accepted architecture
   decision; prefer interface composition or consumer-side wiring.
@@ -80,13 +85,15 @@ scripts/check.sh
 DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
-DAML_PACKAGE=packages/token/tokenCIP112-workflows-v1 dpm damlc lint
-DAML_PACKAGE=packages/token/tokenCIP112-v1 dpm damlc lint
+DAML_PACKAGE=packages/token/cip112-token-types-v1 dpm damlc lint
+DAML_PACKAGE=packages/token/cip112-token-utils dpm damlc lint
+DAML_PACKAGE=packages/token/cip112-token-v1 dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm damlc lint
 DAML_PACKAGE=test/api-pausable-v1-test dpm damlc lint
 DAML_PACKAGE=test/pausable-v1-test dpm damlc lint
-DAML_PACKAGE=test/tokenCIP112-workflows-v1-test dpm damlc lint
-DAML_PACKAGE=test/tokenCIP112-v1-test dpm damlc lint
+DAML_PACKAGE=test/cip112-token-types-v1-test dpm damlc lint
+DAML_PACKAGE=test/cip112-token-utils-test dpm damlc lint
+DAML_PACKAGE=test/cip112-token-v1-test dpm damlc lint
 DAML_PACKAGE=examples/licensing-app-v1 dpm damlc lint
 DAML_PACKAGE=examples/licensing-app-v1-test dpm damlc lint
 DAML_PACKAGE=examples/pausable/registry dpm damlc lint
@@ -98,21 +105,22 @@ DAML_PACKAGE=examples/pausable/vault dpm damlc lint
 DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
 DAML_PACKAGE=examples/treasury-rbac-v1 dpm damlc lint
 DAML_PACKAGE=examples/treasury-rbac-v1-test dpm damlc lint
-DAML_PACKAGE=examples/tokenCIP112/trading-test dpm damlc lint
-DAML_PACKAGE=examples/tokenCIP112/custom-token dpm damlc lint
-DAML_PACKAGE=examples/tokenCIP112/custom-token-test dpm damlc lint
+DAML_PACKAGE=examples/cip112-token/trading-test dpm damlc lint
+DAML_PACKAGE=examples/cip112-token/custom-token dpm damlc lint
+DAML_PACKAGE=examples/cip112-token/custom-token-test dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/api-pausable-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/pausable-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=test/tokenCIP112-workflows-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=test/tokenCIP112-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/cip112-token-types-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/cip112-token-utils-test dpm test --all --show-coverage
+DAML_PACKAGE=test/cip112-token-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=examples/pausable/registry-test dpm test --all
 DAML_PACKAGE=examples/pausable/retrofit-test dpm test --all
 DAML_PACKAGE=examples/pausable/vault-test dpm test --all
 DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=examples/tokenCIP112/trading-test dpm test --all
-DAML_PACKAGE=examples/tokenCIP112/custom-token-test dpm test --all
+DAML_PACKAGE=examples/cip112-token/trading-test dpm test --all
+DAML_PACKAGE=examples/cip112-token/custom-token-test dpm test --all
 scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=authorization scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=licensing scripts/check-sandbox.sh
