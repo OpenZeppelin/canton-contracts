@@ -30,13 +30,13 @@ Consumers of `openzeppelin-api-pausable-v1` and `openzeppelin-pausable-v1`.
 
 ## Token CIP-0112
 
-Consumers of `openzeppelin-cip112-token-v1`, `openzeppelin-cip112-token-types-v1`,
-and `openzeppelin-cip112-token-utils`.
+Consumers of `openzeppelin-token-v1`, `openzeppelin-token-types-v1`,
+and `openzeppelin-token-utils`.
 
 | Example | Tests | Shows |
 |---|---|---|
-| [`trading-test`](cip112-token/trading-test/) | scripts only | Running the default templates of `openzeppelin-cip112-token-v1`: launching a token from the DAR, allocations funded through the standard factory, exact-cover DvP batch settlement, and the iterated-settlement deposit flow |
-| [`custom-token`](cip112-token/custom-token/) | [`custom-token-test`](cip112-token/custom-token-test/) | A compliance-grade consumer that owns its own holding, instruction, allocation, and registry templates and reuses `openzeppelin-cip112-token-types-v1` and `openzeppelin-cip112-token-utils` unchanged: roles, an auditor, a compliance freeze enforced through the spend hook, a pause switch, a fee on transfer built from two workflow calls, and an executor allowlist |
+| [`trading-test`](token/trading-test/) | scripts only | Running the default templates of `openzeppelin-token-v1`: launching a token from the DAR, allocations funded through the standard factory, exact-cover DvP batch settlement, and the iterated-settlement deposit flow |
+| [`custom`](token/custom/) | [`custom-test`](token/custom-test/) | A compliance-grade consumer that owns its own holding, instruction, allocation, and registry templates and reuses `openzeppelin-token-types-v1` and `openzeppelin-token-utils` unchanged: roles, an auditor, a compliance freeze enforced through the spend hook, a pause switch, a fee on transfer built from two workflow calls, and an executor allowlist |
 
 ## Build and run
 

@@ -37,11 +37,11 @@ java_version="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9][0-9]*\).*/\1/
 SUITE="${OZ_SANDBOX_SUITE:-token}"
 case "$SUITE" in
 token)
-	TEST_PKG="test/cip112-token-v1-test"
+	TEST_PKG="test/token-v1-test"
 	SCRIPTS=(
-		OpenZeppelin.CIP112TokenV1SandboxTest:sandboxMintAndQuery
-		OpenZeppelin.CIP112TokenV1SandboxTest:sandboxTransferLifecycle
-		OpenZeppelin.CIP112TokenV1SandboxTest:sandboxMintAndBurn
+		OpenZeppelin.TokenV1.Test.Sandbox:sandboxMintAndQuery
+		OpenZeppelin.TokenV1.Test.Sandbox:sandboxTransferLifecycle
+		OpenZeppelin.TokenV1.Test.Sandbox:sandboxMintAndBurn
 	)
 	;;
 authorization)

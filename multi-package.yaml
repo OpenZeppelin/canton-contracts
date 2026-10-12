@@ -10,12 +10,12 @@ packages:
   - test/api-pausable-v1-test
   - packages/security/pausable-v1
   - test/pausable-v1-test
-  - packages/token/cip112-token-types-v1
-  - test/cip112-token-types-v1-test
-  - packages/token/cip112-token-utils
-  - test/cip112-token-utils-test
-  - packages/token/cip112-token-v1
-  - test/cip112-token-v1-test
+  - packages/token/token-types-v1
+  - test/token-types-v1-test
+  - packages/token/token-utils
+  - test/token-utils-test
+  - packages/token/token-v1
+  - test/token-v1-test
 
   # Integration examples
   - examples/licensing-app-v1
@@ -29,6 +29,6 @@ packages:
   - examples/pausable/vault-test
   - examples/treasury-rbac-v1
   - examples/treasury-rbac-v1-test
-  - examples/cip112-token/trading-test
-  - examples/cip112-token/custom-token
-  - examples/cip112-token/custom-token-test
+  - examples/token/trading-test
+  - examples/token/custom
+  - examples/token/custom-test

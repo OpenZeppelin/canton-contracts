@@ -130,7 +130,7 @@ packages, an explicit contract-model generation:
 openzeppelin-scoped-authorization-grant-v1
 openzeppelin-api-rbac-v1
 openzeppelin-rbac-v1
-openzeppelin-cip112-token-utils
+openzeppelin-token-utils
 ```
 
 Public modules use matching major-version namespaces, and a utils package
@@ -141,7 +141,7 @@ OpenZeppelin.ScopedAuthorizationGrantV1
 OpenZeppelin.RbacV1
 OpenZeppelin.RbacV1.Internal
 OpenZeppelin.Api.RbacV1
-OpenZeppelin.CIP112Token.Utils
+OpenZeppelin.Token.Utils
 ```
 
 An API package places its modules under `OpenZeppelin.Api`, the same way the

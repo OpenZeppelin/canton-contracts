@@ -1,0 +1,73 @@
+-- | The records a CIP-0112 registry's templates store: the rules contract's
+-- configuration and the payloads of pending transfer instructions and
+-- allocations. The functions in `openzeppelin-token-utils` read and
+-- return them.
+--
+-- Storing one of these records in a template binds that template to this
+-- package's upgrade lineage; a later version of this package may only append
+-- `Optional` fields to them. A template that stores the fields itself and
+-- builds the record per call keeps its payload independent of this package.
+module OpenZeppelin.Token.TypesV1 where
+
+import DA.Time (RelTime)
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+
+-- | Registry policy every factory workflow reads. A rules contract stores it
+-- or builds it in a choice body from its own fields.
+data RegistryConfig = RegistryConfig with
+    admin : Party
+      -- ^ The instrument admin: signs every holding and every pending
+      -- workflow contract, and controls supply and cleanup.
+    maxTTL : RelTime
+      -- ^ Upper bound on how long an allocation or transfer instruction may
+      -- occupy storage. Workflow deadlines beyond it are rejected outright.
+    lockGrace : RelTime
+      -- ^ How long a funding lock outlives its workflow contract's
+      -- `expiresAt`: the window in which the admin's expiry path is
+      -- guaranteed to succeed.
+  deriving (Eq, Show)
+
+-- | Payload of a pending transfer instruction. A template stores this record
+-- plus its own fields, or stores the fields separately and builds the record
+-- per call.
+data TransferInstructionState = TransferInstructionState with
+    transfer : TransferInstructionV2.Transfer
+      -- ^ The transfer as instructed, with `inputHoldingCids` rewritten to
+      -- the live locked funding.
+    originalInputHoldingCids : [ContractId HoldingV2.Holding]
+      -- ^ The inputs the sender supplied, already archived.
+    lockedHoldingCids : [ContractId HoldingV2.Holding]
+      -- ^ The locked funding backing the offer.
+    expiresAt : Time
+      -- ^ Storage bound; the admin may expire the instruction after it.
+    lockExpiresAt : Time
+      -- ^ When the funding lock expires. Strictly after `expiresAt`.
+  deriving (Eq, Show)
+
+-- | Payload of an allocation. A template stores this record plus its own
+-- fields, or stores the fields separately and builds the record per call.
+data AllocationState = AllocationState with
+    originalAllocationCid : Optional (ContractId AllocationV2.Allocation)
+      -- ^ The chain's first allocation, for iteration successors.
+    settlement : AllocationV2.SettlementInfo
+    allocation : AllocationV2.AllocationSpecification
+    lockedHoldingCids : [ContractId HoldingV2.Holding]
+      -- ^ The locked funding backing the allocation.
+    requestedAt : Time
+      -- ^ The wallet-supplied request time.
+    createdAt : Time
+      -- ^ When the original allocation was created; carried onto successors.
+    numIterations : Int
+      -- ^ Settlement iterations executed so far; zero for the original.
+    expiresAt : Time
+      -- ^ Storage bound; the admin may cancel the allocation after it.
+    lockExpiresAt : Time
+      -- ^ When the funding lock expires. Strictly after `expiresAt`.
+    maxTTL : RelTime
+      -- ^ The registry's storage bound, snapshotted at allocation time.
+    lockGrace : RelTime
+      -- ^ The registry's lock grace, snapshotted at allocation time.
+  deriving (Eq, Show)

@@ -35,4 +35,4 @@ artifacts/
 post-core/
 
 # Extension ideas for CIP112
-packages/token/cip112-token-v1/ideas.md
+packages/token/token-v1/ideas.md
