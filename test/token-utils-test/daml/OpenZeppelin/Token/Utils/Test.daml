@@ -3,7 +3,7 @@
 -- against a minimal local template it accepts and a foreign template it must
 -- refuse. The consumption, burn, and expiry bodies are run here too, for the
 -- guards that only a consumer's own `HoldingOps` or allocation template can
--- reach. The full workflows run under `test/token-v1` through the
+-- reach. The full workflows run under `test/token-v1-test` through the
 -- default templates and under `examples/token/custom-test`
 -- through a consumer's templates.
 module OpenZeppelin.Token.Utils.Test where
