@@ -1,7 +1,9 @@
 -- | Unit tests for the workflows package on its own: the pure predicates and
 -- bounds, the event-observer merge, and the two pinning builders, each run
 -- against a minimal local template it accepts and a foreign template it must
--- refuse. The full workflows run under `test/tokenCIP112-v1` through the
+-- refuse. The consumption, burn, and expiry bodies are run here too, for the
+-- guards that only a consumer's own `HoldingOps` or allocation template can
+-- reach. The full workflows run under `test/tokenCIP112-v1` through the
 -- default templates and under `examples/tokenCIP112/custom-token-test`
 -- through a consumer's templates.
 module OpenZeppelin.TokenCIP112WorkflowsV1Test where
@@ -20,16 +22,18 @@ import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (accountParties, basicAccount, maxTime)
+import Splice.TokenStandard.Utils (accountParties, basicAccount, maxTime, mintAccount, senderSide)
 
 import OpenZeppelin.TokenCIP112WorkflowsV1.Holding
 import OpenZeppelin.TokenCIP112WorkflowsV1.Transfer
 import OpenZeppelin.TokenCIP112WorkflowsV1.Allocation
+import OpenZeppelin.TokenCIP112WorkflowsV1.Registry
 
-t0, t1, t2 : Time
+t0, t1, t2, t3 : Time
 t0 = time (date 2026 Jan 1) 0 0 0
 t1 = time (date 2026 Jan 1) 0 10 0
 t2 = time (date 2026 Jan 1) 0 20 0
+t3 = time (date 2026 Jan 1) 0 30 0
 
 -- Local templates
 ------------------
@@ -104,6 +108,35 @@ template Harness with
       controller actors
       do pinAllocationTo @UnitAllocation cid
 
+    nonconsuming choice Harness_ConsumeLocked : HoldingV2.HoldingView
+      with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
+      controller actors
+      do consumeLockedHolding unitOps admin expectedAccount cid
+
+    nonconsuming choice Harness_ConsumeUnlocked : HoldingV2.HoldingView
+      with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
+      controller actors
+      do consumeUnlockedHolding unitOps admin expectedAccount cid
+
+    nonconsuming choice Harness_Burn : ()
+      with cid : ContractId HoldingV2.Holding; account : HoldingV2.Account; actors : [Party]
+      controller actors
+      do burnImpl unitOps admin cid account "burn"
+
+    nonconsuming choice Harness_ExpireAllocations : ()
+      with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]; actors : [Party]
+      controller actors
+      do expireAllocationsImpl (pinAllocationTo @UnitAllocation) admin cancelArgs
+
+-- | The operations the harness runs the bodies with. Events are not under
+-- test here, so emission does nothing.
+unitOps : HoldingOps
+unitOps = HoldingOps with
+  createHolding = \v -> toInterfaceContractId <$> create UnitHolding with holding = v
+  consumeHolding = consumeByArchive @UnitHolding
+  withEventLog = \_ -> pure ()
+  eventObservers = const []
+
 basicOwner : HoldingV2.HoldingView -> Party
 basicOwner v = case v.account.owner of
   Some p -> p
@@ -163,26 +196,30 @@ testBuilderRefusesForeignHolding = do
   Some _ <- queryContractId attacker foreignCid
   pure ()
 
+-- | The view of an allocation by `alice` under `admin`, expiring at `t2`.
+unitAllocationView : Party -> Party -> AllocationV2.AllocationView
+unitAllocationView admin alice = AllocationV2.AllocationView with
+  originalAllocationCid = None
+  settlement = AllocationV2.SettlementInfo with executors = [admin]; id = "s"; cid = None; meta = emptyMetadata
+  allocation = AllocationV2.AllocationSpecification with
+    admin
+    authorizer = basicAccount alice
+    transferLegSides = []
+    settlementDeadline = Some t2
+    nextIterationFunding = Some TextMap.empty
+    committed = False
+    meta = emptyMetadata
+  holdingCids = []
+  createdAt = t1
+  numIterations = 0
+  expiresAt = Some t2
+  availableActions = Map.empty
+  meta = emptyMetadata
+
 testPinAllocation : Script ()
 testPinAllocation = do
   Fixture{..} <- setup
-  let v = AllocationV2.AllocationView with
-        originalAllocationCid = None
-        settlement = AllocationV2.SettlementInfo with executors = [admin]; id = "s"; cid = None; meta = emptyMetadata
-        allocation = AllocationV2.AllocationSpecification with
-          admin
-          authorizer = basicAccount alice
-          transferLegSides = []
-          settlementDeadline = Some t2
-          nextIterationFunding = Some TextMap.empty
-          committed = False
-          meta = emptyMetadata
-        holdingCids = []
-        createdAt = t1
-        numIterations = 0
-        expiresAt = Some t2
-        availableActions = Map.empty
-        meta = emptyMetadata
+  let v = unitAllocationView admin alice
   genuine <- submit admin do createCmd UnitAllocation with claimedView = v; admin
   pinned <- submit admin do
     exerciseCmd harnessCid Harness_PinAllocation with
@@ -241,12 +278,60 @@ testTransferInstructionStatePredicate = do
         expiresAt = t2
         lockExpiresAt = t2 `addRelTime` hours 1
   isValidTransferInstructionState s === True
+  isValidTransferInstructionState (s with transfer = transfer with amount = 0.0) === False
+  isValidTransferInstructionState (s with transfer = transfer with sender = mintAccount) === False
+  isValidTransferInstructionState (s with transfer = transfer with receiver = mintAccount) === False
   isValidTransferInstructionState (s with lockedHoldingCids = []) === False
   isValidTransferInstructionState (s with lockExpiresAt = t2) === False
   -- The view advertises each side's account parties as the actor set.
   let v = transferInstructionView s
   Map.lookup TransferInstructionV2.TIA_Accept v.availableActions === Some [[bob]]
   Map.lookup TransferInstructionV2.TIA_Withdraw v.availableActions === Some [[alice]]
+
+testAllocationStatePredicate : Script ()
+testAllocationStatePredicate = do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  let leg = AllocationV2.TransferLeg with
+        transferLegId = "leg-1"
+        sender = basicAccount alice
+        receiver = basicAccount bob
+        amount = 5.0
+        instrumentId = "TOK"
+        meta = emptyMetadata
+      settlement = AllocationV2.SettlementInfo with executors = [bob]; id = "s"; cid = None; meta = emptyMetadata
+      allocation = AllocationV2.AllocationSpecification with
+        admin
+        authorizer = basicAccount alice
+        transferLegSides = [senderSide leg]
+        settlementDeadline = Some t2
+        nextIterationFunding = None
+        committed = False
+        meta = emptyMetadata
+      s = AllocationState with
+        originalAllocationCid = None
+        settlement
+        allocation
+        lockedHoldingCids = []
+        requestedAt = t0
+        createdAt = t1
+        numIterations = 0
+        expiresAt = t2
+        lockExpiresAt = t2 `addRelTime` hours 1
+        maxTTL = days 90
+        lockGrace = hours 1
+  isValidAllocationState s === True
+  isValidAllocationState (s with settlement = settlement with executors = []) === False
+  isValidAllocationState (s with allocation = allocation with transferLegSides = [senderSide leg with amount = 0.0]) === False
+  -- A special account may authorize legs, but holds nothing to reserve.
+  isValidAllocationState (s with allocation = allocation with authorizer = mintAccount) === True
+  isValidAllocationState (s with allocation = allocation with authorizer = mintAccount; nextIterationFunding = Some TextMap.empty) === False
+  isValidAllocationState (s with numIterations = -1) === False
+  isValidAllocationState (s with lockExpiresAt = t2) === False
+  isValidAllocationState (s with maxTTL = minutes 0) === False
+  isValidAllocationState (s with lockGrace = minutes 0) === False
+  isValidAllocationState (s with allocation = allocation with committed = True; settlementDeadline = None) === False
 
 -- | Storage bound: capped by the deadline, saturating at `maxTime`.
 testComputeStorageExpiry : Script ()
@@ -272,3 +357,127 @@ testEventObserversFor = do
         eventObservers = const [auditor, alice]
   eventObserversFor ops admin account === dedupSort (accountParties admin account <> [auditor])
   eventObserversFor (ops with eventObservers = const []) admin account === dedupSort [alice, provider]
+
+-- Consumption, burn, and expiry bodies
+---------------------------------------
+
+-- | A `UnitHolding` signed by `admin` and `owner`, in `account`.
+unitHolding : Party -> Party -> HoldingV2.Account -> Optional HoldingV2.Lock -> Script (ContractId HoldingV2.Holding)
+unitHolding admin owner account lock = do
+  cid <- submit (actAs [admin, owner]) do
+    createCmd UnitHolding with holding = mkHoldingView admin account "TOK" 5.0 lock
+  pure (toInterfaceContractId cid)
+
+lockUntil : Party -> Optional Time -> HoldingV2.Lock
+lockUntil holder expiresAt = HoldingV2.Lock with holders = [holder]; expiresAt; expiresAfter = None; context = None
+
+savingsAccount : Party -> HoldingV2.Account
+savingsAccount owner = HoldingV2.Account with owner = Some owner; provider = None; id = "savings"
+
+-- | The default templates need the instrument admin's authority to consume a
+-- holding, so another admin's holding fails authorization first. A consumer
+-- whose `consumeHolding` needs less authority relies on this check.
+testConsumeLockedRefusesOtherAdmin : Script ()
+testConsumeLockedRefusesOtherAdmin = do
+  Fixture{..} <- setup
+  otherAdmin <- allocateParty "otherAdmin"
+  cid <- unitHolding otherAdmin alice (basicAccount alice) (Some (lockUntil otherAdmin (Some t2)))
+  mustFailWith "'inputHolding.instrumentId.admin' is not equal to" (actAs [admin, otherAdmin]) $
+    exerciseCmd harnessCid Harness_ConsumeLocked with
+      cid; expectedAccount = basicAccount alice; actors = [admin, otherAdmin]
+
+-- | The same parties can hold in several accounts; funding must come from
+-- the expected one.
+testConsumeLockedRefusesOtherAccount : Script ()
+testConsumeLockedRefusesOtherAccount = do
+  Fixture{..} <- setup
+  cid <- unitHolding admin alice (savingsAccount alice) (Some (lockUntil admin (Some t2)))
+  mustFailWith "'inputHolding.account' is not equal to" (actAs admin) $
+    exerciseCmd harnessCid Harness_ConsumeLocked with
+      cid; expectedAccount = basicAccount alice; actors = [admin]
+
+testConsumeLockedRefusesUnlockedHolding : Script ()
+testConsumeLockedRefusesUnlockedHolding = do
+  Fixture{..} <- setup
+  cid <- unitHolding admin alice (basicAccount alice) None
+  mustFailWith "input holding must be locked" (actAs admin) $
+    exerciseCmd harnessCid Harness_ConsumeLocked with
+      cid; expectedAccount = basicAccount alice; actors = [admin]
+
+testConsumeUnlockedRefusesOtherAdmin : Script ()
+testConsumeUnlockedRefusesOtherAdmin = do
+  Fixture{..} <- setup
+  otherAdmin <- allocateParty "otherAdmin"
+  cid <- unitHolding otherAdmin alice (basicAccount alice) None
+  mustFailWith "'inputHolding.instrumentId.admin' is not equal to" (actAs [admin, otherAdmin]) $
+    exerciseCmd harnessCid Harness_ConsumeUnlocked with
+      cid; expectedAccount = basicAccount alice; actors = [admin, otherAdmin]
+
+testConsumeUnlockedRefusesOtherAccount : Script ()
+testConsumeUnlockedRefusesOtherAccount = do
+  Fixture{..} <- setup
+  cid <- unitHolding admin alice (savingsAccount alice) None
+  mustFailWith "'inputHolding.account' is not equal to" (actAs admin) $
+    exerciseCmd harnessCid Harness_ConsumeUnlocked with
+      cid; expectedAccount = basicAccount alice; actors = [admin]
+
+-- | An indefinite lock never expires, so the holding can never fund a new
+-- workflow.
+testConsumeUnlockedRefusesIndefiniteLock : Script ()
+testConsumeUnlockedRefusesIndefiniteLock = do
+  Fixture{..} <- setup
+  cid <- unitHolding admin alice (basicAccount alice) (Some (lockUntil admin None))
+  mustFailWith "input holding is locked indefinitely" (actAs admin) $
+    exerciseCmd harnessCid Harness_ConsumeUnlocked with
+      cid; expectedAccount = basicAccount alice; actors = [admin]
+
+testBurnRefusesOtherAdmin : Script ()
+testBurnRefusesOtherAdmin = do
+  Fixture{..} <- setup
+  otherAdmin <- allocateParty "otherAdmin"
+  cid <- unitHolding otherAdmin alice (basicAccount alice) None
+  mustFailWith "'holding.instrumentId.admin' is not equal to" (actAs [admin, otherAdmin]) $
+    exerciseCmd harnessCid Harness_Burn with
+      cid; account = basicAccount alice; actors = [admin, otherAdmin]
+
+-- | Batched expiry re-checks each allocation itself rather than trusting the
+-- allocation's cancel body, so each refusal below happens before
+-- `UnitAllocation`'s cancel body, which always fails, could run.
+expireUnit : Fixture -> AllocationV2.AllocationView -> [Party] -> Script (Commands ())
+expireUnit Fixture{..} v cancelActors = do
+  cid <- submit admin do createCmd UnitAllocation with claimedView = v; admin
+  pure $ exerciseCmd harnessCid Harness_ExpireAllocations with
+    cancelArgs =
+      [ ( toInterfaceContractId @AllocationV2.Allocation cid
+        , AllocationV2.Allocation_Cancel with
+            actors = cancelActors
+            extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata ) ]
+    actors = [admin]
+
+testExpireAllocationsRefusesOtherCancelActors : Script ()
+testExpireAllocationsRefusesOtherCancelActors = do
+  f@Fixture{..} <- setup
+  setTime t3
+  cmd <- expireUnit f (unitAllocationView admin alice) [admin, alice]
+  mustFailWith "'cancelArg.actors' is not equal to" (actAs admin) cmd
+
+testExpireAllocationsRefusesOtherAdmin : Script ()
+testExpireAllocationsRefusesOtherAdmin = do
+  f@Fixture{..} <- setup
+  setTime t3
+  let v = unitAllocationView admin alice
+  cmd <- expireUnit f (v with allocation = v.allocation with admin = alice) [admin]
+  mustFailWith "'allocation.admin' is not equal to" (actAs admin) cmd
+
+testExpireAllocationsRefusesNoExpiry : Script ()
+testExpireAllocationsRefusesNoExpiry = do
+  f@Fixture{..} <- setup
+  setTime t3
+  cmd <- expireUnit f ((unitAllocationView admin alice) with expiresAt = None) [admin]
+  mustFailWith "cannot expire an allocation without an expiry time" (actAs admin) cmd
+
+testExpireAllocationsRefusesLiveAllocation : Script ()
+testExpireAllocationsRefusesLiveAllocation = do
+  f@Fixture{..} <- setup
+  cmd <- expireUnit f (unitAllocationView admin alice) [admin]
+  mustFailWith "strictly before deadline 'allocation.expiresAt'" (actAs admin) cmd
