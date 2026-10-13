@@ -26,7 +26,6 @@ settleBatchImpl
   -> AllocationV2.SettlementFactory_SettleBatch
   -> Update AllocationV2.SettlementFactory_SettleBatchResult
 settleBatchImpl pin admin self arg = do
-  checkActors arg.actors [arg.settlement.executors]
   require "a settlement batch must cover at least one transfer leg"
     (not (null arg.transferLegs))
   let perAllocationExtraArgs _allocView _settleArg = pure ExtraArgs with
