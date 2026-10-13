@@ -15,9 +15,9 @@ them contain source derived from the Splice TestTokenV2 example:
 
 | Package | Apache-2.0 content in the DAR |
 |---|---|
-| `openzeppelin-token-types-v1` | Splice DALFs |
-| `openzeppelin-token-utils` | Splice DALFs; `OpenZeppelin.Token.Utils.Holding`, `.Transfer`, and `.Allocation` |
-| `openzeppelin-token-v1` | Splice DALFs; `OpenZeppelin.TokenV1.Holding` and `.Registry` |
+| `openzeppelin-token-cip112-types-v1` | Splice DALFs |
+| `openzeppelin-token-cip112-utils` | Splice DALFs; `OpenZeppelin.Token.Cip112.Utils.Holding`, `.Transfer`, and `.Allocation` |
+| `openzeppelin-token-cip112-v1` | Splice DALFs; `OpenZeppelin.Token.Cip112.V1.Holding` and `.Registry` |
 
 A release of one of these packages:
 
