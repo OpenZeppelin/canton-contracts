@@ -22,9 +22,9 @@ The library provides the following packages under [`packages/`](packages/):
 | [Scoped Authorization Grant](packages/access/scoped-authorization-grant-v1/) | `openzeppelin-scoped-authorization-grant-v1` | `OpenZeppelin.ScopedAuthorizationGrantV1` |
 | [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
 | [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` |
-| [Token CIP-0112 types](packages/token/cip112-token-types-v1/) | `openzeppelin-cip112-token-types-v1` | `OpenZeppelin.CIP112Token.TypesV1` |
-| [Token CIP-0112 utils](packages/token/cip112-token-utils/) | `openzeppelin-cip112-token-utils` | `OpenZeppelin.CIP112Token.Utils` |
-| [Token CIP-0112](packages/token/cip112-token-v1/) | `openzeppelin-cip112-token-v1` | `OpenZeppelin.CIP112TokenV1` |
+| [Token CIP-0112 types](packages/token/token-cip112-types-v1/) | `openzeppelin-token-cip112-types-v1` | `OpenZeppelin.Token.Cip112.TypesV1` |
+| [Token CIP-0112 utils](packages/token/token-cip112-utils/) | `openzeppelin-token-cip112-utils` | `OpenZeppelin.Token.Cip112.Utils` |
+| [Token CIP-0112](packages/token/token-cip112-v1/) | `openzeppelin-token-cip112-v1` | `OpenZeppelin.Token.Cip112.V1` |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching

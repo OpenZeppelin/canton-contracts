@@ -130,7 +130,7 @@ packages, an explicit contract-model generation:
 openzeppelin-scoped-authorization-grant-v1
 openzeppelin-api-rbac-v1
 openzeppelin-rbac-v1
-openzeppelin-cip112-token-utils
+openzeppelin-token-cip112-utils
 ```
 
 Public modules use matching major-version namespaces, and a utils package
@@ -141,8 +141,17 @@ OpenZeppelin.ScopedAuthorizationGrantV1
 OpenZeppelin.RbacV1
 OpenZeppelin.RbacV1.Internal
 OpenZeppelin.Api.RbacV1
-OpenZeppelin.CIP112Token.Utils
+OpenZeppelin.Token.Cip112.Utils
 ```
+
+A component that implements a named standard carries the standard as a second
+segment of its component name and module namespace: the CIP-0112 token is
+`openzeppelin-token-cip112-v1` under `OpenZeppelin.Token.Cip112.V1`. The
+`-vN` suffix counts this package's own breaking changes, not the standard's
+generation; naming the standard keeps the two numbers apart.
+A sibling implementation of another token standard shares the
+`token` category and the `OpenZeppelin.Token` namespace without renaming
+either.
 
 An API package places its modules under `OpenZeppelin.Api`, the same way the
 Splice token standard places its interface modules under `Splice.Api`. The
