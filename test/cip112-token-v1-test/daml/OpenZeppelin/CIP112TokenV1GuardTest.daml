@@ -2,7 +2,7 @@
 -- a request to the guard and matches the guard's own message, so it fails if
 -- the guard is removed even when a later check or a missing authorization
 -- would also refuse the request.
-module OpenZeppelin.TokenCIP112V1GuardTest where
+module OpenZeppelin.CIP112TokenV1GuardTest where
 
 import DA.Assert ((===))
 import DA.Date (date, Month(Sep))
