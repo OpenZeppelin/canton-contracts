@@ -7,6 +7,7 @@ import qualified OpenZeppelin.ScopedAuthorizationGrantV1UseTest as Use
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1BoundaryTest as Boundary
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1CheckTest as Check
 import qualified OpenZeppelin.ScopedAuthorizationGrantV1PolicyTest as Policy
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1AuthorityOrGrantTest as AuthorityOrGrant
 
 -- One runner preserves fresh party allocation across the shared ledger.
 sandboxAuthorization : Script ()
@@ -36,6 +37,10 @@ sandboxAuthorization = script do
   Check.test_checkFallbackRecordsOnlySelectedUse
   Check.test_checkUnavailableGrantsAbort
   Check.test_checkDoesNotAuthenticateActor
+  AuthorityOrGrant.test_authorityActsWithoutGrant
+  AuthorityOrGrant.test_nonAuthorityWithoutGrantFails
+  AuthorityOrGrant.test_presentedGrantRecordsUse
+  AuthorityOrGrant.test_grantRequiredCannotBeCaught
   Use.test_directUseRespectsValidityWindow
   Check.checkValidityWindowsFrom (addRelTime Core.t1 (days 2))
   Use.oneMicrosecondWindowFrom (addRelTime Core.t1 (days 5))
