@@ -16,3 +16,4 @@ data-dependencies:
   - ../../dars/vendor/splice-api-token-transfer-instruction-v2-1.0.0.dar
 build-options:
   - --target=2.1
+  - -Wno-template-interface-depends-on-daml-script
