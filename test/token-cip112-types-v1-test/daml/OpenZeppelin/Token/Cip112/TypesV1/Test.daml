@@ -1,0 +1,73 @@
+-- | Tests for the types package on its own: a template stores every record,
+-- and the ledger returns each one unchanged. The functions that read and
+-- return the records run under `test/token-cip112-utils-test` and
+-- `test/token-cip112-v1-test`.
+module OpenZeppelin.Token.Cip112.TypesV1.Test where
+
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.Time (addRelTime, days, hours, time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+
+import OpenZeppelin.Token.Cip112.TypesV1
+
+-- | Stores all three records, as a registry's templates do.
+template Stored with
+    admin : Party
+    config : RegistryConfig
+    instruction : TransferInstructionState
+    allocation : AllocationState
+  where
+    signatory admin
+
+testRecordsRoundTripThroughAPayload : Script ()
+testRecordsRoundTripThroughAPayload = do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  let t0 = time (date 2026 Jan 1) 0 0 0
+      t1 = t0 `addRelTime` hours 1
+      account p = HoldingV2.Account with owner = Some p; provider = None; id = ""
+      config = RegistryConfig with admin; maxTTL = days 90; lockGrace = hours 1
+      instruction = TransferInstructionState with
+        transfer = TransferInstructionV2.Transfer with
+          sender = account alice
+          receiver = account bob
+          amount = 7.0
+          instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+          requestedAt = t0
+          executeBefore = t1
+          inputHoldingCids = []
+          meta = emptyMetadata
+        originalInputHoldingCids = []
+        lockedHoldingCids = []
+        expiresAt = t1
+        lockExpiresAt = t1 `addRelTime` hours 1
+      allocation = AllocationState with
+        originalAllocationCid = None
+        settlement = AllocationV2.SettlementInfo with
+          executors = [admin]; id = "s"; cid = None; meta = emptyMetadata
+        allocation = AllocationV2.AllocationSpecification with
+          admin
+          authorizer = account alice
+          transferLegSides = []
+          settlementDeadline = Some t1
+          nextIterationFunding = None
+          committed = False
+          meta = emptyMetadata
+        lockedHoldingCids = []
+        requestedAt = t0
+        createdAt = t0
+        numIterations = 0
+        expiresAt = t1
+        lockExpiresAt = t1 `addRelTime` hours 1
+        maxTTL = days 90
+        lockGrace = hours 1
+      stored = Stored with admin; config; instruction; allocation
+  cid <- submit admin do createCmd stored
+  queryContractId admin cid >>= (=== Some stored)

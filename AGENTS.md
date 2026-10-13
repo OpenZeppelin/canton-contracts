@@ -39,11 +39,15 @@ workspace files exist.
     semver only and defines no templates, interfaces, exceptions, or
     serializable types.
   - `openzeppelin-<component>-types-vN`, with modules under `OpenZeppelin.<Component>.TypesVN`, holds records that `-utils` functions read and that templates store.
-- `<component>` names the domain, not the proposal that specifies it. The
-  CIP-0112 token component is `token`, so its packages are
-  `openzeppelin-token-v1`, `openzeppelin-token-utils`, and
-  `openzeppelin-token-types-v1`. The package `README.md` names the standard it
-  implements.
+- `<component>` names the domain and, when the component implements a named
+  standard, the standard as a second segment. A multi-segment component maps
+  each segment to a module namespace segment, so its templates package sits
+  under `OpenZeppelin.<Domain>.<Standard>.VN`. The CIP-0112 token component is
+  `token-cip112`: its packages are `openzeppelin-token-cip112-v1`,
+  `openzeppelin-token-cip112-utils`, and `openzeppelin-token-cip112-types-v1`,
+  with modules under `OpenZeppelin.Token.Cip112.V1`,
+  `OpenZeppelin.Token.Cip112.Utils`, and `OpenZeppelin.Token.Cip112.TypesV1`.
+  The package `README.md` names the standard it implements.
 - A component's templates package may depend on its `-utils` package.
 - A component's templates package and its `-utils` package may both depend on its `-types` package.
 - A component that defines Daml interfaces or exceptions uses a frozen
@@ -58,7 +62,7 @@ workspace files exist.
 - Token test packages are named after the package they test plus `-test`.
   Their modules sit under `<Root>.Test`, where `<Root>` is the tested package's
   module root, with one module per suite under `<Root>.Test.<Suite>`: for
-  example `OpenZeppelin.TokenV1.Test` and `OpenZeppelin.TokenV1.Test.Sandbox`.
+  example `OpenZeppelin.Token.Cip112.V1.Test` and `OpenZeppelin.Token.Cip112.V1.Test.Sandbox`.
 - Do not use `exposed-modules` as an API boundary. Use documented public modules
   and `.Internal` naming for implementation details.
 - Category directories under `packages/` and `experiments/` are navigation only
@@ -94,15 +98,15 @@ scripts/check.sh
 DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
-DAML_PACKAGE=packages/token/token-types-v1 dpm damlc lint
-DAML_PACKAGE=packages/token/token-utils dpm damlc lint
-DAML_PACKAGE=packages/token/token-v1 dpm damlc lint
+DAML_PACKAGE=packages/token/token-cip112-types-v1 dpm damlc lint
+DAML_PACKAGE=packages/token/token-cip112-utils dpm damlc lint
+DAML_PACKAGE=packages/token/token-cip112-v1 dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm damlc lint
 DAML_PACKAGE=test/api-pausable-v1-test dpm damlc lint
 DAML_PACKAGE=test/pausable-v1-test dpm damlc lint
-DAML_PACKAGE=test/token-types-v1-test dpm damlc lint
-DAML_PACKAGE=test/token-utils-test dpm damlc lint
-DAML_PACKAGE=test/token-v1-test dpm damlc lint
+DAML_PACKAGE=test/token-cip112-types-v1-test dpm damlc lint
+DAML_PACKAGE=test/token-cip112-utils-test dpm damlc lint
+DAML_PACKAGE=test/token-cip112-v1-test dpm damlc lint
 DAML_PACKAGE=examples/licensing-app-v1 dpm damlc lint
 DAML_PACKAGE=examples/licensing-app-v1-test dpm damlc lint
 DAML_PACKAGE=examples/pausable/registry dpm damlc lint
@@ -114,22 +118,22 @@ DAML_PACKAGE=examples/pausable/vault dpm damlc lint
 DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
 DAML_PACKAGE=examples/treasury-rbac-v1 dpm damlc lint
 DAML_PACKAGE=examples/treasury-rbac-v1-test dpm damlc lint
-DAML_PACKAGE=examples/token/trading-test dpm damlc lint
-DAML_PACKAGE=examples/token/custom dpm damlc lint
-DAML_PACKAGE=examples/token/custom-test dpm damlc lint
+DAML_PACKAGE=examples/token/token-cip112-trading-test dpm damlc lint
+DAML_PACKAGE=examples/token/token-cip112-custom dpm damlc lint
+DAML_PACKAGE=examples/token/token-cip112-custom-test dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/api-pausable-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/pausable-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=test/token-types-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=test/token-utils-test dpm test --all --show-coverage
-DAML_PACKAGE=test/token-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/token-cip112-types-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/token-cip112-utils-test dpm test --all --show-coverage
+DAML_PACKAGE=test/token-cip112-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=examples/pausable/registry-test dpm test --all
 DAML_PACKAGE=examples/pausable/retrofit-test dpm test --all
 DAML_PACKAGE=examples/pausable/vault-test dpm test --all
 DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=examples/token/trading-test dpm test --all
-DAML_PACKAGE=examples/token/custom-test dpm test --all
+DAML_PACKAGE=examples/token/token-cip112-trading-test dpm test --all
+DAML_PACKAGE=examples/token/token-cip112-custom-test dpm test --all
 scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=authorization scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=licensing scripts/check-sandbox.sh
