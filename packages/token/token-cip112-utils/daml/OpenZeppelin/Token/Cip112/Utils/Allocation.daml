@@ -163,9 +163,11 @@ allocationFactoryImpl config ops createAllocation arg = do
       authorizer = allocation.authorizer
   checkActors arg.actors [accountParties admin authorizer]
   requireMatchExpected ("allocation.admin", allocation.admin) admin
-  -- Special (mint/burn) accounts cannot author allocations: the netting
-  -- helper zeroes their leg sides, so such an allocation would lock nothing
-  -- and settle as an unevented supply change.
+  -- Special (mint/burn) accounts cannot author allocations. Such an
+  -- allocation would be the admin authorizing a mint or burn inside a
+  -- settlement, funded by nothing because the netting helper zeroes the
+  -- special side. This package changes supply only through `mintImpl` and
+  -- `burnImpl`.
   require "allocation authorizer must be a regular account" (isRegularAccount authorizer)
   require "allocation must authorize at least one transfer-leg side or enable iterated settlement"
     (not (null allocation.transferLegSides) || isSome allocation.nextIterationFunding)
