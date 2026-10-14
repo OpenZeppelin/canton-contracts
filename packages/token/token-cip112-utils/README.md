@@ -80,14 +80,25 @@ complete consumer that owns its templates and reuses these functions.
 
 ## License
 
-`OpenZeppelin.Token.Cip112.Utils.Holding`, `.Transfer`, and `.Allocation`
-contain code derived from the Splice
+Three modules contain code derived from Splice and modified by OpenZeppelin:
+
+- `OpenZeppelin.Token.Cip112.Utils.Holding`, from
+  `Splice.Testing.Tokens.TestTokenV2.Holding`,
+  `Splice.Testing.Tokens.TestTokenV2.Allocation`, and
+  `Splice.TokenStandard.Utils.Internal.Events`.
+- `OpenZeppelin.Token.Cip112.Utils.Transfer`, from
+  `Splice.Testing.Tokens.TestTokenV2.Transfer` and
+  `Splice.TokenStandard.Utils.Internal.Events`.
+- `OpenZeppelin.Token.Cip112.Utils.Allocation`, from
+  `Splice.Testing.Tokens.TestTokenV2.Allocation`.
+
+The `Splice.Testing.Tokens.TestTokenV2` modules are in the Splice
 [TestTokenV2](https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/examples/splice-test-token-v2)
-example or from the Splice
+example, and `Splice.TokenStandard.Utils.Internal.Events` is in the Splice
 [`splice-token-standard-utils`](https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/splice-token-standard-utils)
-package, Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or its
-affiliates, licensed under the Apache License 2.0
-([`LICENSES/Apache-2.0.txt`](../../../LICENSES/Apache-2.0.txt)). Those
+package. Both are Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or
+its affiliates, licensed under the Apache License 2.0
+([`LICENSES/Apache-2.0.txt`](../../../LICENSES/Apache-2.0.txt)). The three
 modules are licensed `MIT AND Apache-2.0`, and each carries its copyright and
 license notice. The rest of the package is licensed under the repository's
 MIT [`LICENSE`](../../../LICENSE).

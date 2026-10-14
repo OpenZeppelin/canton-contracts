@@ -185,12 +185,18 @@ reuse only the choice bodies, see the utils package `README.md` and
 
 ## License
 
-`OpenZeppelin.Token.Cip112.V1.Holding` and `OpenZeppelin.Token.Cip112.V1.Registry`
-contain code derived from the Splice
+Two modules contain code derived from the Splice
 [TestTokenV2](https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/examples/splice-test-token-v2)
-example, Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or its
-affiliates, licensed under the Apache License 2.0
-([`LICENSES/Apache-2.0.txt`](../../../LICENSES/Apache-2.0.txt)). Those
+example and modified by OpenZeppelin:
+
+- `OpenZeppelin.Token.Cip112.V1.Holding`, from
+  `Splice.Testing.Tokens.TestTokenV2.Holding`.
+- `OpenZeppelin.Token.Cip112.V1.Registry`, from
+  `Splice.Testing.Tokens.TestTokenV2`.
+
+The TestTokenV2 example is Copyright (c) 2024 Digital Asset (Switzerland) GmbH
+and/or its affiliates, licensed under the Apache License 2.0
+([`LICENSES/Apache-2.0.txt`](../../../LICENSES/Apache-2.0.txt)). The two
 modules are licensed `MIT AND Apache-2.0`, and each carries its copyright and
 license notice. The rest of the package is licensed under the repository's
 MIT [`LICENSE`](../../../LICENSE).
