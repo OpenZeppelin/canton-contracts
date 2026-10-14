@@ -13,13 +13,9 @@ must satisfy.
 
 ## Contents
 
-| Component | Package | Public module | Solidity analogue |
-|---|---|---|---|
-| [Token CIP-0112](token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` | `ERC20` (partial) |
-
-Each package README.md states what the package provides and, more importantly, the
-authority and canonical-instance problems it does not solve. Read those warnings
-before drawing conclusions from the code.
+No component is under evaluation here at the moment. When one is, its package
+`README.md` states what it provides and, more importantly, the authority and
+canonical-instance problems it does not solve.
 
 ## Build and test
 
@@ -28,15 +24,10 @@ tests keep running as the repository changes. From the repository root:
 
 ```sh
 dpm build --all
-DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm test --all --show-coverage
 ```
 
 Each component's isolated test package lives under [`test/`](test/) and
-data-depends on the built DAR. Build one component on its own with:
-
-```sh
-DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm build
-```
+data-depends on the built DAR.
 
 ## What to use them for
 

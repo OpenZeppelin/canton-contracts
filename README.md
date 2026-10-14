@@ -22,13 +22,9 @@ The library provides the following packages under [`packages/`](packages/):
 | [Scoped Authorization Grant](packages/access/scoped-authorization-grant-v1/) | `openzeppelin-scoped-authorization-grant-v1` | `OpenZeppelin.ScopedAuthorizationGrantV1` |
 | [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
 | [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` |
-
-Token CIP-0112 is an early-stage experiment with unstable APIs and package
-identity. Read [`experiments/README.md`](experiments/README.md) for its limits.
-
-| Component | Package | Public module |
-|---|---|---|
-| [Token CIP-0112](experiments/token/tokenCIP112-v1/) | `openzeppelin-tokenCIP112-v1` | `OpenZeppelin.TokenCIP112V1` |
+| [Token CIP-0112 types](packages/token/token-cip112-types-v1/) | `openzeppelin-token-cip112-types-v1` | `OpenZeppelin.Token.Cip112.TypesV1` |
+| [Token CIP-0112 utils](packages/token/token-cip112-utils/) | `openzeppelin-token-cip112-utils` | `OpenZeppelin.Token.Cip112.Utils` |
+| [Token CIP-0112](packages/token/token-cip112-v1/) | `openzeppelin-token-cip112-v1` | `OpenZeppelin.Token.Cip112.V1` |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching
@@ -90,14 +86,11 @@ Each package `README.md` shows the consumer code for that component, and
 
 ## Repository layout
 
-```text
 packages/                 Library components and release candidates
   access/                 Authorization components
   security/               Emergency-stop and safety components
+  token/                  Category for token standard and settlement components
 test/                     Isolated library test packages
-experiments/
-  token/                  Category for token components
-  test/                   Isolated component test packages
 dars/
   released/               Immutable OpenZeppelin release baselines
   vendor/                 Verified third-party DAR inputs
@@ -117,6 +110,12 @@ release lineage.
   `openzeppelin-api-<component>-vN` package and a separate upgradeable package
   for templates or helper functions. Template-only components use one
   implementation package.
+- A component whose choice bodies consumers reuse with their own templates
+  ships them in an `openzeppelin-<component>-utils` package that defines no
+  templates, interfaces, exceptions, or serializable types, and ships the
+  records its templates store in an `openzeppelin-<component>-types-vN`
+  package. SCU ignores a utils package, so it versions by semver alone, and a
+  consumer can move to any later version or drop it.
 - Breaking changes create a sibling `-v2` package and `V2` module suffix;
   compatible SCU releases retain the existing package name.
 - Composition between implementations happens through interfaces or in the
