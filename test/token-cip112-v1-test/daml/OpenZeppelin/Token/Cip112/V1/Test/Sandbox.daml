@@ -56,17 +56,13 @@ sandboxTransferLifecycle = do
   assertNoLocks alice
   assertNoLocks bob
 
--- | Mint and burn through the registry conserve the visible supply and emit
--- the standard events.
+-- | A mint offer from the admin, accepted by the receiver in a separate
+-- submission, then a burn through the registry.
 sandboxMintAndBurn : Script ()
 sandboxMintAndBurn = do
   s@Scenario{..} <- setupPrefixed "mintandburn-"
-  mintedCid <- submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Mint with
-      account = basicAccount alice
-      instrumentId = "TOK"
-      amount = 10.0
-      reason = "sandbox mint"
+  offerCid <- submit (actAs admin) (offerMintCmd s alice 10.0)
+  [mintedCid] <- completedHoldings =<< submit (actAs alice) (acceptCmd alice offerCid)
   aliceMinted <- holdingAmounts alice
   aliceMinted === [10.0]
   submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do

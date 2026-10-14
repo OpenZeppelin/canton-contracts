@@ -281,6 +281,8 @@ testTransferInstructionStatePredicate = do
   isValidTransferInstructionState s === True
   isValidTransferInstructionState (s with transfer = transfer with amount = 0.0) === False
   isValidTransferInstructionState (s with transfer = transfer with sender = mintAccount) === False
+  -- A mint offer comes from the mint account and locks nothing.
+  isValidTransferInstructionState ((s with lockedHoldingCids = []) with transfer = transfer with sender = mintAccount) === True
   isValidTransferInstructionState (s with transfer = transfer with receiver = mintAccount) === False
   isValidTransferInstructionState (s with lockedHoldingCids = []) === False
   isValidTransferInstructionState (s with lockExpiresAt = t2) === False

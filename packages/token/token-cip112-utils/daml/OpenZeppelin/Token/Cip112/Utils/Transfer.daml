@@ -9,6 +9,7 @@
 -- and a `HoldingOps` record supplied by the template owner.
 module OpenZeppelin.Token.Cip112.Utils.Transfer where
 
+import DA.Action (unless)
 import DA.Assert (assertDeadlineExceeded, assertWithinDeadline)
 import DA.List (dedupSort)
 import DA.Map qualified as Map
@@ -33,9 +34,12 @@ type CreateTransferInstruction =
 isValidTransferInstructionState : TransferInstructionState -> Bool
 isValidTransferInstructionState s =
   isValidTransferV2 s.transfer
-  && isRegularAccount s.transfer.sender
   && isRegularAccount s.transfer.receiver
-  && not (null s.lockedHoldingCids)
+  -- A mint offer comes from the CIP-0112 mint account and locks nothing.
+  -- Every other offer is funded by locked holdings of a regular account.
+  && (if s.transfer.sender == mintAccount
+        then null s.lockedHoldingCids
+        else isRegularAccount s.transfer.sender && not (null s.lockedHoldingCids))
   && s.expiresAt < s.lockExpiresAt
 
 -- | The standard view of a pending instruction. Joint actor sets: paying out
@@ -74,9 +78,12 @@ transferAcceptImpl ops self s arg = do
   let admin = s.transfer.instrumentId.admin
       transfer = s.transfer
   lockedAmounts <- debitHoldings (consumeLockedHolding ops admin transfer.sender) s.lockedHoldingCids
-  require' ("locked funding for " <> transfer.instrumentId.id,
-      fromOptional 0.0 (TextMap.lookup transfer.instrumentId.id lockedAmounts))
-    isGreaterOrEqualR ("transfer.amount", transfer.amount)
+  -- A mint offer locks nothing: the admin's signature on it authorizes the
+  -- new holding.
+  unless (transfer.sender == mintAccount) $
+    require' ("locked funding for " <> transfer.instrumentId.id,
+        fromOptional 0.0 (TextMap.lookup transfer.instrumentId.id lockedAmounts))
+      isGreaterOrEqualR ("transfer.amount", transfer.amount)
   -- Return every unit of locked funding that is not the transferred amount,
   -- including any balance in a different instrument.
   senderChangeCids <- returnLockedSurplus ops transfer lockedAmounts
@@ -146,17 +153,9 @@ executeTransfer
   -> Update TransferInstructionV2.TransferInstructionResult
 executeTransfer config ops createInstruction oneStep transfer = do
   let admin = config.admin
-  requireMatchExpected ("transfer.instrumentId.admin", transfer.instrumentId.admin) admin
-  require "transfer must be well formed" (isValidTransferV2 transfer)
+  validateTransfer config transfer
   require "transfer accounts must be regular accounts"
     (isRegularAccount transfer.sender && isRegularAccount transfer.receiver)
-  assertDeadlineExceeded "transfer.requestedAt" transfer.requestedAt
-  assertWithinDeadline "transfer.executeBefore" transfer.executeBefore
-  now <- getTime
-  require "transfer execution window exceeds the registry's maximum TTL"
-    (transfer.executeBefore <= now `addRelTime` config.maxTTL)
-  require "transfer requestedAt is older than the registry's maximum TTL"
-    (now `subTime` transfer.requestedAt <= config.maxTTL)
 
   inputAmounts <- debitHoldings (consumeUnlockedHolding ops admin transfer.sender) transfer.inputHoldingCids
   funded <- case TextMap.toList inputAmounts of
@@ -208,6 +207,20 @@ executeTransfer config ops createInstruction oneStep transfer = do
           transferInstructionCid = instructionCid
         senderChangeCids
         meta = transfer.meta
+
+-- | The checks every new transfer instruction passes: the registry's admin,
+-- a well-formed transfer, and an execution window within `maxTTL`.
+validateTransfer : RegistryConfig -> TransferInstructionV2.Transfer -> Update ()
+validateTransfer config transfer = do
+  requireMatchExpected ("transfer.instrumentId.admin", transfer.instrumentId.admin) config.admin
+  require "transfer must be well formed" (isValidTransferV2 transfer)
+  assertDeadlineExceeded "transfer.requestedAt" transfer.requestedAt
+  assertWithinDeadline "transfer.executeBefore" transfer.executeBefore
+  now <- getTime
+  require "transfer execution window exceeds the registry's maximum TTL"
+    (transfer.executeBefore <= now `addRelTime` config.maxTTL)
+  require "transfer requestedAt is older than the registry's maximum TTL"
+    (now `subTime` transfer.requestedAt <= config.maxTTL)
 
 -- | Pay out any locked funding beyond the transferred amount, per
 -- instrument, so accepting can never destroy value.

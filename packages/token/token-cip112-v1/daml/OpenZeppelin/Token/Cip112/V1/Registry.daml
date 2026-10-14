@@ -70,15 +70,20 @@ template TokenRules with
       controller config.admin
       do expireAllocationsImpl (pinAllocationTo @TokenAllocation) config.admin cancelArgs
 
-    nonconsuming choice TokenRules_Mint : ContractId HoldingV2.Holding
-      -- ^ Issue holdings into an account, emitting the standard mint event.
+    nonconsuming choice TokenRules_OfferMint : ContractId TransferInstructionV2.TransferInstruction
+      -- ^ Offer new holdings to a regular account: a pending transfer
+      -- instruction from the CIP-0112 mint account, which the receiver's
+      -- account parties accept or reject. The admin withdraws it or expires
+      -- it like any other instruction.
       with
-        account : HoldingV2.Account
+        receiver : HoldingV2.Account
         instrumentId : Text
         amount : Decimal
+        requestedAt : Time
+        executeBefore : Time
         reason : Text
-      controller config.admin :: accountParties config.admin account
-      do mintImpl (rulesOps config) config.admin account instrumentId amount reason
+      controller config.admin
+      do offerMintImpl config createInstruction receiver instrumentId amount requestedAt executeBefore reason
 
     nonconsuming choice TokenRules_Burn : ()
       -- ^ Burn an unlocked holding, emitting the standard burn event.

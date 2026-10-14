@@ -256,16 +256,18 @@ template MyRules with
         whenNotPaused this
         transferWithFee this arg
 
-    nonconsuming choice MyRules_Mint : ContractId HoldingV2.Holding
+    nonconsuming choice MyRules_OfferMint : ContractId TransferInstructionV2.TransferInstruction
       with
-        account : HoldingV2.Account
+        receiver : HoldingV2.Account
         instrumentId : Text
         amount : Decimal
+        requestedAt : Time
+        executeBefore : Time
         reason : Text
-      controller config.admin :: accountParties config.admin account
+      controller config.admin
       do
         whenNotPaused this
-        mintImpl (ops this) config.admin account instrumentId amount reason
+        offerMintImpl config (createInstruction this) receiver instrumentId amount requestedAt executeBefore reason
 
     -- | Not behind the pause switch: holders can always redeem. Which
     -- operations a pause covers is the consumer's call.

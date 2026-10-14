@@ -129,7 +129,8 @@ testTransferRefusesZeroAmount = do
     (transferCmd s [alice] (mkTransfer s alice bob 0.0 [input]))
 
 -- | Special (mint and burn) accounts hold nothing, so they never take part
--- in a transfer.
+-- in a factory transfer. The mint account's offers come only from
+-- `TokenRules_OfferMint`.
 testTransferRefusesSpecialAccount : Script ()
 testTransferRefusesSpecialAccount = do
   s@Scenario{..} <- setup
@@ -137,6 +138,8 @@ testTransferRefusesSpecialAccount = do
   let transfer = mkTransfer s alice bob 7.0 [input]
   mustFailWith "transfer accounts must be regular accounts" (actAs alice <> discloseMany [rulesDisclosure])
     (transferCmd s [alice] (transfer with receiver = mintAccount))
+  mustFailWith "transfer accounts must be regular accounts" (actAs admin <> discloseMany [rulesDisclosure])
+    (transferCmd s [admin] (transfer with sender = mintAccount; inputHoldingCids = []))
 
 testTransferRefusesFutureRequestedAt : Script ()
 testTransferRefusesFutureRequestedAt = do
@@ -364,12 +367,13 @@ testSettleBatchRefusesExtraActor = do
         actors = [app, bob]
         extraArgs = emptyExtraArgs
 
-testMintRefusesSpecialAccount : Script ()
-testMintRefusesSpecialAccount = do
+testOfferMintRefusesSpecialReceiver : Script ()
+testOfferMintRefusesSpecialReceiver = do
   Scenario{..} <- setup
-  mustFailWith "mint target must be a regular account" (actAs admin <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Mint with
-      account = mintAccount; instrumentId = "TOK"; amount = 10.0; reason = "mint"
+  mustFailWith "mint receiver must be a regular account" (actAs admin) do
+    exerciseCmd rulesCid TokenRules_OfferMint with
+      receiver = mintAccount; instrumentId = "TOK"; amount = 10.0
+      requestedAt = t0; executeBefore = t2; reason = "mint"
 
 testBurnRefusesOtherAccount : Script ()
 testBurnRefusesOtherAccount = do

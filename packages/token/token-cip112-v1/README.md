@@ -38,7 +38,7 @@ their own templates reuses directly.
   settlement and CIP-0112 iterated settlement.
 - `TokenRules` (`Registry`): the registry rules contract over a
   `RegistryConfig` payload, implementing the TSv2 transfer, allocation, and
-  settlement factories plus mint, burn, and expiry.
+  settlement factories plus mint offers, burn, and expiry.
 - `TokenEventLog` (`Base`): the holdings-change event-log host.
 - `defaultHoldingOps` (`Holding`): the operations record these templates run
   the utils functions with. A consumer that keeps `TokenHolding` but owns
@@ -67,6 +67,11 @@ interfaces or exceptions of its own.
   recovery the sender's parties can perform alone. After `executeBefore`, the
   admin alone may also return the funds to the sender through
   `TokenTransferInstruction_Expire`.
+- The admin issues supply with `TokenRules_OfferMint`: a pending transfer
+  instruction from the CIP-0112 mint account (`cip-112/mint`) that locks
+  nothing. The receiver's account parties accept it to create the holding or
+  reject it. The admin can withdraw it until then and expire it after
+  `executeBefore`. A mint is always two-step.
 - An allocation created with `nextIterationFunding` set enables iterated
   settlement: the executors supply extra transfer legs per settlement
   iteration, bounded by the locked reserve plus incoming credits, and may
@@ -81,7 +86,7 @@ interfaces or exceptions of its own.
 - Only regular (owned) accounts hold balances. The admin also authors
   allocations for the CIP-0112 mint and burn accounts (`cip-112/mint` and
   `cip-112/burn`), so a settlement batch can issue or redeem supply as one
-  side of a trade. Supply also changes through `TokenRules_Mint` and
+  side of a trade. Supply also changes through `TokenRules_OfferMint` and
   `TokenRules_Burn`. The special accounts appear in events only as the
   other side of a supply change.
 

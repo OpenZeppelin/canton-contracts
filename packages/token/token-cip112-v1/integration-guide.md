@@ -33,12 +33,18 @@ vetted Splice's Token Standard V2 packages can vet this package alongside them.
 
 ### Launching a registry and minting
 
-The operator creates `TokenRules` and issues supply with `TokenRules_Mint`,
-which requires the admin and the receiving account's parties as controllers.
-The example package `examples/token/token-cip112-trading-test` runs this under `dpm test`.
+The operator creates `TokenRules` and issues supply with
+`TokenRules_OfferMint`, which creates a pending transfer instruction from the
+CIP-0112 mint account to the receiving account. The receiver's wallet accepts
+it with `TransferInstruction_Accept`, which creates the holding and emits an
+event naming `cip-112/mint` as the other side. The admin and the receiver
+submit separately, each from their own participant. The example package
+`examples/token/token-cip112-trading-test` runs this under `dpm test`.
 
-Authorization: the admin signs the rules contract; admin plus account parties
-control mint and burn.
+Authorization: the admin signs the rules contract and alone offers a mint;
+the receiver's account parties accept or reject the offer; the admin
+withdraws it, or expires it after `executeBefore`. Admin plus account parties
+control burn.
 
 ### Two-step and one-step transfers
 

@@ -7,7 +7,7 @@ import DA.Assert ((===), (=/=))
 import DA.Date (date, Month(Jan))
 import DA.Foldable (forA_)
 import DA.List (sort)
-import DA.Time (days, hours, minutes, time)
+import DA.Time (addRelTime, days, hours, minutes, time)
 import Daml.Script
 
 import DA.Map qualified as Map
@@ -923,35 +923,92 @@ testRulesConfigValidated = do
   submitMustFail admin do createCmd TokenRules with config = base with maxTTL = minutes 0
   submitMustFail admin do createCmd TokenRules with config = base with lockGrace = minutes 0
 
--- | Issuance has an evented path, so supply changes are visible to standard
--- history parsers instead of appearing as bare creates. Each supply change is
--- explained by exactly one event whose leg names the mint or burn special
--- account as the other side.
-testMintAndBurnEmitEvents : Script ()
-testMintAndBurnEmitEvents = do
+-- Mint offers
+--------------
+
+-- | Issuance is a pending transfer from the mint account. The admin offers
+-- alone and nothing is created or locked until the receiver accepts. The
+-- accept emits one event, on the receiver's account, naming the mint account
+-- as the other side.
+testOfferMintAccepted : Script ()
+testOfferMintAccepted = do
   s@Scenario{..} <- setup
-  (holdingCid, mintTree) <- submitResultAndTree (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Mint with
-      account = basicAccount alice
-      instrumentId = "TOK"
-      amount = 25.0
-      reason = "initial issuance"
+  offerCid <- submit (actAs admin) (offerMintCmd s alice 25.0)
+  aliceBefore <- holdingAmounts alice
+  aliceBefore === []
+  Some v <- queryInterfaceContractId @TransferInstructionV2.TransferInstruction alice offerCid
+  v.transfer.sender === mintAccount
+  v.transfer.inputHoldingCids === []
+  Map.lookup TransferInstructionV2.TIA_Accept v.availableActions === Some [[alice]]
+  Map.lookup TransferInstructionV2.TIA_Withdraw v.availableActions === Some [[admin]]
+
+  (result, tree) <- submitResultAndTree (actAs alice) (acceptCmd alice offerCid)
+  [holdingCid] <- completedHoldings result
   aliceAfter <- holdingAmounts alice
   aliceAfter === [25.0]
-  mintEvent <- expectOneHoldingsChange mintTree
+  mintEvent <- expectOneHoldingsChange tree
   mintEvent.account === basicAccount alice
   mintEvent.inputHoldingCids === []
   mintEvent.outputHoldingCids === [holdingCid]
   map (.side) mintEvent.transferLegSides === [TransferEventsV2.ReceiverSide]
   map (.otherside) mintEvent.transferLegSides === [mintAccount]
   map (.amount) mintEvent.transferLegSides === [25.0]
-  -- Minting a non-positive amount is refused.
-  mustFailWith "mint amount must be positive" (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Mint with
-      account = basicAccount alice
-      instrumentId = "TOK"
-      amount = 0.0
-      reason = "bad"
+
+-- | A mint offer that is not accepted creates nothing: the receiver rejects
+-- it, the admin withdraws it, and once `executeBefore` has passed it can no
+-- longer be accepted and the admin expires it.
+testOfferMintNotAccepted : Script ()
+testOfferMintNotAccepted = do
+  s@Scenario{..} <- setup
+  rejectedCid <- submit (actAs admin) (offerMintCmd s alice 10.0)
+  _ <- submit (actAs alice) do
+    exerciseCmd rejectedCid TransferInstructionV2.TransferInstruction_Reject with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  withdrawnCid <- submit (actAs admin) (offerMintCmd s alice 10.0)
+  _ <- submit (actAs admin) do
+    exerciseCmd withdrawnCid TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+  expiredCid <- submit (actAs admin) (offerMintCmd s alice 10.0)
+  setTime t3
+  submitMustFail (actAs alice) (acceptCmd alice expiredCid)
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
+      instructionCids = [fromInterfaceContractId @TokenTransferInstruction expiredCid]
+      observers = []
+  instructions <- queryInterface @TransferInstructionV2.TransferInstruction alice
+  instructions === []
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === []
+
+-- | Only the admin offers a mint, and the offer passes the same bounds as
+-- any transfer.
+testOfferMintAuthorityAndBounds : Script ()
+testOfferMintAuthorityAndBounds = do
+  s@Scenario{..} <- setup
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) (offerMintCmd s alice 10.0)
+  let offer = TokenRules_OfferMint with
+        receiver = basicAccount alice
+        instrumentId = "TOK"
+        amount = 10.0
+        requestedAt = t0
+        executeBefore = t2
+        reason = "mint"
+  mustFailWith "transfer must be well formed" (actAs admin) $
+    exerciseCmd rulesCid (offer with amount = 0.0)
+  mustFailWith "transfer execution window exceeds the registry's maximum TTL" (actAs admin) $
+    exerciseCmd rulesCid (offer with executeBefore = t1 `addRelTime` days 91)
+
+-- Burn
+-------
+
+-- | A burn is explained by exactly one event whose leg names the burn account
+-- as the other side.
+testBurnEmitsEvent : Script ()
+testBurnEmitsEvent = do
+  s@Scenario{..} <- setup
+  holdingCid <- toInterfaceContractId @HoldingV2.Holding <$> mint admin alice 25.0
   -- Burning requires the account's authority and clears the holding.
   submitMustFail (actAs admin <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_Burn with

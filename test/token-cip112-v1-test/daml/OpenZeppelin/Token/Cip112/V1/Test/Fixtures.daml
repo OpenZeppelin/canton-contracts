@@ -179,6 +179,28 @@ instructTransfer Scenario{..} actors transfer =
         actors
         extraArgs = emptyExtraArgs
 
+-- | The admin offers `amount` TOK from the mint account to `receiver`'s basic
+-- account, open until `t2`.
+offerMintCmd
+  : Scenario -> Party -> Decimal
+  -> Commands (ContractId TransferInstructionV2.TransferInstruction)
+offerMintCmd Scenario{..} receiver amount =
+  exerciseCmd rulesCid TokenRules_OfferMint with
+    receiver = basicAccount receiver
+    instrumentId = "TOK"
+    amount
+    requestedAt = t0
+    executeBefore = t2
+    reason = "mint"
+
+acceptCmd
+  : Party -> ContractId TransferInstructionV2.TransferInstruction
+  -> Commands TransferInstructionV2.TransferInstructionResult
+acceptCmd receiver instrCid =
+  exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+    actors = [receiver]
+    extraArgs = emptyExtraArgs
+
 pendingCid
   : TransferInstructionV2.TransferInstructionResult
   -> Script (ContractId TransferInstructionV2.TransferInstruction)

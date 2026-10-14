@@ -96,14 +96,27 @@ unpauseRegistry app = do
   Some disclosure <- queryDisclosure @MyRules app.admin newCid
   pure app with rulesCid = newCid; rulesDisclosure = disclosure
 
+offerMintCmd : App -> Party -> Decimal -> Commands (ContractId TransferInstructionV2.TransferInstruction)
+offerMintCmd App{..} receiver amount =
+  exerciseCmd rulesCid MyRules_OfferMint with
+    receiver = basicAccount receiver
+    instrumentId = "TOK"
+    amount
+    requestedAt = t0
+    executeBefore = t2
+    reason = "mint"
+
+-- | The admin offers a mint and the owner accepts it.
 mint : App -> Party -> Decimal -> Script (ContractId HoldingV2.Holding)
-mint App{..} owner amount =
-  submit (actAs [admin, owner] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid MyRules_Mint with
-      account = basicAccount owner
-      instrumentId = "TOK"
-      amount
-      reason = "mint"
+mint app owner amount = do
+  offerCid <- submit (actAs app.admin) (offerMintCmd app owner amount)
+  result <- submit (actAs owner) do
+    exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [owner]
+      extraArgs = emptyExtraArgs
+  case result.output of
+    TransferInstructionV2.TransferInstructionResult_Completed [holdingCid] -> pure holdingCid
+    other -> abort ("expected a completed mint, got: " <> show other)
 
 -- | Balances of `owner` as seen by `who`: the owner, the auditor, or the
 -- compliance officer.
@@ -328,13 +341,15 @@ testDvpSettles = do
 testAuditorObservesEvents : Script ()
 testAuditorObservesEvents = do
   app@App{..} <- setup
-  (aliceTok, mintTree) <- submitResultAndTree (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid MyRules_Mint with
-      account = basicAccount alice
-      instrumentId = "TOK"
-      amount = 10.0
-      reason = "mint"
+  offerCid <- submit (actAs admin) (offerMintCmd app alice 10.0)
+  (mintResult, mintTree) <- submitResultAndTree (actAs alice) do
+    exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
   auditorSeesEvents auditor 1 mintTree
+  [aliceTok] <- case mintResult.output of
+    TransferInstructionV2.TransferInstructionResult_Completed cids -> pure cids
+    other -> abort ("expected a completed mint, got: " <> show other)
   (result, instructTree) <- submitResultAndTree (actAs alice <> discloseMany [rulesDisclosure])
     (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
   auditorSeesEvents auditor 1 instructTree
@@ -448,12 +463,7 @@ testPauseBlocksFactories = do
     (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
   mustFailWith "registry is paused" (actAs alice <> discloseMany [app.rulesDisclosure])
     (allocateCmd app app.settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [aliceTok])
-  mustFailWith "registry is paused" (actAs [admin, alice] <> discloseMany [app.rulesDisclosure]) do
-    exerciseCmd app.rulesCid MyRules_Mint with
-      account = basicAccount alice
-      instrumentId = "TOK"
-      amount = 1.0
-      reason = "mint"
+  mustFailWith "registry is paused" (actAs admin) (offerMintCmd app alice 1.0)
   _ <- submit (actAs [admin, alice] <> discloseMany [app.rulesDisclosure]) do
     exerciseCmd app.rulesCid MyRules_Burn with
       holdingCid = burnMe
