@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Static repository-policy checks. Build and Daml Script execution use DPM
-# directly so this check stays fast and produces focused failures.
+# directly so this check stays fast and produces focused failures. The -utils
+# check reads compiled DARs, so run it after `dpm build --all`.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -132,6 +133,22 @@ while IFS= read -r manifest; do
 		if grep -R -n -E --include='*.daml' '^[[:space:]]*(interface|exception)[[:space:]]+' "$package_dir/daml" |
 			grep -v -E 'interface[[:space:]]+instance[[:space:]]'; then
 			fail "implementation package ${manifest#"$ROOT/"} defines interfaces or exceptions; create a frozen openzeppelin-api-<component>-vN package"
+		fi
+	fi
+
+	# SCU ignores a package without serializable definitions, which is what
+	# lets a consumer upgrade a -utils package freely or drop it. Templates and
+	# exceptions are serializable too, so one look at the compiled package
+	# covers all three.
+	if [[ "$package_name" == openzeppelin-*-utils ]]; then
+		package_version="$(sed -n 's/^version:[[:space:]]*//p' "$manifest")"
+		dar="$package_dir/.daml/dist/$package_name-$package_version.dar"
+		[ -f "$dar" ] ||
+			fail "missing ${dar#"$ROOT/"}; run dpm build --all before scripts/check.sh"
+		inspected="$(dpm damlc inspect "$dar")" ||
+			fail "failed to inspect ${dar#"$ROOT/"}"
+		if grep -n '@serializable' <<< "$inspected"; then
+			fail "utils package ${manifest#"$ROOT/"} defines templates, exceptions, or serializable types; move them to an openzeppelin-<component>-vN package"
 		fi
 	fi
 
