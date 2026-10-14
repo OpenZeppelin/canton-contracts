@@ -11,7 +11,8 @@ release assets next to the DAR. Every release attaches `LICENSE`.
 
 The token packages also contain Apache-2.0 code. Each of their DARs bundles the
 Splice token standard packages from `dars/vendor/` as compiled DALFs, and two of
-them contain source derived from the Splice TestTokenV2 example:
+them contain source derived from the Splice TestTokenV2 example and the Splice
+`splice-token-standard-utils` package:
 
 | Package | Apache-2.0 content in the DAR |
 |---|---|
@@ -34,8 +35,8 @@ A release of one of these packages:
    - The bundled `splice-*` packages, Copyright (c) 2024 Digital Asset
      (Switzerland) GmbH and/or its affiliates, distributed unmodified.
    - Modules marked `SPDX-License-Identifier: MIT AND Apache-2.0`, which
-     contain code derived from the Splice TestTokenV2 example and modified by
-     OpenZeppelin.
+     contain code derived from the Splice TestTokenV2 example or the Splice
+     `splice-token-standard-utils` package and modified by OpenZeppelin.
    ```
 
 If the Splice release tag recorded in `dars/manifest.yaml` contains a `NOTICE`

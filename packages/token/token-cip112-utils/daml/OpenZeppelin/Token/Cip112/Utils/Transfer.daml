@@ -5,6 +5,9 @@
 -- Portions of this file are derived from `Splice.Testing.Tokens.TestTokenV2.Transfer`
 -- in the Splice TestTokenV2 example
 -- (https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/examples/splice-test-token-v2),
+-- and from `Splice.TokenStandard.Utils.Internal.Events`
+-- in the Splice `splice-token-standard-utils` package
+-- (https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/splice-token-standard-utils),
 -- licensed under the Apache License 2.0 (`LICENSES/Apache-2.0.txt`).
 -- OpenZeppelin modified those portions.
 

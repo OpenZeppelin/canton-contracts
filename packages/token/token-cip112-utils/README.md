@@ -83,7 +83,9 @@ complete consumer that owns its templates and reuses these functions.
 `OpenZeppelin.Token.Cip112.Utils.Holding`, `.Transfer`, and `.Allocation`
 contain code derived from the Splice
 [TestTokenV2](https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/examples/splice-test-token-v2)
-example, Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or its
+example or from the Splice
+[`splice-token-standard-utils`](https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/splice-token-standard-utils)
+package, Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or its
 affiliates, licensed under the Apache License 2.0
 ([`LICENSES/Apache-2.0.txt`](../../../LICENSES/Apache-2.0.txt)). Those
 modules are licensed `MIT AND Apache-2.0`, and each carries its copyright and

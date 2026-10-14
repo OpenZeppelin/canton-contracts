@@ -152,6 +152,8 @@ testing requirements, and the checklist for new components.
 
 [MIT](LICENSE), except where a file states otherwise. Files in the CIP-0112
 token packages that contain code derived from the Splice TestTokenV2 example
+or the Splice `splice-token-standard-utils` package
+(https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/)
 carry Digital Asset's copyright notice and are licensed `MIT AND Apache-2.0`.
 The Splice DARs under `dars/vendor/` are licensed Apache-2.0. The Apache
 License 2.0 text is in [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt).
