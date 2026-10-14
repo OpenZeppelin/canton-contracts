@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 OpenZeppelin
+-- Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or its affiliates. All rights reserved.
+-- SPDX-License-Identifier: MIT AND Apache-2.0
+--
+-- Contains code from Splice (https://github.com/canton-network/splice), modified by OpenZeppelin.
+
 -- | The default registry rules contract: transfer factory, allocation
 -- factory, and settlement factory on a single long-lived admin contract, plus
 -- admin supply (mint, burn) and cleanup (expiry) operations. Every body is a

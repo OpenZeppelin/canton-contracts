@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 OpenZeppelin
+-- Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or its affiliates. All rights reserved.
+-- SPDX-License-Identifier: MIT AND Apache-2.0
+--
+-- Contains code from Splice (https://github.com/canton-network/splice), modified by OpenZeppelin.
+
 -- | The default holding template and the operations record the other
 -- default templates pass to the workflows.
 module OpenZeppelin.Token.Cip112.V1.Holding where
