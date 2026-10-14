@@ -78,10 +78,12 @@ interfaces or exceptions of its own.
   successor like any other allocation.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
-- Only regular (owned) accounts author allocations and hold balances. The
-  special mint and burn accounts appear in events as the other side of supply
-  changes and nowhere else; supply changes go through `TokenRules_Mint` and
-  `TokenRules_Burn`.
+- Only regular (owned) accounts hold balances. The admin also authors
+  allocations for the CIP-0112 mint and burn accounts (`cip-112/mint` and
+  `cip-112/burn`), so a settlement batch can issue or redeem supply as one
+  side of a trade. Supply also changes through `TokenRules_Mint` and
+  `TokenRules_Burn`. The special accounts appear in events only as the
+  other side of a supply change.
 
 For multi-participant deployment, disclosure, and wallet integration, see
 [`integration-guide.md`](integration-guide.md).
@@ -125,6 +127,11 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   settle outside the factory. Operate the admin party so that it signs settles
   only through the settlement factory. See `ideas.md` on reintroducing the
   on-ledger guard that removes this trust assumption.
+- A mint-account or burn-account allocation commits the admin to that supply
+  change. The executors decide whether and when it settles, until the
+  settlement deadline or until the admin withdraws an uncommitted allocation.
+  The netting ignores the amount on the special side, so the exact-cover check
+  is what bounds the amount minted or burned to the legs the admin allocated.
 - The vendored settlement-factory default does not validate a
   `FinalizedAllocation.nextIterationFunding`; the check in
   `allocation_settleImpl` is the effective guard. Registry forks that replace

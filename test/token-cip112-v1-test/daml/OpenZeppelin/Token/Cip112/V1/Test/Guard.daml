@@ -129,7 +129,7 @@ testTransferRefusesZeroAmount = do
     (transferCmd s [alice] (mkTransfer s alice bob 0.0 [input]))
 
 -- | Special (mint and burn) accounts hold nothing, so they never take part
--- in a transfer; supply changes go through mint and burn.
+-- in a transfer.
 testTransferRefusesSpecialAccount : Script ()
 testTransferRefusesSpecialAccount = do
   s@Scenario{..} <- setup

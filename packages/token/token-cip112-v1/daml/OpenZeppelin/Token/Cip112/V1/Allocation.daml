@@ -13,7 +13,8 @@ import OpenZeppelin.Token.Cip112.V1.Holding
 -- | A ready-to-settle allocation backed by locked holdings. The admin and the
 -- authorizer's account parties sign so that neither side can create or drop
 -- an allocation alone; the settlement executors observe so they can drive
--- settlement.
+-- settlement. A mint-account or burn-account allocation has the admin as its
+-- only signatory.
 template TokenAllocation with
     state : AllocationState
   where

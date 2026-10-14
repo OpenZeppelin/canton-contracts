@@ -63,5 +63,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   module namespace `OpenZeppelin.Token.Cip112.V1`): ready-to-use templates over
   the types and utils packages with holdings with expiring locks and owner
   recovery, one-step and two-step transfers, allocations with exact-cover
-  batch settlement and iterated settlement, and registry rules with evented
-  mint and burn.
+  batch settlement and iterated settlement, delivery-vs-mint and
+  delivery-vs-burn settlement through the CIP-0112 mint and burn accounts,
+  and registry rules with evented mint and burn.

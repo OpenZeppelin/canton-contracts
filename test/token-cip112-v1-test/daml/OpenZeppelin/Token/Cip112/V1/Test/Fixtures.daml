@@ -64,12 +64,15 @@ mkAllocationSpec admin authorizer sides = AllocationV2.AllocationSpecification w
   meta = emptyMetadata
 
 mint : Party -> Party -> Decimal -> Script (ContractId TokenHolding)
-mint admin owner amount =
+mint admin owner amount = mintOf admin owner "TOK" amount
+
+mintOf : Party -> Party -> Text -> Decimal -> Script (ContractId TokenHolding)
+mintOf admin owner instrumentId amount =
   submit (actAs admin <> actAs owner) do
     createCmd TokenHolding with
       holding = HoldingV2.HoldingView with
         account = basicAccount owner
-        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        instrumentId = HoldingV2.InstrumentId with admin; id = instrumentId
         amount
         lock = None
         meta = emptyMetadata

@@ -65,6 +65,20 @@ DvP.
 Authorization: each authorizer's account parties allocate; the executors alone
 settle the batch.
 
+### Delivery-versus-mint and delivery-versus-burn
+
+The admin allocates the supply side of a trade from a CIP-0112 special
+account: sender sides from `cip-112/mint` to issue, or receiver sides to
+`cip-112/burn` to redeem. That allocation locks nothing. The counterparties
+allocate their sides as in a DvP, and `SettlementFactory_SettleBatch` creates
+the minted holdings or archives the burned ones in the same transaction as the
+payment. The test scripts `testDeliveryVsMint` and `testDeliveryVsBurn` cover
+both directions.
+
+Authorization: the admin alone allocates for a special account, with
+`actors = [admin]`. The executors settle the batch, and the exact-cover check
+limits the supply change to the legs the admin allocated.
+
 ### Iterated settlement
 
 An allocation created with `nextIterationFunding` set lets the executors bring
