@@ -16,8 +16,9 @@ interfaces the way a wallet or settlement app drives any compliant registry.
   `TokenRules` contract, and the token is live — a new instrument is just a
   fresh instrument id minted under the same registry, with no further
   deployment.
-- Minting through the registry's evented path, so supply changes are visible
-  to token-standard history parsers.
+- Minting as the registry does across participants: the admin offers a mint
+  with `TokenRules_OfferMint` and the owner accepts it in a separate
+  submission, emitting the standard event that names the mint account.
 - Each trader funding their own allocation through the standard factory;
   only the trader's net debit is locked.
 - Atomic DvP through `SettlementFactory_SettleBatch`: a batch whose legs are

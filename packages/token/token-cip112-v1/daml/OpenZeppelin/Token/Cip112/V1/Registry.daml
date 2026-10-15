@@ -6,8 +6,9 @@
 
 -- | The default registry rules contract: transfer factory, allocation
 -- factory, and settlement factory on a single long-lived admin contract, plus
--- admin supply (mint, burn) and cleanup (expiry) operations. Every body is a
--- utils-package function applied to this package's templates.
+-- admin mint offers and cleanup (expiry) operations. Burns are transfers to
+-- the CIP-0112 burn account. Every body is a utils-package function applied
+-- to this package's templates.
 module OpenZeppelin.Token.Cip112.V1.Registry where
 
 import DA.Foldable (forA_)
@@ -70,24 +71,19 @@ template TokenRules with
       controller config.admin
       do expireAllocationsImpl (pinAllocationTo @TokenAllocation) config.admin cancelArgs
 
-    nonconsuming choice TokenRules_Mint : ContractId HoldingV2.Holding
-      -- ^ Issue holdings into an account, emitting the standard mint event.
+    nonconsuming choice TokenRules_OfferMint : ContractId TransferInstructionV2.TransferInstruction
+      -- ^ Offer new holdings to a regular account: a pending transfer
+      -- instruction from the CIP-0112 mint account, which the receiver's
+      -- account parties accept or reject.
       with
-        account : HoldingV2.Account
+        receiver : HoldingV2.Account
         instrumentId : Text
         amount : Decimal
+        requestedAt : Time
+        executeBefore : Time
         reason : Text
-      controller config.admin :: accountParties config.admin account
-      do mintImpl (rulesOps config) config.admin account instrumentId amount reason
-
-    nonconsuming choice TokenRules_Burn : ()
-      -- ^ Burn an unlocked holding, emitting the standard burn event.
-      with
-        holdingCid : ContractId HoldingV2.Holding
-        account : HoldingV2.Account
-        reason : Text
-      controller config.admin :: accountParties config.admin account
-      do burnImpl (rulesOps config) config.admin holdingCid account reason
+      controller config.admin
+      do offerMintImpl config createInstruction receiver instrumentId amount requestedAt executeBefore reason
 
     nonconsuming choice TokenRules_ExpireTransferInstructions : ()
       -- ^ Batched admin expiry of stale transfer instructions. Template-typed

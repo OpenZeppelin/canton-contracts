@@ -1,17 +1,19 @@
--- | Registry workflow: the settlement-factory body and the admin supply and
+-- | Registry workflow: the settlement-factory body and the admin mint and
 -- cleanup operations a rules contract exposes as choices.
 module OpenZeppelin.Token.Cip112.Utils.Registry where
 
 import DA.Assert (assertDeadlineExceeded)
 import DA.Foldable (forA_)
-import DA.Optional (isNone, isSome)
+import DA.Time (addRelTime)
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils
 
-import OpenZeppelin.Token.Cip112.Utils.Holding
+import OpenZeppelin.Token.Cip112.TypesV1
+import OpenZeppelin.Token.Cip112.Utils.Transfer
 import OpenZeppelin.Token.Cip112.Utils.Allocation
 
 -- | `settlementFactory_settleBatchImpl`: pin every allocation to an accepted
@@ -52,35 +54,28 @@ expireAllocationsImpl pin admin cancelArgs =
     _ <- exercise allocCid cancelArg
     pure ()
 
--- | Body of a mint choice controlled by the admin and the account parties:
--- issue a holding and emit the standard mint event.
-mintImpl
-  : HoldingOps -> Party -> HoldingV2.Account -> Text -> Decimal -> Text
-  -> Update (ContractId HoldingV2.Holding)
-mintImpl ops admin account instrumentId amount reason = do
-  require "mint amount must be positive" (amount > 0.0)
-  require "mint target must be a regular account" (isSome account.owner)
-  holdingCid <- newHolding ops admin account instrumentId amount None
-  ops.withEventLog $ \eventLogCid ->
-    logMintEvent ops eventLogCid account amount
-      (HoldingV2.InstrumentId with admin; id = instrumentId)
-      (reasonToMeta reason emptyMetadata)
-      [holdingCid]
-  pure holdingCid
-
--- | Body of a burn choice controlled by the admin and the account parties:
--- consume an unlocked holding and emit the standard burn event. The account
--- is a choice argument because the controller set has to be known before
--- the holding can be read; it is then checked against the holding itself.
-burnImpl
-  : HoldingOps -> Party -> ContractId HoldingV2.Holding -> HoldingV2.Account -> Text
-  -> Update ()
-burnImpl ops admin holdingCid account reason = do
-  h <- ops.consumeHolding holdingCid
-  requireMatchExpected ("holding.instrumentId.admin", h.instrumentId.admin) admin
-  requireMatchExpected ("holding.account", h.account) account
-  require "cannot burn a locked holding" (isNone h.lock)
-  ops.withEventLog $ \eventLogCid ->
-    logBurnEvent ops eventLogCid h.account h.amount h.instrumentId
-      (reasonToMeta reason emptyMetadata)
-      [holdingCid]
+-- | Body of an admin-controlled mint choice: a pending transfer instruction
+-- from the CIP-0112 mint account to `receiver`. The receiver's account
+-- parties accept it to create the holding, or reject it. It locks nothing.
+offerMintImpl
+  : RegistryConfig -> CreateTransferInstruction -> HoldingV2.Account -> Text -> Decimal
+  -> Time -> Time -> Text
+  -> Update (ContractId TransferInstructionV2.TransferInstruction)
+offerMintImpl config createInstruction receiver instrumentId amount requestedAt executeBefore reason = do
+  let transfer = TransferInstructionV2.Transfer with
+        sender = mintAccount
+        receiver
+        amount
+        instrumentId = HoldingV2.InstrumentId with admin = config.admin; id = instrumentId
+        requestedAt
+        executeBefore
+        inputHoldingCids = []
+        meta = reasonToMeta reason emptyMetadata
+  validateTransfer config transfer
+  require "mint receiver must be a regular account" (isRegularAccount receiver)
+  createInstruction TransferInstructionState with
+    transfer
+    originalInputHoldingCids = []
+    lockedHoldingCids = []
+    expiresAt = executeBefore
+    lockExpiresAt = executeBefore `addRelTime` config.lockGrace
