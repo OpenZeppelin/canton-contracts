@@ -170,9 +170,7 @@ executeTransfer config ops createInstruction oneStep transfer = do
     isGreaterOrEqualR ("transfer.amount", transfer.amount)
   senderChangeCids <-
     if funded > transfer.amount
-      then do
-        cid <- newHolding ops admin transfer.sender transfer.instrumentId.id (funded - transfer.amount) None
-        pure [cid]
+      then (:: []) <$> newHolding ops admin transfer.sender transfer.instrumentId.id (funded - transfer.amount) None
       else pure []
 
   if oneStep
@@ -239,9 +237,7 @@ returnLockedSurplus ops transfer lockedAmounts = do
     let surplus =
           if instrumentId == transfer.instrumentId.id then amount - transfer.amount else amount
     if surplus > 0.0
-      then do
-        cid <- newHolding ops admin transfer.sender instrumentId surplus None
-        pure [cid]
+      then (:: []) <$> newHolding ops admin transfer.sender instrumentId surplus None
       else pure []
   pure (concat changes)
 
