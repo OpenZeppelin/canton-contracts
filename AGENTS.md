@@ -21,6 +21,7 @@ Before changing the repository, read:
 3. The affected package `README.md`
 4. `CONTRIBUTING.md`
 5. `RELEASING.md` when changing package identity or artifacts
+6. `cip112.md` which contains the official CIP112 specification that you must strictly follow when working with the relevant packages.
 
 All instructions are self-contained in this checkout; do not assume parent
 workspace files exist.

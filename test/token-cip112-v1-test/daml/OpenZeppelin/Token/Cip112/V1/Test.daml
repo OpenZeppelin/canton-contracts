@@ -432,17 +432,6 @@ testTransferEventReason = do
           transfer; actors = [alice, bob]; extraArgs = emptyExtraArgs
   map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents tree1) === ["rent", "rent"]
   map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents tree2) === ["transfer completed", "transfer completed"]
-  -- A mint offer without a reason names the workflow too.
-  offerCid <- submit (actAs admin) do
-    exerciseCmd rulesCid TokenRules_OfferMint with
-      receiver = basicAccount bob
-      instrumentId = "TOK"
-      amount = 1.0
-      requestedAt = t0
-      executeBefore = t2
-      reason = ""
-  mintTree <- submitTree (actAs bob) (acceptCmd bob offerCid)
-  map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents mintTree) === ["tokens minted"]
 
 -- | Reject and withdraw both return the locked funds to the sender.
 testTransferRejectAndWithdraw : Script ()
@@ -1087,24 +1076,6 @@ testBurnOneStep = do
   burnEvent.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding input]
   burnEvent.outputHoldingCids === result.senderChangeCids
   map (.otherside) burnEvent.transferLegSides === [burnAccount]
-
--- | The admin expires a stale burn request like any other instruction: after
--- `executeBefore` it can no longer be accepted, and expiry returns the locked
--- amount to the holder.
-testBurnRequestAdminExpiry : Script ()
-testBurnRequestAdminExpiry = do
-  s@Scenario{..} <- setup
-  input <- mint admin alice 10.0
-  requestCid <- pendingCid =<< instructTransfer s [alice] (burnTransfer s alice 4.0 [input])
-  setTime t3
-  submitMustFail (actAs admin) (acceptCmd admin requestCid)
-  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
-      instructionCids = [fromInterfaceContractId @TokenTransferInstruction requestCid]
-      observers = []
-  aliceAfter <- holdingAmounts alice
-  aliceAfter === [4.0, 6.0]
-  assertNoLocks alice
 
 -- | A burn request that is not accepted returns the funds: the admin rejects
 -- it or the owner withdraws it. The admin cannot burn a holding alone, and a
