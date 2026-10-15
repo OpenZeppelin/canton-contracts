@@ -17,7 +17,7 @@
 --   path (transfer, allocation, burn, unlock) refuses it without the
 --   workflows knowing what a freeze is.
 -- - A pause switch on the registry. A template field plus two choices,
---   checked before each factory delegates to the workflow. Burns bypass it.
+--   checked before each factory delegates to the workflow.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
 --   account. The factory composes two workflow calls: a one-step fee
 --   transfer, then the main transfer funded by the fee leg's change.
@@ -252,14 +252,12 @@ template MyRules with
       view = TransferInstructionV2.TransferFactoryView with admin = config.admin; meta = emptyMetadata
       transferFactory_publicFetchImpl = publicFetchDefaultImpl this
       transferFactory_transferExtraObservers = transferFactoryV2_privateAsset_transferExtraObserversDefaultImpl
-      -- A burn is not behind the pause switch and pays no fee: holders can
-      -- always redeem. Which operations a pause covers is the consumer's call.
-      transferFactory_transferImpl _self arg
-        | arg.transfer.receiver == burnAccount =
-            transferFactoryImpl config (ops this) (createInstruction this) arg
-        | otherwise = do
-            whenNotPaused this
-            transferWithFee this arg
+      -- The fee is charged on transfers between holders, so a burn pays none.
+      transferFactory_transferImpl _self arg = do
+        whenNotPaused this
+        if arg.transfer.receiver == burnAccount
+          then transferFactoryImpl config (ops this) (createInstruction this) arg
+          else transferWithFee this arg
 
     nonconsuming choice MyRules_OfferMint : ContractId TransferInstructionV2.TransferInstruction
       with

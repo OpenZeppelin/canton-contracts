@@ -444,7 +444,7 @@ testFrozenHoldingCannotUnlock = do
 ---------------
 
 -- | Only the pauser can pause. While paused, the transfer and allocation
--- factories and mint are refused; a burn stays open. After unpausing, with the
+-- factories, mint, and burn are refused. After unpausing, with the
 -- new disclosure, the transfer goes through.
 testPauseBlocksFactories : Script ()
 testPauseBlocksFactories = do
@@ -460,8 +460,9 @@ testPauseBlocksFactories = do
   mustFailWith "registry is paused" (actAs alice <> discloseMany [app.rulesDisclosure])
     (allocateCmd app app.settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [aliceTok])
   mustFailWith "registry is paused" (actAs admin) (offerMintCmd app alice 1.0)
-  _ <- submit (actAs [admin, alice] <> discloseMany [app.rulesDisclosure]) (burnCmd app alice 1.0 burnMe)
-  balanceSeenBy alice alice >>= (=== [10.0])
+  mustFailWith "registry is paused" (actAs [admin, alice] <> discloseMany [app.rulesDisclosure])
+    (burnCmd app alice 1.0 burnMe)
+  balanceSeenBy alice alice >>= (=== [1.0, 10.0])
 
   app2 <- unpauseRegistry app
   _ <- submit (actAs [alice, bob] <> discloseMany [app2.rulesDisclosure])
