@@ -25,7 +25,7 @@ import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Examples.Token.Cip112.Custom
@@ -140,6 +140,11 @@ transferCmd : App -> [Party] -> TransferInstructionV2.Transfer -> Commands Trans
 transferCmd App{..} actors transfer =
   exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
     TransferInstructionV2.TransferFactory_Transfer with transfer; actors; extraArgs = emptyExtraArgs
+
+-- | The owner and the admin burn `amount` of a holding in one step.
+burnCmd : App -> Party -> Decimal -> ContractId HoldingV2.Holding -> Commands TransferInstructionV2.TransferInstructionResult
+burnCmd app owner amount holdingCid =
+  transferCmd app [owner, app.admin] ((mkTransfer app owner owner amount [holdingCid]) with receiver = burnAccount)
 
 pendingCid : TransferInstructionV2.TransferInstructionResult -> Script (ContractId TransferInstructionV2.TransferInstruction)
 pendingCid result = case result.output of
@@ -285,11 +290,8 @@ testSpendChoiceRunsOnEveryConsumption = do
   balanceSeenBy alice alice >>= (=== [3.0])
   balanceSeenBy bob bob >>= (=== [7.0])
   [(bobCid, _)] <- query @MyHolding bob
-  burnTree <- submitTree (actAs [admin, bob] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid MyRules_Burn with
-      holdingCid = toInterfaceContractId @HoldingV2.Holding bobCid
-      account = basicAccount bob
-      reason = "redeem"
+  burnTree <- submitTree (actAs [admin, bob] <> discloseMany [rulesDisclosure])
+    (burnCmd app bob 7.0 (toInterfaceContractId @HoldingV2.Holding bobCid))
   countSpends burnTree === 1
   balanceSeenBy bob bob >>= (=== [])
 
@@ -361,11 +363,8 @@ testAuditorObservesEvents = do
   -- Sender-side and receiver-side events of the completed transfer.
   auditorSeesEvents auditor 2 acceptTree
   [(bobCid, _)] <- query @MyHolding bob
-  burnTree <- submitTree (actAs [admin, bob] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid MyRules_Burn with
-      holdingCid = toInterfaceContractId @HoldingV2.Holding bobCid
-      account = basicAccount bob
-      reason = "redeem"
+  burnTree <- submitTree (actAs [admin, bob] <> discloseMany [rulesDisclosure])
+    (burnCmd app bob 7.0 (toInterfaceContractId @HoldingV2.Holding bobCid))
   auditorSeesEvents auditor 1 burnTree
 
 -- Compliance freeze
@@ -391,11 +390,8 @@ testFrozenHoldingCannotMove = do
     (transferCmd app [alice] (mkTransfer app alice bob 7.0 [frozenIface]))
   mustFailWith "holding is frozen" (actAs alice <> discloseMany [rulesDisclosure])
     (allocateCmd app settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [frozenIface])
-  mustFailWith "holding is frozen" (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid MyRules_Burn with
-      holdingCid = frozenIface
-      account = basicAccount alice
-      reason = "redeem"
+  mustFailWith "holding is frozen" (actAs [admin, alice] <> discloseMany [rulesDisclosure])
+    (burnCmd app alice 10.0 frozenIface)
 
   -- Wallets reading the standard interface see nothing unusual.
   Some v <- queryInterfaceContractId @HoldingV2.Holding alice frozenIface
@@ -448,7 +444,7 @@ testFrozenHoldingCannotUnlock = do
 ---------------
 
 -- | Only the pauser can pause. While paused, the transfer and allocation
--- factories and mint are refused; burn stays open. After unpausing, with the
+-- factories and mint are refused; a burn stays open. After unpausing, with the
 -- new disclosure, the transfer goes through.
 testPauseBlocksFactories : Script ()
 testPauseBlocksFactories = do
@@ -464,11 +460,7 @@ testPauseBlocksFactories = do
   mustFailWith "registry is paused" (actAs alice <> discloseMany [app.rulesDisclosure])
     (allocateCmd app app.settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [aliceTok])
   mustFailWith "registry is paused" (actAs admin) (offerMintCmd app alice 1.0)
-  _ <- submit (actAs [admin, alice] <> discloseMany [app.rulesDisclosure]) do
-    exerciseCmd app.rulesCid MyRules_Burn with
-      holdingCid = burnMe
-      account = basicAccount alice
-      reason = "redeem while paused"
+  _ <- submit (actAs [admin, alice] <> discloseMany [app.rulesDisclosure]) (burnCmd app alice 1.0 burnMe)
   balanceSeenBy alice alice >>= (=== [10.0])
 
   app2 <- unpauseRegistry app
@@ -540,6 +532,16 @@ testFeeComposesTwoWorkflowCalls = do
   balanceSeenBy admin admin >>= (=== [0.5])
   balanceSeenBy alice alice >>= (=== [49.5])
   balanceSeenBy bob bob >>= (=== [50.0])
+
+-- | A burn pays no fee: the treasury receives nothing and the change keeps
+-- the full remainder.
+testBurnPaysNoFee : Script ()
+testBurnPaysNoFee = do
+  app@App{..} <- setupWith 100
+  aliceTok <- mint app alice 100.0
+  _ <- submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) (burnCmd app alice 40.0 aliceTok)
+  balanceSeenBy admin admin >>= (=== [])
+  balanceSeenBy alice alice >>= (=== [60.0])
 
 -- | The fee is a share of the transfer amount, so it must lie between 0 and
 -- 10000 basis points inclusive.

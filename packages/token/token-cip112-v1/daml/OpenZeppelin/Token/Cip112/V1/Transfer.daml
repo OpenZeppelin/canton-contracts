@@ -14,7 +14,9 @@ import OpenZeppelin.Token.Cip112.V1.Holding
 -- so their wallet can render and answer the offer. Every terminal choice is
 -- witnessed by the receiver parties even when they are not the actor. A mint
 -- offer, from the CIP-0112 mint account, locks nothing and is signed by the
--- admin alone.
+-- admin alone. A burn request, to the CIP-0112 burn account, is accepted or
+-- rejected by the admin; accepting it archives the locked funds and creates
+-- no holding for the burn account.
 template TokenTransferInstruction with
     state : TransferInstructionState
   where

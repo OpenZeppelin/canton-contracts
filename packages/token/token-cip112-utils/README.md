@@ -24,7 +24,7 @@ functions, with every template decision left to the caller.
   and `allocationView` for interface views.
 - `*Impl` functions for every interface method and template choice a registry
   needs: `transferFactoryImpl`, `transferAcceptImpl`, `allocationFactoryImpl`,
-  `allocationSettleImpl`, `settleBatchImpl`, `offerMintImpl`, `burnImpl`, and the
+  `allocationSettleImpl`, `settleBatchImpl`, `offerMintImpl`, and the
   rest.
 
 The functions read and return the `RegistryConfig`,

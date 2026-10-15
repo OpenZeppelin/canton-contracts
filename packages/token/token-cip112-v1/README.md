@@ -38,7 +38,7 @@ their own templates reuses directly.
   settlement and CIP-0112 iterated settlement.
 - `TokenRules` (`Registry`): the registry rules contract over a
   `RegistryConfig` payload, implementing the TSv2 transfer, allocation, and
-  settlement factories plus mint offers, burn, and expiry.
+  settlement factories plus mint offers and expiry.
 - `TokenEventLog` (`Base`): the holdings-change event-log host.
 - `defaultHoldingOps` (`Holding`): the operations record these templates run
   the utils functions with. A consumer that keeps `TokenHolding` but owns
@@ -72,6 +72,12 @@ interfaces or exceptions of its own.
   nothing. The receiver's account parties accept it to create the holding or
   reject it. The admin can withdraw it until then and expire it after
   `executeBefore`. A mint is always two-step.
+- A holder burns with `TransferFactory_Transfer` to the CIP-0112 burn account
+  (`cip-112/burn`), whose only account party is the admin. The holder alone
+  creates a burn request that locks the amount, and the admin accepts or
+  rejects it; the holder and the admin acting together burn in one step.
+  Accepting archives the locked amount and creates no holding for the burn
+  account.
 - An allocation created with `nextIterationFunding` set enables iterated
   settlement: the executors supply extra transfer legs per settlement
   iteration, bounded by the locked reserve plus incoming credits, and may
@@ -86,9 +92,9 @@ interfaces or exceptions of its own.
 - Only regular (owned) accounts hold balances. The admin also authors
   allocations for the CIP-0112 mint and burn accounts (`cip-112/mint` and
   `cip-112/burn`), so a settlement batch can issue or redeem supply as one
-  side of a trade. Supply also changes through `TokenRules_OfferMint` and
-  `TokenRules_Burn`. The special accounts appear in events only as the
-  other side of a supply change.
+  side of a trade. Supply also changes through mint offers and burn
+  transfers. The special accounts appear in events only as the other side of
+  a supply change.
 
 For multi-participant deployment, disclosure, and wallet integration, see
 [`integration-guide.md`](integration-guide.md).

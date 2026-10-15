@@ -19,7 +19,6 @@ import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructi
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils (basicAccount, senderSide)
 
-import OpenZeppelin.Token.Cip112.V1.Registry
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
 import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (mustFailWith)
 
@@ -84,17 +83,3 @@ testForeignHoldingAsAllocationInput = do
         actors = [attacker]
   after <- holdingAmounts attacker
   after === []
-
--- | The burn path pins the template too, so the guard is uniform: every
--- caller-supplied holding id in the package goes through `consumeHolding`.
-testForeignHoldingBurn : Script ()
-testForeignHoldingBurn = do
-  Scenario{..} <- setup
-  attacker <- allocateParty "attacker"
-  forgedCid <- submit attacker do
-    createCmd ForeignHolding with attacker; claimedView = forgedHolding admin attacker 5.0
-  mustFailWith notAcceptedHolding (actAs admin <> actAs attacker <> discloseMany [rulesDisclosure]) $
-    exerciseCmd rulesCid TokenRules_Burn with
-      holdingCid = toInterfaceContractId @HoldingV2.Holding forgedCid
-      account = basicAccount attacker
-      reason = "burn forged"

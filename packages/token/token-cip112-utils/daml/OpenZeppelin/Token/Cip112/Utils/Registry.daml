@@ -1,10 +1,9 @@
--- | Registry workflow: the settlement-factory body and the admin supply and
+-- | Registry workflow: the settlement-factory body and the admin mint and
 -- cleanup operations a rules contract exposes as choices.
 module OpenZeppelin.Token.Cip112.Utils.Registry where
 
 import DA.Assert (assertDeadlineExceeded)
 import DA.Foldable (forA_)
-import DA.Optional (isNone)
 import DA.Time (addRelTime)
 
 import Splice.Api.Token.MetadataV1
@@ -14,7 +13,6 @@ import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils
 
 import OpenZeppelin.Token.Cip112.TypesV1
-import OpenZeppelin.Token.Cip112.Utils.Holding
 import OpenZeppelin.Token.Cip112.Utils.Transfer
 import OpenZeppelin.Token.Cip112.Utils.Allocation
 
@@ -82,20 +80,3 @@ offerMintImpl config createInstruction receiver instrumentId amount requestedAt 
     lockedHoldingCids = []
     expiresAt = executeBefore
     lockExpiresAt = executeBefore `addRelTime` config.lockGrace
-
--- | Body of a burn choice controlled by the admin and the account parties:
--- consume an unlocked holding and emit the standard burn event. The account
--- is a choice argument because the controller set has to be known before
--- the holding can be read; it is then checked against the holding itself.
-burnImpl
-  : HoldingOps -> Party -> ContractId HoldingV2.Holding -> HoldingV2.Account -> Text
-  -> Update ()
-burnImpl ops admin holdingCid account reason = do
-  h <- ops.consumeHolding holdingCid
-  requireMatchExpected ("holding.instrumentId.admin", h.instrumentId.admin) admin
-  requireMatchExpected ("holding.account", h.account) account
-  require "cannot burn a locked holding" (isNone h.lock)
-  ops.withEventLog $ \eventLogCid ->
-    logBurnEvent ops eventLogCid h.account h.amount h.instrumentId
-      (reasonToMeta reason emptyMetadata)
-      [holdingCid]

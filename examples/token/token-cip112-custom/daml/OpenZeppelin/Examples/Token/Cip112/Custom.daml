@@ -17,10 +17,10 @@
 --   path (transfer, allocation, burn, unlock) refuses it without the
 --   workflows knowing what a freeze is.
 -- - A pause switch on the registry. A template field plus two choices,
---   checked before each factory delegates to the workflow.
--- - A fee on every transfer, paid to the admin's treasury account. The
---   factory composes two workflow calls: a one-step fee transfer, then the
---   main transfer funded by the fee leg's change.
+--   checked before each factory delegates to the workflow. Burns bypass it.
+-- - A fee on every transfer except a burn, paid to the admin's treasury
+--   account. The factory composes two workflow calls: a one-step fee
+--   transfer, then the main transfer funded by the fee leg's change.
 -- - An executor allowlist on the registry, checked before delegating.
 --
 -- Nothing here changes a workflow body. The four templates are the unit a
@@ -252,9 +252,14 @@ template MyRules with
       view = TransferInstructionV2.TransferFactoryView with admin = config.admin; meta = emptyMetadata
       transferFactory_publicFetchImpl = publicFetchDefaultImpl this
       transferFactory_transferExtraObservers = transferFactoryV2_privateAsset_transferExtraObserversDefaultImpl
-      transferFactory_transferImpl _self arg = do
-        whenNotPaused this
-        transferWithFee this arg
+      -- A burn is not behind the pause switch and pays no fee: holders can
+      -- always redeem. Which operations a pause covers is the consumer's call.
+      transferFactory_transferImpl _self arg
+        | arg.transfer.receiver == burnAccount =
+            transferFactoryImpl config (ops this) (createInstruction this) arg
+        | otherwise = do
+            whenNotPaused this
+            transferWithFee this arg
 
     nonconsuming choice MyRules_OfferMint : ContractId TransferInstructionV2.TransferInstruction
       with
@@ -268,16 +273,6 @@ template MyRules with
       do
         whenNotPaused this
         offerMintImpl config (createInstruction this) receiver instrumentId amount requestedAt executeBefore reason
-
-    -- | Not behind the pause switch: holders can always redeem. Which
-    -- operations a pause covers is the consumer's call.
-    nonconsuming choice MyRules_Burn : ()
-      with
-        holdingCid : ContractId HoldingV2.Holding
-        account : HoldingV2.Account
-        reason : Text
-      controller config.admin :: accountParties config.admin account
-      do burnImpl (ops this) config.admin holdingCid account reason
 
     nonconsuming choice MyRules_ExpireAllocations : ()
       with

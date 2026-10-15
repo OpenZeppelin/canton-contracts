@@ -1003,39 +1003,88 @@ testOfferMintAuthorityAndBounds = do
 -- Burn
 -------
 
--- | A burn is explained by exactly one event whose leg names the burn account
--- as the other side.
-testBurnEmitsEvent : Script ()
-testBurnEmitsEvent = do
+burnCmd
+  : Scenario -> [Party] -> TransferInstructionV2.Transfer
+  -> Commands TransferInstructionV2.TransferInstructionResult
+burnCmd Scenario{..} actors transfer =
+  exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+    TransferInstructionV2.TransferFactory_Transfer with transfer; actors; extraArgs = emptyExtraArgs
+
+-- | A burn request is a transfer to the burn account. The owner requests
+-- alone, locking the amount; the admin, the burn account's only party,
+-- accepts in a separate submission. The accept creates no holding and emits
+-- one event, on the owner's account, naming the burn account as the other
+-- side.
+testBurnRequestAccepted : Script ()
+testBurnRequestAccepted = do
   s@Scenario{..} <- setup
-  holdingCid <- toInterfaceContractId @HoldingV2.Holding <$> mint admin alice 25.0
-  -- Burning requires the account's authority and clears the holding.
-  submitMustFail (actAs admin <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Burn with
-      holdingCid
-      account = basicAccount alice
-      reason = "redeem"
-  burnTree <- submitTree (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Burn with
-      holdingCid
-      account = basicAccount alice
-      reason = "redeem"
-  aliceFinal <- holdingAmounts alice
-  aliceFinal === []
-  burnEvent <- expectOneHoldingsChange burnTree
+  input <- mint admin alice 10.0
+  requestCid <- pendingCid =<< instructTransfer s [alice] (burnTransfer s alice 4.0 [input])
+  aliceMid <- holdingAmounts alice
+  aliceMid === [4.0, 6.0]
+  Some v <- queryInterfaceContractId @TransferInstructionV2.TransferInstruction admin requestCid
+  Map.lookup TransferInstructionV2.TIA_Accept v.availableActions === Some [[admin]]
+  Map.lookup TransferInstructionV2.TIA_Withdraw v.availableActions === Some [[alice]]
+  lockedHoldings <- query @TokenHolding alice
+  [l.context | (_, h) <- lockedHoldings, Some l <- [h.holding.lock]] === [Some "pending burn"]
+
+  (result, tree) <- submitResultAndTree (actAs admin) (acceptCmd admin requestCid)
+  completedHoldings result >>= (=== [])
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [6.0]
+  burnEvent <- expectOneHoldingsChange tree
   burnEvent.account === basicAccount alice
-  burnEvent.inputHoldingCids === [holdingCid]
+  burnEvent.inputHoldingCids === v.transfer.inputHoldingCids
   burnEvent.outputHoldingCids === []
   map (.side) burnEvent.transferLegSides === [TransferEventsV2.SenderSide]
   map (.otherside) burnEvent.transferLegSides === [burnAccount]
-  -- A locked holding cannot be burned: the lock reserves it for a workflow.
-  aliceInput <- mint admin alice 10.0
-  _ <- instructTransfer s [alice] (mkTransfer s alice bob 4.0 [aliceInput])
+  map (.amount) burnEvent.transferLegSides === [4.0]
+
+-- | The owner and the admin acting together burn in one step: the input is
+-- consumed, the change returned, and one event explains both.
+testBurnOneStep : Script ()
+testBurnOneStep = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  (result, tree) <- submitResultAndTree (actAs [alice, admin] <> discloseMany [rulesDisclosure])
+    (burnCmd s [alice, admin] (burnTransfer s alice 4.0 [input]))
+  completedHoldings result >>= (=== [])
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [6.0]
+  assertNoLocks alice
+  burnEvent <- expectOneHoldingsChange tree
+  burnEvent.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding input]
+  burnEvent.outputHoldingCids === result.senderChangeCids
+  map (.otherside) burnEvent.transferLegSides === [burnAccount]
+
+-- | A burn request that is not accepted returns the funds: the admin rejects
+-- it or the owner withdraws it. The admin cannot burn a holding alone, and a
+-- holding locked for another workflow cannot fund a burn.
+testBurnRequestNotAccepted : Script ()
+testBurnRequestNotAccepted = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  submitMustFail (actAs admin <> discloseMany [rulesDisclosure])
+    (burnCmd s [admin] (burnTransfer s alice 10.0 [input]))
+
+  rejectedCid <- pendingCid =<< instructTransfer s [alice] (burnTransfer s alice 10.0 [input])
+  _ <- submit (actAs admin) do
+    exerciseCmd rejectedCid TransferInstructionV2.TransferInstruction_Reject with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+  [(returned, _)] <- query @TokenHolding alice
+  withdrawnCid <- pendingCid =<< instructTransfer s [alice] (burnTransfer s alice 10.0 [returned])
+  _ <- submit (actAs alice) do
+    exerciseCmd withdrawnCid TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+  assertNoLocks alice
+
+  [(unlocked, _)] <- query @TokenHolding alice
+  _ <- instructTransfer s [alice] (mkTransfer s alice bob 4.0 [unlocked])
   lockedHoldings <- query @TokenHolding alice
-  let lockedCids = [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock]
-  forA_ lockedCids $ \lockedCid ->
-    submitMustFail (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
-      exerciseCmd rulesCid TokenRules_Burn with
-        holdingCid = toInterfaceContractId @HoldingV2.Holding lockedCid
-        account = basicAccount alice
-        reason = "burn locked"
+  forA_ [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock] $ \lockedCid ->
+    submitMustFail (actAs [alice, admin] <> discloseMany [rulesDisclosure])
+      (burnCmd s [alice, admin] (burnTransfer s alice 4.0 [lockedCid]))

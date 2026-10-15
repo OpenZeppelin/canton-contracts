@@ -12,9 +12,8 @@ import DA.Assert ((===))
 import Daml.Script
 
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount)
 
-import OpenZeppelin.Token.Cip112.V1.Registry
+import OpenZeppelin.Token.Cip112.V1.Holding (TokenHolding)
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
 
 -- | Token creation and querying: holdings appear in owner queries, and the
@@ -57,7 +56,8 @@ sandboxTransferLifecycle = do
   assertNoLocks bob
 
 -- | A mint offer from the admin, accepted by the receiver in a separate
--- submission, then a burn through the registry.
+-- submission, then a burn request from the holder, accepted by the admin in a
+-- separate submission.
 sandboxMintAndBurn : Script ()
 sandboxMintAndBurn = do
   s@Scenario{..} <- setupPrefixed "mintandburn-"
@@ -65,10 +65,8 @@ sandboxMintAndBurn = do
   [mintedCid] <- completedHoldings =<< submit (actAs alice) (acceptCmd alice offerCid)
   aliceMinted <- holdingAmounts alice
   aliceMinted === [10.0]
-  submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Burn with
-      holdingCid = mintedCid
-      account = basicAccount alice
-      reason = "sandbox burn"
+  requestCid <- pendingCid =<< instructTransfer s [alice]
+    (burnTransfer s alice 10.0 [fromInterfaceContractId @TokenHolding mintedCid])
+  _ <- submit (actAs admin) (acceptCmd admin requestCid)
   aliceAfter <- holdingAmounts alice
   aliceAfter === []

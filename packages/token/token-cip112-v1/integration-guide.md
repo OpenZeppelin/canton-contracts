@@ -43,8 +43,21 @@ submit separately, each from their own participant. The example package
 
 Authorization: the admin signs the rules contract and alone offers a mint;
 the receiver's account parties accept or reject the offer; the admin
-withdraws it, or expires it after `executeBefore`. Admin plus account parties
-control burn.
+withdraws it, or expires it after `executeBefore`.
+
+### Burning
+
+A holder burns by exercising `TransferFactory_Transfer` with the CIP-0112 burn
+account (`cip-112/burn`) as the receiver. The burn account's only account
+party is the admin, so the holder's submission creates a pending burn request
+that locks the amount, and the admin accepts it from their own participant.
+Accepting archives the locked amount and emits an event, on the holder's
+account, naming `cip-112/burn` as the other side. When the holder and the
+admin act together, the burn completes in one step. The test scripts
+`testBurnRequestAccepted` and `testBurnOneStep` cover both paths.
+
+Authorization: the holder's account parties request and withdraw; the admin
+accepts or rejects, or expires the request after `executeBefore`.
 
 ### Two-step and one-step transfers
 

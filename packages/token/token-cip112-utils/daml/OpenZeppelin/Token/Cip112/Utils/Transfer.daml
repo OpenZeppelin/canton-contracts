@@ -34,12 +34,13 @@ type CreateTransferInstruction =
 isValidTransferInstructionState : TransferInstructionState -> Bool
 isValidTransferInstructionState s =
   isValidTransferV2 s.transfer
-  && isRegularAccount s.transfer.receiver
   -- A mint offer comes from the CIP-0112 mint account and locks nothing.
-  -- Every other offer is funded by locked holdings of a regular account.
+  -- Every other offer is funded by locked holdings of a regular account, and
+  -- a burn request goes to the CIP-0112 burn account.
   && (if s.transfer.sender == mintAccount
-        then null s.lockedHoldingCids
-        else isRegularAccount s.transfer.sender && not (null s.lockedHoldingCids))
+        then isRegularAccount s.transfer.receiver && null s.lockedHoldingCids
+        else isRegularAccount s.transfer.sender && not (null s.lockedHoldingCids)
+          && (isRegularAccount s.transfer.receiver || s.transfer.receiver == burnAccount))
   && s.expiresAt < s.lockExpiresAt
 
 -- | The standard view of a pending instruction. Joint actor sets: paying out
@@ -147,6 +148,8 @@ transferFactoryImpl config ops createInstruction arg = do
 -- lock the transfer amount and create a pending instruction. The caller is
 -- responsible for authorization: the debit needs the sender's and the admin's
 -- authority, and the one-step path also creates the receiver's holding.
+--
+-- A transfer to the CIP-0112 burn account is a burn.
 executeTransfer
   : RegistryConfig -> HoldingOps -> CreateTransferInstruction -> Bool
   -> TransferInstructionV2.Transfer
@@ -154,8 +157,9 @@ executeTransfer
 executeTransfer config ops createInstruction oneStep transfer = do
   let admin = config.admin
   validateTransfer config transfer
-  require "transfer accounts must be regular accounts"
-    (isRegularAccount transfer.sender && isRegularAccount transfer.receiver)
+  require "transfer sender must be a regular account" (isRegularAccount transfer.sender)
+  require "transfer receiver must be a regular account or the burn account"
+    (isRegularAccount transfer.receiver || transfer.receiver == burnAccount)
 
   inputAmounts <- debitHoldings (consumeUnlockedHolding ops admin transfer.sender) transfer.inputHoldingCids
   funded <- case TextMap.toList inputAmounts of
@@ -189,7 +193,9 @@ executeTransfer config ops createInstruction oneStep transfer = do
             holders = dedupSort (admin :: receiverParties transfer)
             expiresAt = Some lockExpiresAt
             expiresAfter = None
-            context = Some ("pending transfer to " <> show transfer.receiver.owner)
+            context = Some $ if transfer.receiver == burnAccount
+              then "pending burn"
+              else "pending transfer to " <> show transfer.receiver.owner
       lockedCid <- newHolding ops admin transfer.sender transfer.instrumentId.id transfer.amount (Some lock)
       instructionCid <- createInstruction TransferInstructionState with
         transfer = transfer with inputHoldingCids = [lockedCid]
@@ -240,15 +246,17 @@ returnLockedSurplus ops transfer lockedAmounts = do
   pure (concat changes)
 
 -- | Create the receiver's holding and log the transfer event. `inputCids`
--- are the holdings consumed to fund it.
+-- are the holdings consumed to fund it. A burn creates no holding.
 payReceiver
   : HoldingOps -> TransferInstructionV2.Transfer
   -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
   -> Update [ContractId HoldingV2.Holding]
 payReceiver ops transfer inputCids senderChangeCids = do
   let admin = transfer.instrumentId.admin
-  receiverCid <- newHolding ops admin transfer.receiver transfer.instrumentId.id transfer.amount None
-  let receiverHoldingCids = [receiverCid]
+  receiverHoldingCids <-
+    if transfer.receiver == burnAccount
+      then pure []
+      else (:: []) <$> newHolding ops admin transfer.receiver transfer.instrumentId.id transfer.amount None
   ops.withEventLog $ \eventLogCid ->
     logTransferEvents ops eventLogCid (transfer with inputHoldingCids = inputCids)
       senderChangeCids receiverHoldingCids
