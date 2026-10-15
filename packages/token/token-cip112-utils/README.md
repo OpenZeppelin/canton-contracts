@@ -57,6 +57,11 @@ contract id enters through an operation the template owner wrote:
   allocation with the same amount. Without it, a settlement can create
   tokens. No other choice may exercise `Allocation_Settle` with the admin's
   authority, because that skips the check.
+- A transfer instruction whose sender is the CIP-0112 mint account is a mint
+  offer: `transferAcceptImpl` creates the receiver's holding without any
+  locked funding. Only `offerMintImpl`, from a choice the admin alone
+  controls, may create one. A factory body must refuse the mint account as a
+  sender, as `transferFactoryImpl` does.
 
 ## Build
 

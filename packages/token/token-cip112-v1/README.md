@@ -162,8 +162,8 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
 ## Sandbox validation
 
 `dpm test` runs the test suite on an in-memory ledger. The sandbox gate runs
-token creation, transfer, querying, and burn against a real static-time
-Canton sandbox over the Ledger API. From the repository root:
+mint offers, transfers, querying, and burn requests against a real
+static-time Canton sandbox over the Ledger API. From the repository root:
 
 ```sh
 scripts/check-sandbox.sh

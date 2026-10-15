@@ -1,5 +1,6 @@
--- | Sandbox validation for the token package: token creation, transfer, and
--- querying against a real Canton ledger over the Ledger API.
+-- | Sandbox validation for the token package: mint offers, transfers,
+-- querying, and burn requests against a real Canton ledger over the Ledger
+-- API.
 -- `scripts/check-sandbox.sh` runs each script over gRPC against a static-time
 -- sandbox; the same scripts also run under `dpm test` on the in-memory
 -- ledger.

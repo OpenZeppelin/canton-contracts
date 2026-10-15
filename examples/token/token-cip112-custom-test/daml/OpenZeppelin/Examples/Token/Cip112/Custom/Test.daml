@@ -2,7 +2,8 @@
 -- each consumer addition: the auditor sees every contract, every consumption
 -- runs `MyHolding_Spend`, a late acceptance creates a `MyHolding`, iteration
 -- successors are `MyAllocation`s, a frozen holding cannot move on any path,
--- the pause switch blocks the factories, the fee leg pays the treasury, the
+-- the pause switch blocks the factories, mint offers, and burns, the fee
+-- leg pays the treasury and exempts burns, the
 -- executor allowlist is enforced, roles are separate, expired funding is
 -- reclaimed, and a foreign holding or allocation is refused.
 module OpenZeppelin.Examples.Token.Cip112.Custom.Test where
@@ -338,8 +339,9 @@ testDvpSettles = do
 
 -- | The auditor is an informee of every event the workflows emit for the
 -- token: mint, the lock on instruction, both sides of the accepted
--- transfer, and burn. Visibility on contracts alone would miss the standard
--- event stream.
+-- transfer, a one-step burn, and both events of a two-step burn: the lock
+-- on request and the burn on the admin's accept. Visibility on contracts
+-- alone would miss the standard event stream.
 testAuditorObservesEvents : Script ()
 testAuditorObservesEvents = do
   app@App{..} <- setup
@@ -363,9 +365,22 @@ testAuditorObservesEvents = do
   -- Sender-side and receiver-side events of the completed transfer.
   auditorSeesEvents auditor 2 acceptTree
   [(bobCid, _)] <- query @MyHolding bob
-  burnTree <- submitTree (actAs [admin, bob] <> discloseMany [rulesDisclosure])
-    (burnCmd app bob 7.0 (toInterfaceContractId @HoldingV2.Holding bobCid))
+  (burnResult, burnTree) <- submitResultAndTree (actAs [admin, bob] <> discloseMany [rulesDisclosure])
+    (burnCmd app bob 3.0 (toInterfaceContractId @HoldingV2.Holding bobCid))
   auditorSeesEvents auditor 1 burnTree
+  -- Bob requests a burn of the change alone; the auditor observes the
+  -- pending request, and the admin accepts it.
+  (requestResult, requestTree) <- submitResultAndTree (actAs bob <> discloseMany [rulesDisclosure])
+    (transferCmd app [bob] ((mkTransfer app bob bob 4.0 burnResult.senderChangeCids) with receiver = burnAccount))
+  auditorSeesEvents auditor 1 requestTree
+  requestCid <- pendingCid requestResult
+  Some _ <- queryContractId auditor (fromInterfaceContractId @MyTransferInstruction requestCid)
+  burnAcceptTree <- submitTree (actAs admin) do
+    exerciseCmd requestCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+  auditorSeesEvents auditor 1 burnAcceptTree
+  balanceSeenBy auditor bob >>= (=== [])
 
 -- Compliance freeze
 --------------------
