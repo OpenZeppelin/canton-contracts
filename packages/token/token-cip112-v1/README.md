@@ -90,11 +90,9 @@ interfaces or exceptions of its own.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors
-  allocations for the CIP-0112 mint and burn accounts (`cip-112/mint` and
-  `cip-112/burn`), so a settlement batch can issue or redeem supply as one
-  side of a trade. Supply also changes through mint offers and burn
-  transfers. The special accounts appear in events only as the other side of
-  a supply change.
+  allocations for the CIP-0112 mint and burn accounts, so a settlement batch
+  can issue or redeem supply as one side of a trade. The special accounts
+  appear in events only as the other side of a supply change.
 
 For multi-participant deployment, disclosure, and wallet integration, see
 [`integration-guide.md`](integration-guide.md).

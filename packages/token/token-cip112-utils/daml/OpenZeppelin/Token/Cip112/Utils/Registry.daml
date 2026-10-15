@@ -56,8 +56,7 @@ expireAllocationsImpl pin admin cancelArgs =
 
 -- | Body of an admin-controlled mint choice: a pending transfer instruction
 -- from the CIP-0112 mint account to `receiver`. The receiver's account
--- parties accept it to create the holding, or reject it. It locks nothing:
--- the admin's signature on it authorizes the new supply.
+-- parties accept it to create the holding, or reject it. It locks nothing.
 offerMintImpl
   : RegistryConfig -> CreateTransferInstruction -> HoldingV2.Account -> Text -> Decimal
   -> Time -> Time -> Text

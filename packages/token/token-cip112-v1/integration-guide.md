@@ -95,8 +95,7 @@ payment. The test scripts `testDeliveryVsMint` and `testDeliveryVsBurn` cover
 both directions.
 
 Authorization: the admin alone allocates for a special account, with
-`actors = [admin]`. The executors settle the batch, and the exact-cover check
-limits the supply change to the legs the admin allocated.
+`actors = [admin]`; the executors settle the batch.
 
 ### Iterated settlement
 

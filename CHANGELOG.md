@@ -50,7 +50,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 - Added the CIP-0112 utils package `openzeppelin-token-cip112-utils` (public
   module namespace `OpenZeppelin.Token.Cip112.Utils`): the transfer,
-  burn, allocation, settlement, mint, and expiry choice bodies as functions
+  allocation, settlement, mint-offer, and expiry choice bodies as functions
   parameterised over the caller's templates through a `HoldingOps` record and
   constructor and pinning operations. It defines no serializable types and
   depends on `openzeppelin-token-cip112-types-v1`.
@@ -65,5 +65,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   recovery, one-step and two-step transfers, allocations with exact-cover
   batch settlement and iterated settlement, delivery-vs-mint and
   delivery-vs-burn settlement through the CIP-0112 mint and burn accounts,
-  registry rules with mint offers from the CIP-0112 mint account, and burns
-  as transfers to the CIP-0112 burn account.
+  registry rules with mint offers from the mint account, and burns as
+  transfers to the burn account.

@@ -17,7 +17,7 @@
 --   path (transfer, allocation, burn, unlock) refuses it without the
 --   workflows knowing what a freeze is.
 -- - A pause switch on the registry. A template field plus two choices,
---   checked before each factory delegates to the workflow.
+--   checked before each factory and the mint offer delegate to the workflow.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
 --   account. The factory composes two workflow calls: a one-step fee
 --   transfer, then the main transfer funded by the fee leg's change.
