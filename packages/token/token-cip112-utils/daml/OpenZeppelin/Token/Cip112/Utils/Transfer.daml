@@ -264,7 +264,9 @@ payReceiver ops transfer inputCids senderChangeCids = do
 
 -- | The standard transfer events, as the vendored `logTransfer`, with the
 -- owner's extra observers: one account-local event for a self-transfer,
--- otherwise a sender-side and a receiver-side event.
+-- otherwise a sender-side and a receiver-side event. Each event carries the
+-- transfer's own reason in its `extraArgs`, or names the workflow when the
+-- transfer has none.
 logTransferEvents
   : HoldingOps -> ContractId TransferEventsV2.EventLog -> TransferInstructionV2.Transfer
   -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
@@ -280,7 +282,12 @@ logTransferEvents ops eventLogCid transfer senderOutputHoldingCids receiverOutpu
         meta = transfer.meta
       transferIn = leg TransferEventsV2.ReceiverSide transfer.sender
       transferOut = leg TransferEventsV2.SenderSide transfer.receiver
-      noExtra = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+      reason = case reasonFromMeta transfer.meta of
+        "" | transfer.sender == mintAccount -> "tokens minted"
+           | transfer.receiver == burnAccount -> "tokens burned"
+           | otherwise -> "transfer completed"
+        r -> r
+      extraArgs = ExtraArgs with context = emptyChoiceContext; meta = reasonToMeta reason emptyMetadata
   if transfer.sender == transfer.receiver
     then
       logHoldingsChange eventLogCid TransferEventsV2.EventLog_HoldingsChange with
@@ -290,7 +297,7 @@ logTransferEvents ops eventLogCid transfer senderOutputHoldingCids receiverOutpu
         transferLegSides = [transferOut, transferIn]
         outputHoldingCids = senderOutputHoldingCids ++ receiverOutputHoldingCids
         observers = eventObserversFor ops admin transfer.sender
-        extraArgs = noExtra
+        extraArgs
     else do
       logHoldingsChange eventLogCid TransferEventsV2.EventLog_HoldingsChange with
         admin
@@ -299,7 +306,7 @@ logTransferEvents ops eventLogCid transfer senderOutputHoldingCids receiverOutpu
         transferLegSides = [transferOut]
         outputHoldingCids = senderOutputHoldingCids
         observers = eventObserversFor ops admin transfer.sender
-        extraArgs = noExtra
+        extraArgs
       logHoldingsChange eventLogCid TransferEventsV2.EventLog_HoldingsChange with
         admin
         account = transfer.receiver
@@ -307,7 +314,7 @@ logTransferEvents ops eventLogCid transfer senderOutputHoldingCids receiverOutpu
         transferLegSides = [transferIn]
         outputHoldingCids = receiverOutputHoldingCids
         observers = eventObserversFor ops admin transfer.receiver
-        extraArgs = noExtra
+        extraArgs
 
 -- | Release the locked funding to the sender and log the change.
 returnFundsToSender

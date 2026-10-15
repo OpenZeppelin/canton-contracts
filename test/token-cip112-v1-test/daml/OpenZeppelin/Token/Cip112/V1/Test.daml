@@ -20,7 +20,7 @@ import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, reasonFromMeta, reasonToMeta, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Token.Cip112.V1.Allocation
@@ -416,6 +416,22 @@ testTransferOneStep = do
   bobAfter <- holdingAmounts bob
   bobAfter === [7.0]
   assertNoLocks alice
+
+-- | Both events of a completed transfer carry the transfer's own reason in
+-- their `extraArgs`, or name the workflow when the transfer has none.
+testTransferEventReason : Script ()
+testTransferEventReason = do
+  s@Scenario{..} <- setup
+  input1 <- mint admin alice 10.0
+  input2 <- mint admin alice 10.0
+  let withReason = (mkTransfer s alice bob 4.0 [input1]) with meta = reasonToMeta "rent" emptyMetadata
+  [(_, tree1), (_, tree2)] <- forA [withReason, mkTransfer s alice bob 4.0 [input2]] $ \transfer ->
+    submitResultAndTree (actAs [alice, bob] <> discloseMany [rulesDisclosure]) $
+      exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+        TransferInstructionV2.TransferFactory_Transfer with
+          transfer; actors = [alice, bob]; extraArgs = emptyExtraArgs
+  map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents tree1) === ["rent", "rent"]
+  map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents tree2) === ["transfer completed", "transfer completed"]
 
 -- | Reject and withdraw both return the locked funds to the sender.
 testTransferRejectAndWithdraw : Script ()
@@ -953,6 +969,8 @@ testOfferMintAccepted = do
   map (.side) mintEvent.transferLegSides === [TransferEventsV2.ReceiverSide]
   map (.otherside) mintEvent.transferLegSides === [mintAccount]
   map (.amount) mintEvent.transferLegSides === [25.0]
+  -- The offer's reason explains the change.
+  reasonFromMeta mintEvent.extraArgs.meta === "mint"
 
 -- | A mint offer that is not accepted creates nothing: the receiver rejects
 -- it, the admin withdraws it, and once `executeBefore` has passed it can no
@@ -1039,6 +1057,8 @@ testBurnRequestAccepted = do
   map (.side) burnEvent.transferLegSides === [TransferEventsV2.SenderSide]
   map (.otherside) burnEvent.transferLegSides === [burnAccount]
   map (.amount) burnEvent.transferLegSides === [4.0]
+  -- The request carries no reason, so the event names the workflow.
+  reasonFromMeta burnEvent.extraArgs.meta === "tokens burned"
 
 -- | The owner and the admin acting together burn in one step: the input is
 -- consumed, the change returned, and one event explains both.
