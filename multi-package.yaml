@@ -10,6 +10,10 @@ packages:
   - test/api-pausable-v1-test
   - packages/security/pausable-v1
   - test/pausable-v1-test
+  - packages/security/api-timelock-v1
+  - test/api-timelock-v1-test
+  - packages/security/timelock-v1
+  - test/timelock-v1-test
 
   # Integration examples
   - examples/licensing-app-v1
@@ -21,6 +25,8 @@ packages:
   - examples/pausable/retrofit-test
   - examples/pausable/vault
   - examples/pausable/vault-test
+  - examples/timelock/treasury
+  - examples/timelock/treasury-test
   - examples/treasury-rbac-v1
   - examples/treasury-rbac-v1-test
 

@@ -22,6 +22,8 @@ The library provides the following packages under [`packages/`](packages/):
 | [Scoped Authorization Grant](packages/access/scoped-authorization-grant-v1/) | `openzeppelin-scoped-authorization-grant-v1` | `OpenZeppelin.ScopedAuthorizationGrantV1` |
 | [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
 | [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` |
+| [Timelock API](packages/security/api-timelock-v1/) | `openzeppelin-api-timelock-v1` | `OpenZeppelin.Api.TimelockV1` |
+| [Timelock](packages/security/timelock-v1/) | `openzeppelin-timelock-v1` | `OpenZeppelin.TimelockV1` |
 
 Token CIP-0112 is an early-stage experiment with unstable APIs and package
 identity. Read [`experiments/README.md`](experiments/README.md) for its limits.
@@ -93,7 +95,7 @@ Each package `README.md` shows the consumer code for that component, and
 ```text
 packages/                 Library components and release candidates
   access/                 Authorization components
-  security/               Emergency-stop and safety components
+  security/               Emergency-stop, delay, and safety components
 test/                     Isolated library test packages
 experiments/
   token/                  Category for token components

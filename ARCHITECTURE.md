@@ -44,10 +44,22 @@ API packages may depend only on other API packages. A template-only component
 ships one implementation package; empty API packages add ceremony without an
 upgrade or interoperability benefit.
 
+An interface choice body calls a method of the implementing template, and the
+template implements that method with a call to a function in the
+implementation package. In Timelock, `Timelock_Apply` calls `applyImpl`, and
+the consumer implements `applyImpl` with one call to `applyOperation`. The
+Splice token standard interfaces use the same pattern (e.g., see
+[`TransferFactory_Transfer`](https://github.com/hyperledger-labs/splice/blob/69b43eb761e38695052c983715aa855c8cb207fc/token-standard/splice-api-token-transfer-instruction-v1/daml/Splice/Api/Token/TransferInstructionV1.daml#L175-L198)). A fix to
+a check in the function is a new version of the implementation package, and the
+consumer picks it up through an SCU of its own package. A check in a frozen choice body cannot
+be fixed: SCU cannot remove an interface instance, so the faulty choice stays
+callable on every implementing contract. The cost is that the interface does not
+enforce the checks. They run because the consumer's method calls the function.
+
 ### Components without templates
 
-Some components ship no template of their own. Pausable is the model: the
-pause flag is a field of the consumer's template, because a guard that reads
+Some components ship no template of their own. `Pausable` is the model: the
+`pause` flag is a field of the consumer's template, because a guard that reads
 the contract being exercised is sound and a guard that fetches a separate
 switch contract is not, since a caller can substitute or omit a contract it
 supplies. The implementing templates live in consuming packages.
@@ -60,6 +72,10 @@ package, and the frozen interface package does not move. The Splice token
 standard follows the same split, keeping its helper functions in
 `splice-token-standard-utils` beside its frozen interface packages.
 
+Timelock ships no template for a different reason. A scheduled operation is a
+contract of the consumer's own template, typed by its fields, because a Daml
+choice applies typed contract data rather than forwarding an encoded call.
+
 The API package follows the `openzeppelin-api-<component>-vN` freeze rule: no
 templates, no SCU, and a breaking change ships as a sibling `-v2` package. The
 function package depends on the API package alone, and a consumer data-depends
@@ -70,7 +86,7 @@ template, never remove one, and adding one needs the `damlc` option
 `-Wno-template-has-new-interface-instance`. So adopting an API `-v2` package
 means the template implements both interfaces for life; dropping the `-v1`
 instance needs a new template version outside SCU and an offline contract
-migration that copies the flag.
+migration that copies the contract state.
 
 ## Dependency policy
 
