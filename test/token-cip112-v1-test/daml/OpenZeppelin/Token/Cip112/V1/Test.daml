@@ -1101,6 +1101,24 @@ testMintOneStep = do
   map (.otherside) mintEvent.transferLegSides === [mintAccount]
   reasonFromMeta mintEvent.extraArgs.meta === "mint"
 
+-- | The step count follows the receiver account's parties. A mint to the
+-- admin's own account completes with `[admin]`. A mint to a second account
+-- of alice needs alice for one step, and is an offer without her.
+testMintStepsFollowReceiverAccount : Script ()
+testMintStepsFollowReceiverAccount = do
+  s@Scenario{..} <- setup
+  let savings = HoldingV2.Account with owner = Some alice; provider = None; id = "savings"
+      toSavings = (mintTransfer s alice 3.0) with receiver = savings
+  _ <- completedHoldings =<< submit (actAs admin <> discloseMany [rulesDisclosure])
+    (mintCmd s [admin] (mintTransfer s admin 5.0))
+  holdingAmounts admin >>= (=== [5.0])
+  _ <- completedHoldings =<< submit (actAs [admin, alice] <> discloseMany [rulesDisclosure])
+    (mintCmd s [admin, alice] toSavings)
+  offer <- submit (actAs admin <> discloseMany [rulesDisclosure]) (mintCmd s [admin] toSavings)
+  case offer.output of
+    TransferInstructionV2.TransferInstructionResult_Pending _ -> pure ()
+    other -> abort ("expected a pending mint offer, got: " <> show other)
+
 -- Burn
 -------
 

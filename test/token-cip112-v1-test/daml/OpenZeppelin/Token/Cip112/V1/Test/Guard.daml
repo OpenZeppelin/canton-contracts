@@ -424,6 +424,17 @@ testMintRefusesSpecialReceiverAndInputs = do
     mustFailWith "mint takes no input holdings" (actAs actors <> discloseMany [rulesDisclosure])
       (mintCmd s actors (transfer with inputHoldingCids = [toInterfaceContractId input]))
 
+-- | A mint has the same time bounds as a transfer, in both flows.
+testMintRefusesOutOfWindow : Script ()
+testMintRefusesOutOfWindow = do
+  s@Scenario{..} <- setup
+  let transfer = mintTransfer s alice 10.0
+  forA_ [[admin], [admin, alice]] $ \actors -> do
+    mustFailWith "strictly before deadline 'transfer.requestedAt'" (actAs actors <> discloseMany [rulesDisclosure])
+      (mintCmd s actors (transfer with requestedAt = t1 `addRelTime` minutes 5))
+    mustFailWith "transfer.executeBefore" (actAs actors <> discloseMany [rulesDisclosure])
+      (mintCmd s actors (transfer with executeBefore = t0))
+
 -- | The registry only expires its own instructions. Its admin can fetch
 -- another registry's instruction when it is the receiver of that transfer.
 testExpireTransferInstructionsRefusesOtherRegistry : Script ()
