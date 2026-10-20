@@ -1119,6 +1119,26 @@ testMintStepsFollowReceiverAccount = do
     TransferInstructionV2.TransferInstructionResult_Pending _ -> pure ()
     other -> abort ("expected a pending mint offer, got: " <> show other)
 
+-- | A mint to an account with a provider needs the owner and the provider.
+-- Without the provider it is refused. The admin alone offers the mint, the
+-- owner and the provider accept it once, and the provider sees the holding.
+testMintToProviderAccount : Script ()
+testMintToProviderAccount = do
+  s@Scenario{..} <- setup
+  let custody = HoldingV2.Account with owner = Some alice; provider = Some app; id = "custody"
+      toCustody = (mintTransfer s alice 4.0) with receiver = custody
+      disclosed actors = actAs actors <> discloseMany [rulesDisclosure]
+  submitMustFail (disclosed [admin, alice]) (mintCmd s [admin, alice] toCustody)
+  _ <- completedHoldings =<< submit (disclosed [admin, alice, app]) (mintCmd s [admin, alice, app] toCustody)
+  offerCid <- pendingCid =<< submit (disclosed [admin]) (mintCmd s [admin] toCustody)
+  let accept = exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
+        actors = [alice, app]; extraArgs = emptyExtraArgs
+  submitMustFail (actAs alice) (acceptCmd alice offerCid)
+  _ <- submit (actAs [alice, app]) accept
+  submitMustFail (actAs [alice, app]) accept
+  seen <- query @TokenHolding app
+  sort [h.holding.amount | (_, h) <- seen, h.holding.account == custody] === [4.0, 4.0]
+
 -- Burn
 -------
 
