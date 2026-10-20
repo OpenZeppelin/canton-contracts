@@ -70,10 +70,13 @@ interfaces or exceptions of its own.
 - The admin issues supply with `TransferFactory_Transfer` from the CIP-0112
   mint account (`cip-112/mint`), whose only account party is the admin. A
   mint takes no input holdings and locks nothing. The admin and the
-  receiver's account parties acting together mint in one step. The admin
-  alone creates a pending mint offer, which the receiver's account parties
-  accept to create the holding or reject. The admin can withdraw the offer
-  until then and expire it after `executeBefore`.
+  receiver's account parties acting together mint in one step. When the
+  receiver's account has parties other than the admin, the admin alone
+  creates a pending mint offer, which those parties accept to create the
+  holding or reject. The admin can withdraw the offer until then and expire
+  it after `executeBefore`. A mint to an account whose only party is the
+  admin always completes in one step. Clients handle both the `Completed`
+  and the `Pending` result.
 - A holder burns with `TransferFactory_Transfer` to the CIP-0112 burn account
   (`cip-112/burn`), whose only account party is the admin. The holder alone
   creates a burn request that locks the amount, and the admin accepts or
