@@ -2,7 +2,8 @@
 -- each consumer addition: the auditor sees every contract, every consumption
 -- runs `MyHolding_Spend`, a late acceptance creates a `MyHolding`, iteration
 -- successors are `MyAllocation`s, a frozen holding cannot move on any path,
--- the pause switch blocks the factories, the fee leg pays the treasury, the
+-- the pause switch blocks the factories, mint offers, and burns, the fee
+-- leg pays the treasury and exempts burns, the
 -- executor allowlist is enforced, roles are separate, expired funding is
 -- reclaimed, and a foreign holding or allocation is refused.
 module OpenZeppelin.Examples.Token.Cip112.Custom.Test where
@@ -25,7 +26,7 @@ import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Examples.Token.Cip112.Custom
@@ -96,14 +97,27 @@ unpauseRegistry app = do
   Some disclosure <- queryDisclosure @MyRules app.admin newCid
   pure app with rulesCid = newCid; rulesDisclosure = disclosure
 
+offerMintCmd : App -> Party -> Decimal -> Commands (ContractId TransferInstructionV2.TransferInstruction)
+offerMintCmd App{..} receiver amount =
+  exerciseCmd rulesCid MyRules_OfferMint with
+    receiver = basicAccount receiver
+    instrumentId = "TOK"
+    amount
+    requestedAt = t0
+    executeBefore = t2
+    reason = "mint"
+
+-- | The admin offers a mint and the owner accepts it.
 mint : App -> Party -> Decimal -> Script (ContractId HoldingV2.Holding)
-mint App{..} owner amount =
-  submit (actAs [admin, owner] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid MyRules_Mint with
-      account = basicAccount owner
-      instrumentId = "TOK"
-      amount
-      reason = "mint"
+mint app owner amount = do
+  offerCid <- submit (actAs app.admin) (offerMintCmd app owner amount)
+  result <- submit (actAs owner) do
+    exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [owner]
+      extraArgs = emptyExtraArgs
+  case result.output of
+    TransferInstructionV2.TransferInstructionResult_Completed [holdingCid] -> pure holdingCid
+    other -> abort ("expected a completed mint, got: " <> show other)
 
 -- | Balances of `owner` as seen by `who`: the owner, the auditor, or the
 -- compliance officer.
@@ -127,6 +141,11 @@ transferCmd : App -> [Party] -> TransferInstructionV2.Transfer -> Commands Trans
 transferCmd App{..} actors transfer =
   exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
     TransferInstructionV2.TransferFactory_Transfer with transfer; actors; extraArgs = emptyExtraArgs
+
+-- | The owner and the admin burn `amount` of a holding in one step.
+burnCmd : App -> Party -> Decimal -> ContractId HoldingV2.Holding -> Commands TransferInstructionV2.TransferInstructionResult
+burnCmd app owner amount holdingCid =
+  transferCmd app [owner, app.admin] ((mkTransfer app owner owner amount [holdingCid]) with receiver = burnAccount)
 
 pendingCid : TransferInstructionV2.TransferInstructionResult -> Script (ContractId TransferInstructionV2.TransferInstruction)
 pendingCid result = case result.output of
@@ -272,11 +291,8 @@ testSpendChoiceRunsOnEveryConsumption = do
   balanceSeenBy alice alice >>= (=== [3.0])
   balanceSeenBy bob bob >>= (=== [7.0])
   [(bobCid, _)] <- query @MyHolding bob
-  burnTree <- submitTree (actAs [admin, bob] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid MyRules_Burn with
-      holdingCid = toInterfaceContractId @HoldingV2.Holding bobCid
-      account = basicAccount bob
-      reason = "redeem"
+  burnTree <- submitTree (actAs [admin, bob] <> discloseMany [rulesDisclosure])
+    (burnCmd app bob 7.0 (toInterfaceContractId @HoldingV2.Holding bobCid))
   countSpends burnTree === 1
   balanceSeenBy bob bob >>= (=== [])
 
@@ -323,18 +339,21 @@ testDvpSettles = do
 
 -- | The auditor is an informee of every event the workflows emit for the
 -- token: mint, the lock on instruction, both sides of the accepted
--- transfer, and burn. Visibility on contracts alone would miss the standard
--- event stream.
+-- transfer, a one-step burn, and both events of a two-step burn: the lock
+-- on request and the burn on the admin's accept. Visibility on contracts
+-- alone would miss the standard event stream.
 testAuditorObservesEvents : Script ()
 testAuditorObservesEvents = do
   app@App{..} <- setup
-  (aliceTok, mintTree) <- submitResultAndTree (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid MyRules_Mint with
-      account = basicAccount alice
-      instrumentId = "TOK"
-      amount = 10.0
-      reason = "mint"
+  offerCid <- submit (actAs admin) (offerMintCmd app alice 10.0)
+  (mintResult, mintTree) <- submitResultAndTree (actAs alice) do
+    exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
   auditorSeesEvents auditor 1 mintTree
+  [aliceTok] <- case mintResult.output of
+    TransferInstructionV2.TransferInstructionResult_Completed cids -> pure cids
+    other -> abort ("expected a completed mint, got: " <> show other)
   (result, instructTree) <- submitResultAndTree (actAs alice <> discloseMany [rulesDisclosure])
     (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
   auditorSeesEvents auditor 1 instructTree
@@ -346,12 +365,22 @@ testAuditorObservesEvents = do
   -- Sender-side and receiver-side events of the completed transfer.
   auditorSeesEvents auditor 2 acceptTree
   [(bobCid, _)] <- query @MyHolding bob
-  burnTree <- submitTree (actAs [admin, bob] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid MyRules_Burn with
-      holdingCid = toInterfaceContractId @HoldingV2.Holding bobCid
-      account = basicAccount bob
-      reason = "redeem"
+  (burnResult, burnTree) <- submitResultAndTree (actAs [admin, bob] <> discloseMany [rulesDisclosure])
+    (burnCmd app bob 3.0 (toInterfaceContractId @HoldingV2.Holding bobCid))
   auditorSeesEvents auditor 1 burnTree
+  -- Bob requests a burn of the change alone; the auditor observes the
+  -- pending request, and the admin accepts it.
+  (requestResult, requestTree) <- submitResultAndTree (actAs bob <> discloseMany [rulesDisclosure])
+    (transferCmd app [bob] ((mkTransfer app bob bob 4.0 burnResult.senderChangeCids) with receiver = burnAccount))
+  auditorSeesEvents auditor 1 requestTree
+  requestCid <- pendingCid requestResult
+  Some _ <- queryContractId auditor (fromInterfaceContractId @MyTransferInstruction requestCid)
+  burnAcceptTree <- submitTree (actAs admin) do
+    exerciseCmd requestCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+  auditorSeesEvents auditor 1 burnAcceptTree
+  balanceSeenBy auditor bob >>= (=== [])
 
 -- Compliance freeze
 --------------------
@@ -376,11 +405,8 @@ testFrozenHoldingCannotMove = do
     (transferCmd app [alice] (mkTransfer app alice bob 7.0 [frozenIface]))
   mustFailWith "holding is frozen" (actAs alice <> discloseMany [rulesDisclosure])
     (allocateCmd app settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [frozenIface])
-  mustFailWith "holding is frozen" (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid MyRules_Burn with
-      holdingCid = frozenIface
-      account = basicAccount alice
-      reason = "redeem"
+  mustFailWith "holding is frozen" (actAs [admin, alice] <> discloseMany [rulesDisclosure])
+    (burnCmd app alice 10.0 frozenIface)
 
   -- Wallets reading the standard interface see nothing unusual.
   Some v <- queryInterfaceContractId @HoldingV2.Holding alice frozenIface
@@ -433,7 +459,7 @@ testFrozenHoldingCannotUnlock = do
 ---------------
 
 -- | Only the pauser can pause. While paused, the transfer and allocation
--- factories and mint are refused; burn stays open. After unpausing, with the
+-- factories, mint, and burn are refused. After unpausing, with the
 -- new disclosure, the transfer goes through.
 testPauseBlocksFactories : Script ()
 testPauseBlocksFactories = do
@@ -448,18 +474,10 @@ testPauseBlocksFactories = do
     (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
   mustFailWith "registry is paused" (actAs alice <> discloseMany [app.rulesDisclosure])
     (allocateCmd app app.settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [aliceTok])
-  mustFailWith "registry is paused" (actAs [admin, alice] <> discloseMany [app.rulesDisclosure]) do
-    exerciseCmd app.rulesCid MyRules_Mint with
-      account = basicAccount alice
-      instrumentId = "TOK"
-      amount = 1.0
-      reason = "mint"
-  _ <- submit (actAs [admin, alice] <> discloseMany [app.rulesDisclosure]) do
-    exerciseCmd app.rulesCid MyRules_Burn with
-      holdingCid = burnMe
-      account = basicAccount alice
-      reason = "redeem while paused"
-  balanceSeenBy alice alice >>= (=== [10.0])
+  mustFailWith "registry is paused" (actAs admin) (offerMintCmd app alice 1.0)
+  mustFailWith "registry is paused" (actAs [admin, alice] <> discloseMany [app.rulesDisclosure])
+    (burnCmd app alice 1.0 burnMe)
+  balanceSeenBy alice alice >>= (=== [1.0, 10.0])
 
   app2 <- unpauseRegistry app
   _ <- submit (actAs [alice, bob] <> discloseMany [app2.rulesDisclosure])
@@ -530,6 +548,16 @@ testFeeComposesTwoWorkflowCalls = do
   balanceSeenBy admin admin >>= (=== [0.5])
   balanceSeenBy alice alice >>= (=== [49.5])
   balanceSeenBy bob bob >>= (=== [50.0])
+
+-- | A burn pays no fee: the treasury receives nothing and the change keeps
+-- the full remainder.
+testBurnPaysNoFee : Script ()
+testBurnPaysNoFee = do
+  app@App{..} <- setupWith 100
+  aliceTok <- mint app alice 100.0
+  _ <- submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) (burnCmd app alice 40.0 aliceTok)
+  balanceSeenBy admin admin >>= (=== [])
+  balanceSeenBy alice alice >>= (=== [60.0])
 
 -- | The fee is a share of the transfer amount, so it must lie between 0 and
 -- 10000 basis points inclusive.

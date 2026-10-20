@@ -7,7 +7,7 @@ import DA.Assert ((===), (=/=))
 import DA.Date (date, Month(Jan))
 import DA.Foldable (forA_)
 import DA.List (sort)
-import DA.Time (days, hours, minutes, time)
+import DA.Time (addRelTime, days, hours, minutes, time)
 import Daml.Script
 
 import DA.Map qualified as Map
@@ -20,7 +20,7 @@ import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, reasonFromMeta, reasonToMeta, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Token.Cip112.V1.Allocation
@@ -417,6 +417,33 @@ testTransferOneStep = do
   bobAfter === [7.0]
   assertNoLocks alice
 
+-- | Both events of a completed transfer carry the transfer's own reason in
+-- their `extraArgs`, or name the workflow when the transfer has none.
+testTransferEventReason : Script ()
+testTransferEventReason = do
+  s@Scenario{..} <- setup
+  input1 <- mint admin alice 10.0
+  input2 <- mint admin alice 10.0
+  let withReason = (mkTransfer s alice bob 4.0 [input1]) with meta = reasonToMeta "rent" emptyMetadata
+  [(_, tree1), (_, tree2)] <- forA [withReason, mkTransfer s alice bob 4.0 [input2]] $ \transfer ->
+    submitResultAndTree (actAs [alice, bob] <> discloseMany [rulesDisclosure]) $
+      exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+        TransferInstructionV2.TransferFactory_Transfer with
+          transfer; actors = [alice, bob]; extraArgs = emptyExtraArgs
+  map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents tree1) === ["rent", "rent"]
+  map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents tree2) === ["transfer completed", "transfer completed"]
+  -- A mint offer without a reason names the workflow too.
+  offerCid <- submit (actAs admin) do
+    exerciseCmd rulesCid TokenRules_OfferMint with
+      receiver = basicAccount bob
+      instrumentId = "TOK"
+      amount = 1.0
+      requestedAt = t0
+      executeBefore = t2
+      reason = ""
+  mintTree <- submitTree (actAs bob) (acceptCmd bob offerCid)
+  map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents mintTree) === ["tokens minted"]
+
 -- | Reject and withdraw both return the locked funds to the sender.
 testTransferRejectAndWithdraw : Script ()
 testTransferRejectAndWithdraw = do
@@ -689,33 +716,162 @@ testSelfTransferConsolidates = do
   aliceAfter === [10.0]
   assertNoLocks alice
 
--- | A special (ownerless) account cannot author an allocation: its leg sides
--- net to zero, so it would lock nothing and settle as an unevented supply
--- change (delivery-vs-mint). Refused at the factory until that path is
--- deliberately supported.
-testSpecialAuthorizerRefused : Script ()
-testSpecialAuthorizerRefused = do
-  Scenario{..} <- setup
-  let specialAccount = HoldingV2.Account with owner = None; provider = None; id = "mint"
-      spec = AllocationV2.AllocationSpecification with
-        admin
-        authorizer = specialAccount
-        transferLegSides = [senderSide legAliceToBob]
-        settlementDeadline = Some t2
-        nextIterationFunding = None
-        committed = False
-        meta = emptyMetadata
-  -- `accountParties` resolves a special account to the admin, so the admin is
-  -- the only plausible actor — and even the admin is refused.
-  mustFailWith "allocation authorizer must be a regular account" (actAs admin <> discloseMany [rulesDisclosure]) do
-    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
-      AllocationInstructionV2.AllocationFactory_Allocate with
-        settlement
-        allocation = spec
-        requestedAt = t0
-        inputHoldingCids = []
-        extraArgs = emptyExtraArgs
-        actors = [admin]
+-- Delivery-vs-mint and delivery-vs-burn
+----------------------------------------
+
+-- | An allocation spec authorized by a special account.
+specialSpec : Party -> HoldingV2.Account -> [AllocationV2.TransferLegSide] -> AllocationV2.AllocationSpecification
+specialSpec admin account sides = (mkAllocationSpec admin admin sides) with authorizer = account
+
+allocateSpecCmd
+  : Scenario -> [Party] -> AllocationV2.AllocationSpecification
+  -> Commands AllocationInstructionV2.AllocationInstructionResult
+allocateSpecCmd Scenario{..} actors spec =
+  exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+    AllocationInstructionV2.AllocationFactory_Allocate with
+      settlement
+      allocation = spec
+      requestedAt = t0
+      inputHoldingCids = []
+      extraArgs = emptyExtraArgs
+      actors
+
+instrumentHoldings : Party -> Script [(Text, Decimal)]
+instrumentHoldings owner = do
+  holdings <- query @TokenHolding owner
+  pure (sort [ (h.holding.instrumentId.id, h.holding.amount)
+             | (_, h) <- holdings, h.holding.account.owner == Some owner ])
+
+-- | The legs of a transaction's holdings-change events on `account` whose
+-- other side is `otherside`, as (side, instrument, amount).
+legsAgainst
+  : HoldingV2.Account -> HoldingV2.Account -> TransactionTree
+  -> [(TransferEventsV2.TransferSide, Text, Decimal)]
+legsAgainst account otherside tree =
+  [ (l.side, l.instrumentId, l.amount)
+  | e <- holdingsChangeEvents tree, e.account == account
+  , l <- e.transferLegSides, l.otherside == otherside ]
+
+-- | Delivery-vs-mint: Alice pays Bob 50 USD and receives 10 TOK minted in the
+-- same batch. The admin's mint-account allocation locks nothing; Alice's
+-- event names the mint account as the other side, and no event is emitted on
+-- the mint account itself.
+testDeliveryVsMint : Script ()
+testDeliveryVsMint = do
+  s@Scenario{..} <- setup
+  aliceUsd <- mintOf admin alice "USD" 50.0
+  let mintLeg = (mkTransferLeg "mint-1" alice alice 10.0) with sender = mintAccount
+      payLeg = (mkTransferLeg "pay-1" alice bob 50.0) with instrumentId = "USD"
+
+  adminAllocCid <- completedCid =<< allocateSpec s admin (specialSpec admin mintAccount [senderSide mintLeg]) []
+  Some adminView <- queryInterfaceContractId @AllocationV2.Allocation admin adminAllocCid
+  adminView.holdingCids === []
+  aliceAllocCid <- completedCid =<< allocate s alice [receiverSide mintLeg, senderSide payLeg] [aliceUsd]
+  bobAllocCid <- completedCid =<< allocate s bob [receiverSide payLeg] []
+
+  tree <- submitTree (actAs app <> discloseMany [rulesDisclosure]) $
+    settleBatchFinalizedCmd s [mintLeg, payLeg] (map nonIteratedAllocation [adminAllocCid, aliceAllocCid, bobAllocCid])
+
+  aliceAfter <- instrumentHoldings alice
+  aliceAfter === [("TOK", 10.0)]
+  bobAfter <- instrumentHoldings bob
+  bobAfter === [("USD", 50.0)]
+  legsAgainst (basicAccount alice) mintAccount tree === [(TransferEventsV2.ReceiverSide, "TOK", 10.0)]
+  [e | e <- holdingsChangeEvents tree, e.account == mintAccount] === []
+
+-- | Delivery-vs-burn: Alice redeems 10 TOK for 50 USD from Bob. The admin's
+-- burn-account allocation locks nothing and receives nothing; Alice's event
+-- names the burn account as the other side.
+testDeliveryVsBurn : Script ()
+testDeliveryVsBurn = do
+  s@Scenario{..} <- setup
+  aliceTok <- mint admin alice 10.0
+  bobUsd <- mintOf admin bob "USD" 50.0
+  let burnLeg = (mkTransferLeg "burn-1" alice alice 10.0) with receiver = burnAccount
+      payLeg = (mkTransferLeg "pay-1" bob alice 50.0) with instrumentId = "USD"
+
+  adminAllocCid <- completedCid =<< allocateSpec s admin (specialSpec admin burnAccount [receiverSide burnLeg]) []
+  aliceAllocCid <- completedCid =<< allocate s alice [senderSide burnLeg, receiverSide payLeg] [aliceTok]
+  bobAllocCid <- completedCid =<< allocate s bob [senderSide payLeg] [bobUsd]
+
+  tree <- submitTree (actAs app <> discloseMany [rulesDisclosure]) $
+    settleBatchFinalizedCmd s [burnLeg, payLeg] (map nonIteratedAllocation [adminAllocCid, aliceAllocCid, bobAllocCid])
+
+  aliceAfter <- instrumentHoldings alice
+  aliceAfter === [("USD", 50.0)]
+  bobAfter <- instrumentHoldings bob
+  bobAfter === []
+  legsAgainst (basicAccount alice) burnAccount tree === [(TransferEventsV2.SenderSide, "TOK", 10.0)]
+  [e | e <- holdingsChangeEvents tree, e.account == burnAccount] === []
+
+-- | Only the admin authors a special-account allocation, only for the mint
+-- and burn accounts, and only in the direction that creates or destroys
+-- supply.
+testSpecialAuthorizerRestrictions : Script ()
+testSpecialAuthorizerRestrictions = do
+  s@Scenario{..} <- setup
+  let mintLeg = (mkTransferLeg "mint-1" alice alice 10.0) with sender = mintAccount
+      toMintLeg = (mkTransferLeg "to-mint" alice alice 10.0) with receiver = mintAccount
+      fromBurnLeg = (mkTransferLeg "from-burn" alice alice 10.0) with sender = burnAccount
+      otherSpecial = HoldingV2.Account with owner = None; provider = None; id = "cip-112/other"
+      asAdmin = actAs admin <> discloseMany [rulesDisclosure]
+  -- `accountParties` resolves a special account to the admin alone.
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) $
+    allocateSpecCmd s [alice] (specialSpec admin mintAccount [senderSide mintLeg])
+  mustFailWith "a mint-account allocation may only authorize sender sides" asAdmin $
+    allocateSpecCmd s [admin] (specialSpec admin mintAccount [receiverSide toMintLeg])
+  mustFailWith "a burn-account allocation may only authorize receiver sides" asAdmin $
+    allocateSpecCmd s [admin] (specialSpec admin burnAccount [senderSide fromBurnLeg])
+  mustFailWith "allocation authorizer must be a regular, mint, or burn account" asAdmin $
+    allocateSpecCmd s [admin] (specialSpec admin otherSpecial [senderSide mintLeg])
+
+-- | The netting ignores the amount on a mint-account sender side, so exact
+-- cover is what bounds the mint: a receiver allocation for more than the
+-- admin authorized settles under neither amount.
+testMintAllocationBoundsAmount : Script ()
+testMintAllocationBoundsAmount = do
+  s@Scenario{..} <- setup
+  let mintLeg = (mkTransferLeg "mint-1" alice alice 10.0) with sender = mintAccount
+      inflatedLeg = mintLeg with amount = 100.0
+  adminAllocCid <- completedCid =<< allocateSpec s admin (specialSpec admin mintAccount [senderSide mintLeg]) []
+  aliceAllocCid <- completedCid =<< allocate s alice [receiverSide inflatedLeg] []
+  forA_ [mintLeg, inflatedLeg] $ \leg ->
+    submitMustFail (actAs app <> discloseMany [rulesDisclosure]) $
+      settleBatchFinalizedCmd s [leg] (map nonIteratedAllocation [adminAllocCid, aliceAllocCid])
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === []
+
+-- | A mint-account allocation holds nothing, so withdraw, executor cancel,
+-- and admin expiry archive it without creating or releasing any holding.
+testMintAllocationLifecycle : Script ()
+testMintAllocationLifecycle = do
+  s@Scenario{..} <- setup
+  let mintLeg = (mkTransferLeg "mint-1" alice alice 10.0) with sender = mintAccount
+      newMintAllocation = completedCid =<< allocateSpec s admin (specialSpec admin mintAccount [senderSide mintLeg]) []
+      cancel actors = AllocationV2.Allocation_Cancel with actors; extraArgs = emptyExtraArgs
+
+  withdrawnCid <- newMintAllocation
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation admin withdrawnCid
+  Map.lookup AllocationV2.AA_Withdraw v.availableActions === Some [[admin]]
+  _ <- submit (actAs admin) do
+    exerciseCmd withdrawnCid AllocationV2.Allocation_Withdraw with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+
+  cancelledCid <- newMintAllocation
+  _ <- submit (actAs app) do exerciseCmd cancelledCid (cancel [app])
+
+  expiredCid <- newMintAllocation
+  setTime t3
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireAllocations with
+      cancelArgs = [(expiredCid, cancel [admin])]
+      observers = []
+
+  allocations <- queryInterface @AllocationV2.Allocation admin
+  allocations === []
+  holdings <- query @TokenHolding admin
+  holdings === []
 
 -- | An empty batch is refused rather than succeeding as a no-op.
 testEmptyBatchRefused : Script ()
@@ -794,62 +950,190 @@ testRulesConfigValidated = do
   submitMustFail admin do createCmd TokenRules with config = base with maxTTL = minutes 0
   submitMustFail admin do createCmd TokenRules with config = base with lockGrace = minutes 0
 
--- | Issuance has an evented path, so supply changes are visible to standard
--- history parsers instead of appearing as bare creates. Each supply change is
--- explained by exactly one event whose leg names the mint or burn special
--- account as the other side.
-testMintAndBurnEmitEvents : Script ()
-testMintAndBurnEmitEvents = do
+-- Mint offers
+--------------
+
+-- | Issuance is a pending transfer from the mint account. The admin offers
+-- alone and nothing is created or locked until the receiver accepts. The
+-- accept emits one event, on the receiver's account, naming the mint account
+-- as the other side.
+testOfferMintAccepted : Script ()
+testOfferMintAccepted = do
   s@Scenario{..} <- setup
-  (holdingCid, mintTree) <- submitResultAndTree (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Mint with
-      account = basicAccount alice
-      instrumentId = "TOK"
-      amount = 25.0
-      reason = "initial issuance"
+  offerCid <- submit (actAs admin) (offerMintCmd s alice 25.0)
+  aliceBefore <- holdingAmounts alice
+  aliceBefore === []
+  Some v <- queryInterfaceContractId @TransferInstructionV2.TransferInstruction alice offerCid
+  v.transfer.sender === mintAccount
+  v.transfer.inputHoldingCids === []
+  Map.lookup TransferInstructionV2.TIA_Accept v.availableActions === Some [[alice]]
+  Map.lookup TransferInstructionV2.TIA_Withdraw v.availableActions === Some [[admin]]
+
+  (result, tree) <- submitResultAndTree (actAs alice) (acceptCmd alice offerCid)
+  [holdingCid] <- completedHoldings result
   aliceAfter <- holdingAmounts alice
   aliceAfter === [25.0]
-  mintEvent <- expectOneHoldingsChange mintTree
+  mintEvent <- expectOneHoldingsChange tree
   mintEvent.account === basicAccount alice
   mintEvent.inputHoldingCids === []
   mintEvent.outputHoldingCids === [holdingCid]
   map (.side) mintEvent.transferLegSides === [TransferEventsV2.ReceiverSide]
   map (.otherside) mintEvent.transferLegSides === [mintAccount]
   map (.amount) mintEvent.transferLegSides === [25.0]
-  -- Minting a non-positive amount is refused.
-  mustFailWith "mint amount must be positive" (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Mint with
-      account = basicAccount alice
-      instrumentId = "TOK"
-      amount = 0.0
-      reason = "bad"
-  -- Burning requires the account's authority and clears the holding.
-  submitMustFail (actAs admin <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Burn with
-      holdingCid
-      account = basicAccount alice
-      reason = "redeem"
-  burnTree <- submitTree (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Burn with
-      holdingCid
-      account = basicAccount alice
-      reason = "redeem"
-  aliceFinal <- holdingAmounts alice
-  aliceFinal === []
-  burnEvent <- expectOneHoldingsChange burnTree
+  -- The offer's reason explains the change.
+  reasonFromMeta mintEvent.extraArgs.meta === "mint"
+
+-- | A mint offer that is not accepted creates nothing: the receiver rejects
+-- it, the admin withdraws it, and once `executeBefore` has passed it can no
+-- longer be accepted and the admin expires it.
+testOfferMintNotAccepted : Script ()
+testOfferMintNotAccepted = do
+  s@Scenario{..} <- setup
+  rejectedCid <- submit (actAs admin) (offerMintCmd s alice 10.0)
+  _ <- submit (actAs alice) do
+    exerciseCmd rejectedCid TransferInstructionV2.TransferInstruction_Reject with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  withdrawnCid <- submit (actAs admin) (offerMintCmd s alice 10.0)
+  _ <- submit (actAs admin) do
+    exerciseCmd withdrawnCid TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+  expiredCid <- submit (actAs admin) (offerMintCmd s alice 10.0)
+  setTime t3
+  submitMustFail (actAs alice) (acceptCmd alice expiredCid)
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
+      instructionCids = [fromInterfaceContractId @TokenTransferInstruction expiredCid]
+      observers = []
+  instructions <- queryInterface @TransferInstructionV2.TransferInstruction alice
+  instructions === []
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === []
+
+-- | Only the admin offers a mint, and the offer passes the same bounds as
+-- any transfer.
+testOfferMintAuthorityAndBounds : Script ()
+testOfferMintAuthorityAndBounds = do
+  s@Scenario{..} <- setup
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) (offerMintCmd s alice 10.0)
+  let offer = TokenRules_OfferMint with
+        receiver = basicAccount alice
+        instrumentId = "TOK"
+        amount = 10.0
+        requestedAt = t0
+        executeBefore = t2
+        reason = "mint"
+  mustFailWith "transfer must be well formed" (actAs admin) $
+    exerciseCmd rulesCid (offer with amount = 0.0)
+  mustFailWith "transfer execution window exceeds the registry's maximum TTL" (actAs admin) $
+    exerciseCmd rulesCid (offer with executeBefore = t1 `addRelTime` days 91)
+
+-- Burn
+-------
+
+burnCmd
+  : Scenario -> [Party] -> TransferInstructionV2.Transfer
+  -> Commands TransferInstructionV2.TransferInstructionResult
+burnCmd Scenario{..} actors transfer =
+  exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+    TransferInstructionV2.TransferFactory_Transfer with transfer; actors; extraArgs = emptyExtraArgs
+
+-- | A burn request is a transfer to the burn account. The owner requests
+-- alone, locking the amount; the admin, the burn account's only party,
+-- accepts in a separate submission. The accept creates no holding and emits
+-- one event, on the owner's account, naming the burn account as the other
+-- side.
+testBurnRequestAccepted : Script ()
+testBurnRequestAccepted = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  requestCid <- pendingCid =<< instructTransfer s [alice] (burnTransfer s alice 4.0 [input])
+  aliceMid <- holdingAmounts alice
+  aliceMid === [4.0, 6.0]
+  Some v <- queryInterfaceContractId @TransferInstructionV2.TransferInstruction admin requestCid
+  Map.lookup TransferInstructionV2.TIA_Accept v.availableActions === Some [[admin]]
+  Map.lookup TransferInstructionV2.TIA_Withdraw v.availableActions === Some [[alice]]
+  lockedHoldings <- query @TokenHolding alice
+  [l.context | (_, h) <- lockedHoldings, Some l <- [h.holding.lock]] === [Some "pending burn"]
+
+  (result, tree) <- submitResultAndTree (actAs admin) (acceptCmd admin requestCid)
+  completedHoldings result >>= (=== [])
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [6.0]
+  burnEvent <- expectOneHoldingsChange tree
   burnEvent.account === basicAccount alice
-  burnEvent.inputHoldingCids === [holdingCid]
+  burnEvent.inputHoldingCids === v.transfer.inputHoldingCids
   burnEvent.outputHoldingCids === []
   map (.side) burnEvent.transferLegSides === [TransferEventsV2.SenderSide]
   map (.otherside) burnEvent.transferLegSides === [burnAccount]
-  -- A locked holding cannot be burned: the lock reserves it for a workflow.
-  aliceInput <- mint admin alice 10.0
-  _ <- instructTransfer s [alice] (mkTransfer s alice bob 4.0 [aliceInput])
+  map (.amount) burnEvent.transferLegSides === [4.0]
+  -- The request carries no reason, so the event names the workflow.
+  reasonFromMeta burnEvent.extraArgs.meta === "tokens burned"
+
+-- | The owner and the admin acting together burn in one step: the input is
+-- consumed, the change returned, and one event explains both.
+testBurnOneStep : Script ()
+testBurnOneStep = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  (result, tree) <- submitResultAndTree (actAs [alice, admin] <> discloseMany [rulesDisclosure])
+    (burnCmd s [alice, admin] (burnTransfer s alice 4.0 [input]))
+  completedHoldings result >>= (=== [])
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [6.0]
+  assertNoLocks alice
+  burnEvent <- expectOneHoldingsChange tree
+  burnEvent.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding input]
+  burnEvent.outputHoldingCids === result.senderChangeCids
+  map (.otherside) burnEvent.transferLegSides === [burnAccount]
+
+-- | The admin expires a stale burn request like any other instruction: after
+-- `executeBefore` it can no longer be accepted, and expiry returns the locked
+-- amount to the holder.
+testBurnRequestAdminExpiry : Script ()
+testBurnRequestAdminExpiry = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  requestCid <- pendingCid =<< instructTransfer s [alice] (burnTransfer s alice 4.0 [input])
+  setTime t3
+  submitMustFail (actAs admin) (acceptCmd admin requestCid)
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
+      instructionCids = [fromInterfaceContractId @TokenTransferInstruction requestCid]
+      observers = []
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [4.0, 6.0]
+  assertNoLocks alice
+
+-- | A burn request that is not accepted returns the funds: the admin rejects
+-- it or the owner withdraws it. The admin cannot burn a holding alone, and a
+-- holding locked for another workflow cannot fund a burn.
+testBurnRequestNotAccepted : Script ()
+testBurnRequestNotAccepted = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  submitMustFail (actAs admin <> discloseMany [rulesDisclosure])
+    (burnCmd s [admin] (burnTransfer s alice 10.0 [input]))
+
+  rejectedCid <- pendingCid =<< instructTransfer s [alice] (burnTransfer s alice 10.0 [input])
+  _ <- submit (actAs admin) do
+    exerciseCmd rejectedCid TransferInstructionV2.TransferInstruction_Reject with
+      actors = [admin]
+      extraArgs = emptyExtraArgs
+  [(returned, _)] <- query @TokenHolding alice
+  withdrawnCid <- pendingCid =<< instructTransfer s [alice] (burnTransfer s alice 10.0 [returned])
+  _ <- submit (actAs alice) do
+    exerciseCmd withdrawnCid TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+  assertNoLocks alice
+
+  [(unlocked, _)] <- query @TokenHolding alice
+  _ <- instructTransfer s [alice] (mkTransfer s alice bob 4.0 [unlocked])
   lockedHoldings <- query @TokenHolding alice
-  let lockedCids = [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock]
-  forA_ lockedCids $ \lockedCid ->
-    submitMustFail (actAs admin <> actAs alice <> discloseMany [rulesDisclosure]) do
-      exerciseCmd rulesCid TokenRules_Burn with
-        holdingCid = toInterfaceContractId @HoldingV2.Holding lockedCid
-        account = basicAccount alice
-        reason = "burn locked"
+  forA_ [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock] $ \lockedCid ->
+    submitMustFail (actAs [alice, admin] <> discloseMany [rulesDisclosure])
+      (burnCmd s [alice, admin] (burnTransfer s alice 4.0 [lockedCid]))

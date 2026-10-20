@@ -1,7 +1,7 @@
 -- | Unit tests for the utils package on its own: the pure predicates and
 -- bounds, the event-observer merge, and the two pinning builders, each run
 -- against a minimal local template it accepts and a foreign template it must
--- refuse. The consumption, burn, and expiry bodies are run here too, for the
+-- refuse. The consumption and expiry bodies are run here too, for the
 -- guards that only a consumer's own `HoldingOps` or allocation template can
 -- reach. The full workflows run under `test/token-cip112-v1-test` through the
 -- default templates and under `examples/token/token-cip112-custom-test`
@@ -22,7 +22,7 @@ import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (accountParties, basicAccount, maxTime, mintAccount, senderSide)
+import Splice.TokenStandard.Utils (accountParties, basicAccount, burnAccount, maxTime, mintAccount, senderSide)
 
 import OpenZeppelin.Token.Cip112.TypesV1
 import OpenZeppelin.Token.Cip112.Utils.Holding
@@ -118,11 +118,6 @@ template Harness with
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
       controller actors
       do consumeUnlockedHolding unitOps admin expectedAccount cid
-
-    nonconsuming choice Harness_Burn : ()
-      with cid : ContractId HoldingV2.Holding; account : HoldingV2.Account; actors : [Party]
-      controller actors
-      do burnImpl unitOps admin cid account "burn"
 
     nonconsuming choice Harness_ExpireAllocations : ()
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]; actors : [Party]
@@ -281,7 +276,14 @@ testTransferInstructionStatePredicate = do
   isValidTransferInstructionState s === True
   isValidTransferInstructionState (s with transfer = transfer with amount = 0.0) === False
   isValidTransferInstructionState (s with transfer = transfer with sender = mintAccount) === False
+  -- A mint offer comes from the mint account and locks nothing.
+  isValidTransferInstructionState ((s with lockedHoldingCids = []) with transfer = transfer with sender = mintAccount) === True
   isValidTransferInstructionState (s with transfer = transfer with receiver = mintAccount) === False
+  -- A burn request goes to the burn account, which never sends and never
+  -- receives a mint offer.
+  isValidTransferInstructionState (s with transfer = transfer with receiver = burnAccount) === True
+  isValidTransferInstructionState (s with transfer = transfer with sender = burnAccount) === False
+  isValidTransferInstructionState ((s with lockedHoldingCids = []) with transfer = transfer with sender = mintAccount; receiver = burnAccount) === False
   isValidTransferInstructionState (s with lockedHoldingCids = []) === False
   isValidTransferInstructionState (s with lockExpiresAt = t2) === False
   -- The view advertises each side's account parties as the actor set.
@@ -359,8 +361,8 @@ testEventObserversFor = do
   eventObserversFor ops admin account === dedupSort (accountParties admin account <> [auditor])
   eventObserversFor (ops with eventObservers = const []) admin account === dedupSort [alice, provider]
 
--- Consumption, burn, and expiry bodies
----------------------------------------
+-- Consumption and expiry bodies
+--------------------------------
 
 -- | A `UnitHolding` signed by `admin` and `owner`, in `account`.
 unitHolding : Party -> Party -> HoldingV2.Account -> Optional HoldingV2.Lock -> Script (ContractId HoldingV2.Holding)
@@ -431,15 +433,6 @@ testConsumeUnlockedRefusesIndefiniteLock = do
   mustFailWith "input holding is locked indefinitely" (actAs admin) $
     exerciseCmd harnessCid Harness_ConsumeUnlocked with
       cid; expectedAccount = basicAccount alice; actors = [admin]
-
-testBurnRefusesOtherAdmin : Script ()
-testBurnRefusesOtherAdmin = do
-  Fixture{..} <- setup
-  otherAdmin <- allocateParty "otherAdmin"
-  cid <- unitHolding otherAdmin alice (basicAccount alice) None
-  mustFailWith "'holding.instrumentId.admin' is not equal to" (actAs [admin, otherAdmin]) $
-    exerciseCmd harnessCid Harness_Burn with
-      cid; account = basicAccount alice; actors = [admin, otherAdmin]
 
 -- | Batched expiry re-checks each allocation itself rather than trusting the
 -- allocation's cancel body, so each refusal below happens before

@@ -16,6 +16,7 @@ data-dependencies:
   - ../../../dars/vendor/splice-api-token-holding-v2-1.0.0.dar
   - ../../../dars/vendor/splice-api-token-allocation-v2-1.0.0.dar
   - ../../../dars/vendor/splice-api-token-allocation-instruction-v2-1.0.0.dar
+  - ../../../dars/vendor/splice-api-token-transfer-instruction-v2-1.0.0.dar
   - ../../../dars/vendor/splice-token-standard-utils-2.0.0.dar
 build-options:
   # Match the packages under demonstration and the vendored API DARs.
