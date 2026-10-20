@@ -17,8 +17,9 @@ interfaces the way a wallet or settlement app drives any compliant registry.
   fresh instrument id minted under the same registry, with no further
   deployment.
 - Minting as the registry does across participants: the admin offers a mint
-  with `TokenRules_OfferMint` and the owner accepts it in a separate
-  submission, emitting the standard event that names the mint account.
+  through `TransferFactory_Transfer` from the mint account and the owner
+  accepts it in a separate submission, emitting the standard event that names
+  the mint account.
 - Each trader funding their own allocation through the standard factory;
   only the trader's net debit is locked.
 - Atomic DvP through `SettlementFactory_SettleBatch`: a batch whose legs are

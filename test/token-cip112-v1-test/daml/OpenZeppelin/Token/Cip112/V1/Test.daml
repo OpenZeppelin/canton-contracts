@@ -432,16 +432,9 @@ testTransferEventReason = do
           transfer; actors = [alice, bob]; extraArgs = emptyExtraArgs
   map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents tree1) === ["rent", "rent"]
   map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents tree2) === ["transfer completed", "transfer completed"]
-  -- A mint offer without a reason names the workflow too.
-  offerCid <- submit (actAs admin) do
-    exerciseCmd rulesCid TokenRules_OfferMint with
-      receiver = basicAccount bob
-      instrumentId = "TOK"
-      amount = 1.0
-      requestedAt = t0
-      executeBefore = t2
-      reason = ""
-  mintTree <- submitTree (actAs bob) (acceptCmd bob offerCid)
+  -- A mint without a reason names the workflow too.
+  mintTree <- submitTree (actAs [admin, bob] <> discloseMany [rulesDisclosure]) $
+    mintCmd s [admin, bob] ((mintTransfer s bob 1.0) with meta = emptyMetadata)
   map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents mintTree) === ["tokens minted"]
 
 -- | Reject and withdraw both return the locked funds to the sender.
@@ -1016,18 +1009,41 @@ testOfferMintNotAccepted = do
 testOfferMintAuthorityAndBounds : Script ()
 testOfferMintAuthorityAndBounds = do
   s@Scenario{..} <- setup
-  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) (offerMintCmd s alice 10.0)
-  let offer = TokenRules_OfferMint with
-        receiver = basicAccount alice
-        instrumentId = "TOK"
-        amount = 10.0
-        requestedAt = t0
-        executeBefore = t2
-        reason = "mint"
+  let transfer = mintTransfer s alice 10.0
+  -- Only the admin acts for the mint account. The receiver alone cannot
+  -- mint, in one step or two.
+  forA_ [[alice], [alice, bob]] $ \actors ->
+    submitMustFail (actAs actors <> discloseMany [rulesDisclosure]) (mintCmd s actors transfer)
+  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) (mintCmd s [admin] transfer)
+  -- Actors outside both accounts are refused.
+  submitMustFail (actAs [admin, alice, bob] <> discloseMany [rulesDisclosure])
+    (mintCmd s [admin, alice, bob] transfer)
   mustFailWith "transfer must be well formed" (actAs admin) $
-    exerciseCmd rulesCid (offer with amount = 0.0)
+    mintCmd s [admin] (transfer with amount = 0.0)
   mustFailWith "transfer execution window exceeds the registry's maximum TTL" (actAs admin) $
-    exerciseCmd rulesCid (offer with executeBefore = t1 `addRelTime` days 91)
+    mintCmd s [admin] (transfer with executeBefore = t1 `addRelTime` days 91)
+
+-- | One-step mint: the admin and the receiver acting together create the
+-- holding at once, with no pending instruction. One event, on the
+-- receiver's account, names the mint account as the other side.
+testMintOneStep : Script ()
+testMintOneStep = do
+  s@Scenario{..} <- setup
+  (result, tree) <- submitResultAndTree (actAs [admin, alice] <> discloseMany [rulesDisclosure])
+    (mintCmd s [admin, alice] (mintTransfer s alice 10.0))
+  [_] <- completedHoldings result
+  result.senderChangeCids === []
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+  assertNoLocks alice
+  instructions <- query @TokenTransferInstruction admin
+  instructions === []
+  mintEvent <- expectOneHoldingsChange tree
+  mintEvent.account === basicAccount alice
+  mintEvent.inputHoldingCids === []
+  map (.side) mintEvent.transferLegSides === [TransferEventsV2.ReceiverSide]
+  map (.otherside) mintEvent.transferLegSides === [mintAccount]
+  reasonFromMeta mintEvent.extraArgs.meta === "mint"
 
 -- Burn
 -------

@@ -1,19 +1,14 @@
--- | Registry workflow: the settlement-factory body and the admin mint and
--- cleanup operations a rules contract exposes as choices.
+-- | Registry workflow: the settlement-factory body and the admin cleanup
+-- operations a rules contract exposes as choices.
 module OpenZeppelin.Token.Cip112.Utils.Registry where
 
 import DA.Assert (assertDeadlineExceeded)
 import DA.Foldable (forA_)
-import DA.Time (addRelTime)
 
 import Splice.Api.Token.MetadataV1
-import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
-import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils
 
-import OpenZeppelin.Token.Cip112.TypesV1
-import OpenZeppelin.Token.Cip112.Utils.Transfer
 import OpenZeppelin.Token.Cip112.Utils.Allocation
 
 -- | `settlementFactory_settleBatchImpl`: pin every allocation to an accepted
@@ -53,29 +48,3 @@ expireAllocationsImpl pin admin cancelArgs =
       Some t -> assertDeadlineExceeded "allocation.expiresAt" t
     _ <- exercise allocCid cancelArg
     pure ()
-
--- | Body of an admin-controlled mint choice: a pending transfer instruction
--- from the CIP-0112 mint account to `receiver`. The receiver's account
--- parties accept it to create the holding, or reject it. It locks nothing.
-offerMintImpl
-  : RegistryConfig -> CreateTransferInstruction -> HoldingV2.Account -> Text -> Decimal
-  -> Time -> Time -> Text
-  -> Update (ContractId TransferInstructionV2.TransferInstruction)
-offerMintImpl config createInstruction receiver instrumentId amount requestedAt executeBefore reason = do
-  let transfer = TransferInstructionV2.Transfer with
-        sender = mintAccount
-        receiver
-        amount
-        instrumentId = HoldingV2.InstrumentId with admin = config.admin; id = instrumentId
-        requestedAt
-        executeBefore
-        inputHoldingCids = []
-        meta = reasonToMeta reason emptyMetadata
-  validateTransfer config transfer
-  require "mint receiver must be a regular account" (isRegularAccount receiver)
-  createInstruction TransferInstructionState with
-    transfer
-    originalInputHoldingCids = []
-    lockedHoldingCids = []
-    expiresAt = executeBefore
-    lockExpiresAt = executeBefore `addRelTime` config.lockGrace

@@ -34,16 +34,21 @@ vetted Splice's Token Standard V2 packages can vet this package alongside them.
 ### Launching a registry and minting
 
 The operator creates `TokenRules` and issues supply with
-`TokenRules_OfferMint`, which creates a pending transfer instruction from the
-CIP-0112 mint account to the receiving account. The receiver's wallet accepts
-it with `TransferInstruction_Accept`, which creates the holding and emits an
-event naming `cip-112/mint` as the other side. The admin and the receiver
-submit separately, each from their own participant. The example package
-`examples/token/token-cip112-trading-test` runs this under `dpm test`.
+`TransferFactory_Transfer` from the CIP-0112 mint account to the receiving
+account, with no input holdings. With the admin as the only actor, the
+transfer creates a pending mint offer. The receiver's wallet accepts it with
+`TransferInstruction_Accept`, which creates the holding and emits an event
+naming `cip-112/mint` as the other side. The admin and the receiver submit
+separately, each from their own participant. The example package
+`examples/token/token-cip112-trading-test` runs this under `dpm test`. With
+the admin and the receiver's account parties as actors, the mint completes
+in one step.
 
-Authorization: the admin signs the rules contract and alone offers a mint;
-the receiver's account parties accept or reject the offer; the admin
-withdraws it, or expires it after `executeBefore`.
+Authorization: the admin signs the rules contract and is the only account
+party of the mint account, so every mint needs the admin's authority; the
+receiver's account parties accept or reject an offer, or co-authorize a
+one-step mint; the admin withdraws an offer, or expires it after
+`executeBefore`.
 
 ### Burning
 
