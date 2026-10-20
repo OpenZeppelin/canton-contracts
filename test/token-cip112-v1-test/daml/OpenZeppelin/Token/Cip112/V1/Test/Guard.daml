@@ -130,8 +130,8 @@ testTransferRefusesZeroAmount = do
     (transferCmd s [alice] (mkTransfer s alice bob 0.0 [input]))
 
 -- | Special accounts hold nothing, so a factory transfer is only ever sent
--- by a regular account, and only the burn account receives one. The mint
--- account's offers come only from `TokenRules_OfferMint`.
+-- by a regular account or the mint account, and only the burn account
+-- receives one.
 testTransferRefusesSpecialAccount : Script ()
 testTransferRefusesSpecialAccount = do
   s@Scenario{..} <- setup
@@ -139,9 +139,8 @@ testTransferRefusesSpecialAccount = do
   let transfer = mkTransfer s alice bob 7.0 [input]
   mustFailWith "transfer receiver must be a regular account or the burn account" (actAs alice <> discloseMany [rulesDisclosure])
     (transferCmd s [alice] (transfer with receiver = mintAccount))
-  forA_ [mintAccount, burnAccount] $ \special ->
-    mustFailWith "transfer sender must be a regular account" (actAs admin <> discloseMany [rulesDisclosure])
-      (transferCmd s [admin] (transfer with sender = special; receiver = basicAccount admin; inputHoldingCids = []))
+  mustFailWith "transfer sender must be a regular account" (actAs admin <> discloseMany [rulesDisclosure])
+    (transferCmd s [admin] (transfer with sender = burnAccount; receiver = basicAccount admin; inputHoldingCids = []))
 
 testTransferRefusesFutureRequestedAt : Script ()
 testTransferRefusesFutureRequestedAt = do
@@ -411,13 +410,19 @@ testSettleBatchRefusesExtraActor = do
         actors = [app, bob]
         extraArgs = emptyExtraArgs
 
-testOfferMintRefusesSpecialReceiver : Script ()
-testOfferMintRefusesSpecialReceiver = do
-  Scenario{..} <- setup
-  mustFailWith "mint receiver must be a regular account" (actAs admin) do
-    exerciseCmd rulesCid TokenRules_OfferMint with
-      receiver = mintAccount; instrumentId = "TOK"; amount = 10.0
-      requestedAt = t0; executeBefore = t2; reason = "mint"
+-- | A mint pays a regular account only, and takes no input holdings: the
+-- mint account holds nothing to spend.
+testMintRefusesSpecialReceiverAndInputs : Script ()
+testMintRefusesSpecialReceiverAndInputs = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let transfer = mintTransfer s alice 10.0
+  forA_ [mintAccount, burnAccount] $ \special ->
+    mustFailWith "mint receiver must be a regular account" (actAs admin <> discloseMany [rulesDisclosure])
+      (mintCmd s [admin] (transfer with receiver = special))
+  forA_ [[admin], [admin, alice]] $ \actors ->
+    mustFailWith "mint takes no input holdings" (actAs actors <> discloseMany [rulesDisclosure])
+      (mintCmd s actors (transfer with inputHoldingCids = [toInterfaceContractId input]))
 
 -- | The registry only expires its own instructions. Its admin can fetch
 -- another registry's instruction when it is the receiver of that transfer.

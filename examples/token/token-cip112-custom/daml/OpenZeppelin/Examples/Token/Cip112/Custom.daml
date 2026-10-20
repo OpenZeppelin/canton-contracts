@@ -17,10 +17,10 @@
 --   path (transfer, allocation, burn, unlock) refuses it without the
 --   workflows knowing what a freeze is.
 -- - A pause switch on the registry. A template field plus two choices,
---   checked before each factory and the mint offer delegate to the workflow.
--- - A fee on every transfer except a burn, paid to the admin's treasury
---   account. The factory composes two workflow calls: a one-step fee
---   transfer, then the main transfer funded by the fee leg's change.
+--   checked before each factory delegates to the workflow.
+-- - A fee on every transfer except a mint or a burn, paid to the admin's
+--   treasury account. The factory composes two workflow calls: a one-step
+--   fee transfer, then the main transfer funded by the fee leg's change.
 -- - An executor allowlist on the registry, checked before delegating.
 --
 -- Nothing here changes a workflow body. The four templates are the unit a
@@ -252,25 +252,13 @@ template MyRules with
       view = TransferInstructionV2.TransferFactoryView with admin = config.admin; meta = emptyMetadata
       transferFactory_publicFetchImpl = publicFetchDefaultImpl this
       transferFactory_transferExtraObservers = transferFactoryV2_privateAsset_transferExtraObserversDefaultImpl
-      -- The fee is charged on transfers between holders, so a burn pays none.
+      -- The fee is charged on transfers between holders, so a mint or a burn
+      -- pays none.
       transferFactory_transferImpl _self arg = do
         whenNotPaused this
-        if arg.transfer.receiver == burnAccount
+        if arg.transfer.sender == mintAccount || arg.transfer.receiver == burnAccount
           then transferFactoryImpl config (ops this) (createInstruction this) arg
           else transferWithFee this arg
-
-    nonconsuming choice MyRules_OfferMint : ContractId TransferInstructionV2.TransferInstruction
-      with
-        receiver : HoldingV2.Account
-        instrumentId : Text
-        amount : Decimal
-        requestedAt : Time
-        executeBefore : Time
-        reason : Text
-      controller config.admin
-      do
-        whenNotPaused this
-        offerMintImpl config (createInstruction this) receiver instrumentId amount requestedAt executeBefore reason
 
     nonconsuming choice MyRules_ExpireAllocations : ()
       with
