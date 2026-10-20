@@ -24,7 +24,7 @@ functions, with every template decision left to the caller.
   and `allocationView` for interface views.
 - `*Impl` functions for every interface method and template choice a registry
   needs: `transferFactoryImpl`, `transferAcceptImpl`, `allocationFactoryImpl`,
-  `allocationSettleImpl`, `settleBatchImpl`, `mintImpl`, `burnImpl`, and the
+  `allocationSettleImpl`, `settleBatchImpl`, `offerMintImpl`, and the
   rest.
 
 The functions read and return the `RegistryConfig`,
@@ -52,6 +52,16 @@ contract id enters through an operation the template owner wrote:
   control. Use `pinAllocationTo @YourAllocation`.
 - `createHolding` must create a contract whose view equals the argument and
   whose signatories include the admin and the account parties.
+- The settlement factory must settle through `settleBatchImpl`, or keep its
+  exact-cover check: every leg in the batch needs a sending and a receiving
+  allocation with the same amount. Without it, a settlement can create
+  tokens. No other choice may exercise `Allocation_Settle` with the admin's
+  authority, because that skips the check.
+- A transfer instruction whose sender is the CIP-0112 mint account is a mint
+  offer: `transferAcceptImpl` creates the receiver's holding without any
+  locked funding. Only `offerMintImpl`, from a choice the admin alone
+  controls, may create one. A factory body must refuse the mint account as a
+  sender, as `transferFactoryImpl` does.
 
 ## Build
 
@@ -77,3 +87,28 @@ import OpenZeppelin.Token.Cip112.Utils.Holding
 The ready-to-use templates over these functions are
 `openzeppelin-token-cip112-v1`. `examples/token/token-cip112-custom` is a
 complete consumer that owns its templates and reuses these functions.
+
+## License
+
+Three modules contain code derived from Splice and modified by OpenZeppelin:
+
+- `OpenZeppelin.Token.Cip112.Utils.Holding`, from
+  `Splice.Testing.Tokens.TestTokenV2.Holding`,
+  `Splice.Testing.Tokens.TestTokenV2.Allocation`, and
+  `Splice.TokenStandard.Utils.Internal.Events`.
+- `OpenZeppelin.Token.Cip112.Utils.Transfer`, from
+  `Splice.Testing.Tokens.TestTokenV2.Transfer` and
+  `Splice.TokenStandard.Utils.Internal.Events`.
+- `OpenZeppelin.Token.Cip112.Utils.Allocation`, from
+  `Splice.Testing.Tokens.TestTokenV2.Allocation`.
+
+The `Splice.Testing.Tokens.TestTokenV2` modules are in the Splice
+[TestTokenV2](https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/examples/splice-test-token-v2)
+example, and `Splice.TokenStandard.Utils.Internal.Events` is in the Splice
+[`splice-token-standard-utils`](https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/splice-token-standard-utils)
+package. Both are Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or
+its affiliates, licensed under the Apache License 2.0
+([`LICENSES/Apache-2.0.txt`](../../../LICENSES/Apache-2.0.txt)). The three
+modules are licensed `MIT AND Apache-2.0`, and each carries its copyright and
+license notice. The rest of the package is licensed under the repository's
+MIT [`LICENSE`](../../../LICENSE).

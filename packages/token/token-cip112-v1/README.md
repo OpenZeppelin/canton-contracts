@@ -38,7 +38,7 @@ their own templates reuses directly.
   settlement and CIP-0112 iterated settlement.
 - `TokenRules` (`Registry`): the registry rules contract over a
   `RegistryConfig` payload, implementing the TSv2 transfer, allocation, and
-  settlement factories plus mint, burn, and expiry.
+  settlement factories plus mint offers and expiry.
 - `TokenEventLog` (`Base`): the holdings-change event-log host.
 - `defaultHoldingOps` (`Holding`): the operations record these templates run
   the utils functions with. A consumer that keeps `TokenHolding` but owns
@@ -67,6 +67,17 @@ interfaces or exceptions of its own.
   recovery the sender's parties can perform alone. After `executeBefore`, the
   admin alone may also return the funds to the sender through
   `TokenTransferInstruction_Expire`.
+- The admin issues supply with `TokenRules_OfferMint`: a pending transfer
+  instruction from the CIP-0112 mint account (`cip-112/mint`) that locks
+  nothing. The receiver's account parties accept it to create the holding or
+  reject it. The admin can withdraw it until then and expire it after
+  `executeBefore`. A mint is always two-step.
+- A holder burns with `TransferFactory_Transfer` to the CIP-0112 burn account
+  (`cip-112/burn`), whose only account party is the admin. The holder alone
+  creates a burn request that locks the amount, and the admin accepts or
+  rejects it; the holder and the admin acting together burn in one step.
+  Accepting archives the locked amount and creates no holding for the burn
+  account.
 - An allocation created with `nextIterationFunding` set enables iterated
   settlement: the executors supply extra transfer legs per settlement
   iteration, bounded by the locked reserve plus incoming credits, and may
@@ -78,10 +89,10 @@ interfaces or exceptions of its own.
   successor like any other allocation.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
-- Only regular (owned) accounts author allocations and hold balances. The
-  special mint and burn accounts appear in events as the other side of supply
-  changes and nowhere else; supply changes go through `TokenRules_Mint` and
-  `TokenRules_Burn`.
+- Only regular (owned) accounts hold balances. The admin also authors
+  allocations for the CIP-0112 mint and burn accounts, so a settlement batch
+  can issue or redeem supply as one side of a trade. The special accounts
+  appear in events only as the other side of a supply change.
 
 For multi-participant deployment, disclosure, and wallet integration, see
 [`integration-guide.md`](integration-guide.md).
@@ -125,6 +136,11 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   settle outside the factory. Operate the admin party so that it signs settles
   only through the settlement factory. See `ideas.md` on reintroducing the
   on-ledger guard that removes this trust assumption.
+- A mint-account or burn-account allocation commits the admin to that supply
+  change. The executors decide whether and when it settles, until the
+  settlement deadline or until the admin withdraws an uncommitted allocation.
+  The netting ignores the amount on the special side, so the exact-cover check
+  is what bounds the amount minted or burned to the legs the admin allocated.
 - The vendored settlement-factory default does not validate a
   `FinalizedAllocation.nextIterationFunding`; the check in
   `allocation_settleImpl` is the effective guard. Registry forks that replace
@@ -144,8 +160,8 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
 ## Sandbox validation
 
 `dpm test` runs the test suite on an in-memory ledger. The sandbox gate runs
-token creation, transfer, querying, and burn against a real static-time
-Canton sandbox over the Ledger API. From the repository root:
+mint offers, transfers, querying, and burn requests against a real
+static-time Canton sandbox over the Ledger API. From the repository root:
 
 ```sh
 scripts/check-sandbox.sh
@@ -182,3 +198,21 @@ import OpenZeppelin.Token.Cip112.V1.Registry
 drives it through the standard interfaces. To own the templates instead and
 reuse only the choice bodies, see the utils package `README.md` and
 `examples/token/token-cip112-custom`.
+
+## License
+
+Two modules contain code derived from the Splice
+[TestTokenV2](https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/examples/splice-test-token-v2)
+example and modified by OpenZeppelin:
+
+- `OpenZeppelin.Token.Cip112.V1.Holding`, from
+  `Splice.Testing.Tokens.TestTokenV2.Holding`.
+- `OpenZeppelin.Token.Cip112.V1.Registry`, from
+  `Splice.Testing.Tokens.TestTokenV2`.
+
+The TestTokenV2 example is Copyright (c) 2024 Digital Asset (Switzerland) GmbH
+and/or its affiliates, licensed under the Apache License 2.0
+([`LICENSES/Apache-2.0.txt`](../../../LICENSES/Apache-2.0.txt)). The two
+modules are licensed `MIT AND Apache-2.0`, and each carries its copyright and
+license notice. The rest of the package is licensed under the repository's
+MIT [`LICENSE`](../../../LICENSE).

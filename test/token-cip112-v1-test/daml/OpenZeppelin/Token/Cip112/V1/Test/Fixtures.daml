@@ -17,7 +17,7 @@ import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Token.Cip112.V1.Holding
@@ -64,12 +64,15 @@ mkAllocationSpec admin authorizer sides = AllocationV2.AllocationSpecification w
   meta = emptyMetadata
 
 mint : Party -> Party -> Decimal -> Script (ContractId TokenHolding)
-mint admin owner amount =
+mint admin owner amount = mintOf admin owner "TOK" amount
+
+mintOf : Party -> Party -> Text -> Decimal -> Script (ContractId TokenHolding)
+mintOf admin owner instrumentId amount =
   submit (actAs admin <> actAs owner) do
     createCmd TokenHolding with
       holding = HoldingV2.HoldingView with
         account = basicAccount owner
-        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        instrumentId = HoldingV2.InstrumentId with admin; id = instrumentId
         amount
         lock = None
         meta = emptyMetadata
@@ -165,6 +168,10 @@ mkTransfer Scenario{..} sender receiver amount inputs = TransferInstructionV2.Tr
   inputHoldingCids = map (toInterfaceContractId @HoldingV2.Holding) inputs
   meta = emptyMetadata
 
+-- | A burn: a transfer from `owner`'s basic account to the burn account.
+burnTransfer : Scenario -> Party -> Decimal -> [ContractId TokenHolding] -> TransferInstructionV2.Transfer
+burnTransfer s owner amount inputs = (mkTransfer s owner owner amount inputs) with receiver = burnAccount
+
 instructTransfer
   : Scenario -> [Party] -> TransferInstructionV2.Transfer
   -> Script TransferInstructionV2.TransferInstructionResult
@@ -175,6 +182,28 @@ instructTransfer Scenario{..} actors transfer =
         transfer
         actors
         extraArgs = emptyExtraArgs
+
+-- | The admin offers `amount` TOK from the mint account to `receiver`'s basic
+-- account, open until `t2`.
+offerMintCmd
+  : Scenario -> Party -> Decimal
+  -> Commands (ContractId TransferInstructionV2.TransferInstruction)
+offerMintCmd Scenario{..} receiver amount =
+  exerciseCmd rulesCid TokenRules_OfferMint with
+    receiver = basicAccount receiver
+    instrumentId = "TOK"
+    amount
+    requestedAt = t0
+    executeBefore = t2
+    reason = "mint"
+
+acceptCmd
+  : Party -> ContractId TransferInstructionV2.TransferInstruction
+  -> Commands TransferInstructionV2.TransferInstructionResult
+acceptCmd receiver instrCid =
+  exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+    actors = [receiver]
+    extraArgs = emptyExtraArgs
 
 pendingCid
   : TransferInstructionV2.TransferInstructionResult

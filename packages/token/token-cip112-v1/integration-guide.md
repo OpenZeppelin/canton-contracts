@@ -33,12 +33,31 @@ vetted Splice's Token Standard V2 packages can vet this package alongside them.
 
 ### Launching a registry and minting
 
-The operator creates `TokenRules` and issues supply with `TokenRules_Mint`,
-which requires the admin and the receiving account's parties as controllers.
-The example package `examples/token/token-cip112-trading-test` runs this under `dpm test`.
+The operator creates `TokenRules` and issues supply with
+`TokenRules_OfferMint`, which creates a pending transfer instruction from the
+CIP-0112 mint account to the receiving account. The receiver's wallet accepts
+it with `TransferInstruction_Accept`, which creates the holding and emits an
+event naming `cip-112/mint` as the other side. The admin and the receiver
+submit separately, each from their own participant. The example package
+`examples/token/token-cip112-trading-test` runs this under `dpm test`.
 
-Authorization: the admin signs the rules contract; admin plus account parties
-control mint and burn.
+Authorization: the admin signs the rules contract and alone offers a mint;
+the receiver's account parties accept or reject the offer; the admin
+withdraws it, or expires it after `executeBefore`.
+
+### Burning
+
+A holder burns by exercising `TransferFactory_Transfer` with the CIP-0112 burn
+account (`cip-112/burn`) as the receiver. The burn account's only account
+party is the admin, so the holder's submission creates a pending burn request
+that locks the amount, and the admin accepts it from their own participant.
+Accepting archives the locked amount and emits an event, on the holder's
+account, naming `cip-112/burn` as the other side. When the holder and the
+admin act together, the burn completes in one step. The test scripts
+`testBurnRequestAccepted` and `testBurnOneStep` cover both paths.
+
+Authorization: the holder's account parties request and withdraw; the admin
+accepts or rejects, or expires the request after `executeBefore`.
 
 ### Two-step and one-step transfers
 
@@ -64,6 +83,19 @@ DvP.
 
 Authorization: each authorizer's account parties allocate; the executors alone
 settle the batch.
+
+### Delivery-versus-mint and delivery-versus-burn
+
+The admin allocates the supply side of a trade from a CIP-0112 special
+account: sender sides from `cip-112/mint` to issue, or receiver sides to
+`cip-112/burn` to redeem. That allocation locks nothing. The counterparties
+allocate their sides as in a DvP, and `SettlementFactory_SettleBatch` creates
+the minted holdings or archives the burned ones in the same transaction as the
+payment. The test scripts `testDeliveryVsMint` and `testDeliveryVsBurn` cover
+both directions.
+
+Authorization: the admin alone allocates for a special account, with
+`actors = [admin]`; the executors settle the batch.
 
 ### Iterated settlement
 

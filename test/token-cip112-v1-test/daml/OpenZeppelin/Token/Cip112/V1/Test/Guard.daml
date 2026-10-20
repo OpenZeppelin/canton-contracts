@@ -6,6 +6,7 @@ module OpenZeppelin.Token.Cip112.V1.Test.Guard where
 
 import DA.Assert ((===))
 import DA.Date (date, Month(Sep))
+import DA.Foldable (forA_)
 import DA.Optional (optionalToList)
 import DA.TextMap qualified as TextMap
 import DA.Time (addRelTime, days, hours, minutes, time)
@@ -16,7 +17,7 @@ import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, mintAccount, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..), TransferInstructionState(..))
 import OpenZeppelin.Token.Cip112.V1.Holding
@@ -128,15 +129,19 @@ testTransferRefusesZeroAmount = do
   mustFailWith "transfer must be well formed" (actAs alice <> discloseMany [rulesDisclosure])
     (transferCmd s [alice] (mkTransfer s alice bob 0.0 [input]))
 
--- | Special (mint and burn) accounts hold nothing, so they never take part
--- in a transfer; supply changes go through mint and burn.
+-- | Special accounts hold nothing, so a factory transfer is only ever sent
+-- by a regular account, and only the burn account receives one. The mint
+-- account's offers come only from `TokenRules_OfferMint`.
 testTransferRefusesSpecialAccount : Script ()
 testTransferRefusesSpecialAccount = do
   s@Scenario{..} <- setup
   input <- mint admin alice 10.0
   let transfer = mkTransfer s alice bob 7.0 [input]
-  mustFailWith "transfer accounts must be regular accounts" (actAs alice <> discloseMany [rulesDisclosure])
+  mustFailWith "transfer receiver must be a regular account or the burn account" (actAs alice <> discloseMany [rulesDisclosure])
     (transferCmd s [alice] (transfer with receiver = mintAccount))
+  forA_ [mintAccount, burnAccount] $ \special ->
+    mustFailWith "transfer sender must be a regular account" (actAs admin <> discloseMany [rulesDisclosure])
+      (transferCmd s [admin] (transfer with sender = special; receiver = basicAccount admin; inputHoldingCids = []))
 
 testTransferRefusesFutureRequestedAt : Script ()
 testTransferRefusesFutureRequestedAt = do
@@ -364,20 +369,13 @@ testSettleBatchRefusesExtraActor = do
         actors = [app, bob]
         extraArgs = emptyExtraArgs
 
-testMintRefusesSpecialAccount : Script ()
-testMintRefusesSpecialAccount = do
+testOfferMintRefusesSpecialReceiver : Script ()
+testOfferMintRefusesSpecialReceiver = do
   Scenario{..} <- setup
-  mustFailWith "mint target must be a regular account" (actAs admin <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Mint with
-      account = mintAccount; instrumentId = "TOK"; amount = 10.0; reason = "mint"
-
-testBurnRefusesOtherAccount : Script ()
-testBurnRefusesOtherAccount = do
-  Scenario{..} <- setup
-  savings <- holdingIn admin (savingsAccount alice) "TOK" 10.0 None
-  mustFailWith "'holding.account' is not equal to" (actAs [admin, alice] <> discloseMany [rulesDisclosure]) do
-    exerciseCmd rulesCid TokenRules_Burn with
-      holdingCid = toInterfaceContractId savings; account = basicAccount alice; reason = "burn"
+  mustFailWith "mint receiver must be a regular account" (actAs admin) do
+    exerciseCmd rulesCid TokenRules_OfferMint with
+      receiver = mintAccount; instrumentId = "TOK"; amount = 10.0
+      requestedAt = t0; executeBefore = t2; reason = "mint"
 
 -- | The registry only expires its own instructions. Its admin can fetch
 -- another registry's instruction when it is the receiver of that transfer.

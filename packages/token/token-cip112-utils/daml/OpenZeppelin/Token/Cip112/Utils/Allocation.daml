@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 OpenZeppelin
+-- Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or its affiliates. All rights reserved.
+-- SPDX-License-Identifier: MIT AND Apache-2.0
+--
+-- Contains code from Splice (https://github.com/canton-network/splice), modified by OpenZeppelin.
+
 {-# LANGUAGE AllowAmbiguousTypes #-}
 -- | Allocation workflow: the allocation-factory body and the choice bodies of
 -- an allocation, over an `AllocationState` payload and a `HoldingOps` record
@@ -157,10 +163,19 @@ allocationFactoryImpl config ops createAllocation arg = do
       authorizer = allocation.authorizer
   checkActors arg.actors [accountParties admin authorizer]
   requireMatchExpected ("allocation.admin", allocation.admin) admin
-  -- Special (mint/burn) accounts cannot author allocations: the netting
-  -- helper zeroes their leg sides, so such an allocation would lock nothing
-  -- and settle as an unevented supply change.
-  require "allocation authorizer must be a regular account" (isRegularAccount authorizer)
+  -- Besides regular accounts, only the CIP-0112 mint and burn accounts can
+  -- authorize. The mint account may only send and the burn account may only
+  -- receive: the other direction would need them to hold tokens. Settling
+  -- such an allocation ignores its amount, so only the batch's exact-cover
+  -- check keeps the minted or burned amount equal to what the admin allocated.
+  require "allocation authorizer must be a regular, mint, or burn account"
+    (isRegularAccount authorizer || authorizer == mintAccount || authorizer == burnAccount)
+  require "a mint-account allocation may only authorize sender sides"
+    (authorizer /= mintAccount
+      || all ((== AllocationV2.SenderSide) . (.side)) allocation.transferLegSides)
+  require "a burn-account allocation may only authorize receiver sides"
+    (authorizer /= burnAccount
+      || all ((== AllocationV2.ReceiverSide) . (.side)) allocation.transferLegSides)
   require "allocation must authorize at least one transfer-leg side or enable iterated settlement"
     (not (null allocation.transferLegSides) || isSome allocation.nextIterationFunding)
   forA_ allocation.nextIterationFunding $ \reserve ->
