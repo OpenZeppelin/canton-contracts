@@ -2,10 +2,11 @@
 -- each consumer addition: the auditor sees every contract, every consumption
 -- runs `MyHolding_Spend`, a late acceptance creates a `MyHolding`, iteration
 -- successors are `MyAllocation`s, a frozen holding cannot move on any path,
--- the pause switch blocks the factories, mint offers, and burns, the fee
+-- the pause switch blocks the factories and burns, the fee
 -- leg pays the treasury and exempts mints and burns, the
--- executor allowlist is enforced, roles are separate, expired funding is
--- reclaimed, and a foreign holding or allocation is refused.
+-- executor allowlist is enforced, roles are separate and cannot mint,
+-- expired funding is reclaimed, and a foreign holding or allocation is
+-- refused.
 module OpenZeppelin.Examples.Token.Cip112.Custom.Test where
 
 import DA.Action (unless)
@@ -635,6 +636,16 @@ testSettlementChecksExecutorAllowlist = do
   let app = app0 with rulesCid = newRulesCid; rulesDisclosure = disclosure
   mustFailWith "a settlement executor is not approved" (actAs exchange <> discloseMany [disclosure])
     (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]))
+
+-- | The roles on the registry hold no mint power: each role holder alone is
+-- refused, for its own account and for the treasury.
+testRolesCannotMint : Script ()
+testRolesCannotMint = do
+  app@App{..} <- setup
+  forA_ [pauser, complianceOfficer, auditor, exchange] $ \role ->
+    forA_ [role, admin] $ \receiver ->
+      mustFailWith "'actors' does not have the same elements as one of"
+        (actAs role <> discloseMany [rulesDisclosure]) (mintCmd app [role] receiver 10.0)
 
 -- Expiry and cleanup
 ---------------------

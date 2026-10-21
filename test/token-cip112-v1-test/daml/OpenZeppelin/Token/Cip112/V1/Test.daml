@@ -29,6 +29,7 @@ import OpenZeppelin.Token.Cip112.V1.Registry
 import OpenZeppelin.Token.Cip112.V1.Transfer
 import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (mustFailWith)
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
+import OpenZeppelin.Token.Cip112.V1.Test.Guard (actorsMismatch, mintMustFail)
 
 -- | Happy path: two-leg DvP with net funding. Alice sends 10 and receives 4,
 -- so only 6 is locked; Bob nets +6 and locks nothing. After settlement Alice
@@ -890,6 +891,27 @@ testMintAllocationBoundsAmount = do
   aliceAfter <- holdingAmounts alice
   aliceAfter === []
 
+-- | Exact cover needs the mint account's side too: an executor cannot settle
+-- a mint leg without the admin's mint-account allocation, and cannot add a
+-- mint leg to that allocation.
+testMintLegNeedsAdminAllocation : Script ()
+testMintLegNeedsAdminAllocation = do
+  s@Scenario{..} <- setup
+  let mintLeg = (mkTransferLeg "mint-1" alice alice 10.0) with sender = mintAccount
+      extraLeg = (mkTransferLeg "mint-2" alice alice 1000.0) with sender = mintAccount
+      asApp = actAs app <> discloseMany [rulesDisclosure]
+  aliceAllocCid <- completedCid =<< allocate s alice [receiverSide mintLeg] []
+  mustFailWith "'missing authorizations' is not equal to 'empty set'" asApp $
+    settleBatchFinalizedCmd s [mintLeg] [nonIteratedAllocation aliceAllocCid]
+  adminAllocCid <- completedCid =<< allocateSpec s admin (specialSpec admin mintAccount [senderSide mintLeg]) []
+  mustFailWith "'finalizedAllocation.extraTransferLegSides' is not equal to" asApp $
+    settleBatchFinalizedCmd s [mintLeg, extraLeg]
+      [ (nonIteratedAllocation adminAllocCid) with extraTransferLegSides = [senderSide extraLeg]
+      , (nonIteratedAllocation aliceAllocCid) with extraTransferLegSides = [receiverSide extraLeg]
+      ]
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === []
+
 -- | A mint-account allocation holds nothing, so withdraw, executor cancel,
 -- and admin expiry archive it without creating or releasing any holding.
 testMintAllocationLifecycle : Script ()
@@ -999,8 +1021,8 @@ testRulesConfigValidated = do
   submitMustFail admin do createCmd TokenRules with config = base with maxTTL = minutes 0
   submitMustFail admin do createCmd TokenRules with config = base with lockGrace = minutes 0
 
--- Mint offers
---------------
+-- Mints
+-------
 
 -- | Issuance is a pending transfer from the mint account. The admin offers
 -- alone and nothing is created or locked until the receiver accepts. The
@@ -1060,24 +1082,27 @@ testOfferMintNotAccepted = do
   aliceAfter <- holdingAmounts alice
   aliceAfter === []
 
--- | Only the admin offers a mint, and the offer passes the same bounds as
--- any transfer.
-testOfferMintAuthorityAndBounds : Script ()
-testOfferMintAuthorityAndBounds = do
+-- | Only the admin mints. A mint without the admin, or with a party outside
+-- the mint and receiver accounts, is refused. Both the offer and the
+-- one-step mint pass the same bounds as any transfer.
+testMintAuthorityAndBounds : Script ()
+testMintAuthorityAndBounds = do
   s@Scenario{..} <- setup
   let transfer = mintTransfer s alice 10.0
-  -- Only the admin acts for the mint account. The receiver alone cannot
-  -- mint, in one step or two.
-  forA_ [[alice], [alice, bob]] $ \actors ->
-    submitMustFail (actAs actors <> discloseMany [rulesDisclosure]) (mintCmd s actors transfer)
-  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) (mintCmd s [admin] transfer)
-  -- Actors outside both accounts are refused.
-  submitMustFail (actAs [admin, alice, bob] <> discloseMany [rulesDisclosure])
-    (mintCmd s [admin, alice, bob] transfer)
-  mustFailWith "transfer must be well formed" (actAs admin) $
-    mintCmd s [admin] (transfer with amount = 0.0)
-  mustFailWith "transfer execution window exceeds the registry's maximum TTL" (actAs admin) $
-    mintCmd s [admin] (transfer with executeBefore = t1 `addRelTime` days 91)
+  -- Without the admin, the actors do not match the mint account.
+  mintMustFail s actorsMismatch [alice] transfer
+  -- A party outside both accounts is refused, with or without the admin.
+  forA_ [[alice, app], [alice, bob], [admin, alice, bob]] $ \actors ->
+    mintMustFail s actorsMismatch actors transfer
+  -- The receiver cannot name the admin as an actor without the admin's
+  -- authority.
+  mustFailWith "Authorization failure" (actAs alice <> discloseMany [rulesDisclosure])
+    (mintCmd s [admin] transfer)
+  -- The bounds apply to the offer and to the one-step mint
+  forA_ [[admin], [admin, alice]] $ \actors -> do
+    mintMustFail s "transfer must be well formed" actors (transfer with amount = 0.0)
+    mintMustFail s "transfer execution window exceeds the registry's maximum TTL" actors
+      (transfer with executeBefore = t1 `addRelTime` days 91)
 
 -- | One-step mint: the admin and the receiver acting together create the
 -- holding at once, with no pending instruction. One event, on the
@@ -1103,39 +1128,43 @@ testMintOneStep = do
 
 -- | The step count follows the receiver account's parties. A mint to the
 -- admin's own account completes with `[admin]`. A mint to a second account
--- of alice needs alice for one step, and is an offer without her.
+-- of alice completes with alice among the actors, and is an offer without her.
 testMintStepsFollowReceiverAccount : Script ()
 testMintStepsFollowReceiverAccount = do
   s@Scenario{..} <- setup
   let savings = HoldingV2.Account with owner = Some alice; provider = None; id = "savings"
       toSavings = (mintTransfer s alice 3.0) with receiver = savings
-  _ <- completedHoldings =<< submit (actAs admin <> discloseMany [rulesDisclosure])
-    (mintCmd s [admin] (mintTransfer s admin 5.0))
+      disclosed actors = actAs actors <> discloseMany [rulesDisclosure]
+  -- The admin is the only party of its own account, so it mints alone.
+  _ <- completedHoldings =<< submit (disclosed [admin]) (mintCmd s [admin] (mintTransfer s admin 5.0))
   holdingAmounts admin >>= (=== [5.0])
-  _ <- completedHoldings =<< submit (actAs [admin, alice] <> discloseMany [rulesDisclosure])
-    (mintCmd s [admin, alice] toSavings)
-  offer <- submit (actAs admin <> discloseMany [rulesDisclosure]) (mintCmd s [admin] toSavings)
-  case offer.output of
-    TransferInstructionV2.TransferInstructionResult_Pending _ -> pure ()
-    other -> abort ("expected a pending mint offer, got: " <> show other)
+  -- With alice, the mint to her savings account completes at once.
+  _ <- completedHoldings =<< submit (disclosed [admin, alice]) (mintCmd s [admin, alice] toSavings)
+  holdingAmounts alice >>= (=== [3.0])
+  -- Without alice, the same mint is an offer.
+  _ <- pendingCid =<< submit (disclosed [admin]) (mintCmd s [admin] toSavings)
+  holdingAmounts alice >>= (=== [3.0])
 
 -- | A mint to an account with a provider needs the owner and the provider.
--- Without the provider it is refused. The admin alone offers the mint, the
--- owner and the provider accept it once, and the provider sees the holding.
+-- Without the provider it is refused. The admin alone offers the mint, and
+-- the owner and the provider accept it once. The provider sees both holdings.
 testMintToProviderAccount : Script ()
 testMintToProviderAccount = do
   s@Scenario{..} <- setup
   let custody = HoldingV2.Account with owner = Some alice; provider = Some app; id = "custody"
       toCustody = (mintTransfer s alice 4.0) with receiver = custody
       disclosed actors = actAs actors <> discloseMany [rulesDisclosure]
-  submitMustFail (disclosed [admin, alice]) (mintCmd s [admin, alice] toCustody)
+  -- One step needs the admin, the owner, and the provider.
+  mintMustFail s actorsMismatch [admin, alice] toCustody
   _ <- completedHoldings =<< submit (disclosed [admin, alice, app]) (mintCmd s [admin, alice, app] toCustody)
+  -- Two steps: the admin offers, and the owner and the provider accept.
   offerCid <- pendingCid =<< submit (disclosed [admin]) (mintCmd s [admin] toCustody)
-  let accept = exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
-        actors = [alice, app]; extraArgs = emptyExtraArgs
-  submitMustFail (actAs alice) (acceptCmd alice offerCid)
-  _ <- submit (actAs [alice, app]) accept
-  submitMustFail (actAs [alice, app]) accept
+  let accept actors = exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
+        actors; extraArgs = emptyExtraArgs
+  mustFailWith actorsMismatch (actAs alice) (accept [alice])
+  _ <- submit (actAs [alice, app]) (accept [alice, app])
+  -- The accept consumes the offer.
+  mustFailWith "NotActive" (actAs [alice, app]) (accept [alice, app])
   seen <- query @TokenHolding app
   sort [h.holding.amount | (_, h) <- seen, h.holding.account == custody] === [4.0, 4.0]
 

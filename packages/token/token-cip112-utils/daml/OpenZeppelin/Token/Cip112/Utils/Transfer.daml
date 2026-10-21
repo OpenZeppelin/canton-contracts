@@ -129,10 +129,10 @@ transferGcImpl s = assertDeadlineExceeded "lockExpiresAt" s.lockExpiresAt
 -- Factory body
 ---------------
 
--- | `transferFactory_transferImpl`: check the actors, then execute. The
--- sender's account parties jointly initiate; including the receiver's account
--- parties completes the transfer in one step. A transfer from the CIP-0112
--- mint account is a mint: the admin, the mint account's only party,
+-- | `transferFactory_transferImpl`: check the actors, validate, then execute.
+-- The sender's account parties jointly initiate; including the receiver's
+-- account parties completes the transfer in one step. A transfer from the
+-- CIP-0112 mint account is a mint: the admin, the mint account's only party,
 -- initiates it, and the receiver's account parties accept it, in the same
 -- submission or later.
 transferFactoryImpl
@@ -220,6 +220,9 @@ executeTransfer config ops createInstruction oneStep legId transfer = do
 -- debits nothing and locks nothing: the admin's authority alone backs the
 -- new supply. The caller is responsible for authorization: the one-step
 -- path creates the receiver's holding, which needs the receiver's authority.
+-- The caller must also establish the admin's consent, since a choice on an
+-- admin-signed contract carries the admin's authority whatever its
+-- controller.
 executeMint
   : RegistryConfig -> HoldingOps -> CreateTransferInstruction -> Bool -> Text
   -> TransferInstructionV2.Transfer
