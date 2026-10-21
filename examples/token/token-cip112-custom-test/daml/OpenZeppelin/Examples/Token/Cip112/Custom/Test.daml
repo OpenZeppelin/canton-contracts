@@ -2,7 +2,7 @@
 -- each consumer addition: the auditor sees every contract, every consumption
 -- runs `MyHolding_Spend`, a late acceptance creates a `MyHolding`, iteration
 -- successors are `MyAllocation`s, a frozen holding cannot move on any path,
--- the pause switch blocks the factories, mint offers, and burns, the fee
+-- the pause switch blocks the factories and burns, the fee
 -- leg pays the treasury and exempts mints and burns, the
 -- executor allowlist is enforced, roles are separate and cannot mint,
 -- expired funding is reclaimed, and a foreign holding or allocation is

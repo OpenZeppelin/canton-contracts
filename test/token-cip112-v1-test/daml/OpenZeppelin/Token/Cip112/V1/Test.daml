@@ -965,8 +965,8 @@ testRulesConfigValidated = do
   submitMustFail admin do createCmd TokenRules with config = base with maxTTL = minutes 0
   submitMustFail admin do createCmd TokenRules with config = base with lockGrace = minutes 0
 
--- Mint offers
---------------
+-- Mints
+-------
 
 -- | Issuance is a pending transfer from the mint account. The admin offers
 -- alone and nothing is created or locked until the receiver accepts. The
