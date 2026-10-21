@@ -1026,25 +1026,28 @@ testOfferMintNotAccepted = do
   aliceAfter <- holdingAmounts alice
   aliceAfter === []
 
--- | Only the admin offers a mint, and the offer passes the same bounds as
--- any transfer.
-testOfferMintAuthorityAndBounds : Script ()
-testOfferMintAuthorityAndBounds = do
+-- | Only the admin mints. A mint without the admin, or with a party outside
+-- the mint and receiver accounts, is refused. Both the offer and the
+-- one-step mint pass the same bounds as any transfer.
+testMintAuthorityAndBounds : Script ()
+testMintAuthorityAndBounds = do
   s@Scenario{..} <- setup
   let transfer = mintTransfer s alice 10.0
       disclosed actors = actAs actors <> discloseMany [rulesDisclosure]
-  -- Only the admin acts for the mint account. The receiver alone cannot
-  -- mint, in one step or two.
-  forA_ [[alice], [alice, app], [alice, bob]] $ \actors ->
+      refused msg actors t = mustFailWith msg (disclosed actors) (mintCmd s actors t)
+  -- Without the admin, the actors do not match the mint account.
+  mustFailWith actorsMismatch (disclosed [alice]) (mintCmd s [alice] transfer)
+  -- A party outside both accounts is refused, with or without the admin.
+  forA_ [[alice, app], [alice, bob], [admin, alice, bob]] $ \actors ->
     mustFailWith actorsMismatch (disclosed actors) (mintCmd s actors transfer)
+  -- The receiver cannot name the admin as an actor without the admin's
+  -- authority.
   mustFailWith "Authorization failure" (disclosed [alice]) (mintCmd s [admin] transfer)
-  -- Actors outside both accounts are refused.
-  mustFailWith actorsMismatch (disclosed [admin, alice, bob])
-    (mintCmd s [admin, alice, bob] transfer)
-  mustFailWith "transfer must be well formed" (actAs admin) $
-    mintCmd s [admin] (transfer with amount = 0.0)
-  mustFailWith "transfer execution window exceeds the registry's maximum TTL" (actAs admin) $
-    mintCmd s [admin] (transfer with executeBefore = t1 `addRelTime` days 91)
+  -- The bounds apply to the offer and to the one-step mint
+  forA_ [[admin], [admin, alice]] $ \actors -> do
+    refused "transfer must be well formed" actors (transfer with amount = 0.0)
+    refused "transfer execution window exceeds the registry's maximum TTL" actors
+      (transfer with executeBefore = t1 `addRelTime` days 91)
 
 -- | One-step mint: the admin and the receiver acting together create the
 -- holding at once, with no pending instruction. One event, on the
