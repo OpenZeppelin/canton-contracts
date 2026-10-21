@@ -129,10 +129,10 @@ transferGcImpl s = assertDeadlineExceeded "lockExpiresAt" s.lockExpiresAt
 -- Factory body
 ---------------
 
--- | `transferFactory_transferImpl`: check the actors, then execute. The
--- sender's account parties jointly initiate; including the receiver's account
--- parties completes the transfer in one step. A transfer from the CIP-0112
--- mint account is a mint: the admin, the mint account's only party,
+-- | `transferFactory_transferImpl`: validate, check the actors, then execute.
+-- The sender's account parties jointly initiate; including the receiver's
+-- account parties completes the transfer in one step. A transfer from the
+-- CIP-0112 mint account is a mint: the admin, the mint account's only party,
 -- initiates it, and the receiver's account parties accept it, in the same
 -- submission or later.
 transferFactoryImpl
@@ -144,11 +144,31 @@ transferFactoryImpl config ops createInstruction arg = do
       senders = dedupSort (senderParties arg.transfer)
       bothSides = dedupSort (senderParties arg.transfer <> receiverParties arg.transfer)
       actors = dedupSort arg.actors
+      oneStep = all (`elem` actors) receivers
   checkActors arg.actors [senders, bothSides]
-  let oneStep = all (`elem` actors) receivers
   if arg.transfer.sender == mintAccount
-    then executeMint config ops createInstruction oneStep arg.transfer
+    then do
+      -- A mint consumes no holding, and the rules contract's signature
+      -- already carries the admin's authority, so only this check makes
+      -- the admin a party to new supply.
+      require "a mint needs the admin among the actors" (config.admin `elem` arg.actors)
+      mint oneStep arg.transfer
     else executeTransfer config ops createInstruction oneStep arg.transfer
+  where
+    mint oneStep transfer = do
+      validateTransfer config transfer
+      require "mint receiver must be a regular account" (isRegularAccount transfer.receiver)
+      require "mint takes no input holdings" (null transfer.inputHoldingCids)
+      if oneStep
+        then completed transfer [] <$> payReceiver ops transfer [] []
+        else do
+          instructionCid <- createInstruction TransferInstructionState with
+            transfer
+            originalInputHoldingCids = []
+            lockedHoldingCids = []
+            expiresAt = transfer.executeBefore
+            lockExpiresAt = transfer.executeBefore `addRelTime` config.lockGrace
+          pure $ pending transfer [] instructionCid
 
 -- | Validate, debit the sender's inputs, and either complete in one step or
 -- lock the transfer amount and create a pending instruction. The caller is
@@ -209,30 +229,6 @@ executeTransfer config ops createInstruction oneStep transfer = do
         []
         "lock holdings for transfer"
       pure $ pending transfer senderChangeCids instructionCid
-
--- | Validate a transfer from the CIP-0112 mint account, then either create
--- the receiver's holding in one step or create a pending mint offer. A mint
--- debits nothing and locks nothing: the admin's authority alone backs the
--- new supply. The caller is responsible for authorization: the one-step
--- path creates the receiver's holding, which needs the receiver's authority.
-executeMint
-  : RegistryConfig -> HoldingOps -> CreateTransferInstruction -> Bool
-  -> TransferInstructionV2.Transfer
-  -> Update TransferInstructionV2.TransferInstructionResult
-executeMint config ops createInstruction oneStep transfer = do
-  validateTransfer config transfer
-  require "mint receiver must be a regular account" (isRegularAccount transfer.receiver)
-  require "mint takes no input holdings" (null transfer.inputHoldingCids)
-  if oneStep
-    then completed transfer [] <$> payReceiver ops transfer [] []
-    else do
-      instructionCid <- createInstruction TransferInstructionState with
-        transfer
-        originalInputHoldingCids = []
-        lockedHoldingCids = []
-        expiresAt = transfer.executeBefore
-        lockExpiresAt = transfer.executeBefore `addRelTime` config.lockGrace
-      pure $ pending transfer [] instructionCid
 
 completed
   : TransferInstructionV2.Transfer -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
