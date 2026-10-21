@@ -835,6 +835,27 @@ testMintAllocationBoundsAmount = do
   aliceAfter <- holdingAmounts alice
   aliceAfter === []
 
+-- | Exact cover needs the mint account's side too: an executor cannot settle
+-- a mint leg without the admin's mint-account allocation, and cannot add a
+-- mint leg to that allocation.
+testMintLegNeedsAdminAllocation : Script ()
+testMintLegNeedsAdminAllocation = do
+  s@Scenario{..} <- setup
+  let mintLeg = (mkTransferLeg "mint-1" alice alice 10.0) with sender = mintAccount
+      extraLeg = (mkTransferLeg "mint-2" alice alice 1000.0) with sender = mintAccount
+      asApp = actAs app <> discloseMany [rulesDisclosure]
+  aliceAllocCid <- completedCid =<< allocate s alice [receiverSide mintLeg] []
+  mustFailWith "'missing authorizations' is not equal to 'empty set'" asApp $
+    settleBatchFinalizedCmd s [mintLeg] [nonIteratedAllocation aliceAllocCid]
+  adminAllocCid <- completedCid =<< allocateSpec s admin (specialSpec admin mintAccount [senderSide mintLeg]) []
+  mustFailWith "'finalizedAllocation.extraTransferLegSides' is not equal to" asApp $
+    settleBatchFinalizedCmd s [mintLeg, extraLeg]
+      [ (nonIteratedAllocation adminAllocCid) with extraTransferLegSides = [senderSide extraLeg]
+      , (nonIteratedAllocation aliceAllocCid) with extraTransferLegSides = [receiverSide extraLeg]
+      ]
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === []
+
 -- | A mint-account allocation holds nothing, so withdraw, executor cancel,
 -- and admin expiry archive it without creating or releasing any holding.
 testMintAllocationLifecycle : Script ()
