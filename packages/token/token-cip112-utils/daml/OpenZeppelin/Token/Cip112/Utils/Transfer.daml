@@ -129,7 +129,7 @@ transferGcImpl s = assertDeadlineExceeded "lockExpiresAt" s.lockExpiresAt
 -- Factory body
 ---------------
 
--- | `transferFactory_transferImpl`: validate, check the actors, then execute.
+-- | `transferFactory_transferImpl`: check the actors, validate, then execute.
 -- The sender's account parties jointly initiate; including the receiver's
 -- account parties completes the transfer in one step. A transfer from the
 -- CIP-0112 mint account is a mint: the admin, the mint account's only party,
