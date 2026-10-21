@@ -215,6 +215,9 @@ executeTransfer config ops createInstruction oneStep transfer = do
 -- debits nothing and locks nothing: the admin's authority alone backs the
 -- new supply. The caller is responsible for authorization: the one-step
 -- path creates the receiver's holding, which needs the receiver's authority.
+-- The caller must also establish the admin's consent, since a choice on an
+-- admin-signed contract carries the admin's authority whatever its
+-- controller.
 executeMint
   : RegistryConfig -> HoldingOps -> CreateTransferInstruction -> Bool
   -> TransferInstructionV2.Transfer
