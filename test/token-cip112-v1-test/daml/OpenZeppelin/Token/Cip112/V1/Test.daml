@@ -29,6 +29,7 @@ import OpenZeppelin.Token.Cip112.V1.Registry
 import OpenZeppelin.Token.Cip112.V1.Transfer
 import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (mustFailWith)
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
+import OpenZeppelin.Token.Cip112.V1.Test.Guard (actorsMismatch)
 
 -- | Happy path: two-leg DvP with net funding. Alice sends 10 and receives 4,
 -- so only 6 is locked; Bob nets +6 and locks nothing. After settlement Alice
@@ -1010,13 +1011,14 @@ testOfferMintAuthorityAndBounds : Script ()
 testOfferMintAuthorityAndBounds = do
   s@Scenario{..} <- setup
   let transfer = mintTransfer s alice 10.0
+      disclosed actors = actAs actors <> discloseMany [rulesDisclosure]
   -- Only the admin acts for the mint account. The receiver alone cannot
   -- mint, in one step or two.
-  forA_ [[alice], [alice, bob]] $ \actors ->
-    submitMustFail (actAs actors <> discloseMany [rulesDisclosure]) (mintCmd s actors transfer)
-  submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) (mintCmd s [admin] transfer)
+  forA_ [[alice], [alice, app], [alice, bob]] $ \actors ->
+    mustFailWith actorsMismatch (disclosed actors) (mintCmd s actors transfer)
+  mustFailWith "Authorization failure" (disclosed [alice]) (mintCmd s [admin] transfer)
   -- Actors outside both accounts are refused.
-  submitMustFail (actAs [admin, alice, bob] <> discloseMany [rulesDisclosure])
+  mustFailWith actorsMismatch (disclosed [admin, alice, bob])
     (mintCmd s [admin, alice, bob] transfer)
   mustFailWith "transfer must be well formed" (actAs admin) $
     mintCmd s [admin] (transfer with amount = 0.0)
