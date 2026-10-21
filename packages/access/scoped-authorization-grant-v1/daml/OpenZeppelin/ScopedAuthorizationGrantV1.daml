@@ -13,6 +13,7 @@ module OpenZeppelin.ScopedAuthorizationGrantV1
   , requireAuthorization
   , checkPermission
   , requirePermission
+  , requireAuthorityOrGrant
   ) where
 
 import qualified DA.Fail as Fail
@@ -134,12 +135,32 @@ checkAuthorization authorization requirement = do
 
 -- | Validate and return the fetched grant after exercising Use.
 -- Call on the protected operation's committed path; a caught exception can roll back the event.
+-- Every success records Use. If the expected authority must also act without a grant,
+-- use `requireAuthorityOrGrant`.
 requireAuthorization : Authorization -> AuthorizationRequirement -> Update AuthorizationGrant
 requireAuthorization authorization requirement = do
   grant <- fetch authorization.grantCid
   Internal.requireSuccess (checkGrantMatches authorization.actor requirement grant)
   exercise authorization.grantCid AuthorizationGrant_Use
   pure grant
+
+-- | Accept the expected authority acting directly, or validate a presented grant.
+-- Without a grant, `actor` must be the expected authority; no fetch or Use occurs.
+-- A presented grant goes through `requireAuthorization`, even when the actor is the authority.
+-- The protected choice must make `actor` a controller and derive trusted policy.
+requireAuthorityOrGrant
+  : Party
+  -> Optional (ContractId AuthorizationGrant)
+  -> AuthorizationRequirement
+  -> Update (Optional AuthorizationGrant)
+requireAuthorityOrGrant actor presentedGrant requirement = case presentedGrant of
+  None -> do
+    Internal.requireSuccess $ Internal.checkCondition
+      (Internal.grantRequired requirement.expectedAuthority actor)
+      (actor == requirement.expectedAuthority)
+    pure None
+  Some grantCid ->
+    Some <$> requireAuthorization (Authorization with actor; grantCid) requirement
 
 checkGrantMatches
   : Party -> AuthorizationRequirement -> AuthorizationGrant -> Either Fail.FailureStatus ()

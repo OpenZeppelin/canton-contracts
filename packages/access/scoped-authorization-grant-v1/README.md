@@ -128,6 +128,35 @@ skipped this way. Fetching a rejected candidate also makes it a transaction
 dependency. Prefer selecting a grant in the backend
 when the choice does not need to evaluate alternatives itself.
 
+## Choice contexts
+
+A generic interface can accept a grant without depending on this package. Its
+choice takes an extensible context, such as Splice's `ExtraArgs`, and its
+implementations read a grant contract ID from that context under a key the
+protocol defines.
+
+An implementation reading Splice's `ChoiceContext` converts the looked-up value
+and passes it to a guard:
+
+```daml
+grantCid <- case TextMap.lookup grantContextKey extraArgs.context.values of
+  Some (AV_ContractId cid) -> pure (coerceContractId cid)
+  Some _ -> fail "scoped authorization grant context value must be a contract id"
+  None -> fail "scoped authorization grant required"
+void $ SAG.requireAuthorization (SAG.Authorization with actor; grantCid) requirement
+```
+
+To also accept the expected authority acting without a grant, map a missing key
+to `None` and pass the `Optional` to `requireAuthorityOrGrant`.
+
+Daml interfaces fix each choice's controller, so the interface choice takes the
+actor as an argument and makes it the controller. Every implementation must then
+call a guard; otherwise any party can exercise the choice. Take the actor from
+the controller and derive the requirement from trusted state, never from the
+context values or metadata. The
+[authority-or-grant tests](../../../test/scoped-authorization-grant-v1-test/daml/OpenZeppelin/ScopedAuthorizationGrantV1AuthorityOrGrantTest.daml)
+model such a choice with a Splice `ChoiceContext`.
+
 ## Resource identity
 
 `resourceId` is a stable application identifier represented as `Text`.
@@ -209,7 +238,9 @@ not undo committed work.
 
 Every successful `requireAuthorization` call exercises
 `AuthorizationGrant_Use` after matching the actor, authority, and scope. The choice
-enforces the grant's validity window. `requirePermission` uses the same path.
+enforces the grant's validity window. `requirePermission` uses the same path,
+as does `requireAuthorityOrGrant` when a grant is presented. Its direct authority
+path records no use.
 The use event is visible only if the transaction commits and that exercise is
 not rolled back by a
 [caught exception](https://docs.canton.network/appdev/reference/daml-language-reference#catch-exceptions).
@@ -230,17 +261,20 @@ Neither check helper produces a `Use` event, whether its result is success or fa
 ## Validation results
 
 `checkAuthorization` and `checkPermission` return failures as `Left FailureStatus`.
-`requireAuthorization` and `requirePermission` raise them with
+`requireAuthorization`, `requirePermission`, and `requireAuthorityOrGrant` raise
+them with
 [`DA.Fail.failWithStatus`](https://docs.canton.network/appdev/reference/daml-standard-library/da-fail).
-All four helpers use these stable IDs and metadata, checking in the order shown:
+The helpers use these stable IDs and metadata. Grant checks run in the order
+shown and stop at the first mismatch:
 
-| Error ID | Metadata |
-|---|---|
-| `openzeppelin.com/scoped-authorization-grant-authority-mismatch` | `expected`, `actual`: issuing parties |
-| `openzeppelin.com/scoped-authorization-grant-grantee-mismatch` | `expected`, `actual`: actor and grant grantee |
-| `openzeppelin.com/scoped-authorization-grant-scope-mismatch` | `fields`: comma-separated mismatched scope field names |
-| `openzeppelin.com/scoped-authorization-grant-not-yet-valid` | `validFrom`: inclusive lower bound |
-| `openzeppelin.com/scoped-authorization-grant-expired` | `validUntil`: exclusive upper bound |
+| Error ID | Metadata | Raised by |
+|---|---|---|
+| `openzeppelin.com/scoped-authorization-grant-authority-mismatch` | `expected`, `actual`: issuing parties | All helpers |
+| `openzeppelin.com/scoped-authorization-grant-grantee-mismatch` | `expected`, `actual`: actor and grant grantee | All helpers |
+| `openzeppelin.com/scoped-authorization-grant-scope-mismatch` | `fields`: comma-separated mismatched scope field names | All helpers |
+| `openzeppelin.com/scoped-authorization-grant-not-yet-valid` | `validFrom`: inclusive lower bound | All helpers |
+| `openzeppelin.com/scoped-authorization-grant-expired` | `validUntil`: exclusive upper bound | All helpers |
+| `openzeppelin.com/scoped-authorization-grant-required` | `expected`, `actual`: expected authority and actor | `requireAuthorityOrGrant` without a grant, when the actor is not the expected authority |
 
 Direct `AuthorizationGrant_Use` calls raise the same validity-window failures.
 
@@ -313,6 +347,9 @@ grant administration, transferability, counters, or an interface.
   and calls `checkAuthorization`.
 - `requirePermission` derives the requirement through `HasAuthorizationPolicy`
   and calls `requireAuthorization`.
+- `requireAuthorityOrGrant` accepts the expected authority acting without a
+  grant, or calls `requireAuthorization` for a presented grant. It returns the
+  validated grant, or `None` on the direct path.
 
 Only the entries above and the documented grant choices form the consumer API.
 Matching helpers and `OpenZeppelin.ScopedAuthorizationGrantV1.Internal` contain
