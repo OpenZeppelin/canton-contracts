@@ -34,6 +34,12 @@ staleTime = time (date 2025 Sep 1) 0 0 0
 actorsMismatch : Text
 actorsMismatch = "'actors' does not have the same elements as one of"
 
+-- | `actors` submit a mint of `transfer` with the rules disclosed, and the
+-- rejection carries `msg`.
+mintMustFail : Scenario -> Text -> [Party] -> TransferInstructionV2.Transfer -> Script ()
+mintMustFail s msg actors transfer =
+  mustFailWith msg (actAs actors <> discloseMany [s.rulesDisclosure]) (mintCmd s actors transfer)
+
 -- | A holding created directly with the admin's and the owner's authority.
 holdingIn : Party -> HoldingV2.Account -> Text -> Decimal -> Optional HoldingV2.Lock -> Script (ContractId TokenHolding)
 holdingIn admin account instrumentId amount lock =
@@ -376,11 +382,10 @@ testMintRefusesSpecialReceiverAndInputs = do
   input <- mint admin alice 10.0
   let transfer = mintTransfer s alice 10.0
   forA_ [mintAccount, burnAccount] $ \special ->
-    mustFailWith "mint receiver must be a regular account" (actAs admin <> discloseMany [rulesDisclosure])
-      (mintCmd s [admin] (transfer with receiver = special))
+    mintMustFail s "mint receiver must be a regular account" [admin] (transfer with receiver = special)
   forA_ [[admin], [admin, alice]] $ \actors ->
-    mustFailWith "mint takes no input holdings" (actAs actors <> discloseMany [rulesDisclosure])
-      (mintCmd s actors (transfer with inputHoldingCids = [toInterfaceContractId input]))
+    mintMustFail s "mint takes no input holdings" actors
+      (transfer with inputHoldingCids = [toInterfaceContractId input])
 
 -- | A mint has the same time bounds as a transfer, in both flows.
 testMintRefusesOutOfWindow : Script ()
@@ -388,10 +393,9 @@ testMintRefusesOutOfWindow = do
   s@Scenario{..} <- setup
   let transfer = mintTransfer s alice 10.0
   forA_ [[admin], [admin, alice]] $ \actors -> do
-    mustFailWith "strictly before deadline 'transfer.requestedAt'" (actAs actors <> discloseMany [rulesDisclosure])
-      (mintCmd s actors (transfer with requestedAt = t1 `addRelTime` minutes 5))
-    mustFailWith "transfer.executeBefore" (actAs actors <> discloseMany [rulesDisclosure])
-      (mintCmd s actors (transfer with executeBefore = t0))
+    mintMustFail s "strictly before deadline 'transfer.requestedAt'" actors
+      (transfer with requestedAt = t1 `addRelTime` minutes 5)
+    mintMustFail s "transfer.executeBefore" actors (transfer with executeBefore = t0)
 
 -- | The mint account's only party is the transfer's instrument admin, so a
 -- mint that names another admin passes the actor check with that admin as
