@@ -1,8 +1,8 @@
 name: ci
 
-# Validation gate for the OpenZeppelin Daml contracts library: enforce package
-# boundaries, build every package in dependency order, lint every package, and
-# run the consumer examples.
+# Validation gate for the OpenZeppelin Daml contracts library: build every
+# package in dependency order, enforce package boundaries, lint every package,
+# and run the consumer examples.
 #
 on:
   push:
@@ -28,11 +28,11 @@ jobs:
       - name: Set up Daml
         uses: ./.github/actions/setup-daml
 
-      - name: Check repository structure and package boundaries
-        run: scripts/check.sh
-
       - name: Build all packages
         run: dpm build --all
+
+      - name: Check repository structure and package boundaries
+        run: scripts/check.sh
 
       - name: Lint all packages
         run: scripts/check-lint.sh

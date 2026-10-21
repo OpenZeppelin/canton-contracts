@@ -28,13 +28,30 @@ workspace files exist.
 ## Package rules
 
 - One independently released unit equals one package and one DAR.
-- Package names use `openzeppelin-<component>-vN`; module names use
-  `OpenZeppelin.<Component>VN`. API packages use
-  `openzeppelin-api-<component>-vN` and place their modules under
-  `OpenZeppelin.Api.<Component>VN`.
+- Package names follow these patterns:
+  - `openzeppelin-api-<component>-vN`, with modules under
+    `OpenZeppelin.Api.<Component>VN`, holds frozen interfaces.
+  - `openzeppelin-<component>-vN`, with modules under
+    `OpenZeppelin.<Component>VN`, holds templates and serializable types.
+  - `openzeppelin-<component>-utils`, with modules under
+    `OpenZeppelin.<Component>.Utils`, holds pure functions, failure statuses,
+    and reusable `Update` functions such as choice bodies. It is versioned by
+    semver only and defines no templates, interfaces, exceptions, or
+    serializable types.
+  - `openzeppelin-<component>-types-vN`, with modules under `OpenZeppelin.<Component>.TypesVN`, holds records that `-utils` functions read and that templates store.
+- `<component>` names the domain and, when the component implements a named
+  standard, the standard as a second segment. A multi-segment component maps
+  each segment to a module namespace segment, so its templates package sits
+  under `OpenZeppelin.<Domain>.<Standard>.VN`. The CIP-0112 token component is
+  `token-cip112`: its packages are `openzeppelin-token-cip112-v1`,
+  `openzeppelin-token-cip112-utils`, and `openzeppelin-token-cip112-types-v1`,
+  with modules under `OpenZeppelin.Token.Cip112.V1`,
+  `OpenZeppelin.Token.Cip112.Utils`, and `OpenZeppelin.Token.Cip112.TypesV1`.
+  The package `README.md` names the standard it implements.
+- A component's templates package may depend on its `-utils` package.
+- A component's templates package and its `-utils` package may both depend on its `-types` package.
 - A component that defines Daml interfaces or exceptions uses a frozen
-  `openzeppelin-api-<component>-vN` package containing no templates. Template-only components do not get
-  empty API packages.
+  `openzeppelin-api-<component>-vN` package containing no templates. Template-only components do not get empty API packages.
 - API packages may depend only on API packages. Implementation packages must not
   depend on other implementation packages without an accepted architecture
   decision; prefer interface composition or consumer-side wiring.
@@ -42,6 +59,10 @@ workspace files exist.
 - Test code lives in an isolated `-test` package under the root `test/`,
   `experiments/test/` and `examples/*-test` directories and is never released
   or uploaded.
+- Token test packages are named after the package they test plus `-test`.
+  Their modules sit under `<Root>.Test`, where `<Root>` is the tested package's
+  module root, with one module per suite under `<Root>.Test.<Suite>`: for
+  example `OpenZeppelin.Token.Cip112.V1.Test` and `OpenZeppelin.Token.Cip112.V1.Test.Sandbox`.
 - Do not use `exposed-modules` as an API boundary. Use documented public modules
   and `.Internal` naming for implementation details.
 - Category directories under `packages/` and `experiments/` are navigation only
@@ -77,9 +98,15 @@ scripts/check.sh
 DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
+DAML_PACKAGE=packages/token/token-cip112-types-v1 dpm damlc lint
+DAML_PACKAGE=packages/token/token-cip112-utils dpm damlc lint
+DAML_PACKAGE=packages/token/token-cip112-v1 dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm damlc lint
 DAML_PACKAGE=test/api-pausable-v1-test dpm damlc lint
 DAML_PACKAGE=test/pausable-v1-test dpm damlc lint
+DAML_PACKAGE=test/token-cip112-types-v1-test dpm damlc lint
+DAML_PACKAGE=test/token-cip112-utils-test dpm damlc lint
+DAML_PACKAGE=test/token-cip112-v1-test dpm damlc lint
 DAML_PACKAGE=examples/licensing-app-v1 dpm damlc lint
 DAML_PACKAGE=examples/licensing-app-v1-test dpm damlc lint
 DAML_PACKAGE=examples/pausable/registry dpm damlc lint
@@ -91,17 +118,22 @@ DAML_PACKAGE=examples/pausable/vault dpm damlc lint
 DAML_PACKAGE=examples/pausable/vault-test dpm damlc lint
 DAML_PACKAGE=examples/treasury-rbac-v1 dpm damlc lint
 DAML_PACKAGE=examples/treasury-rbac-v1-test dpm damlc lint
-DAML_PACKAGE=experiments/token/tokenCIP112-v1 dpm damlc lint
-DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm damlc lint
+DAML_PACKAGE=examples/token/token-cip112-trading-test dpm damlc lint
+DAML_PACKAGE=examples/token/token-cip112-custom dpm damlc lint
+DAML_PACKAGE=examples/token/token-cip112-custom-test dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/api-pausable-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/pausable-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/token-cip112-types-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/token-cip112-utils-test dpm test --all --show-coverage
+DAML_PACKAGE=test/token-cip112-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=examples/pausable/registry-test dpm test --all
 DAML_PACKAGE=examples/pausable/retrofit-test dpm test --all
 DAML_PACKAGE=examples/pausable/vault-test dpm test --all
 DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=experiments/test/tokenCIP112-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/token/token-cip112-trading-test dpm test --all
+DAML_PACKAGE=examples/token/token-cip112-custom-test dpm test --all
 scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=authorization scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=licensing scripts/check-sandbox.sh
