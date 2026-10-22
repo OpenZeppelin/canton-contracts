@@ -441,12 +441,12 @@ testMintRefusesOutOfWindow = do
 
 -- | The mint account's only party is the transfer's instrument admin, so a
 -- mint that names another admin passes the actor check with that admin as
--- the only actor. The registry's admin must still be among the actors.
+-- the only actor. The instrument admin must still be the registry's admin.
 testMintRefusesOtherAdmin : Script ()
 testMintRefusesOtherAdmin = do
   s@Scenario{..} <- setup
   let transfer = mintTransfer s bob 10.0
-  mustFailWith "a mint needs the admin among the actors" (actAs bob <> discloseMany [rulesDisclosure])
+  mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs bob <> discloseMany [rulesDisclosure])
     (mintCmd s [bob] (transfer with instrumentId = transfer.instrumentId with admin = bob))
 
 -- | The registry only expires its own instructions. Its admin can fetch
