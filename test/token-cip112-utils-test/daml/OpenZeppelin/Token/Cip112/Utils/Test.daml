@@ -22,7 +22,8 @@ import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (accountParties, basicAccount, burnAccount, maxTime, mintAccount, senderSide)
+import Splice.TokenStandard.Utils (accountParties, basicAccount, burnAccount, maxTime, mintAccount, receiverSide, senderSide)
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 
 import OpenZeppelin.Token.Cip112.TypesV1
 import OpenZeppelin.Token.Cip112.Utils.Holding
@@ -335,6 +336,51 @@ testAllocationStatePredicate = do
   isValidAllocationState (s with maxTTL = minutes 0) === False
   isValidAllocationState (s with lockGrace = minutes 0) === False
   isValidAllocationState (s with allocation = allocation with committed = True; settlementDeadline = None) === False
+
+-- | The executors observe a factory call only when it needs no funding and
+-- names no inputs: an unnecessary input would show them its id and the
+-- change holding the factory returns.
+testPrivateAssetAllocateExtraObservers : Script ()
+testPrivateAssetAllocateExtraObservers = do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  exchange <- allocateParty "exchange"
+  h <- submit (actAs [admin, alice]) do
+    createCmd UnitHolding with holding = mkHoldingView admin (basicAccount alice) "TOK" 10.0 None
+  let incoming = AllocationV2.TransferLeg with
+        transferLegId = "leg-1"
+        sender = basicAccount bob
+        receiver = basicAccount alice
+        amount = 10.0
+        instrumentId = "TOK"
+        meta = emptyMetadata
+      outgoing = incoming with transferLegId = "leg-2"; sender = basicAccount alice; receiver = basicAccount bob; amount = 4.0
+      allocation = AllocationV2.AllocationSpecification with
+        admin
+        authorizer = basicAccount alice
+        transferLegSides = [receiverSide incoming, senderSide outgoing]
+        settlementDeadline = Some t2
+        nextIterationFunding = None
+        committed = False
+        meta = emptyMetadata
+      arg = AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement = AllocationV2.SettlementInfo with executors = [exchange]; id = "s"; cid = None; meta = emptyMetadata
+        allocation
+        requestedAt = t0
+        inputHoldingCids = []
+        extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+        actors = [alice]
+      observes = elem exchange . privateAssetAllocateExtraObservers
+  -- Netting leaves a credit of 6 and no inputs are named: the executors
+  -- observe, as under the vendored default.
+  observes arg === True
+  -- The same call with an unnecessary input: the executors do not observe.
+  observes (arg with inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding h]) === False
+  -- Funding required: unchanged from the default.
+  observes (arg with allocation = allocation with transferLegSides = [senderSide outgoing]) === False
+  -- The account parties always observe.
+  (alice `elem` privateAssetAllocateExtraObservers (arg with inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding h])) === True
 
 -- | Storage bound: capped by the deadline, saturating at `maxTime`.
 testComputeStorageExpiry : Script ()

@@ -151,6 +151,25 @@ allocationGcImpl s = assertDeadlineExceeded "allocation lockExpiresAt" s.lockExp
 -- Factory body
 ---------------
 
+-- | `allocationFactory_allocateExtraObservers` for a private asset. As the
+-- vendored private-asset default, the settlement executors observe the
+-- factory call only when it needs no funding, and additionally only when it
+-- names no input holdings.
+--
+-- The vendored default decides from the legs and the reserve alone. But the
+-- factory consumes every input it is given and returns the unused value as
+-- change, and every observer of the call sees its argument and everything
+-- it creates. For example, Alice allocates to send 4 tokens and receive 10
+-- in one settlement. Netting leaves her a credit of 6, so nothing needs
+-- locking and the default adds the executors. Her wallet funds the sending
+-- leg on its own and passes her 10-token holding anyway. The factory
+-- archives it and returns a 10-token change holding, and the executors
+-- would see the input's id, the change holding, and its amount.
+privateAssetAllocateExtraObservers : AllocationInstructionV2.AllocationFactory_Allocate -> [Party]
+privateAssetAllocateExtraObservers arg
+  | null arg.inputHoldingCids = allocationFactoryV2_privateAsset_allocateExtraObserversDefaultImpl arg
+  | otherwise = accountParties arg.allocation.admin arg.allocation.authorizer
+
 -- | `allocationFactory_allocateImpl`: validate, lock net funding plus any
 -- next-iteration reserve, return the completed allocation and any change.
 allocationFactoryImpl
