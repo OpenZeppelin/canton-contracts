@@ -2,7 +2,7 @@ name: ci
 
 # Validation gate for the OpenZeppelin Daml contracts library: build every
 # package in dependency order, enforce package boundaries, lint every package,
-# run the consumer examples.
+# and run the consumer examples.
 #
 on:
   push:
@@ -20,8 +20,6 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      OZ_DAML_TOOLCHAIN: dpm
     steps:
       - uses: actions/checkout@v4
 
