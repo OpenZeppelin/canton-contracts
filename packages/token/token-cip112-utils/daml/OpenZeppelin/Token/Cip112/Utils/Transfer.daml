@@ -88,7 +88,7 @@ transferAcceptImpl ops self s arg = do
   -- Return every unit of locked funding that is not the transferred amount,
   -- including any balance in a different instrument.
   senderChangeCids <- returnLockedSurplus ops transfer lockedAmounts
-  receiverHoldingCids <- payReceiver ops transfer s.lockedHoldingCids senderChangeCids
+  receiverHoldingCids <- payReceiver ops "" transfer s.lockedHoldingCids senderChangeCids
   pure TransferInstructionV2.TransferInstructionResult with
     output = TransferInstructionV2.TransferInstructionResult_Completed with receiverHoldingCids
     senderChangeCids
@@ -142,7 +142,7 @@ transferFactoryImpl config ops createInstruction arg = do
       bothSides = dedupSort (senderParties arg.transfer <> receiverParties arg.transfer)
       actors = dedupSort arg.actors
   checkActors arg.actors [senders, bothSides]
-  executeTransfer config ops createInstruction (all (`elem` actors) receivers) arg.transfer
+  executeTransfer config ops createInstruction (all (`elem` actors) receivers) "" arg.transfer
 
 -- | Validate, debit the sender's inputs, and either complete in one step or
 -- lock the transfer amount and create a pending instruction. The caller is
@@ -150,11 +150,17 @@ transferFactoryImpl config ops createInstruction arg = do
 -- authority, and the one-step path also creates the receiver's holding.
 --
 -- A transfer to the CIP-0112 burn account is a burn.
+--
+-- `legId` is the transfer leg id the events of a one-step transfer report.
+-- The standard paths, which complete one transfer per choice, use `""` as
+-- the vendored `logTransfer` does. A caller that completes more than one
+-- transfer in a choice gives each a distinct id, because CIP-0112 requires
+-- different transfer legs to have different ids.
 executeTransfer
-  : RegistryConfig -> HoldingOps -> CreateTransferInstruction -> Bool
+  : RegistryConfig -> HoldingOps -> CreateTransferInstruction -> Bool -> Text
   -> TransferInstructionV2.Transfer
   -> Update TransferInstructionV2.TransferInstructionResult
-executeTransfer config ops createInstruction oneStep transfer = do
+executeTransfer config ops createInstruction oneStep legId transfer = do
   let admin = config.admin
   validateTransfer config transfer
   require "transfer sender must be a regular account" (isRegularAccount transfer.sender)
@@ -175,7 +181,7 @@ executeTransfer config ops createInstruction oneStep transfer = do
 
   if oneStep
     then do
-      receiverHoldingCids <- payReceiver ops transfer transfer.inputHoldingCids senderChangeCids
+      receiverHoldingCids <- payReceiver ops legId transfer transfer.inputHoldingCids senderChangeCids
       pure TransferInstructionV2.TransferInstructionResult with
         output = TransferInstructionV2.TransferInstructionResult_Completed with receiverHoldingCids
         senderChangeCids
@@ -240,20 +246,21 @@ returnLockedSurplus ops transfer lockedAmounts = do
       else pure []
   pure (concat changes)
 
--- | Create the receiver's holding and log the transfer event. `inputCids`
--- are the holdings consumed to fund it. A burn creates no holding.
+-- | Create the receiver's holding and log the transfer events under leg id
+-- `legId`. `inputCids` are the holdings consumed to fund it. A burn creates
+-- no holding.
 payReceiver
-  : HoldingOps -> TransferInstructionV2.Transfer
+  : HoldingOps -> Text -> TransferInstructionV2.Transfer
   -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
   -> Update [ContractId HoldingV2.Holding]
-payReceiver ops transfer inputCids senderChangeCids = do
+payReceiver ops legId transfer inputCids senderChangeCids = do
   let admin = transfer.instrumentId.admin
   receiverHoldingCids <-
     if transfer.receiver == burnAccount
       then pure []
       else (:: []) <$> newHolding ops admin transfer.receiver transfer.instrumentId.id transfer.amount None
   ops.withEventLog $ \eventLogCid ->
-    logTransferEvents ops eventLogCid (transfer with inputHoldingCids = inputCids)
+    logTransferEvents ops legId eventLogCid (transfer with inputHoldingCids = inputCids)
       senderChangeCids receiverHoldingCids
   pure receiverHoldingCids
 
@@ -261,15 +268,15 @@ payReceiver ops transfer inputCids senderChangeCids = do
 -- owner's extra observers: one account-local event for a self-transfer,
 -- otherwise a sender-side and a receiver-side event. Each event carries the
 -- transfer's own reason in its `extraArgs`, or names the workflow when the
--- transfer has none.
+-- transfer has none. Both sides carry `legId`.
 logTransferEvents
-  : HoldingOps -> ContractId TransferEventsV2.EventLog -> TransferInstructionV2.Transfer
+  : HoldingOps -> Text -> ContractId TransferEventsV2.EventLog -> TransferInstructionV2.Transfer
   -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
   -> Update ()
-logTransferEvents ops eventLogCid transfer senderOutputHoldingCids receiverOutputHoldingCids = do
+logTransferEvents ops legId eventLogCid transfer senderOutputHoldingCids receiverOutputHoldingCids = do
   let admin = transfer.instrumentId.admin
       leg side otherside = TransferEventsV2.TransferLegSide with
-        transferLegId = ""
+        transferLegId = legId
         side
         otherside
         instrumentId = transfer.instrumentId.id
