@@ -127,11 +127,11 @@ DAML_PACKAGE=test/pausable-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/token-cip112-types-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/token-cip112-utils-test dpm test --all --show-coverage
 DAML_PACKAGE=test/token-cip112-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all
 DAML_PACKAGE=examples/pausable/registry-test dpm test --all
 DAML_PACKAGE=examples/pausable/retrofit-test dpm test --all
 DAML_PACKAGE=examples/pausable/vault-test dpm test --all
-DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all
 DAML_PACKAGE=examples/token/token-cip112-trading-test dpm test --all
 DAML_PACKAGE=examples/token/token-cip112-custom-test dpm test --all
 scripts/check-sandbox.sh
