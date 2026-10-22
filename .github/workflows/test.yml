@@ -1,6 +1,6 @@
 name: test coverage
 
-# This workflow backs the README coverage badge. The coverage script fails when
+# This workflow backs the README choice coverage badge. The coverage script fails when
 # a production template, template choice, or interface choice is uncovered.
 
 on:
