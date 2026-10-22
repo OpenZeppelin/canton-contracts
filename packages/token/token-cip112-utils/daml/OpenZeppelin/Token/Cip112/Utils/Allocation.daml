@@ -271,7 +271,10 @@ allocationFactoryImpl config ops createAllocation arg = do
     maxTTL = config.maxTTL
     lockGrace = config.lockGrace
 
-  emitHoldingsChange ops admin authorizer arg.settlement.executors
+  -- The executors are not told how the authorizer funded the lock: they see
+  -- the allocation and the locked holdings as stakeholders, and the inputs
+  -- and change belong to the rest of the account.
+  emitHoldingsChange ops admin authorizer []
     arg.inputHoldingCids
     (lockedHoldingCids <> concat (textMapValues authorizerChangeCids))
     []

@@ -54,6 +54,33 @@ testNetSettlementHappyPath = do
   bobAfter <- holdingAmounts bob
   bobAfter === [6.0]
 
+-- | Funding an allocation tells the executors nothing about the rest of the
+-- account: the funding event, which names the consumed input and the change,
+-- is observed by the account parties only. The executors still see the
+-- locked holding, as its lock holders.
+testFundingEventHiddenFromExecutors : Script ()
+testFundingEventHiddenFromExecutors = do
+  Scenario{..} <- setup
+  aliceInput <- mint admin alice 15.0
+  tree <- submitTree (actAs alice <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = mkAllocationSpec admin alice [senderSide legAliceToBob]
+        requestedAt = t0
+        inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding aliceInput]
+        extraArgs = emptyExtraArgs
+        actors = [alice]
+  ev <- expectOneHoldingsChange tree
+  -- The event names the input and two outputs: the 10 locked and the 5 change.
+  ev.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding aliceInput]
+  length ev.outputHoldingCids === 2
+  assertMsg "the account parties must observe the funding event" (alice `elem` ev.observers)
+  assertMsg "the executors must not observe the funding event" (app `notElem` ev.observers)
+  -- The executor still sees the locked holding, and only that one.
+  holdings <- query @TokenHolding app
+  [h.holding.amount | (_, h) <- holdings] === [10.0]
+
 -- | The batch's arguments stay with the batch: each authorizer witnesses its
 -- own `Allocation_Settle`, and none carries the batch's metadata, which may
 -- describe other authorizers' trades.
