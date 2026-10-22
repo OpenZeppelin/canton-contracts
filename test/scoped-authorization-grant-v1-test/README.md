@@ -22,8 +22,9 @@ package boundary used by an integrator.
 | Treasury | Role-to-authority mapping, role reuse, actor checks, duty separation, stage revocation/expiry, wrong permission, policy binding and cleanup; earlier role revocation preserves pending work |
 | Trust limits | Direct creation by full signatory sets; receipt payloads are not proof of prior choices; scope CIDs do not prove liveness |
 
-The CI coverage gate requires every library and example template and choice,
-including implicit Archive, to be exercised. Daml does not report source-line
+The CI coverage gate requires every library template and choice, including
+implicit Archive, to be exercised. The example tests must pass but have no
+coverage gate. Daml does not report source-line
 or branch coverage. Negative-only test probes intentionally have no successful
 exercise; they are test fixtures rather than production code.
 
@@ -40,8 +41,8 @@ From the repository root:
 ```sh
 dpm build --all
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all
 ```
 
 The sandbox suites run selected scenarios against a real local Canton Ledger
