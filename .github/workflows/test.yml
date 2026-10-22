@@ -1,12 +1,12 @@
-name: choice coverage
+name: test coverage
 
-# This workflow backs the README coverage badge for `main`. The coverage script
-# fails when a production template, template choice, or interface choice is
-# uncovered. On pull requests, the `validate` job in `ci.yml` runs the same gate.
+# This workflow backs the README coverage badge. The coverage script fails when
+# a production template, template choice, or interface choice is uncovered.
 
 on:
   push:
     branches: [main]
+  pull_request:
 
 permissions:
   contents: read
