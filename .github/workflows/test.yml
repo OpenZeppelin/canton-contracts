@@ -1,6 +1,6 @@
-name: choice coverage
+name: test coverage
 
-# This workflow backs the README coverage badge. The coverage script fails when
+# This workflow backs the README choice coverage badge. The coverage script fails when
 # a production template, template choice, or interface choice is uncovered.
 
 on:
@@ -12,15 +12,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: coverage-${{ github.workflow }}-${{ github.ref }}
+  group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  coverage:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      OZ_DAML_TOOLCHAIN: dpm
     steps:
       - uses: actions/checkout@v4
 
