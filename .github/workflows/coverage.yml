@@ -1,0 +1,42 @@
+name: choice coverage
+
+# This workflow backs the README coverage badge. The coverage script fails when
+# a production template, template choice, or interface choice is uncovered.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OZ_DAML_TOOLCHAIN: dpm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Daml
+        uses: ./.github/actions/setup-daml
+
+      - name: Build all packages
+        run: dpm build --all
+
+      - name: Test all packages and enforce production coverage
+        run: scripts/check-coverage.sh
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: test-reports/
+          if-no-files-found: ignore
