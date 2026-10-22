@@ -17,8 +17,8 @@ import OpenZeppelin.Token.Cip112.Utils.Transfer
 import OpenZeppelin.Token.Cip112.Utils.Allocation
 
 -- | `settlementFactory_settleBatchImpl`: pin every allocation to an accepted
--- implementation, then run the vendored exact-cover settlement. The batch's
--- choice context is redacted from what the authorizers witness.
+-- implementation, then run the vendored exact-cover settlement. No part of
+-- the batch's `extraArgs` reaches the allocations' `Allocation_Settle`.
 --
 -- The vendored default validates each `FinalizedAllocation`'s extra legs but
 -- not its `nextIterationFunding`; the `validateNextIterationArgs` call in
@@ -30,11 +30,16 @@ settleBatchImpl
 settleBatchImpl pin admin self arg = do
   require "a settlement batch must cover at least one transfer leg"
     (not (null arg.transferLegs))
-  let perAllocationExtraArgs _allocView _settleArg = pure ExtraArgs with
+  -- Each authorizer witnesses its own `Allocation_Settle`, so nothing from
+  -- the batch's arguments should reach it: they may describe other authorizers'
+  -- trades, and the allocation bodies read neither context nor metadata.
+  -- Information meant for every participant belongs in `SettlementInfo.meta`,
+  -- which each authorizer already sees and agreed to.
+  let redactedBatchArgs _allocView _settleArg = pure ExtraArgs with
         context = emptyChoiceContext
-        meta = arg.extraArgs.meta
+        meta = emptyMetadata
   forA_ arg.allocations $ \finalizedAlloc -> pin finalizedAlloc.allocationCid
-  settlementFactoryV2_settleBatchDefaultImpl perAllocationExtraArgs admin self arg
+  settlementFactoryV2_settleBatchDefaultImpl redactedBatchArgs admin self arg
 
 -- | Body of a batched admin-expiry choice: each allocation is pinned, and
 -- actors, admin, and expiry are re-verified per allocation independently of
