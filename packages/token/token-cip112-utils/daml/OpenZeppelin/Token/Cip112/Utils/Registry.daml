@@ -75,7 +75,6 @@ offerMintImpl config createInstruction receiver instrumentId amount requestedAt 
   require "mint receiver must be a regular account" (isRegularAccount receiver)
   createInstruction TransferInstructionState with
     transfer
-    originalInputHoldingCids = []
     lockedHoldingCids = []
     expiresAt = executeBefore
     lockExpiresAt = executeBefore `addRelTime` config.lockGrace
