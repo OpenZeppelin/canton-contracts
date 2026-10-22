@@ -61,13 +61,13 @@ Each example builds separately and imports the library DAR. Its isolated test
 package lives beside it at `examples/<example>-vN-test`. Run the grant examples with:
 
 ```sh
-DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all
+DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all
 ```
 
-Coverage includes the dependency DARs and implicit Archive choices.
-See [the authorization test matrix](test/scoped-authorization-grant-v1-test/README.md)
-for behavioral and security coverage beyond those metrics.
+CI runs the example tests without the coverage gate, because examples are not
+released. See [the authorization test matrix](test/scoped-authorization-grant-v1-test/README.md)
+for the behavior and security properties these tests check.
 
 Run `scripts/check-sandbox.sh` for the token sandbox gate. Set
 `OZ_SANDBOX_SUITE` to `authorization`, `licensing`, or `treasury` for the grant
