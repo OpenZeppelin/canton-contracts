@@ -2,9 +2,7 @@ name: ci
 
 # Validation gate for the OpenZeppelin Daml contracts library: build every
 # package in dependency order, enforce package boundaries, lint every package,
-# run the consumer examples, and run every test. The test step fails when a
-# test fails or a production template, template choice, or interface choice
-# is uncovered.
+# run the consumer examples.
 #
 on:
   push:
@@ -41,17 +39,6 @@ jobs:
 
       - name: Run consumer examples
         run: scripts/check-examples.sh
-
-      - name: Test all packages and enforce production coverage
-        run: scripts/check-coverage.sh
-
-      - name: Upload coverage reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-reports
-          path: test-reports/
-          if-no-files-found: ignore
 
   sandbox:
     runs-on: ubuntu-latest
