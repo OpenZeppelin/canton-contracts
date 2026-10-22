@@ -29,7 +29,7 @@ import OpenZeppelin.Token.Cip112.V1.Registry
 import OpenZeppelin.Token.Cip112.V1.Transfer
 import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (mustFailWith)
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
-import OpenZeppelin.Token.Cip112.V1.Test.Guard (actorsMismatch, mintMustFail)
+import OpenZeppelin.Token.Cip112.V1.Test.Guard (actorsMismatch, mintFailsWith)
 
 -- | Happy path: two-leg DvP with net funding. Alice sends 10 and receives 4,
 -- so only 6 is locked; Bob nets +6 and locks nothing. After settlement Alice
@@ -1090,18 +1090,18 @@ testMintAuthorityAndBounds = do
   s@Scenario{..} <- setup
   let transfer = mintTransfer s alice 10.0
   -- Without the admin, the actors do not match the mint account.
-  mintMustFail s actorsMismatch [alice] transfer
+  mintFailsWith actorsMismatch s [alice] transfer
   -- A party outside both accounts is refused, with or without the admin.
   forA_ [[alice, app], [alice, bob], [admin, alice, bob]] $ \actors ->
-    mintMustFail s actorsMismatch actors transfer
+    mintFailsWith actorsMismatch s actors transfer
   -- The receiver cannot name the admin as an actor without the admin's
   -- authority.
   mustFailWith "Authorization failure" (actAs alice <> discloseMany [rulesDisclosure])
     (mintCmd s [admin] transfer)
   -- The bounds apply to the offer and to the one-step mint
   forA_ [[admin], [admin, alice]] $ \actors -> do
-    mintMustFail s "transfer must be well formed" actors (transfer with amount = 0.0)
-    mintMustFail s "transfer execution window exceeds the registry's maximum TTL" actors
+    mintFailsWith "transfer must be well formed" s actors (transfer with amount = 0.0)
+    mintFailsWith "transfer execution window exceeds the registry's maximum TTL" s actors
       (transfer with executeBefore = t1 `addRelTime` days 91)
 
 -- | One-step mint: the admin and the receiver acting together create the
@@ -1155,7 +1155,7 @@ testMintToProviderAccount = do
       toCustody = (mintTransfer s alice 4.0) with receiver = custody
       disclosed actors = actAs actors <> discloseMany [rulesDisclosure]
   -- One step needs the admin, the owner, and the provider.
-  mintMustFail s actorsMismatch [admin, alice] toCustody
+  mintFailsWith actorsMismatch s [admin, alice] toCustody
   _ <- completedHoldings =<< submit (disclosed [admin, alice, app]) (mintCmd s [admin, alice, app] toCustody)
   -- Two steps: the admin offers, and the owner and the provider accept.
   offerCid <- pendingCid =<< submit (disclosed [admin]) (mintCmd s [admin] toCustody)
