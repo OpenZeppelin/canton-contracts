@@ -326,6 +326,49 @@ testSettleRefusesNegativeTotal = do
   mustFailWith "'locked funds plus net credit for TOK' is less than 'zero'" (actAs [admin, app])
     (settleCmd aliceAlloc [admin, app] [extra])
 
+-- | Executor-supplied legs may not carry the reserved account metadata the
+-- allocation's own legs are refused at creation: it would reach the events
+-- and contradict the leg's actual `otherside`.
+forgedAccountMeta : Metadata
+forgedAccountMeta = Metadata with
+  values = TextMap.fromList
+    [ ("cip-112/receiver.id", "treasury")
+    , ("cip-112/receiver.provider", "mallory::1220")
+    ]
+
+testSettleRefusesReservedAccountMeta : Script ()
+testSettleRefusesReservedAccountMeta = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let spec = (mkAllocationSpec admin alice []) with nextIterationFunding = Some (TextMap.fromList [("TOK", 10.0)])
+  aliceAlloc <- completedCid =<< allocateSpec s alice spec [input]
+  let forged = (mkTransferLeg "it-1" alice bob 4.0) with meta = forgedAccountMeta
+  mustFailWith "extra transfer-leg sides must be valid allocation legs" (actAs [admin, app])
+    (settleCmd aliceAlloc [admin, app] [senderSide forged])
+
+-- | The same through the batch factory, where the executors write both the
+-- batch leg and the matching sides, so exact cover accepts the forgery.
+testSettleBatchRefusesReservedAccountMeta : Script ()
+testSettleBatchRefusesReservedAccountMeta = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let iterated p reserve = (mkAllocationSpec admin p []) with nextIterationFunding = Some reserve
+  aliceAlloc <- completedCid =<< allocateSpec s alice (iterated alice (TextMap.fromList [("TOK", 10.0)])) [input]
+  bobAlloc <- completedCid =<< allocateSpec s bob (iterated bob TextMap.empty) []
+  let forged = (mkTransferLeg "it-1" alice bob 10.0) with meta = forgedAccountMeta
+      finalized cid side = AllocationV2.FinalizedAllocation with
+        allocationCid = cid
+        extraTransferLegSides = [side]
+        nextIterationFunding = None
+  mustFailWith "extra transfer-leg sides must be valid allocation legs" (actAs app <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [forged]
+        allocations = [finalized aliceAlloc (senderSide forged), finalized bobAlloc (receiverSide forged)]
+        actors = [app]
+        extraArgs = emptyExtraArgs
+
 testAllocationWithdrawRefusesExtraActor : Script ()
 testAllocationWithdrawRefusesExtraActor = do
   s@Scenario{..} <- setup
