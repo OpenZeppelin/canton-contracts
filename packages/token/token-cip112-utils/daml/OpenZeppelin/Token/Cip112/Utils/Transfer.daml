@@ -236,7 +236,6 @@ executeMint config ops createInstruction oneStep legId transfer = do
     else do
       instructionCid <- createInstruction TransferInstructionState with
         transfer
-        originalInputHoldingCids = []
         lockedHoldingCids = []
         expiresAt = transfer.executeBefore
         lockExpiresAt = transfer.executeBefore `addRelTime` config.lockGrace
