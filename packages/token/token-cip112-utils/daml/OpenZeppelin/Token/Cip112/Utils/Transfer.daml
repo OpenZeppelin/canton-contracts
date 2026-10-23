@@ -129,9 +129,12 @@ transferGcImpl s = assertDeadlineExceeded "lockExpiresAt" s.lockExpiresAt
 -- Factory body
 ---------------
 
--- | `transferFactory_transferImpl`: check the actors, then execute. The
--- sender's account parties jointly initiate; including the receiver's account
--- parties completes the transfer in one step.
+-- | `transferFactory_transferImpl`: check the actors, validate, then execute.
+-- The sender's account parties jointly initiate; including the receiver's
+-- account parties completes the transfer in one step. A transfer from the
+-- CIP-0112 mint account is a mint: the admin, the mint account's only party,
+-- initiates it, and the receiver's account parties accept it, in the same
+-- submission or later.
 transferFactoryImpl
   : RegistryConfig -> HoldingOps -> CreateTransferInstruction
   -> TransferInstructionV2.TransferFactory_Transfer
@@ -142,7 +145,10 @@ transferFactoryImpl config ops createInstruction arg = do
       bothSides = dedupSort (senderParties arg.transfer <> receiverParties arg.transfer)
       actors = dedupSort arg.actors
   checkActors arg.actors [senders, bothSides]
-  executeTransfer config ops createInstruction (all (`elem` actors) receivers) "" arg.transfer
+  let oneStep = all (`elem` actors) receivers
+  if arg.transfer.sender == mintAccount
+    then executeMint config ops createInstruction oneStep "" arg.transfer
+    else executeTransfer config ops createInstruction oneStep "" arg.transfer
 
 -- | Validate, debit the sender's inputs, and either complete in one step or
 -- lock the transfer amount and create a pending instruction. The caller is
@@ -180,12 +186,8 @@ executeTransfer config ops createInstruction oneStep legId transfer = do
       else pure []
 
   if oneStep
-    then do
-      receiverHoldingCids <- payReceiver ops legId transfer transfer.inputHoldingCids senderChangeCids
-      pure TransferInstructionV2.TransferInstructionResult with
-        output = TransferInstructionV2.TransferInstructionResult_Completed with receiverHoldingCids
-        senderChangeCids
-        meta = transfer.meta
+    then completed transfer senderChangeCids <$>
+      payReceiver ops legId transfer transfer.inputHoldingCids senderChangeCids
     else do
       -- The receiver's account parties are lock holders so they can read the
       -- locked funding when accepting or rejecting. The lock outlives the
@@ -211,11 +213,50 @@ executeTransfer config ops createInstruction oneStep legId transfer = do
         (lockedCid :: senderChangeCids)
         []
         "lock holdings for transfer"
-      pure TransferInstructionV2.TransferInstructionResult with
-        output = TransferInstructionV2.TransferInstructionResult_Pending with
-          transferInstructionCid = instructionCid
-        senderChangeCids
-        meta = transfer.meta
+      pure $ pending transfer senderChangeCids instructionCid
+
+-- | Validate a transfer from the CIP-0112 mint account, then either create
+-- the receiver's holding in one step or create a pending mint offer. A mint
+-- debits nothing and locks nothing: the admin's authority alone backs the
+-- new supply. The caller is responsible for authorization: the one-step
+-- path creates the receiver's holding, which needs the receiver's authority.
+-- The caller must also establish the admin's consent, since a choice on an
+-- admin-signed contract carries the admin's authority whatever its
+-- controller.
+executeMint
+  : RegistryConfig -> HoldingOps -> CreateTransferInstruction -> Bool -> Text
+  -> TransferInstructionV2.Transfer
+  -> Update TransferInstructionV2.TransferInstructionResult
+executeMint config ops createInstruction oneStep legId transfer = do
+  validateTransfer config transfer
+  require "mint receiver must be a regular account" (isRegularAccount transfer.receiver)
+  require "mint takes no input holdings" (null transfer.inputHoldingCids)
+  if oneStep
+    then completed transfer [] <$> payReceiver ops legId transfer [] []
+    else do
+      instructionCid <- createInstruction TransferInstructionState with
+        transfer
+        lockedHoldingCids = []
+        expiresAt = transfer.executeBefore
+        lockExpiresAt = transfer.executeBefore `addRelTime` config.lockGrace
+      pure $ pending transfer [] instructionCid
+
+completed
+  : TransferInstructionV2.Transfer -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
+  -> TransferInstructionV2.TransferInstructionResult
+completed transfer senderChangeCids receiverHoldingCids = TransferInstructionV2.TransferInstructionResult with
+  output = TransferInstructionV2.TransferInstructionResult_Completed with receiverHoldingCids
+  senderChangeCids
+  meta = transfer.meta
+
+pending
+  : TransferInstructionV2.Transfer -> [ContractId HoldingV2.Holding]
+  -> ContractId TransferInstructionV2.TransferInstruction
+  -> TransferInstructionV2.TransferInstructionResult
+pending transfer senderChangeCids transferInstructionCid = TransferInstructionV2.TransferInstructionResult with
+  output = TransferInstructionV2.TransferInstructionResult_Pending with transferInstructionCid
+  senderChangeCids
+  meta = transfer.meta
 
 -- | The checks every new transfer instruction passes: the registry's admin,
 -- a well-formed transfer, and an execution window within `maxTTL`.

@@ -27,8 +27,7 @@ functions, with every template decision left to the caller.
   and `allocationView` for interface views.
 - `*Impl` functions for every interface method and template choice a registry
   needs: `transferFactoryImpl`, `transferAcceptImpl`, `allocationFactoryImpl`,
-  `allocationSettleImpl`, `settleBatchImpl`, `offerMintImpl`, and the
-  rest.
+  `allocationSettleImpl`, `settleBatchImpl`, and the rest.
 
 The functions read and return the `RegistryConfig`,
 `TransferInstructionState`, and `AllocationState` records of
@@ -63,11 +62,11 @@ contract id enters through an operation the template owner wrote:
 - A choice that completes more than one transfer through `executeTransfer`
   must give each a distinct `legId`. CIP-0112 requires different transfer
   legs to report different ids, and the standard paths all use `""`.
-- A transfer instruction whose sender is the CIP-0112 mint account is a mint
-  offer: `transferAcceptImpl` creates the receiver's holding without any
-  locked funding. Only `offerMintImpl`, from a choice the admin alone
-  controls, may create one. A factory body must refuse the mint account as a
-  sender, as `transferFactoryImpl` does.
+- A transfer whose sender is the CIP-0112 mint account is a mint: it creates
+  the receiver's holding without any funding, and `transferAcceptImpl` does
+  the same for a mint offer. A factory body must require the admin's
+  authority for a mint, as `transferFactoryImpl` does through the mint
+  account's actor set.
 
 ## Build
 

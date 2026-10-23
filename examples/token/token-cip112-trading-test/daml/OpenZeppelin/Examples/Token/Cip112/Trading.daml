@@ -21,7 +21,7 @@ import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, mintAccount, reasonToMeta, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Token.Cip112.V1.Holding
@@ -75,14 +75,23 @@ setup = do
 -- accept emits the standard event naming the mint account.
 mint : App -> Party -> Text -> Decimal -> Script (ContractId HoldingV2.Holding)
 mint App{..} owner instrumentId amount = do
-  offerCid <- submit admin do
-    exerciseCmd rulesCid TokenRules_OfferMint with
-      receiver = basicAccount owner
-      instrumentId
-      amount
-      requestedAt = t0
-      executeBefore = t2
-      reason = "demo mint"
+  offer <- submit admin do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+      TransferInstructionV2.TransferFactory_Transfer with
+        transfer = TransferInstructionV2.Transfer with
+          sender = mintAccount
+          receiver = basicAccount owner
+          amount
+          instrumentId = HoldingV2.InstrumentId with admin; id = instrumentId
+          requestedAt = t0
+          executeBefore = t2
+          inputHoldingCids = []
+          meta = reasonToMeta "demo mint" emptyMetadata
+        actors = [admin]
+        extraArgs = emptyExtraArgs
+  offerCid <- case offer.output of
+    TransferInstructionV2.TransferInstructionResult_Pending cid -> pure cid
+    other -> abort ("expected a pending mint offer, got: " <> show other)
   result <- submit owner do
     exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
       actors = [owner]

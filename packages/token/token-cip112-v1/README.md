@@ -38,7 +38,7 @@ their own templates reuses directly.
   settlement and CIP-0112 iterated settlement.
 - `TokenRules` (`Registry`): the registry rules contract over a
   `RegistryConfig` payload, implementing the TSv2 transfer, allocation, and
-  settlement factories plus mint offers and expiry.
+  settlement factories plus mints and instruction expiry.
 - `TokenEventLog` (`Base`): the holdings-change event-log host.
 - `defaultHoldingOps` (`Holding`): the operations record these templates run
   the utils functions with. A consumer that keeps `TokenHolding` but owns
@@ -67,11 +67,16 @@ interfaces or exceptions of its own.
   recovery the sender's parties can perform alone. After `executeBefore`, the
   admin alone may also return the funds to the sender through
   `TokenTransferInstruction_Expire`.
-- The admin issues supply with `TokenRules_OfferMint`: a pending transfer
-  instruction from the CIP-0112 mint account (`cip-112/mint`) that locks
-  nothing. The receiver's account parties accept it to create the holding or
-  reject it. The admin can withdraw it until then and expire it after
-  `executeBefore`. A mint is always two-step.
+- The admin issues supply with `TransferFactory_Transfer` from the CIP-0112
+  mint account (`cip-112/mint`), whose only account party is the admin. A
+  mint takes no input holdings and locks nothing. The admin and the
+  receiver's account parties acting together mint in one step. When the
+  receiver's account has parties other than the admin, the admin alone
+  creates a pending mint offer, which those parties accept to create the
+  holding or reject. The admin can withdraw the offer until then and expire
+  it after `executeBefore`. A mint to an account whose only party is the
+  admin always completes in one step. Clients handle both the `Completed`
+  and the `Pending` result.
 - A holder burns with `TransferFactory_Transfer` to the CIP-0112 burn account
   (`cip-112/burn`), whose only account party is the admin. The holder alone
   creates a burn request that locks the amount, and the admin accepts or

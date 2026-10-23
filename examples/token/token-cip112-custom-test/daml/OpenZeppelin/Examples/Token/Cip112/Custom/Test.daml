@@ -2,10 +2,11 @@
 -- each consumer addition: the auditor sees every contract, every consumption
 -- runs `MyHolding_Spend`, a late acceptance creates a `MyHolding`, iteration
 -- successors are `MyAllocation`s, a frozen holding cannot move on any path,
--- the pause switch blocks the factories, mint offers, and burns, the fee
--- leg pays the treasury and exempts burns, the
--- executor allowlist is enforced, roles are separate, expired funding is
--- reclaimed, and a foreign holding or allocation is refused.
+-- the pause switch blocks the factories and burns, the fee
+-- leg pays the treasury and exempts mints and burns, the
+-- executor allowlist is enforced, roles are separate and cannot mint,
+-- expired funding is reclaimed, and a foreign holding or allocation is
+-- refused.
 module OpenZeppelin.Examples.Token.Cip112.Custom.Test where
 
 import DA.Action (unless)
@@ -26,7 +27,7 @@ import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, burnAccount, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, reasonToMeta, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Examples.Token.Cip112.Custom
@@ -97,15 +98,30 @@ unpauseRegistry app = do
   Some disclosure <- queryDisclosure @MyRules app.admin newCid
   pure app with rulesCid = newCid; rulesDisclosure = disclosure
 
+-- | A mint of `amount` TOK to `receiver` through the transfer factory. The
+-- admin alone offers the mint; the admin and the receiver mint in one step.
+mintCmd : App -> [Party] -> Party -> Decimal -> Commands TransferInstructionV2.TransferInstructionResult
+mintCmd App{..} actors receiver amount =
+  exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+    TransferInstructionV2.TransferFactory_Transfer with
+      transfer = TransferInstructionV2.Transfer with
+        sender = mintAccount
+        receiver = basicAccount receiver
+        amount
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        requestedAt = t0
+        executeBefore = t2
+        inputHoldingCids = []
+        meta = reasonToMeta "mint" emptyMetadata
+      actors
+      extraArgs = emptyExtraArgs
+
 offerMintCmd : App -> Party -> Decimal -> Commands (ContractId TransferInstructionV2.TransferInstruction)
-offerMintCmd App{..} receiver amount =
-  exerciseCmd rulesCid MyRules_OfferMint with
-    receiver = basicAccount receiver
-    instrumentId = "TOK"
-    amount
-    requestedAt = t0
-    executeBefore = t2
-    reason = "mint"
+offerMintCmd app receiver amount = pendingCid <$> mintCmd app [app.admin] receiver amount
+  where
+    pendingCid r = case r.output of
+      TransferInstructionV2.TransferInstructionResult_Pending cid -> cid
+      _ -> error "expected a pending mint offer"
 
 -- | The admin offers a mint and the owner accepts it.
 mint : App -> Party -> Decimal -> Script (ContractId HoldingV2.Holding)
@@ -476,6 +492,8 @@ testPauseBlocksFactories = do
     (allocateCmd app app.settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [aliceTok])
   mustFailWith "registry is paused" (actAs admin) (offerMintCmd app alice 1.0)
   mustFailWith "registry is paused" (actAs [admin, alice] <> discloseMany [app.rulesDisclosure])
+    (mintCmd app [admin, alice] alice 1.0)
+  mustFailWith "registry is paused" (actAs [admin, alice] <> discloseMany [app.rulesDisclosure])
     (burnCmd app alice 1.0 burnMe)
   balanceSeenBy alice alice >>= (=== [1.0, 10.0])
 
@@ -534,6 +552,15 @@ testTransferFeeGoesToTreasury = do
   [(changeCid, _)] <- query @MyHolding alice
   submitMustFail (actAs alice <> discloseMany [rulesDisclosure])
     (transferCmd app [alice] (mkTransfer app alice bob 149.0 [toInterfaceContractId @HoldingV2.Holding changeCid]))
+
+-- | A mint pays no fee: a one-step mint of 100 gives the receiver 100 and the
+-- treasury nothing.
+testMintPaysNoFee : Script ()
+testMintPaysNoFee = do
+  app@App{..} <- setupWith 100
+  _ <- submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) (mintCmd app [admin, alice] alice 100.0)
+  balanceSeenBy alice alice >>= (=== [100.0])
+  balanceSeenBy admin admin >>= (=== [])
 
 -- | The fee is two workflow calls: the fee leg consumes both inputs, the
 -- main transfer consumes the fee leg's change. Three spends, one transfer.
@@ -609,6 +636,16 @@ testSettlementChecksExecutorAllowlist = do
   let app = app0 with rulesCid = newRulesCid; rulesDisclosure = disclosure
   mustFailWith "a settlement executor is not approved" (actAs exchange <> discloseMany [disclosure])
     (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]))
+
+-- | The roles on the registry hold no mint power: each role holder alone is
+-- refused, for its own account and for the treasury.
+testRolesCannotMint : Script ()
+testRolesCannotMint = do
+  app@App{..} <- setup
+  forA_ [pauser, complianceOfficer, auditor, exchange] $ \role ->
+    forA_ [role, admin] $ \receiver ->
+      mustFailWith "'actors' does not have the same elements as one of"
+        (actAs role <> discloseMany [rulesDisclosure]) (mintCmd app [role] receiver 10.0)
 
 -- Expiry and cleanup
 ---------------------

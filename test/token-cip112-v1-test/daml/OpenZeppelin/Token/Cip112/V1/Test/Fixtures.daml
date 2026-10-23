@@ -17,7 +17,7 @@ import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, burnAccount, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, nonIteratedAllocation, reasonToMeta)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Token.Cip112.V1.Holding
@@ -183,19 +183,39 @@ instructTransfer Scenario{..} actors transfer =
         actors
         extraArgs = emptyExtraArgs
 
--- | The admin offers `amount` TOK from the mint account to `receiver`'s basic
+-- | A transfer of `amount` TOK from the mint account to `receiver`'s basic
 -- account, open until `t2`.
+mintTransfer : Scenario -> Party -> Decimal -> TransferInstructionV2.Transfer
+mintTransfer Scenario{..} receiver amount = TransferInstructionV2.Transfer with
+  sender = mintAccount
+  receiver = basicAccount receiver
+  amount
+  instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+  requestedAt = t0
+  executeBefore = t2
+  inputHoldingCids = []
+  meta = reasonToMeta "mint" emptyMetadata
+
+-- | The admin offers `amount` TOK from the mint account to `receiver`'s basic
+-- account, open until `t2`: a two-step mint through the transfer factory.
 offerMintCmd
   : Scenario -> Party -> Decimal
   -> Commands (ContractId TransferInstructionV2.TransferInstruction)
-offerMintCmd Scenario{..} receiver amount =
-  exerciseCmd rulesCid TokenRules_OfferMint with
-    receiver = basicAccount receiver
-    instrumentId = "TOK"
-    amount
-    requestedAt = t0
-    executeBefore = t2
-    reason = "mint"
+offerMintCmd s receiver amount =
+  pendingCidCmd <$> mintCmd s [s.admin] (mintTransfer s receiver amount)
+  where
+    pendingCidCmd r = case r.output of
+      TransferInstructionV2.TransferInstructionResult_Pending cid -> cid
+      _ -> error "expected a pending mint offer"
+
+-- | A transfer from the mint account through the transfer factory. The admin
+-- alone offers the mint; the admin and the receiver together mint in one step.
+mintCmd
+  : Scenario -> [Party] -> TransferInstructionV2.Transfer
+  -> Commands TransferInstructionV2.TransferInstructionResult
+mintCmd Scenario{..} actors transfer =
+  exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+    TransferInstructionV2.TransferFactory_Transfer with transfer; actors; extraArgs = emptyExtraArgs
 
 acceptCmd
   : Party -> ContractId TransferInstructionV2.TransferInstruction
