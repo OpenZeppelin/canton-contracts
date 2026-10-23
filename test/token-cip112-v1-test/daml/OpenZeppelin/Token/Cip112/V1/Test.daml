@@ -11,7 +11,7 @@ import DA.Time (addRelTime, days, hours, minutes, time)
 import Daml.Script
 
 import DA.Map qualified as Map
-import DA.Optional (isSome)
+import DA.Optional (isSome, optionalToList)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.MetadataV1
@@ -53,6 +53,35 @@ testNetSettlementHappyPath = do
   aliceAfter === [4.0]
   bobAfter <- holdingAmounts bob
   bobAfter === [6.0]
+
+-- | The batch's arguments stay with the batch: each authorizer witnesses its
+-- own `Allocation_Settle`, and none carries the batch's metadata, which may
+-- describe other authorizers' trades.
+testSettleBatchRedactsBatchMeta : Script ()
+testSettleBatchRedactsBatchMeta = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  aliceAllocCid <- completedCid =<< allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
+  bobAllocCid <- completedCid =<< allocate s bob [receiverSide legAliceToBob, senderSide legBobToAlice] []
+  let batchMeta = Metadata with values = TextMap.fromList [("venue.example/order-ref.carol-dave", "OTC-7781")]
+  tree <- submitTree (actAs app <> discloseMany [rulesDisclosure]) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob, legBobToAlice]
+        allocations = map nonIteratedAllocation [aliceAllocCid, bobAllocCid]
+        actors = [app]
+        extraArgs = emptyExtraArgs with meta = batchMeta
+  let settles = concatMap allocationSettlesIn tree.rootEvents
+  length settles === 2
+  forA_ settles $ \settle -> settle.extraArgs === emptyExtraArgs
+
+-- | Every `Allocation_Settle` exercised anywhere below a tree event.
+allocationSettlesIn : TreeEvent -> [AllocationV2.Allocation_Settle]
+allocationSettlesIn (CreatedEvent _) = []
+allocationSettlesIn (ExercisedEvent ex) =
+  optionalToList (fromAnyChoice @AllocationV2.Allocation ex.argument)
+    <> concatMap allocationSettlesIn ex.childEvents
 
 -- | Conservation: a sender whose inputs do not cover the net debit fails
 -- closed at allocation time.
