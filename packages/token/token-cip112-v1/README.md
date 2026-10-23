@@ -141,6 +141,13 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   settlement deadline or until the admin withdraws an uncommitted allocation.
   The netting ignores the amount on the special side, so the exact-cover check
   is what bounds the amount minted or burned to the legs the admin allocated.
+- Enabling iterated settlement hands the executors control of the reserve.
+  In each iteration they choose the authorizer's extra legs, which may send
+  the reserve to any account that allocates to receive it, and whether to keep
+  a reserve for the next iteration, which renews the allocation's expiry and
+  lock. The authorizer bounds this with a settlement deadline, or by
+  withdrawing an uncommitted allocation. Enable iterated settlement only with
+  executors trusted with the amount reserved.
 - The vendored settlement-factory default does not validate a
   `FinalizedAllocation.nextIterationFunding`; the check in
   `allocation_settleImpl` is the effective guard. Registry forks that replace
