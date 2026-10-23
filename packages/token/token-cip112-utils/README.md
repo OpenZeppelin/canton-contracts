@@ -20,6 +20,9 @@ functions, with every template decision left to the caller.
   so it is never stored.
 - `consumeByArchive @T` and `pinAllocationTo @T`: the safe ways to write the
   consumption and allocation policies, pinned to one template.
+- `privateAssetAllocateExtraObservers`: the allocation factory's extra
+  observers, which admit the settlement executors only to a call that needs
+  no funding and names no input holdings.
 - `isValid*` predicates for `ensure` clauses, and `transferInstructionView`
   and `allocationView` for interface views.
 - `*Impl` functions for every interface method and template choice a registry

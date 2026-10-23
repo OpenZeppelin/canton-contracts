@@ -50,7 +50,7 @@ template TokenRules with
     interface instance AllocationInstructionV2.AllocationFactory for TokenRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
       allocationFactory_publicFetchImpl = publicFetchDefaultImpl this
-      allocationFactory_allocateExtraObservers = allocationFactoryV2_privateAsset_allocateExtraObserversDefaultImpl
+      allocationFactory_allocateExtraObservers = privateAssetAllocateExtraObservers
       allocationFactory_allocateImpl _self arg =
         allocationFactoryImpl config (rulesOps config) createAllocation arg
 

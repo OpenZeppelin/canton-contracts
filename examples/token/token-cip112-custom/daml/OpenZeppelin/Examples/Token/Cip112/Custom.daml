@@ -242,7 +242,7 @@ template MyRules with
     interface instance AllocationInstructionV2.AllocationFactory for MyRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
       allocationFactory_publicFetchImpl = publicFetchDefaultImpl this
-      allocationFactory_allocateExtraObservers = allocationFactoryV2_privateAsset_allocateExtraObserversDefaultImpl
+      allocationFactory_allocateExtraObservers = privateAssetAllocateExtraObservers
       allocationFactory_allocateImpl _self arg = do
         whenNotPaused this
         requireAllowedExecutors this arg.settlement.executors
