@@ -114,6 +114,15 @@ allocationSettleImpl ops createSuccessor self s arg = do
   forA_ s.allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
   validateNextIterationArgs "Allocation_Settle" (isSome s.allocation.nextIterationFunding)
     arg.extraTransferLegSides arg.nextIterationFunding
+  -- Executor-supplied legs pass the checks the allocation's own legs passed at
+  -- creation, including the ban on the reserved `cip-112/{sender,receiver}`
+  -- account metadata. The batch's exact cover cannot catch it, since the
+  -- executors write both the batch leg and the matching sides, and the
+  -- metadata is copied into the emitted events, where it would contradict
+  -- the leg's actual `otherside`.
+  require "extra transfer-leg sides must be valid allocation legs"
+    (isValidAllocationSpecificationV2 (const True)
+      (s.allocation with transferLegSides = s.allocation.transferLegSides <> arg.extraTransferLegSides))
   settleAllocation ops createSuccessor self s arg.extraTransferLegSides arg.nextIterationFunding
 
 -- | `allocation_withdrawImpl`.
