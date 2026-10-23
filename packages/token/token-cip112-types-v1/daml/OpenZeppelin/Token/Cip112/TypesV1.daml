@@ -37,8 +37,6 @@ data TransferInstructionState = TransferInstructionState with
     transfer : TransferInstructionV2.Transfer
       -- ^ The transfer as instructed, with `inputHoldingCids` rewritten to
       -- the live locked funding.
-    originalInputHoldingCids : [ContractId HoldingV2.Holding]
-      -- ^ The inputs the sender supplied, already archived.
     lockedHoldingCids : [ContractId HoldingV2.Holding]
       -- ^ The locked funding backing the offer.
     expiresAt : Time

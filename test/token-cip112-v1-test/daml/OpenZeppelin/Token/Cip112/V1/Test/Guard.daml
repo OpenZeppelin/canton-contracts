@@ -234,7 +234,6 @@ testAcceptRefusesUnderfundedLock = do
     createCmd TokenTransferInstruction with
       state = TransferInstructionState with
         transfer = mkTransfer s alice bob 7.0 [locked]
-        originalInputHoldingCids = []
         lockedHoldingCids = [toInterfaceContractId locked]
         expiresAt = t2
         lockExpiresAt = t4

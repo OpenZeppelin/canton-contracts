@@ -197,7 +197,6 @@ executeTransfer config ops createInstruction oneStep transfer = do
       lockedCid <- newHolding ops admin transfer.sender transfer.instrumentId.id transfer.amount (Some lock)
       instructionCid <- createInstruction TransferInstructionState with
         transfer = transfer with inputHoldingCids = [lockedCid]
-        originalInputHoldingCids = transfer.inputHoldingCids
         lockedHoldingCids = [lockedCid]
         expiresAt = instructionExpiresAt
         lockExpiresAt

@@ -270,7 +270,6 @@ testTransferInstructionStatePredicate = do
         meta = emptyMetadata
       s = TransferInstructionState with
         transfer
-        originalInputHoldingCids = []
         lockedHoldingCids = [toInterfaceContractId @HoldingV2.Holding h]
         expiresAt = t2
         lockExpiresAt = t2 `addRelTime` hours 1

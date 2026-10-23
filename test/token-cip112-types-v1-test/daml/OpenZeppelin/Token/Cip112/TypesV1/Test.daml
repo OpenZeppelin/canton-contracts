@@ -44,7 +44,6 @@ testRecordsRoundTripThroughAPayload = do
           executeBefore = t1
           inputHoldingCids = []
           meta = emptyMetadata
-        originalInputHoldingCids = []
         lockedHoldingCids = []
         expiresAt = t1
         lockExpiresAt = t1 `addRelTime` hours 1
