@@ -314,8 +314,10 @@ feeFor rules amount = amount * intToDecimal rules.transferFeeBps / 10000.0
 -- inputs; it consumes them and returns the sender's change. The main
 -- transfer then runs on that change, exactly as the default factory would
 -- on the original inputs. Both legs emit their standard events, so history
--- parsers see the fee as a transfer to the treasury. Inputs that cover the
--- amount but not the fee fail on the main leg's funding check.
+-- parsers see the fee as a transfer to the treasury. The fee leg reports leg
+-- id "fee", so it never shares an id with the main transfer completing in
+-- the same transaction. Inputs that cover the amount but not the fee fail on
+-- the main leg's funding check.
 transferWithFee
   : MyRules -> TransferInstructionV2.TransferFactory_Transfer
   -> Update TransferInstructionV2.TransferInstructionResult
@@ -325,7 +327,7 @@ transferWithFee rules arg = do
   inputs <-
     if fee > 0.0
       then do
-        feeResult <- executeTransfer rules.config (ops rules) (createInstruction rules) True
+        feeResult <- executeTransfer rules.config (ops rules) (createInstruction rules) True "fee"
           (transfer with receiver = treasury rules; amount = fee)
         pure feeResult.senderChangeCids
       else pure transfer.inputHoldingCids

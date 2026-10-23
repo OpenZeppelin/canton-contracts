@@ -60,6 +60,9 @@ contract id enters through an operation the template owner wrote:
   allocation with the same amount. Without it, a settlement can create
   tokens. No other choice may exercise `Allocation_Settle` with the admin's
   authority, because that skips the check.
+- A choice that completes more than one transfer through `executeTransfer`
+  must give each a distinct `legId`. CIP-0112 requires different transfer
+  legs to report different ids, and the standard paths all use `""`.
 - A transfer instruction whose sender is the CIP-0112 mint account is a mint
   offer: `transferAcceptImpl` creates the receiver's holding without any
   locked funding. Only `offerMintImpl`, from a choice the admin alone
