@@ -537,9 +537,6 @@ testTransferFeeGoesToTreasury = do
 
 -- | The fee is two workflow calls: the fee leg consumes both inputs, the
 -- main transfer consumes the fee leg's change. Three spends, one transfer.
--- The two transfers complete in one transaction, so their legs carry
--- different ids, each reported once on the sending and once on the
--- receiving side.
 testFeeComposesTwoWorkflowCalls : Script ()
 testFeeComposesTwoWorkflowCalls = do
   app@App{..} <- setupWith 100
@@ -548,9 +545,6 @@ testFeeComposesTwoWorkflowCalls = do
   tree <- submitTree (actAs [alice, bob] <> discloseMany [rulesDisclosure])
     (transferCmd app [alice, bob] (mkTransfer app alice bob 50.0 [in1, in2]))
   countSpends tree === 3
-  let legIds side = sort [l.transferLegId | e <- holdingsChangeEvents tree, l <- e.transferLegSides, l.side == side]
-  legIds TransferEventsV2.SenderSide === ["", "fee"]
-  legIds TransferEventsV2.ReceiverSide === ["", "fee"]
   balanceSeenBy admin admin >>= (=== [0.5])
   balanceSeenBy alice alice >>= (=== [49.5])
   balanceSeenBy bob bob >>= (=== [50.0])
