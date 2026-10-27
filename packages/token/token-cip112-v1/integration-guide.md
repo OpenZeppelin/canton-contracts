@@ -125,12 +125,6 @@ Conformance notes:
   see this token (see the README's "Standards conformance").
 - Lock shape is restricted: locks always carry a finite `expiresAt` and never
   `expiresAfter`; holdings with `expiresAfter` locks are rejected at creation.
-- A completed transfer reports `transferLegId = ""` on both sides, as Splice's
-  own `logTransfer` does: the standard paths complete one transfer per
-  choice. Leg ids are therefore unique within one choice, not across
-  commands submitted together in one transaction. A parser that meets
-  several sides under one id in a transaction pairs them by the leg id
-  together with the accounts, instrument, and amount each side names.
 - The standard's off-ledger halves — factory discovery, instrument metadata,
   pause reporting — are deployment infrastructure outside this package. The
   trading example substitutes explicit disclosure for discovery.
@@ -151,5 +145,4 @@ cleanup.
 | Creating a committed allocation without a settlement deadline | Refused at the factory and by the template | Set `settlementDeadline`; commitment ends at the deadline |
 | Requesting a deadline or execution window beyond the registry's `maxTTL` | Refused outright, not truncated | Keep workflow deadlines within `maxTTL` of submission time |
 | Expecting the admin to expire a live workflow | Expiry choices fail before the workflow deadline | Wait for `expiresAt`; only executors cancel early |
-| Completing two transfers in one choice through `executeTransfer` with the same `legId` | Both transfers report the same leg id, which CIP-0112 forbids for different legs | Give each transfer completed in the choice a distinct `legId`, as the custom example's fee leg does with `fee` |
 | Reading `availableActions` as "exercisable now" | A committed allocation advertises withdraw that still fails before the deadline | Treat the map as the actor sets; check the deadline separately |

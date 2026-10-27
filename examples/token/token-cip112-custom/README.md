@@ -14,7 +14,7 @@ What it adds, and where each addition lives:
 | Auditor observing every contract and every holdings-change event | A consumer field on each template, reached through the closure that builds `HoldingOps`, plus the `eventObservers` operation |
 | Compliance freeze on holdings | A template field plus `MyHolding_Freeze` and `MyHolding_Unfreeze`; `MyHolding_Spend` refuses a frozen holding, so every workflow path refuses it |
 | Pause switch on the registry | A template field plus `MyRules_Pause` and `MyRules_Unpause`, checked before each factory delegates and before a mint offer |
-| Fee on every transfer except a burn | Two workflow calls composed in the factory body: a one-step fee transfer to the treasury under leg id `fee`, then the main transfer on the fee leg's change |
+| Fee on every transfer except a burn | Two workflow calls composed in the factory body: a one-step fee transfer to the treasury, then the main transfer on the fee leg's change |
 | Executor allowlist | Checked before delegating to the allocation and settlement workflows |
 
 The pause does not cover pending transfer instructions. Their accept choice
