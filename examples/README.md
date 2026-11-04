@@ -36,6 +36,16 @@ Consumers of `openzeppelin-api-timelock-v1` and `openzeppelin-timelock-v1`.
 |---|---|---|
 | [`treasury`](timelock/treasury) | [`treasury-test`](timelock/treasury-test) | A timelock, a governed config, and a treasury on separate contracts. The spending limit and the delay policy change only through timelocked operations: schedule, wait, apply, cancel, expiry cleanup, and self-administration of the delay |
 
+## Token CIP-0112
+
+Consumers of `openzeppelin-token-cip112-v1`, `openzeppelin-token-cip112-types-v1`,
+and `openzeppelin-token-cip112-utils`.
+
+| Example | Tests | Shows |
+|---|---|---|
+| [`token-cip112-trading-test`](token/token-cip112-trading-test/) | scripts only | Running the default templates of `openzeppelin-token-cip112-v1`: launching a token from the DAR, allocations funded through the standard factory, exact-cover DvP batch settlement, and the iterated-settlement deposit flow |
+| [`token-cip112-custom`](token/token-cip112-custom/) | [`token-cip112-custom-test`](token/token-cip112-custom-test/) | A compliance-grade consumer that owns its own holding, instruction, allocation, and registry templates and reuses `openzeppelin-token-cip112-types-v1` and `openzeppelin-token-cip112-utils` unchanged: roles, an auditor, a compliance freeze enforced through the spend hook, a pause switch, a fee on transfer built from two workflow calls, and an executor allowlist |
+
 ## Build and run
 
 From the repository root, using the package path from `multi-package.yaml`:

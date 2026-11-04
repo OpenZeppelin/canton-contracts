@@ -79,6 +79,14 @@ scopeMismatch fieldMatches = Fail.FailureStatus with
   meta = TextMap.singleton "fields"
     (Text.intercalate "," [field | (field, False) <- fieldMatches])
 
+grantRequired : Party -> Party -> Fail.FailureStatus
+grantRequired expected actual = Fail.FailureStatus with
+  errorId = grantRequiredErrorId
+  category = Fail.failedPrecondition
+  message = "Actor is not the authority and presented no grant"
+  meta = TextMap.fromList
+    [("expected", partyToText expected), ("actual", partyToText actual)]
+
 -- Stable identifiers carried in guard failure responses.
 notYetValidErrorId : Text
 notYetValidErrorId = "openzeppelin.com/scoped-authorization-grant-not-yet-valid"
@@ -94,3 +102,6 @@ granteeMismatchErrorId = "openzeppelin.com/scoped-authorization-grant-grantee-mi
 
 scopeMismatchErrorId : Text
 scopeMismatchErrorId = "openzeppelin.com/scoped-authorization-grant-scope-mismatch"
+
+grantRequiredErrorId : Text
+grantRequiredErrorId = "openzeppelin.com/scoped-authorization-grant-required"

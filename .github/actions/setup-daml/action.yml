@@ -14,15 +14,21 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.dpm
-        key: dpm-${{ runner.os }}-sdk-${{ hashFiles('multi-package.yaml') }}-v2
+        key: dpm-${{ runner.os }}-sdk-${{ hashFiles('multi-package.yaml') }}-v3
 
     - name: Provision DPM and the project SDK
       shell: bash
       run: |
         set -euo pipefail
 
+        # Bootstrap DPM from the workspace SDK bundle so cached and fresh
+        # runners use the same DPM.
         if [ ! -x "$HOME/.dpm/bin/dpm" ]; then
-          version="$(curl -sSf https://get.digitalasset.com/install/latest)"
+          version="$(sed -n 's/^sdk-version:[[:space:]]*//p' multi-package.yaml)"
+          [ -n "$version" ] || {
+            echo "::error::multi-package.yaml does not declare sdk-version." >&2
+            exit 1
+          }
           arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
           os="$(uname | tr '[:upper:]' '[:lower:]')"
           tarball="dpm-${version}-${os}-${arch}.tar.gz"

@@ -13,6 +13,9 @@ are navigation only and never appear in a package name or module namespace.
 | [Pausable V1](security/pausable-v1/) | Guards and structured failures for templates implementing Pausable. |
 | [Timelock API V1](security/api-timelock-v1/) | Frozen interfaces for a mandatory delay between the proposal and the execution of an operation. |
 | [Timelock V1](security/timelock-v1/) | Lifecycle functions, schedule functions, time guards, and structured failures for templates implementing Timelock. |
+| [Token CIP-0112 types V1](token/token-cip112-types-v1/) | The registry configuration, transfer-instruction, and allocation records CIP-0112 templates store. |
+| [Token CIP-0112 utils](token/token-cip112-utils/) | CIP-0112 transfer, allocation, settlement, and mint-offer choice bodies as functions over a consumer's own templates. |
+| [Token CIP-0112 V1](token/token-cip112-v1/) | Ready-to-use CIP-0112 token templates: holdings, transfer instructions, allocations, and registry rules over the utils package. |
 
 These components are unreleased, unaudited library candidates. Tagged DARs and
 their manifest entries define releases; placement here does not imply stability.
