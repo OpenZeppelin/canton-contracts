@@ -22,6 +22,8 @@ The library provides the following packages under [`packages/`](packages/):
 | [Scoped Authorization Grant](packages/access/scoped-authorization-grant-v1/) | `openzeppelin-scoped-authorization-grant-v1` | `OpenZeppelin.ScopedAuthorizationGrantV1` |
 | [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
 | [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` |
+| [Timelock API](packages/security/api-timelock-v1/) | `openzeppelin-api-timelock-v1` | `OpenZeppelin.Api.TimelockV1` |
+| [Timelock](packages/security/timelock-v1/) | `openzeppelin-timelock-v1` | `OpenZeppelin.TimelockV1` |
 | [Token CIP-0112 types](packages/token/token-cip112-types-v1/) | `openzeppelin-token-cip112-types-v1` | `OpenZeppelin.Token.Cip112.TypesV1` |
 | [Token CIP-0112 utils](packages/token/token-cip112-utils/) | `openzeppelin-token-cip112-utils` | `OpenZeppelin.Token.Cip112.Utils` |
 | [Token CIP-0112](packages/token/token-cip112-v1/) | `openzeppelin-token-cip112-v1` | `OpenZeppelin.Token.Cip112.V1` |
@@ -88,7 +90,7 @@ Each package `README.md` shows the consumer code for that component, and
 
 packages/                 Library components and release candidates
   access/                 Authorization components
-  security/               Emergency-stop and safety components
+  security/               Emergency-stop, delay, and safety components
   token/                  Category for token standard and settlement components
 test/                     Isolated library test packages
 dars/
