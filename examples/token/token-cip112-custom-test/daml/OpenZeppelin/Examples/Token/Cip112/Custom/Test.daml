@@ -92,7 +92,7 @@ setupWith transferFeeBps = do
       allowedExecutors = [exchange]
   Some rulesDisclosure <- queryDisclosure @MyRules admin rulesCid
   blocklistCid <- submit admin do
-    createCmd Blocklist with admin; blocker; id = tokenBlocklistId; blocked = Set.empty
+    createCmd Blocklist with admin; blocker; id = tokenBlocklistId; blocked = Set.empty; maxEntries = 1000
   Some blocklistDisclosure <- queryDisclosure @Blocklist admin blocklistCid
   pure App with
     admin; auditor; complianceOfficer; pauser; blocker; exchange; alice; bob
@@ -123,13 +123,13 @@ unpauseRegistry app = do
 blockAccount : App -> Party -> Script App
 blockAccount app account = do
   newCid <- submit (actAs app.blocker) do
-    exerciseCmd app.blocklistCid Blocklist_Block with account; reason = "case-1"
+    exerciseCmd app.blocklistCid Blocklist_Block with accounts = [account]; reason = "case-1"
   refreshBlocklist app newCid
 
 unblockAccount : App -> Party -> Script App
 unblockAccount app account = do
   newCid <- submit (actAs app.blocker) do
-    exerciseCmd app.blocklistCid Blocklist_Unblock with account; reason = "case-1 closed"
+    exerciseCmd app.blocklistCid Blocklist_Unblock with accounts = [account]; reason = "case-1 closed"
   refreshBlocklist app newCid
 
 refreshBlocklist : App -> ContractId Blocklist -> Script App
@@ -812,7 +812,7 @@ testExpireTransferInstructionsRefusesOtherRegistry = do
   otherRulesCid <- submit otherAdmin do createCmd rules with config = rules.config with admin = otherAdmin
   Some otherDisclosure <- queryDisclosure @MyRules otherAdmin otherRulesCid
   otherBlocklistCid <- submit otherAdmin do
-    createCmd Blocklist with admin = otherAdmin; blocker; id = tokenBlocklistId; blocked = Set.empty
+    createCmd Blocklist with admin = otherAdmin; blocker; id = tokenBlocklistId; blocked = Set.empty; maxEntries = 1000
   Some otherBlocklistDisclosure <- queryDisclosure @Blocklist otherAdmin otherBlocklistCid
   let other = app with
         admin = otherAdmin; rulesCid = otherRulesCid; rulesDisclosure = otherDisclosure
@@ -1018,6 +1018,28 @@ testBlockedAuthorizerCannotWithdraw = do
   balanceSeenBy alice alice >>= (=== [5.0, 5.0])
   assertNoLocks alice
 
+-- | CIP-0112 lets an authorizer withdraw a committed allocation after its
+-- settlement deadline. A blocked authorizer stays refused, and the admin
+-- expires the allocation instead: its expiry is never later than the
+-- settlement deadline, so the funds return to the authorizer's account.
+testBlockedAuthorizerAfterDeadline : Script ()
+testBlockedAuthorizerAfterDeadline = do
+  app0@App{..} <- setup
+  aliceTok <- mint app0 alice 10.0
+  aliceAlloc <- allocate app0 alice
+    ((mkSpec app0 alice [senderSide (mkLeg "leg-1" alice bob 5.0)] None) with committed = True) [aliceTok]
+  app <- blockAccount app0 alice
+  setTime t3
+  mustFailBlocked alice (actAs alice <> discloseMany [app.blocklistDisclosure]) do
+    exerciseCmd aliceAlloc AllocationV2.Allocation_Withdraw with
+      actors = [alice]
+      extraArgs = blocklistArgs app.blocklistCid
+  submit (actAs admin) do
+    exerciseCmd rulesCid MyRules_ExpireAllocations with
+      cancelArgs = [(aliceAlloc, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)]
+  balanceSeenBy alice alice >>= (=== [5.0, 5.0])
+  assertNoLocks alice
+
 -- | A blocked owner cannot unlock a holding whose lock has expired. After
 -- the unblock, the same unlock goes through.
 testBlockedOwnerCannotUnlock : Script ()
@@ -1087,7 +1109,7 @@ testOnlyTheBlockerBlocks = do
   App{..} <- setup
   forA_ [admin, pauser, complianceOfficer] $ \who ->
     submitMustFail (actAs who <> discloseMany [blocklistDisclosure]) do
-      exerciseCmd blocklistCid Blocklist_Block with account = alice; reason = "case-1"
+      exerciseCmd blocklistCid Blocklist_Block with accounts = [alice]; reason = "case-1"
 
 -- | The blocker sees the blocklist and no token contract: after a mint, a
 -- transfer, a pending transfer, and an allocation, it sees no holding,
@@ -1129,7 +1151,7 @@ testRegistryRequiresItsBlocklist = do
       context = ChoiceContext with values = TextMap.fromList [(blocklistContextKey, AV_Text "none")]
       meta = emptyMetadata))
   other <- submit admin do
-    createCmd Blocklist with admin; blocker; id = "other"; blocked = Set.empty
+    createCmd Blocklist with admin; blocker; id = "other"; blocked = Set.empty; maxEntries = 1000
   Some otherDisclosure <- queryDisclosure @Blocklist admin other
   result <- trySubmit (actAs alice <> discloseMany [rulesDisclosure, otherDisclosure])
     (transferWith (blocklistArgs other))

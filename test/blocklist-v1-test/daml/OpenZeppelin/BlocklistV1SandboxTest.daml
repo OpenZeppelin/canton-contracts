@@ -16,6 +16,14 @@ sandboxBlocklist = script do
   test_blockRefusesBlockedParty
   test_blockRefusesTheAdmin
   test_unblockRefusesUnblockedParty
+  test_blockAndUnblockSeveralParties
+  test_blockRefusesEmptyList
+  test_unblockRefusesEmptyList
+  test_blockRefusesDuplicateParty
+  test_unblockRefusesDuplicateParty
+  test_failedChangeLeavesTheSetUnchanged
+  test_blockRefusesFullBlocklist
+  test_createRefusesNonPositiveMaxEntries
   test_guardRefusesBlockedSender
   test_guardRefusesBlockedReceiver
   test_fetchBlocklistRefusesOtherAdmin

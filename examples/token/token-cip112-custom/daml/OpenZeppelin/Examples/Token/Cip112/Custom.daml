@@ -53,7 +53,7 @@ import OpenZeppelin.Token.Cip112.Utils.Transfer
 import OpenZeppelin.Token.Cip112.Utils.Allocation
 import OpenZeppelin.Token.Cip112.Utils.Registry
 
-import OpenZeppelin.BlocklistV1 (Blocklist, fetchBlocklist, whenNotBlocked)
+import OpenZeppelin.BlocklistV1 (Blocklist, blocklistContextKey, fetchBlocklist, whenNotBlocked)
 
 -- Roles
 --------
@@ -73,12 +73,8 @@ data AppRoles = AppRoles with
 -- Blocklist
 ------------
 
--- | The choice-context key under which the registry's off-ledger API
--- supplies the blocklist contract id, with the contract as a disclosure.
-blocklistContextKey : Text
-blocklistContextKey = "blocklist"
-
--- | Fetch the token's blocklist from a choice context, pinned to the admin
+-- | Fetch the token's blocklist from a choice context, under
+-- `blocklistContextKey`, pinned to the admin
 -- and the blocklist id. A context without the blocklist is refused, so a
 -- caller cannot skip the check by leaving it out.
 blocklistFrom : Party -> AppRoles -> ExtraArgs -> Update Blocklist
@@ -244,9 +240,10 @@ template MyAllocation with
       allocation_settleImpl self arg =
         allocationSettleImpl (ops this) (\s -> toInterfaceContractId <$> create this with state = s) self state arg
       -- Withdrawing is the authorizer unlocking its own funds, refused for a
-      -- blocked authorizer. Cancelling by the executors, or by the admin
-      -- after expiry, returns the funds to the authorizer's account and
-      -- stays open. Settlement is checked in the settlement factory, the
+      -- blocked authorizer, also after the settlement deadline. Cancelling
+      -- by the executors, or by the admin after expiry, returns the funds to
+      -- the authorizer's account and stays open; expiry is never later than
+      -- the settlement deadline, so the funds are never held past it. Settlement is checked in the settlement factory, the
       -- only path through which the admin settles.
       allocation_withdrawImpl self arg = do
         blocklist <- blocklistFrom state.allocation.admin roles arg.extraArgs

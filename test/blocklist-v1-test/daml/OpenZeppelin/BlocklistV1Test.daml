@@ -28,7 +28,7 @@ setup = do
   alice <- allocateParty "alice"
   bob <- allocateParty "bob"
   blocklist <- submit admin do
-    createCmd Blocklist with admin; blocker; id = assetBlocklistId; blocked = Set.empty
+    createCmd Blocklist with admin; blocker; id = assetBlocklistId; blocked = Set.empty; maxEntries = 10
   asset <- submit admin do
     createCmd Asset with issuer = admin; owner = alice; amount = 10.0
   pure Fixture with ..
@@ -36,13 +36,13 @@ setup = do
 block : Fixture -> Party -> Script Fixture
 block f account = do
   cid <- submit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Block with account; reason = "case-1"
+    exerciseCmd f.blocklist Blocklist_Block with accounts = [account]; reason = "case-1"
   pure f with blocklist = cid
 
 unblock : Fixture -> Party -> Script Fixture
 unblock f account = do
   cid <- submit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Unblock with account; reason = "case-1 closed"
+    exerciseCmd f.blocklist Blocklist_Unblock with accounts = [account]; reason = "case-1 closed"
   pure f with blocklist = cid
 
 -- | The blocklist as a disclosure from its admin.
@@ -139,21 +139,98 @@ test_blockRefusesBlockedParty = script do
   f0 <- setup
   f <- block f0 f0.alice
   submitMustFailWith (eAlreadyBlocked f.alice) $ trySubmit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Block with account = f.alice; reason = "case-2"
+    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.alice]; reason = "case-2"
 
 -- | The admin signs the blocklist and cannot be blocked.
 test_blockRefusesTheAdmin : Script ()
 test_blockRefusesTheAdmin = script do
   f <- setup
   submitMustFailWith eAdminNotBlockable $ trySubmit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Block with account = f.admin; reason = "case-1"
+    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.admin]; reason = "case-1"
 
 -- | A party that is not blocked cannot be unblocked.
 test_unblockRefusesUnblockedParty : Script ()
 test_unblockRefusesUnblockedParty = script do
   f <- setup
   submitMustFailWith (eNotBlocked f.alice) $ trySubmit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Unblock with account = f.alice; reason = "case-1"
+    exerciseCmd f.blocklist Blocklist_Unblock with accounts = [f.alice]; reason = "case-1"
+
+-- | One change blocks several parties, and one change unblocks them.
+test_blockAndUnblockSeveralParties : Script ()
+test_blockAndUnblockSeveralParties = script do
+  f <- setup
+  blocked <- submit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.alice, f.bob]; reason = "list-update-1"
+  Some bl <- queryContractId f.admin blocked
+  bl.blocked === Set.fromList [blockedKey f.alice, blockedKey f.bob]
+  unblocked <- submit f.blocker do
+    exerciseCmd blocked Blocklist_Unblock with accounts = [f.alice, f.bob]; reason = "list-update-2"
+  Some bl2 <- queryContractId f.admin unblocked
+  bl2.blocked === Set.empty
+
+-- | A block lists at least one party.
+test_blockRefusesEmptyList : Script ()
+test_blockRefusesEmptyList = script do
+  f <- setup
+  submitMustFailWith eNoAccounts $ trySubmit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with accounts = []; reason = "case-1"
+
+-- | An unblock lists at least one party.
+test_unblockRefusesEmptyList : Script ()
+test_unblockRefusesEmptyList = script do
+  f <- setup
+  submitMustFailWith eNoAccounts $ trySubmit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Unblock with accounts = []; reason = "case-1"
+
+-- | A party listed twice in one block is refused as already blocked.
+test_blockRefusesDuplicateParty : Script ()
+test_blockRefusesDuplicateParty = script do
+  f <- setup
+  submitMustFailWith (eAlreadyBlocked f.alice) $ trySubmit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.alice, f.alice]; reason = "case-1"
+
+-- | A party listed twice in one unblock is refused as not blocked.
+test_unblockRefusesDuplicateParty : Script ()
+test_unblockRefusesDuplicateParty = script do
+  f0 <- setup
+  f <- block f0 f0.alice
+  submitMustFailWith (eNotBlocked f.alice) $ trySubmit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Unblock with accounts = [f.alice, f.alice]; reason = "case-1"
+
+-- | A change is atomic: when one listed party fails a check, no party in the
+-- list changes state.
+test_failedChangeLeavesTheSetUnchanged : Script ()
+test_failedChangeLeavesTheSetUnchanged = script do
+  f0 <- setup
+  f <- block f0 f0.alice
+  submitMustFailWith (eAlreadyBlocked f.alice) $ trySubmit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.bob, f.alice]; reason = "case-2"
+  Some bl <- queryContractId f.admin f.blocklist
+  isBlocked bl f.bob === False
+  bl.blocked === Set.fromList [blockedKey f.alice]
+
+-- | A block that would make the set larger than `maxEntries` is refused,
+-- and an unblock still runs at the limit.
+test_blockRefusesFullBlocklist : Script ()
+test_blockRefusesFullBlocklist = script do
+  f0 <- setup
+  small <- submit f0.admin do
+    createCmd Blocklist with
+      admin = f0.admin; blocker = f0.blocker; id = "small"; blocked = Set.empty; maxEntries = 1
+  let f = f0 with blocklist = small
+  f1 <- block f f.alice
+  submitMustFailWith (eBlocklistFull 1) $ trySubmit f1.blocker do
+    exerciseCmd f1.blocklist Blocklist_Block with accounts = [f1.bob]; reason = "case-2"
+  _ <- unblock f1 f1.alice
+  pure ()
+
+-- | `maxEntries` is positive.
+test_createRefusesNonPositiveMaxEntries : Script ()
+test_createRefusesNonPositiveMaxEntries = script do
+  f <- setup
+  submitMustFail f.admin do
+    createCmd Blocklist with
+      admin = f.admin; blocker = f.blocker; id = "zero"; blocked = Set.empty; maxEntries = 0
 
 -- The guards
 -------------------------------------------------------
@@ -180,7 +257,7 @@ test_fetchBlocklistRefusesOtherAdmin = script do
   f <- block f0 f0.alice
   forged <- submit f.alice do
     createCmd Blocklist with
-      admin = f.alice; blocker = f.alice; id = assetBlocklistId; blocked = Set.empty
+      admin = f.alice; blocker = f.alice; id = assetBlocklistId; blocked = Set.empty; maxEntries = 10
   submitMustFailWith (eWrongBlocklist f.admin assetBlocklistId) $ trySubmit f.alice do
     exerciseCmd f.asset Asset_Transfer with newOwner = f.bob; blocklistCid = forged
 
@@ -191,7 +268,7 @@ test_fetchBlocklistRefusesOtherId = script do
   f <- block f0 f0.alice
   other <- submit f.admin do
     createCmd Blocklist with
-      admin = f.admin; blocker = f.blocker; id = "other"; blocked = Set.empty
+      admin = f.admin; blocker = f.blocker; id = "other"; blocked = Set.empty; maxEntries = 10
   submitMustFailWith (eWrongBlocklist f.admin assetBlocklistId) $ tryTransfer f other f.alice f.asset f.bob
 
 -- | The admin is trusted with the canonical instance: a second active
@@ -203,7 +280,7 @@ test_secondInstanceWithSameIdPassesThePin = script do
   f <- block f0 f0.alice
   second <- submit f.admin do
     createCmd Blocklist with
-      admin = f.admin; blocker = f.blocker; id = assetBlocklistId; blocked = Set.empty
+      admin = f.admin; blocker = f.blocker; id = assetBlocklistId; blocked = Set.empty; maxEntries = 10
   _ <- transfer (f with blocklist = second) f.alice f.asset f.bob
   pure ()
 
@@ -216,7 +293,7 @@ test_onlyTheBlockerBlocks : Script ()
 test_onlyTheBlockerBlocks = script do
   f <- setup
   outsider <- allocateParty "outsider"
-  let choice = Blocklist_Block with account = f.bob; reason = "case-1"
+  let choice = Blocklist_Block with accounts = [f.bob]; reason = "case-1"
   submitMustFailAuthorization $ tryExercise f f.admin choice
   submitMustFailAuthorization $ tryExercise f f.alice choice
   submitMustFailAuthorization $ tryExercise f outsider choice
@@ -226,7 +303,7 @@ test_onlyTheBlockerUnblocks : Script ()
 test_onlyTheBlockerUnblocks = script do
   f0 <- setup
   f <- block f0 f0.bob
-  let choice = Blocklist_Unblock with account = f.bob; reason = "case-1 closed"
+  let choice = Blocklist_Unblock with accounts = [f.bob]; reason = "case-1 closed"
   submitMustFailAuthorization $ tryExercise f f.admin choice
   submitMustFailAuthorization $ tryExercise f f.bob choice
 
@@ -257,7 +334,7 @@ test_setBlockerHandsOverTheRole = script do
   isBlocked bl f2.alice === True
   queryContractId f2.blocker handedOver >>= (=== None)
   submitMustFailAuthorization $ tryExercise f2 f2.blocker
-    (Blocklist_Unblock with account = f2.alice; reason = "case-1 closed")
+    (Blocklist_Unblock with accounts = [f2.alice]; reason = "case-1 closed")
   _ <- unblock (f2 with blocker = successor) f2.alice
   pure ()
 
@@ -301,18 +378,18 @@ test_changesRecordTheAuditTrail : Script ()
 test_changesRecordTheAuditTrail = script do
   f <- setup
   blockTree <- submitTree f.blocker do
-    exerciseCmd f.blocklist Blocklist_Block with account = f.alice; reason = "case-1"
+    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.alice]; reason = "case-1"
   [ExercisedEvent blockEvent] <- pure blockTree.rootEvents
   blockEvent.choice === "Blocklist_Block"
   fromAnyChoice @Blocklist blockEvent.argument
-    === Some (Blocklist_Block with account = f.alice; reason = "case-1")
+    === Some (Blocklist_Block with accounts = [f.alice]; reason = "case-1")
   [blocked] <- query @Blocklist f.blocker
   unblockTree <- submitTree f.blocker do
-    exerciseCmd (fst blocked) Blocklist_Unblock with account = f.alice; reason = "case-1 closed"
+    exerciseCmd (fst blocked) Blocklist_Unblock with accounts = [f.alice]; reason = "case-1 closed"
   [ExercisedEvent unblockEvent] <- pure unblockTree.rootEvents
   unblockEvent.choice === "Blocklist_Unblock"
   fromAnyChoice @Blocklist unblockEvent.argument
-    === Some (Blocklist_Unblock with account = f.alice; reason = "case-1 closed")
+    === Some (Blocklist_Unblock with accounts = [f.alice]; reason = "case-1 closed")
 
 -- Archival
 -------------------------------------------------------

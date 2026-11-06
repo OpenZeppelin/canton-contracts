@@ -26,7 +26,7 @@
 -- the identifier to its parties and checks each of them.
 module OpenZeppelin.BlocklistV1 where
 
-import DA.Action (unless, when)
+import DA.Action (foldlA, unless, when)
 import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
 import DA.Set (Set)
 import qualified DA.Set as Set
@@ -44,7 +44,8 @@ import qualified OpenZeppelin.BlocklistV1.Internal as Internal
 -- `Blocklist_Unblock`; the admin exercises `Blocklist_SetBlocker`. The blocker
 -- can be any party, including an external party whose submissions need a
 -- threshold of its signing keys. The topology enforces that threshold, so
--- the template needs no multi-signature logic.
+-- the template needs no multi-signature logic, and a key rotation of the
+-- blocker changes the topology, not this contract.
 --
 -- Disclosure: every party that submits a guarded transaction needs this
 -- contract, usually by explicit disclosure from the admin. The `blocked` set
@@ -52,7 +53,7 @@ import qualified OpenZeppelin.BlocklistV1.Internal as Internal
 -- cannot list the blocked parties.
 --
 -- Audit: each change is a consuming exercise. The Ledger API update for the
--- change carries the choice name, its argument (the party and the reason),
+-- change carries the choice name, its argument (the parties and the reason),
 -- the acting party, and the ledger effective time. The admin and the
 -- blocker at the time of the change see the update.
 --
@@ -62,8 +63,11 @@ import qualified OpenZeppelin.BlocklistV1.Internal as Internal
 -- the contract and create it again with any set or blocker, outside the
 -- choices.
 --
--- Each change replaces the contract. A transaction that fetches the
--- predecessor fails, and its submitter retries with the successor.
+-- Size: each change replaces the contract, so its transaction carries the
+-- set twice, about 150 bytes per entry. A guarded transaction carries it
+-- once. `maxEntries` keeps a change within the synchronizer's maximum
+-- request size. A transaction that fetches the predecessor fails, and its
+-- submitter retries with the successor.
 template Blocklist
   with
     admin : Party
@@ -75,37 +79,57 @@ template Blocklist
       -- admin.
     blocked : Set Text
       -- ^ The `blockedKey` of every blocked party.
+    maxEntries : Int
+      -- ^ The largest set `Blocklist_Block` creates. A change carries about
+      -- 150 bytes per entry, so 50000 entries fit the default synchronizer
+      -- maximum request size of 10 MiB with room for the rest of the
+      -- transaction.
   where
     signatory admin
     observer blocker
+    ensure maxEntries > 0
 
     choice Blocklist_Block : ContractId Blocklist
-      -- ^ Add `account` to the blocked set. Fails with `eAdminNotBlockable`
-      -- for the admin and with `eAlreadyBlocked` for a blocked party.
+      -- ^ Add `accounts` to the blocked set in one change. Fails with
+      -- `eNoAccounts` for an empty list, with `eAdminNotBlockable` for the
+      -- admin, with `eAlreadyBlocked` for a party that is blocked or listed
+      -- twice, and with `eBlocklistFull` when the set would exceed
+      -- `maxEntries`. A failure leaves the set unchanged.
       with
-        account : Party
-          -- ^ The party to block.
+        accounts : [Party]
+          -- ^ The parties to block.
         reason : Text
           -- ^ A free-form reference for the audit trail, such as a case
           -- number. Visible to the stakeholders of this contract only.
       controller blocker
       do
-        when (account == admin) (failWithStatus eAdminNotBlockable)
-        when (isBlocked this account) (failWithStatus (eAlreadyBlocked account))
-        create this with blocked = Set.insert (blockedKey account) blocked
+        when (null accounts) (failWithStatus eNoAccounts)
+        newBlocked <- foldlA (\set account -> do
+            when (account == admin) (failWithStatus eAdminNotBlockable)
+            when (Set.member (blockedKey account) set) (failWithStatus (eAlreadyBlocked account))
+            pure (Set.insert (blockedKey account) set))
+          blocked accounts
+        when (Set.size newBlocked > maxEntries) (failWithStatus (eBlocklistFull maxEntries))
+        create this with blocked = newBlocked
 
     choice Blocklist_Unblock : ContractId Blocklist
-      -- ^ Remove `account` from the blocked set. Fails with `eNotBlocked` for
-      -- a party that is not blocked.
+      -- ^ Remove `accounts` from the blocked set in one change. Fails with
+      -- `eNoAccounts` for an empty list and with `eNotBlocked` for a party
+      -- that is not blocked or is listed twice. A failure leaves the set
+      -- unchanged.
       with
-        account : Party
-          -- ^ The party to unblock.
+        accounts : [Party]
+          -- ^ The parties to unblock.
         reason : Text
           -- ^ A free-form reference for the audit trail.
       controller blocker
       do
-        unless (isBlocked this account) (failWithStatus (eNotBlocked account))
-        create this with blocked = Set.delete (blockedKey account) blocked
+        when (null accounts) (failWithStatus eNoAccounts)
+        newBlocked <- foldlA (\set account -> do
+            unless (Set.member (blockedKey account) set) (failWithStatus (eNotBlocked account))
+            pure (Set.delete (blockedKey account) set))
+          blocked accounts
+        create this with blocked = newBlocked
 
     choice Blocklist_SetBlocker : ContractId Blocklist
       -- ^ Give the blocker role to `newBlocker`. The blocked set is
@@ -114,6 +138,12 @@ template Blocklist
         newBlocker : Party
       controller admin
       do create this with blocker = newBlocker
+
+-- | The choice-context key under which an application that passes
+-- `ExtraArgs` to its choices, such as a CIP-0112 registry, supplies the
+-- blocklist contract id.
+blocklistContextKey : Text
+blocklistContextKey = "blocklist"
 
 -- | The entry that represents `party` in the blocked set: the SHA-256 digest
 -- of the party's text form.
@@ -163,6 +193,19 @@ eAlreadyBlocked party = Internal.blocklistFailure "already-blocked" InvalidGiven
 eNotBlocked : Party -> FailureStatus
 eNotBlocked party = Internal.blocklistFailure "not-blocked" InvalidGivenCurrentSystemStateOther
   "Blocklist: the account is not blocked" [("account", partyToText party)]
+
+-- | Raised when a block or an unblock lists no party.
+-- `errorId`: `openzeppelin.com/blocklist-no-accounts`.
+eNoAccounts : FailureStatus
+eNoAccounts = Internal.blocklistFailure "no-accounts" InvalidIndependentOfSystemState
+  "Blocklist: no account to change" []
+
+-- | Raised when a block would make the set larger than `maxEntries`.
+-- `errorId`: `openzeppelin.com/blocklist-full`. `meta` holds the limit under
+-- `maxEntries`.
+eBlocklistFull : Int -> FailureStatus
+eBlocklistFull maxEntries = Internal.blocklistFailure "full" InvalidGivenCurrentSystemStateOther
+  "Blocklist: the blocklist is full" [("maxEntries", show maxEntries)]
 
 -- | Raised when the blocker blocks the admin.
 -- `errorId`: `openzeppelin.com/blocklist-admin-not-blockable`.

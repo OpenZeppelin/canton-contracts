@@ -143,6 +143,7 @@ OZ_SANDBOX_SUITE=licensing scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=treasury scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=blocklist scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=custom-token scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=external-blocker scripts/check-sandbox.sh
 ```
 
 `scripts/check.sh` enforces package boundaries. Component tests and production

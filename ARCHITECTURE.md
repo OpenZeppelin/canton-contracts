@@ -101,7 +101,29 @@ user test a known party.
 
 The key is a party, not an account record. A CIP-0112 account `id` is free
 text that its owner chooses, so a block on an `id` does not hold. The token
-checks the owner and the provider of each account.
+checks the owner and the provider of each account. A provider authorizes
+every movement of the accounts it provides, so a blocked provider blocks all
+of them; to block one client of a provider, block the client.
+
+One contract keeps the guard sound, and it bounds the size of the set. A
+change carries the set twice and a guarded transaction carries it once, so
+the synchronizer's maximum request size limits both. Past that limit no
+change fits, not even an unblock, so `Blocklist_Block` refuses to grow the
+set beyond an admin-chosen `maxEntries`. Each change also invalidates every
+transaction prepared against the predecessor, so one choice changes a list
+of parties: an update of a screening list is one change, and its audit
+record is one exercise.
+
+A blocked account takes no action on its own holdings, including a withdraw
+after the settlement deadline, which CIP-0112 section 4.3.3 asks registries
+to allow. The deadline still releases the funds, because the registry's
+allocation expiry is never later than the settlement deadline and the
+admin's expiry returns the funds to the account.
+
+The admin changes the blocker in one step. A two-step handover protects a
+role that signs the contract; the blocker only observes it, and the admin
+can correct a wrong party at any time. A key rotation of an external blocker
+is a topology change that keeps the party, so it needs no ledger change.
 
 `Blocklist` is a template with no interface, so the component is one package.
 A guard reads the blocklist through the template, which it can pin; a frozen

@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [token, authorization, licensing, treasury, blocklist, custom-token]
+        suite: [token, authorization, licensing, treasury, blocklist, custom-token, external-blocker]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Daml

@@ -40,11 +40,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 - Added the blocklist package `openzeppelin-blocklist-v1` with public module
   `OpenZeppelin.BlocklistV1`, holding the `Blocklist` template with the
-  choices `Blocklist_Block`, `Blocklist_Unblock`, and `Blocklist_SetBlocker`,
-  the functions `fetchBlocklist`, `whenNotBlocked`, `isBlocked`, and
-  `blockedKey`, and the failure statuses `eAccountBlocked`,
-  `eAlreadyBlocked`, `eNotBlocked`, `eAdminNotBlockable`, and
-  `eWrongBlocklist`.
+  choices `Blocklist_Block` and `Blocklist_Unblock`, which change a list of
+  parties at once, and `Blocklist_SetBlocker`, the functions
+  `fetchBlocklist`, `whenNotBlocked`, `isBlocked`, and `blockedKey`, the
+  choice-context key `blocklistContextKey`, and the failure statuses
+  `eAccountBlocked`, `eAlreadyBlocked`, `eNotBlocked`, `eAdminNotBlockable`,
+  `eNoAccounts`, `eBlocklistFull`, and `eWrongBlocklist`.
 
 ### `openzeppelin-token-cip112-types-v1`
 

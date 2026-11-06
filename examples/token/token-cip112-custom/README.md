@@ -14,7 +14,7 @@ What it adds, and where each addition lives:
 | Auditor observing every contract and every holdings-change event | A consumer field on each template, reached through the closure that builds `HoldingOps`, plus the `eventObservers` operation |
 | Compliance freeze on holdings | A template field plus `MyHolding_Freeze` and `MyHolding_Unfreeze`; `MyHolding_Spend` refuses a frozen holding, so every workflow path refuses it |
 | Pause switch on the registry | A template field plus `MyRules_Pause` and `MyRules_Unpause`, checked before each factory delegates and before a mint offer |
-| Account blocklist | A `Blocklist` from `openzeppelin-blocklist-v1`, read from the choice context under the key `blocklist` and checked against the owner and provider of every account a choice debits or credits |
+| Account blocklist | A `Blocklist` from `openzeppelin-blocklist-v1`, read from the choice context under `blocklistContextKey` and checked against the owner and provider of every account a choice debits or credits |
 | Fee on every transfer except a burn | Two workflow calls composed in the factory body: a one-step fee transfer to the treasury, then the main transfer on the fee leg's change |
 | Executor allowlist | Checked before delegating to the allocation and settlement workflows |
 
@@ -30,8 +30,9 @@ moves:
   settlement factory checks every leg and every authorizer. An allocation
   committed before a block does not settle while the block holds.
 - Accepting a transfer, mint offer, or burn request checks the sender and the
-  receiver. Withdrawing a transfer or an allocation and `MyHolding_OwnerUnlock`
-  check the account that unlocks its own funds.
+  receiver. Withdrawing a transfer or an allocation, also after the
+  settlement deadline, and `MyHolding_OwnerUnlock` check the account that
+  unlocks its own funds.
 - Reject, cancel, and admin expiry return locked funds to the account that
   locked them, so they stay open for every account.
 - The blocker sees the blocklist only, never a holding, instruction,
@@ -39,8 +40,8 @@ moves:
   switch, so they work while the registry is paused.
 
 The registry's off-ledger API supplies the blocklist contract id in
-`ExtraArgs.context` under the key `blocklist`, with the contract as a
-disclosure. A call without it fails.
+`ExtraArgs.context` under `blocklistContextKey` (`blocklist`), with the
+contract as a disclosure. A call without it fails.
 
 No workflow body changes. `token-cip112-custom-test` drives the token through the
 standard interfaces and checks each addition.
