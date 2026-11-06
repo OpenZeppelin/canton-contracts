@@ -239,15 +239,6 @@ Set `maxEntries` from both limits:
 - The blocklist restricts value movement only. Moving the funds of a blocked
   party to another account is out of scope.
 
-## Open questions
-
-- Confidential membership and per-transfer cost. A guarded transaction could
-  carry a Merkle root of the set and a proof of non-membership for its
-  parties, instead of the whole set. Each user would then learn nothing
-  beyond its own proof, and the cost per transfer would grow with the
-  logarithm of the set size. A simpler step shards the set by digest prefix,
-  so a transaction carries only the shards of its parties.
-
 ## Compatibility
 
 Daml-LF `2.1`, built with the SDK that
@@ -279,3 +270,13 @@ import OpenZeppelin.BlocklistV1
 [`examples/token/token-cip112-custom`](../../../examples/token/token-cip112-custom/)
 is a CIP-0112 registry that checks every value-moving path against a
 blocklist.
+
+## License
+
+The package source is licensed under the repository's MIT
+[`LICENSE`](../../../LICENSE). The DAR bundles `splice-api-token-metadata-v1`
+from [`dars/vendor/`](../../../dars/vendor/) as a compiled DALF, licensed under
+the Apache License 2.0
+([`LICENSES/Apache-2.0.txt`](../../../LICENSES/Apache-2.0.txt)).
+[`RELEASING.md`](../../../RELEASING.md) describes the license files that a
+release attaches.

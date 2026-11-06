@@ -103,9 +103,17 @@ party ids out of the payload, which is obfuscation, not confidentiality:
 anyone who can list party ids computes their digests, successive disclosures
 show the changes, and a party has the same digest in every blocklist. A salt
 would not change this, because the guard needs the salt to compute the
-digest, so every reader of the contract would also hold it. Confidential
-membership needs a different structure: a guarded transaction that carries a
-proof of non-membership against a committed root instead of the set.
+digest, so every reader of the contract would also hold it.
+
+Two other structures trade simplicity for confidentiality or cost. A
+contract that holds a Merkle root of the sorted set lets a guarded
+transaction carry a proof of non-membership for its parties instead of the
+set: a reader learns nothing beyond that proof, and the cost per transfer
+grows with the logarithm of the set size. Shards by digest prefix, one
+contract per prefix, let a transaction carry only the shards of its parties:
+the cost per transfer falls, and a reader still learns every digest in those
+shards. The single contract is the simplest structure whose guard is sound
+without contract keys, and its cost is linear in the size of the set.
 
 The key is a party, not an account record. A CIP-0112 account `id` is free
 text that its owner chooses, so a block on an `id` does not hold. The token

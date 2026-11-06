@@ -68,8 +68,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   allocation, settlement, mint-offer, and expiry choice bodies as functions
   parameterised over the caller's templates through a `HoldingOps` record and
   constructor and pinning operations. `settleBatchImpl` passes a choice
-  context from the settlement factory to each allocation's settle. It defines no serializable types and
-  depends on `openzeppelin-token-cip112-types-v1`.
+  context from the settlement factory to each allocation's settle. It
+  defines no serializable types and depends on
+  `openzeppelin-token-cip112-types-v1`.
 
 ### `openzeppelin-token-cip112-v1`
 

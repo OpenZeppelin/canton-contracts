@@ -157,5 +157,8 @@ or the Splice `splice-token-standard-utils` package
 (https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/)
 carry Digital Asset's copyright notice and are licensed `MIT AND Apache-2.0`.
 The `README.md` of each token package lists those files and the Splice modules
-they derive from. The Splice DARs under `dars/vendor/` are licensed Apache-2.0. The Apache
-License 2.0 text is in [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt).
+they derive from. The Splice DARs under `dars/vendor/` are licensed
+Apache-2.0. The DARs of the CIP-0112 token packages and of
+`openzeppelin-blocklist-v1` bundle Splice packages from `dars/vendor/`;
+[`RELEASING.md`](RELEASING.md) lists them. The Apache License 2.0 text is in
+[`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt).
