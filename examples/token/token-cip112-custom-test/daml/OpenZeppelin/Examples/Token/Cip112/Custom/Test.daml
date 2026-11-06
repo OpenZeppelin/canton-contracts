@@ -12,6 +12,7 @@ module OpenZeppelin.Examples.Token.Cip112.Custom.Test where
 import DA.Action (unless)
 import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
+import DA.Fail (FailureStatus)
 import DA.Foldable (forA_)
 import DA.List (sort)
 import DA.Map qualified as Map
@@ -489,10 +490,9 @@ testFrozenHoldingCannotUnlock = do
   -- t4 is past the lock's expiry: t2 plus the one-hour lock grace.
   setTime t4
   frozenCid <- submit (actAs complianceOfficer) do exerciseCmd lockedCid MyHolding_Freeze
-  mustFailWith "holding is frozen" (actAs alice) do exerciseCmd frozenCid MyHolding_OwnerUnlock with blocklistCid
+  mustFailWith "holding is frozen" (actAs alice) do exerciseCmd frozenCid MyHolding_OwnerUnlock
   thawedCid <- submit (actAs complianceOfficer) do exerciseCmd frozenCid MyHolding_Unfreeze
-  _ <- submit (actAs alice <> discloseMany [blocklistDisclosure]) do
-    exerciseCmd thawedCid MyHolding_OwnerUnlock with blocklistCid
+  _ <- submit (actAs alice) do exerciseCmd thawedCid MyHolding_OwnerUnlock
   assertNoLocks alice
 
 -- Pause switch
@@ -690,7 +690,7 @@ testOwnerUnlockThenAdminGC = do
   setTime t4
   holdings <- query @MyHolding alice
   forA_ [cid | (cid, h) <- holdings, isSome h.holding.lock] $ \cid ->
-    submit (actAs alice <> discloseMany [blocklistDisclosure]) do exerciseCmd cid MyHolding_OwnerUnlock with blocklistCid
+    submit (actAs alice) do exerciseCmd cid MyHolding_OwnerUnlock
   balanceSeenBy alice alice >>= (=== [3.0, 5.0, 7.0])
   assertNoLocks alice
   let instrTemplateCid = fromInterfaceContractId @MyTransferInstruction instrCid
@@ -828,15 +828,19 @@ testExpireTransferInstructionsRefusesOtherRegistry = do
 -- Account blocklist
 --------------------
 
--- | Run a submission and require the blocklist guard to refuse it for
--- `party`. Any other outcome fails with what arrived instead.
-mustFailBlocked : Party -> SubmitOptions -> Commands a -> Script ()
-mustFailBlocked party options cmds = do
+-- | Run a submission and require the ledger to reject it with exactly this
+-- status. Any other outcome fails with what arrived instead.
+mustFailWithStatus : FailureStatus -> SubmitOptions -> Commands a -> Script ()
+mustFailWithStatus expected options cmds = do
   result <- trySubmit options cmds
   case result of
-    Left (FailureStatusError status) -> status === eAccountBlocked party
+    Left (FailureStatusError status) -> status === expected
     Right _ -> abort "submission succeeded but was expected to fail"
     Left err -> abort ("submission failed for an unexpected reason: " <> show err)
+
+-- | Require the blocklist guard to refuse a submission for `party`.
+mustFailBlocked : Party -> SubmitOptions -> Commands a -> Script ()
+mustFailBlocked party = mustFailWithStatus (eAccountBlocked party)
 
 -- | A blocked sender can neither transfer in one step nor offer a two-step
 -- transfer. After the unblock, the same transfer goes through.
@@ -884,28 +888,25 @@ testBlockedReceiverCannotAcceptPendingTransfer = do
   balanceSeenBy alice alice >>= (=== [3.0, 7.0])
   assertNoLocks alice
 
--- | A sender blocked after its offer cannot have the transfer completed, and
--- cannot withdraw it, since a withdraw unlocks the sender's own funds. The
--- receiver rejects it instead, and the funds return to the blocked sender's
--- account, where they stay until the unblock.
-testBlockedSenderPendingTransferCannotComplete : Script ()
-testBlockedSenderPendingTransferCannotComplete = do
+-- | A sender blocked after its offer cannot have the transfer completed.
+-- It can withdraw the offer: the funds return to its own account, unlocked,
+-- and every later transfer from that account is refused.
+testBlockedSenderWithdrawsPendingTransfer : Script ()
+testBlockedSenderWithdrawsPendingTransfer = do
   app0@App{..} <- setup
   aliceTok <- mint app0 alice 10.0
   instrCid <- pendingCid =<< submit (actAs alice <> registryDisclosures app0)
     (transferCmd app0 [alice] (mkTransfer app0 alice bob 7.0 [aliceTok]))
   app <- blockAccount app0 alice
   mustFailBlocked alice (actAs bob <> discloseMany [app.blocklistDisclosure]) (acceptCmd app bob instrCid)
-  mustFailBlocked alice (actAs alice <> discloseMany [app.blocklistDisclosure]) do
+  result <- submit (actAs alice) do
     exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Withdraw with
       actors = [alice]
-      extraArgs = blocklistArgs app.blocklistCid
-  _ <- submit (actAs bob) do
-    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Reject with
-      actors = [bob]
       extraArgs = emptyExtraArgs
   balanceSeenBy alice alice >>= (=== [3.0, 7.0])
-  balanceSeenBy bob bob >>= (=== [])
+  assertNoLocks alice
+  mustFailBlocked alice (actAs [alice, bob] <> registryDisclosures app)
+    (transferCmd app [alice, bob] (mkTransfer app alice bob 7.0 result.senderChangeCids))
 
 -- | Mint and burn are checked on the holder's side: a blocked account
 -- cannot accept a mint offer, burn in one step, or have a pending burn
@@ -998,52 +999,50 @@ testBlockedAuthorizerCannotSettle = do
             nextIterationFunding = reserve
         ]))
 
--- | A blocked authorizer cannot withdraw its allocation, since a withdraw
--- unlocks its own funds. The executors can still cancel it, and the funds
--- return to the authorizer's account.
-testBlockedAuthorizerCannotWithdraw : Script ()
-testBlockedAuthorizerCannotWithdraw = do
+-- | A blocked authorizer can withdraw its allocation: the funds return to
+-- its own account, unlocked, and every later transfer from that account is
+-- refused.
+testBlockedAuthorizerWithdrawsAllocation : Script ()
+testBlockedAuthorizerWithdrawsAllocation = do
   app0@App{..} <- setup
   aliceTok <- mint app0 alice 10.0
   aliceAlloc <- allocate app0 alice (mkSpec app0 alice [senderSide (mkLeg "leg-1" alice bob 5.0)] None) [aliceTok]
   app <- blockAccount app0 alice
-  mustFailBlocked alice (actAs alice <> discloseMany [app.blocklistDisclosure]) do
+  result <- submit (actAs alice) do
     exerciseCmd aliceAlloc AllocationV2.Allocation_Withdraw with
       actors = [alice]
-      extraArgs = blocklistArgs app.blocklistCid
-  _ <- submit (actAs exchange) do
-    exerciseCmd aliceAlloc AllocationV2.Allocation_Cancel with
-      actors = [exchange]
       extraArgs = emptyExtraArgs
   balanceSeenBy alice alice >>= (=== [5.0, 5.0])
   assertNoLocks alice
+  mustFailBlocked alice (actAs [alice, bob] <> registryDisclosures app)
+    (transferCmd app [alice, bob]
+      (mkTransfer app alice bob 5.0 (concatMap snd (TextMap.toList result.authorizerHoldingCids))))
 
 -- | CIP-0112 lets an authorizer withdraw a committed allocation after its
--- settlement deadline. A blocked authorizer stays refused, and the admin
--- expires the allocation instead: its expiry is never later than the
--- settlement deadline, so the funds return to the authorizer's account.
-testBlockedAuthorizerAfterDeadline : Script ()
-testBlockedAuthorizerAfterDeadline = do
+-- settlement deadline, and a blocked authorizer can too. The funds stay in
+-- its account and cannot move on.
+testBlockedAuthorizerWithdrawsAfterDeadline : Script ()
+testBlockedAuthorizerWithdrawsAfterDeadline = do
   app0@App{..} <- setup
   aliceTok <- mint app0 alice 10.0
   aliceAlloc <- allocate app0 alice
     ((mkSpec app0 alice [senderSide (mkLeg "leg-1" alice bob 5.0)] None) with committed = True) [aliceTok]
   app <- blockAccount app0 alice
   setTime t3
-  mustFailBlocked alice (actAs alice <> discloseMany [app.blocklistDisclosure]) do
+  result <- submit (actAs alice) do
     exerciseCmd aliceAlloc AllocationV2.Allocation_Withdraw with
       actors = [alice]
-      extraArgs = blocklistArgs app.blocklistCid
-  submit (actAs admin) do
-    exerciseCmd rulesCid MyRules_ExpireAllocations with
-      cancelArgs = [(aliceAlloc, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)]
+      extraArgs = emptyExtraArgs
   balanceSeenBy alice alice >>= (=== [5.0, 5.0])
   assertNoLocks alice
+  mustFailBlocked alice (actAs [alice, bob] <> registryDisclosures app)
+    (transferCmd app [alice, bob]
+      (mkTransfer app alice bob 5.0 (concatMap snd (TextMap.toList result.authorizerHoldingCids))))
 
--- | A blocked owner cannot unlock a holding whose lock has expired. After
--- the unblock, the same unlock goes through.
-testBlockedOwnerCannotUnlock : Script ()
-testBlockedOwnerCannotUnlock = do
+-- | A blocked owner can unlock a holding whose lock has expired. The holding
+-- stays in its account, and a transfer of it is refused.
+testBlockedOwnerUnlocksButCannotSend : Script ()
+testBlockedOwnerUnlocksButCannotSend = do
   app0@App{..} <- setup
   aliceTok <- mint app0 alice 10.0
   _ <- submit (actAs alice <> registryDisclosures app0)
@@ -1051,12 +1050,46 @@ testBlockedOwnerCannotUnlock = do
   [(lockedCid, _)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock)
   setTime t4
   app <- blockAccount app0 alice
-  mustFailBlocked alice (actAs alice <> discloseMany [app.blocklistDisclosure]) do
-    exerciseCmd lockedCid MyHolding_OwnerUnlock with blocklistCid = app.blocklistCid
-  app2 <- unblockAccount app alice
-  _ <- submit (actAs alice <> discloseMany [app2.blocklistDisclosure]) do
-    exerciseCmd lockedCid MyHolding_OwnerUnlock with blocklistCid = app2.blocklistCid
+  unlocked <- submit (actAs alice) do exerciseCmd lockedCid MyHolding_OwnerUnlock
   assertNoLocks alice
+  balanceSeenBy alice alice >>= (=== [3.0, 7.0])
+  mustFailBlocked alice (actAs [alice, bob] <> registryDisclosures app)
+    (transferCmd app [alice, bob] (mkTransfer app alice bob 7.0 [unlocked]))
+
+-- | A direct `Allocation_Settle` by the admin and the executors, outside
+-- the settlement factory, checks the blocklist too: settling alice's
+-- allocation, whose leg pays a blocked bob, is refused, and a settle without
+-- the blocklist in its context fails closed.
+testDirectSettleRefusesBlockedReceiver : Script ()
+testDirectSettleRefusesBlockedReceiver = do
+  app0@App{..} <- setup
+  aliceTok <- mint app0 alice 15.0
+  let leg = mkLeg "leg-1" alice bob 10.0
+  aliceAlloc <- allocate app0 alice (mkSpec app0 alice [senderSide leg] None) [aliceTok]
+  app <- blockAccount app0 bob
+  let directSettle extraArgs = exerciseCmd aliceAlloc AllocationV2.Allocation_Settle with
+        actors = [admin, exchange]
+        extraTransferLegSides = []
+        nextIterationFunding = None
+        extraArgs
+  mustFailBlocked bob (actAs [admin, exchange] <> discloseMany [app.blocklistDisclosure])
+    (directSettle (blocklistArgs app.blocklistCid))
+  mustFailWithStatus eBlocklistMissing (actAs [admin, exchange]) (directSettle emptyExtraArgs)
+
+-- | Settlement relies on exact cover: a leg whose receiver has no allocation
+-- in the batch never settles. So every account on a leg is the authorizer of
+-- an allocation in the batch, and the per-allocation checks cover every leg
+-- account even without the factory's leg checks.
+testSettlementNeedsAnAllocationPerLegAccount : Script ()
+testSettlementNeedsAnAllocationPerLegAccount = do
+  app@App{..} <- setup
+  carol <- allocateParty "carol"
+  aliceTok <- mint app alice 15.0
+  let leg = mkLeg "leg-1" alice carol 10.0
+  aliceAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) [aliceTok]
+  mustFailWith "'missing authorizations' is not equal to 'empty set'" (actAs exchange <> registryDisclosures app)
+    (settleBatchCmd app [leg] [nonIteratedAllocation aliceAlloc])
+  balanceSeenBy carol carol >>= (=== [])
 
 -- | An account with a provider is blocked when its provider is blocked, so
 -- a provider block covers every account the provider serves.
@@ -1144,9 +1177,9 @@ testRegistryRequiresItsBlocklist = do
       factory = toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid
       transferWith extraArgs = exerciseCmd factory
         TransferInstructionV2.TransferFactory_Transfer with transfer; actors = [alice]; extraArgs
-  mustFailWith "blocklist missing from the choice context" (actAs alice <> registryDisclosures app)
+  mustFailWithStatus eBlocklistMissing (actAs alice <> registryDisclosures app)
     (transferWith emptyExtraArgs)
-  mustFailWith "blocklist context value must be a contract id" (actAs alice <> registryDisclosures app)
+  mustFailWithStatus eBlocklistMissing (actAs alice <> registryDisclosures app)
     (transferWith (ExtraArgs with
       context = ChoiceContext with values = TextMap.fromList [(blocklistContextKey, AV_Text "none")]
       meta = emptyMetadata))

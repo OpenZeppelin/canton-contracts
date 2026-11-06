@@ -1,7 +1,7 @@
 -- | A compliance-grade token that owns every template it deploys and reuses
 -- the OpenZeppelin CIP-0112 workflows unchanged. It depends on the types and
--- utils packages only, never on the default templates, so it has its own
--- upgrade lineage.
+-- utils packages and on the blocklist package, never on the default
+-- templates.
 --
 -- What it adds over the defaults, and the mechanism each addition uses:
 --
@@ -21,9 +21,9 @@
 -- - An account blocklist from `openzeppelin-blocklist-v1`. A blocker party
 --   blocks and unblocks parties on a `Blocklist` contract that the admin
 --   signs, and sees no holding. The registry's off-ledger API supplies the
---   blocklist in the choice context, and every choice that debits or
---   credits an account checks that account's owner and provider before it
---   delegates to the workflow.
+--   blocklist in the choice context, and every choice that moves value
+--   between accounts checks the owner and provider of each account before
+--   it delegates to the workflow.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
 --   account. The factory composes two workflow calls: a one-step fee
 --   transfer, then the main transfer funded by the fee leg's change.
@@ -53,7 +53,8 @@ import OpenZeppelin.Token.Cip112.Utils.Transfer
 import OpenZeppelin.Token.Cip112.Utils.Allocation
 import OpenZeppelin.Token.Cip112.Utils.Registry
 
-import OpenZeppelin.BlocklistV1 (Blocklist, blocklistContextKey, fetchBlocklist, whenNotBlocked)
+import OpenZeppelin.BlocklistV1
+  (Blocklist, blocklistContextKey, fetchBlocklistFromContext, whenNotBlocked)
 
 -- Roles
 --------
@@ -73,16 +74,19 @@ data AppRoles = AppRoles with
 -- Blocklist
 ------------
 
--- | Fetch the token's blocklist from a choice context, under
--- `blocklistContextKey`, pinned to the admin
--- and the blocklist id. A context without the blocklist is refused, so a
--- caller cannot skip the check by leaving it out.
+-- | The token's blocklist from a choice context, pinned to the admin and the
+-- blocklist id. A context without it fails with `eBlocklistMissing`.
 blocklistFrom : Party -> AppRoles -> ExtraArgs -> Update Blocklist
 blocklistFrom admin roles extraArgs =
-  case TextMap.lookup blocklistContextKey extraArgs.context.values of
-    Some (AV_ContractId cid) -> fetchBlocklist admin roles.blocklistId (coerceContractId cid)
-    Some _ -> fail "blocklist context value must be a contract id"
-    None -> fail "blocklist missing from the choice context"
+  fetchBlocklistFromContext admin roles.blocklistId extraArgs.context
+
+-- | A choice context that holds the blocklist entry of `context` and nothing
+-- else. The settlement factory forwards it to each allocation's settle after
+-- it has pinned the blocklist, so no other part of the batch's context
+-- reaches an authorizer.
+blocklistOnly : ChoiceContext -> ChoiceContext
+blocklistOnly context = ChoiceContext with
+  values = TextMap.filterWithKey (\key _ -> key == blocklistContextKey) context.values
 
 -- | Fail when the owner or the provider of `account` is blocked. A blocked
 -- provider blocks every account it provides. The CIP-0112 mint and burn
@@ -165,16 +169,13 @@ template MyHolding with
 
     -- | Refused while frozen: the workflow recreates the holding through
     -- `createHolding`, which would drop the freeze. Any consumer choice that
-    -- recreates a holding has to make the same check. Refused for a blocked
-    -- account, whose holdings stay as they are until it is unblocked.
+    -- recreates a holding has to make the same check. Open to a blocked
+    -- account: the unlocked holding stays in the same account, and every
+    -- later transfer from it is refused.
     choice MyHolding_OwnerUnlock : ContractId HoldingV2.Holding
-      with
-        blocklistCid : ContractId Blocklist
       controller accountParties holding.instrumentId.admin holding.account
       do
         require "holding is frozen" (not frozen)
-        blocklist <- fetchBlocklist holding.instrumentId.admin roles.blocklistId blocklistCid
-        whenAccountNotBlocked blocklist holding.account
         holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
 
     interface instance HoldingV2.Holding for MyHolding where
@@ -203,15 +204,10 @@ template MyTransferInstruction with
         whenAccountNotBlocked blocklist state.transfer.sender
         whenAccountNotBlocked blocklist state.transfer.receiver
         transferAcceptImpl (ops this) self state arg
-      -- Rejecting returns the funds to the sender's own account, so it stays
-      -- open even when either side is blocked.
+      -- Rejecting and withdrawing return the funds to the sender's own
+      -- account, so they stay open even when either side is blocked.
       transferInstruction_rejectImpl self arg = transferRejectImpl (ops this) self state arg
-      -- Withdrawing is the sender unlocking its own funds, refused for a
-      -- blocked sender.
-      transferInstruction_withdrawImpl self arg = do
-        blocklist <- blocklistFrom state.transfer.instrumentId.admin roles arg.extraArgs
-        whenAccountNotBlocked blocklist state.transfer.sender
-        transferWithdrawImpl (ops this) self state arg
+      transferInstruction_withdrawImpl self arg = transferWithdrawImpl (ops this) self state arg
 
     choice MyTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
       controller state.transfer.instrumentId.admin
@@ -237,18 +233,20 @@ template MyAllocation with
       allocation_settleExtraObservers _ = observer this
       allocation_cancelExtraObservers _ = observer this
       allocation_withdrawExtraObservers _ = observer this
-      allocation_settleImpl self arg =
-        allocationSettleImpl (ops this) (\s -> toInterfaceContractId <$> create this with state = s) self state arg
-      -- Withdrawing is the authorizer unlocking its own funds, refused for a
-      -- blocked authorizer, also after the settlement deadline. Cancelling
-      -- by the executors, or by the admin after expiry, returns the funds to
-      -- the authorizer's account and stays open; expiry is never later than
-      -- the settlement deadline, so the funds are never held past it. Settlement is checked in the settlement factory, the
-      -- only path through which the admin settles.
-      allocation_withdrawImpl self arg = do
+      -- Settling moves value between accounts, so the authorizer and the
+      -- other side of every effective leg are checked here, on the
+      -- settlement factory's path and on a direct `Allocation_Settle` alike.
+      -- The factory forwards the blocklist in the settle's context.
+      allocation_settleImpl self arg = do
         blocklist <- blocklistFrom state.allocation.admin roles arg.extraArgs
         whenAccountNotBlocked blocklist state.allocation.authorizer
-        allocationWithdrawImpl (ops this) self state arg
+        forA_ (state.allocation.transferLegSides <> arg.extraTransferLegSides)
+          (whenAccountNotBlocked blocklist . (.otherside))
+        allocationSettleImpl (ops this)
+          (\s -> toInterfaceContractId <$> create this with state = s) self state arg
+      -- Withdrawing and cancelling return the funds to the authorizer's own
+      -- account, so they stay open even when the authorizer is blocked.
+      allocation_withdrawImpl self arg = allocationWithdrawImpl (ops this) self state arg
       allocation_cancelImpl self arg = allocationCancelImpl (ops this) self state arg
 
     choice MyAllocation_AdminGC : ()
@@ -302,13 +300,16 @@ template MyRules with
         whenNotPaused this
         requireAllowedExecutors this arg.settlement.executors
         blocklist <- blocklistFrom config.admin roles arg.extraArgs
+        -- Defense in depth: exact cover makes every leg account an
+        -- authorizer below, and each allocation's settle checks again.
         forA_ arg.transferLegs $ \leg -> do
           whenAccountNotBlocked blocklist leg.sender
           whenAccountNotBlocked blocklist leg.receiver
         forA_ arg.allocations $ \finalized -> do
           v <- pinAllocationTo @MyAllocation finalized.allocationCid
           whenAccountNotBlocked blocklist v.allocation.authorizer
-        settleBatchImpl (pinAllocationTo @MyAllocation) config.admin self arg
+        settleBatchImpl (pinAllocationTo @MyAllocation) config.admin
+          (blocklistOnly arg.extraArgs.context) self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for MyRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata

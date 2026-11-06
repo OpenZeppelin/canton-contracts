@@ -41,11 +41,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Added the blocklist package `openzeppelin-blocklist-v1` with public module
   `OpenZeppelin.BlocklistV1`, holding the `Blocklist` template with the
   choices `Blocklist_Block` and `Blocklist_Unblock`, which change a list of
-  parties at once, and `Blocklist_SetBlocker`, the functions
-  `fetchBlocklist`, `whenNotBlocked`, `isBlocked`, and `blockedKey`, the
-  choice-context key `blocklistContextKey`, and the failure statuses
-  `eAccountBlocked`, `eAlreadyBlocked`, `eNotBlocked`, `eAdminNotBlockable`,
-  `eNoAccounts`, `eBlocklistFull`, and `eWrongBlocklist`.
+  parties at once and skip parties already in the target state, and
+  `Blocklist_SetBlocker`, the functions `fetchBlocklist`,
+  `fetchBlocklistFromContext`, `whenNotBlocked`, `isBlocked`, and
+  `blockedKey`, the choice-context key `blocklistContextKey`, and the failure
+  statuses `eAccountBlocked`, `eAdminNotBlockable`, `eBlocklistFull`,
+  `eWrongBlocklist`, and `eBlocklistMissing`. It depends on
+  `splice-api-token-metadata-v1`.
 
 ### `openzeppelin-token-cip112-types-v1`
 
@@ -65,7 +67,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   module namespace `OpenZeppelin.Token.Cip112.Utils`): the transfer,
   allocation, settlement, mint-offer, and expiry choice bodies as functions
   parameterised over the caller's templates through a `HoldingOps` record and
-  constructor and pinning operations. It defines no serializable types and
+  constructor and pinning operations. `settleBatchImpl` passes a choice
+  context from the settlement factory to each allocation's settle. It defines no serializable types and
   depends on `openzeppelin-token-cip112-types-v1`.
 
 ### `openzeppelin-token-cip112-v1`
