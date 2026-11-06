@@ -1076,6 +1076,24 @@ testDirectSettleRefusesBlockedReceiver = do
     (directSettle (blocklistArgs app.blocklistCid))
   mustFailWithStatus eBlocklistMissing (actAs [admin, exchange]) (directSettle emptyExtraArgs)
 
+-- | A direct `Allocation_Settle` of a blocked authorizer's allocation is
+-- refused too, although the other side of its leg is not blocked.
+testDirectSettleRefusesBlockedAuthorizer : Script ()
+testDirectSettleRefusesBlockedAuthorizer = do
+  app0@App{..} <- setup
+  aliceTok <- mint app0 alice 15.0
+  let leg = mkLeg "leg-1" alice bob 10.0
+  aliceAlloc <- allocate app0 alice (mkSpec app0 alice [senderSide leg] None) [aliceTok]
+  app <- blockAccount app0 alice
+  mustFailBlocked alice (actAs [admin, exchange] <> discloseMany [app.blocklistDisclosure]) do
+    exerciseCmd aliceAlloc AllocationV2.Allocation_Settle with
+      actors = [admin, exchange]
+      extraTransferLegSides = []
+      nextIterationFunding = None
+      extraArgs = blocklistArgs app.blocklistCid
+  -- The 10.0 stays locked in the allocation; the 5.0 is the change.
+  balanceSeenBy alice alice >>= (=== [5.0, 10.0])
+
 -- | Settlement relies on exact cover: a leg whose receiver has no allocation
 -- in the batch never settles. So every account on a leg is the authorizer of
 -- an allocation in the batch, and the per-allocation checks cover every leg

@@ -216,9 +216,8 @@ eWrongBlocklist admin id = Internal.blocklistFailure "wrong-blocklist" InvalidIn
   "Blocklist: the blocklist is not the expected one" [("admin", partyToText admin), ("id", id)]
 
 -- | Raised when `fetchBlocklistFromContext` finds no contract id under
--- `blocklistContextKey`. `errorId`:
--- `openzeppelin.com/blocklist-blocklist-missing`. `meta` holds the key under
--- `contextKey`.
+-- `blocklistContextKey`. `errorId`: `openzeppelin.com/blocklist-missing`.
+-- `meta` holds the key under `contextKey`.
 eBlocklistMissing : FailureStatus
-eBlocklistMissing = Internal.blocklistFailure "blocklist-missing" InvalidIndependentOfSystemState
+eBlocklistMissing = Internal.blocklistFailure "missing" InvalidIndependentOfSystemState
   "Blocklist: the choice context holds no blocklist contract id" [("contextKey", blocklistContextKey)]

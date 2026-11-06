@@ -26,6 +26,7 @@ sandboxCustomTokenBlocklist = do
   testBlockedAuthorizerCannotSettle
   testBlockedAuthorizerWithdrawsAllocation
   testDirectSettleRefusesBlockedReceiver
+  testDirectSettleRefusesBlockedAuthorizer
   testSettlementNeedsAnAllocationPerLegAccount
   testBlockedProviderBlocksItsAccounts
   testBlockAndUnblockWhilePaused
