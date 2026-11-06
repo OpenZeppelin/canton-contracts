@@ -1,0 +1,52 @@
+-- | The Daml side of the `external-blocker` sandbox suite. The blocker is an
+-- external party whose topology requires two of its three signing keys.
+-- `scripts/check-sandbox.sh` runs `setupExternalBlocker`, then the Canton
+-- console script `canton/block-as-external-blocker.canton`, which blocks
+-- alice through interactive submission, then `checkExternalBlocker`.
+module OpenZeppelin.BlocklistV1ExternalBlockerTest where
+
+import DA.Assert ((===))
+import qualified DA.Set as Set
+import Daml.Script
+
+import OpenZeppelin.BlocklistV1
+import OpenZeppelin.BlocklistV1TestFixtures
+
+data ExternalBlockerFixture = ExternalBlockerFixture with
+    admin : Party
+    blocker : Party
+    alice : Party
+    bob : Party
+    blocklist : ContractId Blocklist
+    asset : ContractId Asset
+  deriving (Eq, Show)
+
+-- | An empty blocklist whose blocker is the external party, and an asset
+-- owned by alice.
+setupExternalBlocker : Party -> Script ExternalBlockerFixture
+setupExternalBlocker blocker = do
+  admin <- allocateParty "external-admin"
+  alice <- allocateParty "external-alice"
+  bob <- allocateParty "external-bob"
+  blocklist <- submit admin do
+    createCmd Blocklist with
+      admin; blocker; id = assetBlocklistId; blocked = Set.empty; maxEntries = 10
+  asset <- submit admin do
+    createCmd Asset with issuer = admin; owner = alice; amount = 10.0
+  pure ExternalBlockerFixture with ..
+
+-- | After the external block: the blocklist that the fixture created is
+-- archived, its successor blocks alice under the same blocker, and the guard
+-- refuses alice's transfer.
+checkExternalBlocker : ExternalBlockerFixture -> Script ()
+checkExternalBlocker f = do
+  queryContractId f.admin f.blocklist >>= (=== None)
+  [(current, bl)] <- query @Blocklist f.admin
+  bl.blocker === f.blocker
+  isBlocked bl f.alice === True
+  Some disclosure <- queryDisclosure f.admin current
+  result <- trySubmit (actAs f.alice <> discloseMany [disclosure]) do
+    exerciseCmd f.asset Asset_Transfer with newOwner = f.bob; blocklistCid = current
+  case result of
+    Left (FailureStatusError status) -> status === eAccountBlocked f.alice
+    other -> fail ("expected the blocked-account failure, got " <> show other)

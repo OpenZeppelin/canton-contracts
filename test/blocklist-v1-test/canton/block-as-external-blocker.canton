@@ -1,0 +1,63 @@
+// Block alice as the external blocker through interactive submission, and
+// check that the topology enforces the two-of-three signing threshold.
+// Reads the files that onboard-external-blocker.canton and
+// setupExternalBlocker wrote to OZ_EXTERNAL_DIR. Prints
+// EXTERNAL-BLOCKER-OK when every expectation holds.
+import com.daml.ledger.api.v2.commands.{Command, ExerciseCommand}
+import com.daml.ledger.api.v2.value.{Identifier, List => ValueList, Record, RecordField, Value}
+import com.digitalasset.canton.crypto._
+import com.digitalasset.canton.topology._
+import com.google.protobuf.ByteString
+import java.nio.file.{Files, Paths}
+import java.security.KeyFactory
+import java.security.spec.PKCS8EncodedKeySpec
+
+val dir = sys.env("OZ_EXTERNAL_DIR")
+def read(name: String) = new String(Files.readAllBytes(Paths.get(s"$dir/$name")))
+def attempt[A](a: => A): Either[Throwable, A] = try Right(a) catch { case e: Throwable => Left(e) }
+val p = participants.all.head
+val party = PartyId.tryFromProtoPrimitive(read("party.json").stripPrefix("\"").stripSuffix("\""))
+val fixture = read("fixture.json")
+def field(n: String) = ("\"" + n + "\": \"([^\"]+)\"").r.findFirstMatchIn(fixture).get.group(1)
+val keys = (0 to 2).map(i => KeyFactory.getInstance("Ed25519").generatePrivate(
+  new PKCS8EncodedKeySpec(Files.readAllBytes(Paths.get(s"$dir/key$i.pkcs8")))))
+val fingerprints = (0 to 2).map(i => Fingerprint.tryFromString(read(s"key$i.fingerprint")))
+
+val blocklistTemplate = Identifier(
+  packageId = "#openzeppelin-blocklist-v1", moduleName = "OpenZeppelin.BlocklistV1", entityName = "Blocklist")
+val alice = Value(Value.Sum.Party(field("alice")))
+val accounts = RecordField("accounts", Some(Value(Value.Sum.List(ValueList(Seq(alice))))))
+val reason = RecordField("reason", Some(Value(Value.Sum.Text("external-blocker"))))
+val blockArgument = Value(Value.Sum.Record(Record(None, Seq(accounts, reason))))
+val block = Command(Command.Command.Exercise(
+  ExerciseCommand(Some(blocklistTemplate), field("blocklist"), "Blocklist_Block", Some(blockArgument))))
+
+def sign(hash: ByteString, i: Int): Signature = {
+  val signer = java.security.Signature.getInstance("Ed25519")
+  signer.initSign(keys(i))
+  signer.update(hash.toByteArray)
+  Signature.fromExternalSigning(SignatureFormat.Concat, ByteString.copyFrom(signer.sign()), fingerprints(i), SigningAlgorithmSpec.Ed25519)
+}
+def execute(id: String, signers: Seq[Int]) = {
+  val prepared = p.ledger_api.interactive_submission.prepare(Seq(party), Seq(block), commandId = id)
+  attempt(p.ledger_api.interactive_submission.execute_and_wait_for_transaction(prepared.getPreparedTransaction,
+    Map(party -> signers.map(i => sign(prepared.preparedTransactionHash, i))),
+    submissionId = id, hashingSchemeVersion = prepared.hashingSchemeVersion))
+}
+// Each step prints EXTERNAL-BLOCKER-STEP before its submission and PASS or
+// FAIL after it. A refused submission raises a bare CommandFailure; the
+// console logs the reason between the two lines, and check-sandbox.sh
+// requires the expected reason there.
+def step(name: String, expectRefusal: Boolean)(run: => Either[Throwable, _]): Boolean = {
+  println(s"EXTERNAL-BLOCKER-STEP $name")
+  val ok = run.isLeft == expectRefusal
+  println(s"EXTERNAL-BLOCKER-${if (ok) "PASS" else "FAIL"} $name")
+  ok
+}
+
+val results = Seq(
+  step("no-signature", expectRefusal = true)(attempt(p.ledger_api.commands.submit(Seq(party), Seq(block)))),
+  step("one-signature", expectRefusal = true)(execute("external-one", Seq(0))),
+  step("same-key-twice", expectRefusal = true)(execute("external-same", Seq(0, 0))),
+  step("two-distinct-keys", expectRefusal = false)(execute("external-two", Seq(1, 2))))
+if (results.forall(ok => ok)) println("EXTERNAL-BLOCKER-OK")

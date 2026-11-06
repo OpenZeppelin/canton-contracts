@@ -1,0 +1,43 @@
+-- | Sandbox validation for the blocklist: the same scripts that `dpm test`
+-- runs on the in-memory ledger, run by `scripts/check-sandbox.sh` against a
+-- Canton sandbox over the Ledger API. Every test allocates fresh parties, so
+-- the tests compose on one ledger.
+module OpenZeppelin.BlocklistV1SandboxTest where
+
+import Daml.Script (Script, script)
+import OpenZeppelin.BlocklistV1Test
+
+-- | One runner preserves fresh party allocation across the shared ledger.
+sandboxBlocklist : Script ()
+sandboxBlocklist = script do
+  test_blockAddsTheParty
+  test_unblockRestoresTheAccount
+  test_changeArchivesThePredecessor
+  test_blockSkipsBlockedParty
+  test_blockRefusesTheAdmin
+  test_unblockSkipsUnblockedParty
+  test_blockAndUnblockSeveralParties
+  test_blockAppliesOnlyTheChanges
+  test_emptyListChangesNothing
+  test_failedChangeLeavesTheSetUnchanged
+  test_blockRefusesFullBlocklist
+  test_createRefusesNonPositiveMaxEntries
+  test_createRefusesSetLargerThanMaxEntries
+  test_createRefusesBlockedAdmin
+  test_guardRefusesBlockedSender
+  test_guardRefusesBlockedReceiver
+  test_fetchBlocklistRefusesOtherAdmin
+  test_fetchBlocklistRefusesOtherId
+  test_secondInstanceWithSameIdPassesThePin
+  test_fetchFromContextReadsTheBlocklist
+  test_fetchFromContextRefusesMissingKey
+  test_fetchFromContextRefusesNonContractId
+  test_fetchFromContextPinsTheBlocklist
+  test_onlyTheBlockerBlocks
+  test_onlyTheBlockerUnblocks
+  test_onlyTheAdminSetsTheBlocker
+  test_setBlockerHandsOverTheRole
+  test_blockerSeesOnlyTheBlocklist
+  test_blockedSetHoldsDigests
+  test_changesRecordTheAuditTrail
+  test_archivedBlocklistFailsClosed

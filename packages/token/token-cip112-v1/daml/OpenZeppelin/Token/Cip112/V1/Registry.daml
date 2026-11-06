@@ -45,7 +45,7 @@ template TokenRules with
       -- other allocations being settled.
       settlementFactory_settleBatchExtraObservers _ = []
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @TokenAllocation) config.admin self arg
+        settleBatchImpl (pinAllocationTo @TokenAllocation) config.admin emptyChoiceContext self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for TokenRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata

@@ -204,7 +204,8 @@ import OpenZeppelin.Token.Cip112.V1.Registry
 `examples/token/token-cip112-trading-test` launches a registry from this package and
 drives it through the standard interfaces. To own the templates instead and
 reuse only the choice bodies, see the utils package `README.md` and
-`examples/token/token-cip112-custom`.
+`examples/token/token-cip112-custom`, which also adds a pause switch and an
+account blocklist to its own templates.
 
 ## License
 
