@@ -5,5 +5,8 @@ version: 0.1.0
 dependencies:
   - daml-prim
   - daml-stdlib
+data-dependencies:
+  # The Splice choice-context types that fetchBlocklistFromContext reads.
+  - ../../../dars/vendor/splice-api-token-metadata-v1-1.0.0.dar
 build-options:
   - --target=2.1

@@ -7,7 +7,10 @@ import DA.Assert ((===))
 import DA.Fail (FailureStatus)
 import qualified DA.Set as Set
 import DA.Stack (HasCallStack)
+import qualified DA.TextMap as TextMap
 import Daml.Script
+import DA.Text (sha256)
+import Splice.Api.Token.MetadataV1 (AnyValue (..), ChoiceContext (..))
 
 import OpenZeppelin.BlocklistV1
 import OpenZeppelin.BlocklistV1TestFixtures
@@ -44,6 +47,10 @@ unblock f account = do
   cid <- submit f.blocker do
     exerciseCmd f.blocklist Blocklist_Unblock with accounts = [account]; reason = "case-1 closed"
   pure f with blocklist = cid
+
+-- | A choice context with `value` under `blocklistContextKey`.
+contextWith : AnyValue -> ChoiceContext
+contextWith value = ChoiceContext with values = TextMap.fromList [(blocklistContextKey, value)]
 
 -- | The blocklist as a disclosure from its admin.
 disclosureOf : Party -> ContractId Blocklist -> Script Disclosure
@@ -133,13 +140,17 @@ test_changeArchivesThePredecessor = script do
   active <- query @Blocklist f.admin
   map fst active === [f.blocklist]
 
--- | A blocked party cannot be blocked again.
-test_blockRefusesBlockedParty : Script ()
-test_blockRefusesBlockedParty = script do
+-- | Blocking a party that is already blocked is a no-op: the contract stays
+-- active, and the call returns its id.
+test_blockSkipsBlockedParty : Script ()
+test_blockSkipsBlockedParty = script do
   f0 <- setup
   f <- block f0 f0.alice
-  submitMustFailWith (eAlreadyBlocked f.alice) $ trySubmit f.blocker do
+  again <- submit f.blocker do
     exerciseCmd f.blocklist Blocklist_Block with accounts = [f.alice]; reason = "case-2"
+  again === f.blocklist
+  Some bl <- queryContractId f.admin f.blocklist
+  bl.blocked === Set.fromList [blockedKey f.alice]
 
 -- | The admin signs the blocklist and cannot be blocked.
 test_blockRefusesTheAdmin : Script ()
@@ -148,66 +159,64 @@ test_blockRefusesTheAdmin = script do
   submitMustFailWith eAdminNotBlockable $ trySubmit f.blocker do
     exerciseCmd f.blocklist Blocklist_Block with accounts = [f.admin]; reason = "case-1"
 
--- | A party that is not blocked cannot be unblocked.
-test_unblockRefusesUnblockedParty : Script ()
-test_unblockRefusesUnblockedParty = script do
+-- | Unblocking a party that is not blocked is a no-op.
+test_unblockSkipsUnblockedParty : Script ()
+test_unblockSkipsUnblockedParty = script do
   f <- setup
-  submitMustFailWith (eNotBlocked f.alice) $ trySubmit f.blocker do
+  again <- submit f.blocker do
     exerciseCmd f.blocklist Blocklist_Unblock with accounts = [f.alice]; reason = "case-1"
+  again === f.blocklist
+  queryContractId f.admin f.blocklist >>= (=== Some (Blocklist with
+    admin = f.admin; blocker = f.blocker; id = assetBlocklistId; blocked = Set.empty; maxEntries = 10))
 
--- | One change blocks several parties, and one change unblocks them.
+-- | One call blocks several parties, and one call unblocks them. A party
+-- listed twice counts once.
 test_blockAndUnblockSeveralParties : Script ()
 test_blockAndUnblockSeveralParties = script do
   f <- setup
   blocked <- submit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.alice, f.bob]; reason = "list-update-1"
+    exerciseCmd f.blocklist Blocklist_Block with
+      accounts = [f.alice, f.bob, f.alice]; reason = "list-update-1"
   Some bl <- queryContractId f.admin blocked
   bl.blocked === Set.fromList [blockedKey f.alice, blockedKey f.bob]
   unblocked <- submit f.blocker do
-    exerciseCmd blocked Blocklist_Unblock with accounts = [f.alice, f.bob]; reason = "list-update-2"
+    exerciseCmd blocked Blocklist_Unblock with
+      accounts = [f.alice, f.bob, f.bob]; reason = "list-update-2"
   Some bl2 <- queryContractId f.admin unblocked
   bl2.blocked === Set.empty
 
--- | A block lists at least one party.
-test_blockRefusesEmptyList : Script ()
-test_blockRefusesEmptyList = script do
-  f <- setup
-  submitMustFailWith eNoAccounts $ trySubmit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Block with accounts = []; reason = "case-1"
-
--- | An unblock lists at least one party.
-test_unblockRefusesEmptyList : Script ()
-test_unblockRefusesEmptyList = script do
-  f <- setup
-  submitMustFailWith eNoAccounts $ trySubmit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Unblock with accounts = []; reason = "case-1"
-
--- | A party listed twice in one block is refused as already blocked.
-test_blockRefusesDuplicateParty : Script ()
-test_blockRefusesDuplicateParty = script do
-  f <- setup
-  submitMustFailWith (eAlreadyBlocked f.alice) $ trySubmit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.alice, f.alice]; reason = "case-1"
-
--- | A party listed twice in one unblock is refused as not blocked.
-test_unblockRefusesDuplicateParty : Script ()
-test_unblockRefusesDuplicateParty = script do
+-- | A list that mixes blocked and new parties applies the new ones only, so
+-- a sync can send the whole screening list each time.
+test_blockAppliesOnlyTheChanges : Script ()
+test_blockAppliesOnlyTheChanges = script do
   f0 <- setup
   f <- block f0 f0.alice
-  submitMustFailWith (eNotBlocked f.alice) $ trySubmit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Unblock with accounts = [f.alice, f.alice]; reason = "case-1"
+  changed <- submit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.alice, f.bob]; reason = "list-update-1"
+  queryContractId f.admin f.blocklist >>= (=== None)
+  Some bl <- queryContractId f.admin changed
+  bl.blocked === Set.fromList [blockedKey f.alice, blockedKey f.bob]
 
--- | A change is atomic: when one listed party fails a check, no party in the
+-- | An empty list changes nothing.
+test_emptyListChangesNothing : Script ()
+test_emptyListChangesNothing = script do
+  f <- setup
+  same <- submit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with accounts = []; reason = "case-1"
+  same === f.blocklist
+  same2 <- submit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Unblock with accounts = []; reason = "case-1"
+  same2 === f.blocklist
+
+-- | A call is atomic: when one listed party fails a check, no party in the
 -- list changes state.
 test_failedChangeLeavesTheSetUnchanged : Script ()
 test_failedChangeLeavesTheSetUnchanged = script do
-  f0 <- setup
-  f <- block f0 f0.alice
-  submitMustFailWith (eAlreadyBlocked f.alice) $ trySubmit f.blocker do
-    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.bob, f.alice]; reason = "case-2"
+  f <- setup
+  submitMustFailWith eAdminNotBlockable $ trySubmit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with accounts = [f.bob, f.admin]; reason = "case-2"
   Some bl <- queryContractId f.admin f.blocklist
-  isBlocked bl f.bob === False
-  bl.blocked === Set.fromList [blockedKey f.alice]
+  bl.blocked === Set.empty
 
 -- | A block that would make the set larger than `maxEntries` is refused,
 -- and an unblock still runs at the limit.
@@ -224,6 +233,9 @@ test_blockRefusesFullBlocklist = script do
   _ <- unblock f1 f1.alice
   pure ()
 
+-- The ensure clause
+-------------------------------------------------------
+
 -- | `maxEntries` is positive.
 test_createRefusesNonPositiveMaxEntries : Script ()
 test_createRefusesNonPositiveMaxEntries = script do
@@ -231,6 +243,24 @@ test_createRefusesNonPositiveMaxEntries = script do
   submitMustFail f.admin do
     createCmd Blocklist with
       admin = f.admin; blocker = f.blocker; id = "zero"; blocked = Set.empty; maxEntries = 0
+
+-- | The set never holds more than `maxEntries`, also on a direct create.
+test_createRefusesSetLargerThanMaxEntries : Script ()
+test_createRefusesSetLargerThanMaxEntries = script do
+  f <- setup
+  submitMustFail f.admin do
+    createCmd Blocklist with
+      admin = f.admin; blocker = f.blocker; id = "over"; maxEntries = 1
+      blocked = Set.fromList [blockedKey f.alice, blockedKey f.bob]
+
+-- | The set never holds the admin, also on a direct create.
+test_createRefusesBlockedAdmin : Script ()
+test_createRefusesBlockedAdmin = script do
+  f <- setup
+  submitMustFail f.admin do
+    createCmd Blocklist with
+      admin = f.admin; blocker = f.blocker; id = "admin"; maxEntries = 10
+      blocked = Set.fromList [blockedKey f.admin]
 
 -- The guards
 -------------------------------------------------------
@@ -284,6 +314,51 @@ test_secondInstanceWithSameIdPassesThePin = script do
   _ <- transfer (f with blocklist = second) f.alice f.asset f.bob
   pure ()
 
+-- | A choice that receives the blocklist in a Splice choice context reads it
+-- with `fetchBlocklistFromContext`, which applies the same pin.
+test_fetchFromContextReadsTheBlocklist : Script ()
+test_fetchFromContextReadsTheBlocklist = script do
+  f0 <- setup
+  f <- block f0 f0.bob
+  disclosure <- disclosureOf f.admin f.blocklist
+  let context = contextWith (AV_ContractId (coerceContractId f.blocklist))
+  submitMustFailWith (eAccountBlocked f.bob) $ trySubmit (actAs f.alice <> discloseMany [disclosure]) do
+    exerciseCmd f.asset Asset_TransferWithContext with newOwner = f.bob; context
+  outsider <- allocateParty "outsider"
+  moved <- submit (actAs f.alice <> discloseMany [disclosure]) do
+    exerciseCmd f.asset Asset_TransferWithContext with newOwner = outsider; context
+  Some a <- queryContractId outsider moved
+  a.owner === outsider
+
+-- | A context without the key fails with `eBlocklistMissing`.
+test_fetchFromContextRefusesMissingKey : Script ()
+test_fetchFromContextRefusesMissingKey = script do
+  f <- setup
+  submitMustFailWith eBlocklistMissing $ trySubmit f.alice do
+    exerciseCmd f.asset Asset_TransferWithContext with
+      newOwner = f.bob; context = ChoiceContext with values = TextMap.empty
+
+-- | A key that holds no contract id fails with `eBlocklistMissing`.
+test_fetchFromContextRefusesNonContractId : Script ()
+test_fetchFromContextRefusesNonContractId = script do
+  f <- setup
+  submitMustFailWith eBlocklistMissing $ trySubmit f.alice do
+    exerciseCmd f.asset Asset_TransferWithContext with
+      newOwner = f.bob; context = contextWith (AV_Text "blocklist")
+
+-- | The context form pins the admin and the id like `fetchBlocklist`.
+test_fetchFromContextPinsTheBlocklist : Script ()
+test_fetchFromContextPinsTheBlocklist = script do
+  f <- setup
+  other <- submit f.admin do
+    createCmd Blocklist with
+      admin = f.admin; blocker = f.blocker; id = "other"; blocked = Set.empty; maxEntries = 10
+  disclosure <- disclosureOf f.admin other
+  submitMustFailWith (eWrongBlocklist f.admin assetBlocklistId) $
+    trySubmit (actAs f.alice <> discloseMany [disclosure]) do
+      exerciseCmd f.asset Asset_TransferWithContext with
+        newOwner = f.bob; context = contextWith (AV_ContractId (coerceContractId other))
+
 -- Roles
 -------------------------------------------------------
 
@@ -313,7 +388,7 @@ test_onlyTheAdminSetsTheBlocker : Script ()
 test_onlyTheAdminSetsTheBlocker = script do
   f <- setup
   successor <- allocateParty "successor"
-  let choice = Blocklist_SetBlocker with newBlocker = successor
+  let choice = Blocklist_SetBlocker with newBlocker = successor; reason = "provider change"
   submitMustFailAuthorization $ tryExercise f f.blocker choice
   submitMustFailAuthorization $ tryExercise f f.alice choice
   submitMustFailAuthorization $ tryExercise f successor choice
@@ -327,7 +402,7 @@ test_setBlockerHandsOverTheRole = script do
   f1 <- block f0 f0.alice
   successor <- allocateParty "successor"
   handedOver <- submit f1.admin do
-    exerciseCmd f1.blocklist Blocklist_SetBlocker with newBlocker = successor
+    exerciseCmd f1.blocklist Blocklist_SetBlocker with newBlocker = successor; reason = "provider change"
   let f2 = f1 with blocklist = handedOver
   Some bl <- queryContractId successor handedOver
   bl.blocker === successor
@@ -355,8 +430,8 @@ test_blockerSeesOnlyTheBlocklist = script do
   blocklists <- query @Blocklist f.blocker
   map fst blocklists === [f.blocklist]
 
--- | A party that receives the blocklist by disclosure reads digests, not
--- parties: it can test a party it knows, and the set names no party.
+-- | The set holds unsalted digests, not party ids. A reader who knows a party
+-- id computes its digest and tests it, as alice does here with bob's.
 test_blockedSetHoldsDigests : Script ()
 test_blockedSetHoldsDigests = script do
   f0 <- setup
@@ -367,12 +442,13 @@ test_blockedSetHoldsDigests = script do
   Set.member (partyToText f.alice) bl.blocked === False
   Set.member (partyToText f.bob) bl.blocked === False
   bl.blocked === Set.fromList [blockedKey f.alice, blockedKey f.bob]
+  Set.member (sha256 (partyToText f.bob)) bl.blocked === True
   -- Alice uses the disclosed contract without being one of its stakeholders.
   submitMustFailWith (eAccountBlocked f.alice) $ trySubmit (actAs f.alice <> discloseMany [disclosure]) do
     exerciseCmd f.asset Asset_Transfer with newOwner = f.admin; blocklistCid = f.blocklist
 
--- | Each change is a consuming exercise whose argument names the party and
--- the reason, so the update stream reconstructs who was blocked, by whom,
+-- | Each call is an exercise whose argument names the parties and the
+-- reason, so the update stream reconstructs who was blocked, by whom,
 -- and when.
 test_changesRecordTheAuditTrail : Script ()
 test_changesRecordTheAuditTrail = script do

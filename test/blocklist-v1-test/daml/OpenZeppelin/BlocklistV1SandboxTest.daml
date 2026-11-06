@@ -13,21 +13,26 @@ sandboxBlocklist = script do
   test_blockAddsTheParty
   test_unblockRestoresTheAccount
   test_changeArchivesThePredecessor
-  test_blockRefusesBlockedParty
+  test_blockSkipsBlockedParty
   test_blockRefusesTheAdmin
-  test_unblockRefusesUnblockedParty
+  test_unblockSkipsUnblockedParty
   test_blockAndUnblockSeveralParties
-  test_blockRefusesEmptyList
-  test_unblockRefusesEmptyList
-  test_blockRefusesDuplicateParty
-  test_unblockRefusesDuplicateParty
+  test_blockAppliesOnlyTheChanges
+  test_emptyListChangesNothing
   test_failedChangeLeavesTheSetUnchanged
   test_blockRefusesFullBlocklist
   test_createRefusesNonPositiveMaxEntries
+  test_createRefusesSetLargerThanMaxEntries
+  test_createRefusesBlockedAdmin
   test_guardRefusesBlockedSender
   test_guardRefusesBlockedReceiver
   test_fetchBlocklistRefusesOtherAdmin
   test_fetchBlocklistRefusesOtherId
+  test_secondInstanceWithSameIdPassesThePin
+  test_fetchFromContextReadsTheBlocklist
+  test_fetchFromContextRefusesMissingKey
+  test_fetchFromContextRefusesNonContractId
+  test_fetchFromContextPinsTheBlocklist
   test_onlyTheBlockerBlocks
   test_onlyTheBlockerUnblocks
   test_onlyTheAdminSetsTheBlocker
