@@ -1,0 +1,33 @@
+-- | Consumer fixtures: an asset whose transfer is guarded by a blocklist.
+module OpenZeppelin.BlocklistV1TestFixtures where
+
+import OpenZeppelin.BlocklistV1
+
+-- | The id the asset pins its blocklist to.
+assetBlocklistId : Text
+assetBlocklistId = "asset"
+
+-- | A consumer asset. The issuer signs and is the blocklist's admin; the
+-- owner observes and transfers. The transfer fetches the blocklist with the
+-- issuer's authority and checks the party it debits and the party it
+-- credits.
+template Asset
+  with
+    issuer : Party
+    owner : Party
+    amount : Decimal
+  where
+    signatory issuer
+    observer owner
+    ensure amount > 0.0
+
+    choice Asset_Transfer : ContractId Asset
+      with
+        newOwner : Party
+        blocklistCid : ContractId Blocklist
+      controller owner
+      do
+        blocklist <- fetchBlocklist issuer assetBlocklistId blocklistCid
+        whenNotBlocked blocklist owner
+        whenNotBlocked blocklist newOwner
+        create this with owner = newOwner

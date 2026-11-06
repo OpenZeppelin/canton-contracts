@@ -71,8 +71,9 @@ for the behavior and security properties these tests check.
 
 Run `scripts/check-sandbox.sh` for the token sandbox gate. Set
 `OZ_SANDBOX_SUITE` to `authorization`, `licensing`, or `treasury` for the grant
-and integration-example Ledger API checks. CI runs all four suites on separate fresh
-static-time ledgers.
+and integration-example Ledger API checks, to `blocklist` for the blocklist
+checks, or to `custom-token` for the blocklist checks of the custom token
+example. CI runs all six suites on separate fresh static-time ledgers.
 
 ## Choosing the right repository
 

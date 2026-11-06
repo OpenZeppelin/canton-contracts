@@ -1,0 +1,335 @@
+-- | Tests for `OpenZeppelin.BlocklistV1`: the blocklist choices, one test per
+-- guard, the role controls, and the privacy and audit properties, exercised
+-- through a consumer asset whose transfer calls the guards.
+module OpenZeppelin.BlocklistV1Test where
+
+import DA.Assert ((===))
+import DA.Fail (FailureStatus)
+import qualified DA.Set as Set
+import DA.Stack (HasCallStack)
+import Daml.Script
+
+import OpenZeppelin.BlocklistV1
+import OpenZeppelin.BlocklistV1TestFixtures
+
+data Fixture = Fixture with
+  admin : Party
+  blocker : Party
+  alice : Party
+  bob : Party
+  blocklist : ContractId Blocklist
+  asset : ContractId Asset
+
+-- | An empty blocklist and a 10-unit asset owned by alice.
+setup : Script Fixture
+setup = do
+  admin <- allocateParty "admin"
+  blocker <- allocateParty "blocker"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  blocklist <- submit admin do
+    createCmd Blocklist with admin; blocker; id = assetBlocklistId; blocked = Set.empty
+  asset <- submit admin do
+    createCmd Asset with issuer = admin; owner = alice; amount = 10.0
+  pure Fixture with ..
+
+block : Fixture -> Party -> Script Fixture
+block f account = do
+  cid <- submit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with account; reason = "case-1"
+  pure f with blocklist = cid
+
+unblock : Fixture -> Party -> Script Fixture
+unblock f account = do
+  cid <- submit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Unblock with account; reason = "case-1 closed"
+  pure f with blocklist = cid
+
+-- | The blocklist as a disclosure from its admin.
+disclosureOf : Party -> ContractId Blocklist -> Script Disclosure
+disclosureOf admin cid = do
+  disclosure <- queryDisclosure admin cid
+  case disclosure of
+    Some d -> pure d
+    None -> fail "the admin cannot see the blocklist"
+
+-- | `owner` transfers `asset` to `newOwner`, checked against `blocklistCid`,
+-- which the admin discloses.
+tryTransfer
+  : Fixture -> ContractId Blocklist -> Party -> ContractId Asset -> Party
+  -> Script (Either SubmitError (ContractId Asset))
+tryTransfer f blocklistCid owner asset newOwner = do
+  disclosure <- disclosureOf f.admin blocklistCid
+  trySubmit (actAs owner <> discloseMany [disclosure]) do
+    exerciseCmd asset Asset_Transfer with newOwner; blocklistCid
+
+transfer : Fixture -> Party -> ContractId Asset -> Party -> Script (ContractId Asset)
+transfer f owner asset newOwner = tryTransfer f f.blocklist owner asset newOwner >>= \case
+  Right cid -> pure cid
+  Left err -> fail ("expected the transfer to succeed, got " <> show err)
+
+-- | Run a submission and require the ledger to reject it with exactly this
+-- status. Any other outcome fails with what arrived instead.
+submitMustFailWith
+  : (HasCallStack, Show a)
+  => FailureStatus -> Script (Either SubmitError a) -> Script ()
+submitMustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  other -> fail ("expected " <> show expected <> ", got " <> show other)
+
+-- | Run a submission and require the ledger to reject it for missing
+-- authority, before any choice body runs. Any other outcome fails with what
+-- arrived instead.
+submitMustFailAuthorization
+  : (HasCallStack, Show a) => Script (Either SubmitError a) -> Script ()
+submitMustFailAuthorization action = action >>= \case
+  Left (AuthorizationError _) -> pure ()
+  other -> fail ("expected an authorization failure, got " <> show other)
+
+-- | `who` exercises `choice` on the blocklist, with the blocklist disclosed
+-- so that a party outside its stakeholders reaches the authorization check.
+tryExercise
+  : (Choice Blocklist c r, Show r)
+  => Fixture -> Party -> c -> Script (Either SubmitError r)
+tryExercise f who choice = do
+  disclosure <- disclosureOf f.admin f.blocklist
+  trySubmit (actAs who <> discloseMany [disclosure]) do exerciseCmd f.blocklist choice
+
+-- Block and unblock
+-------------------------------------------------------
+
+-- | Blocking adds the party and no other.
+test_blockAddsTheParty : Script ()
+test_blockAddsTheParty = script do
+  f0 <- setup
+  f <- block f0 f0.alice
+  Some bl <- queryContractId f.admin f.blocklist
+  isBlocked bl f.alice === True
+  isBlocked bl f.bob === False
+  bl.blocked === Set.fromList [blockedKey f.alice]
+
+-- | Unblocking restores the account: the transfer that the block refused
+-- goes through after the unblock.
+test_unblockRestoresTheAccount : Script ()
+test_unblockRestoresTheAccount = script do
+  f0 <- setup
+  f1 <- block f0 f0.alice
+  submitMustFailWith (eAccountBlocked f1.alice) $ tryTransfer f1 f1.blocklist f1.alice f1.asset f1.bob
+  f2 <- unblock f1 f1.alice
+  Some bl <- queryContractId f2.admin f2.blocklist
+  isBlocked bl f2.alice === False
+  bl.blocked === Set.empty
+  moved <- transfer f2 f2.alice f2.asset f2.bob
+  Some a <- queryContractId f2.bob moved
+  a.owner === f2.bob
+
+-- | Each change consumes the predecessor, so one contract stays active and
+-- a transaction that presents the stale id fails.
+test_changeArchivesThePredecessor : Script ()
+test_changeArchivesThePredecessor = script do
+  f0 <- setup
+  f <- block f0 f0.bob
+  queryContractId f.admin f0.blocklist >>= (=== None)
+  active <- query @Blocklist f.admin
+  map fst active === [f.blocklist]
+
+-- | A blocked party cannot be blocked again.
+test_blockRefusesBlockedParty : Script ()
+test_blockRefusesBlockedParty = script do
+  f0 <- setup
+  f <- block f0 f0.alice
+  submitMustFailWith (eAlreadyBlocked f.alice) $ trySubmit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with account = f.alice; reason = "case-2"
+
+-- | The admin signs the blocklist and cannot be blocked.
+test_blockRefusesTheAdmin : Script ()
+test_blockRefusesTheAdmin = script do
+  f <- setup
+  submitMustFailWith eAdminNotBlockable $ trySubmit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with account = f.admin; reason = "case-1"
+
+-- | A party that is not blocked cannot be unblocked.
+test_unblockRefusesUnblockedParty : Script ()
+test_unblockRefusesUnblockedParty = script do
+  f <- setup
+  submitMustFailWith (eNotBlocked f.alice) $ trySubmit f.blocker do
+    exerciseCmd f.blocklist Blocklist_Unblock with account = f.alice; reason = "case-1"
+
+-- The guards
+-------------------------------------------------------
+
+-- | A blocked owner cannot send.
+test_guardRefusesBlockedSender : Script ()
+test_guardRefusesBlockedSender = script do
+  f0 <- setup
+  f <- block f0 f0.alice
+  submitMustFailWith (eAccountBlocked f.alice) $ tryTransfer f f.blocklist f.alice f.asset f.bob
+
+-- | A blocked party cannot receive.
+test_guardRefusesBlockedReceiver : Script ()
+test_guardRefusesBlockedReceiver = script do
+  f0 <- setup
+  f <- block f0 f0.bob
+  submitMustFailWith (eAccountBlocked f.bob) $ tryTransfer f f.blocklist f.alice f.asset f.bob
+
+-- | An owner who presents a blocklist of their own, with the expected id, is
+-- refused: the admin does not match.
+test_fetchBlocklistRefusesOtherAdmin : Script ()
+test_fetchBlocklistRefusesOtherAdmin = script do
+  f0 <- setup
+  f <- block f0 f0.alice
+  forged <- submit f.alice do
+    createCmd Blocklist with
+      admin = f.alice; blocker = f.alice; id = assetBlocklistId; blocked = Set.empty
+  submitMustFailWith (eWrongBlocklist f.admin assetBlocklistId) $ trySubmit f.alice do
+    exerciseCmd f.asset Asset_Transfer with newOwner = f.bob; blocklistCid = forged
+
+-- | The admin's blocklist for another id is refused.
+test_fetchBlocklistRefusesOtherId : Script ()
+test_fetchBlocklistRefusesOtherId = script do
+  f0 <- setup
+  f <- block f0 f0.alice
+  other <- submit f.admin do
+    createCmd Blocklist with
+      admin = f.admin; blocker = f.blocker; id = "other"; blocked = Set.empty
+  submitMustFailWith (eWrongBlocklist f.admin assetBlocklistId) $ tryTransfer f other f.alice f.asset f.bob
+
+-- | The admin is trusted with the canonical instance: a second active
+-- blocklist with the same admin and id passes the pin, so the guard reads
+-- whichever contract the caller presents.
+test_secondInstanceWithSameIdPassesThePin : Script ()
+test_secondInstanceWithSameIdPassesThePin = script do
+  f0 <- setup
+  f <- block f0 f0.alice
+  second <- submit f.admin do
+    createCmd Blocklist with
+      admin = f.admin; blocker = f.blocker; id = assetBlocklistId; blocked = Set.empty
+  _ <- transfer (f with blocklist = second) f.alice f.asset f.bob
+  pure ()
+
+-- Roles
+-------------------------------------------------------
+
+-- | Only the blocker blocks: the admin, the owner, and an outsider are
+-- refused for missing authority, with the blocklist disclosed to them.
+test_onlyTheBlockerBlocks : Script ()
+test_onlyTheBlockerBlocks = script do
+  f <- setup
+  outsider <- allocateParty "outsider"
+  let choice = Blocklist_Block with account = f.bob; reason = "case-1"
+  submitMustFailAuthorization $ tryExercise f f.admin choice
+  submitMustFailAuthorization $ tryExercise f f.alice choice
+  submitMustFailAuthorization $ tryExercise f outsider choice
+
+-- | Only the blocker unblocks.
+test_onlyTheBlockerUnblocks : Script ()
+test_onlyTheBlockerUnblocks = script do
+  f0 <- setup
+  f <- block f0 f0.bob
+  let choice = Blocklist_Unblock with account = f.bob; reason = "case-1 closed"
+  submitMustFailAuthorization $ tryExercise f f.admin choice
+  submitMustFailAuthorization $ tryExercise f f.bob choice
+
+-- | Only the admin changes the blocker: the blocker cannot hand the role
+-- over by itself.
+test_onlyTheAdminSetsTheBlocker : Script ()
+test_onlyTheAdminSetsTheBlocker = script do
+  f <- setup
+  successor <- allocateParty "successor"
+  let choice = Blocklist_SetBlocker with newBlocker = successor
+  submitMustFailAuthorization $ tryExercise f f.blocker choice
+  submitMustFailAuthorization $ tryExercise f f.alice choice
+  submitMustFailAuthorization $ tryExercise f successor choice
+
+-- | The admin gives the role to a new party. The blocked set carries over,
+-- the previous blocker loses the role and its visibility, and the new
+-- blocker unblocks.
+test_setBlockerHandsOverTheRole : Script ()
+test_setBlockerHandsOverTheRole = script do
+  f0 <- setup
+  f1 <- block f0 f0.alice
+  successor <- allocateParty "successor"
+  handedOver <- submit f1.admin do
+    exerciseCmd f1.blocklist Blocklist_SetBlocker with newBlocker = successor
+  let f2 = f1 with blocklist = handedOver
+  Some bl <- queryContractId successor handedOver
+  bl.blocker === successor
+  isBlocked bl f2.alice === True
+  queryContractId f2.blocker handedOver >>= (=== None)
+  submitMustFailAuthorization $ tryExercise f2 f2.blocker
+    (Blocklist_Unblock with account = f2.alice; reason = "case-1 closed")
+  _ <- unblock (f2 with blocker = successor) f2.alice
+  pure ()
+
+-- Privacy and audit
+-------------------------------------------------------
+
+-- | The blocker sees the blocklist and nothing it guards: after a guarded
+-- transfer, the asset and its successor are invisible to the blocker.
+test_blockerSeesOnlyTheBlocklist : Script ()
+test_blockerSeesOnlyTheBlocklist = script do
+  f0 <- setup
+  f <- block f0 f0.bob
+  outsider <- allocateParty "outsider"
+  moved <- transfer f f.alice f.asset outsider
+  query @Asset f.blocker >>= (=== [])
+  queryContractId f.blocker f.asset >>= (=== None)
+  queryContractId f.blocker moved >>= (=== None)
+  blocklists <- query @Blocklist f.blocker
+  map fst blocklists === [f.blocklist]
+
+-- | A party that receives the blocklist by disclosure reads digests, not
+-- parties: it can test a party it knows, and the set names no party.
+test_blockedSetHoldsDigests : Script ()
+test_blockedSetHoldsDigests = script do
+  f0 <- setup
+  f1 <- block f0 f0.alice
+  f <- block f1 f1.bob
+  disclosure <- disclosureOf f.admin f.blocklist
+  Some bl <- queryContractId f.admin f.blocklist
+  Set.member (partyToText f.alice) bl.blocked === False
+  Set.member (partyToText f.bob) bl.blocked === False
+  bl.blocked === Set.fromList [blockedKey f.alice, blockedKey f.bob]
+  -- Alice uses the disclosed contract without being one of its stakeholders.
+  submitMustFailWith (eAccountBlocked f.alice) $ trySubmit (actAs f.alice <> discloseMany [disclosure]) do
+    exerciseCmd f.asset Asset_Transfer with newOwner = f.admin; blocklistCid = f.blocklist
+
+-- | Each change is a consuming exercise whose argument names the party and
+-- the reason, so the update stream reconstructs who was blocked, by whom,
+-- and when.
+test_changesRecordTheAuditTrail : Script ()
+test_changesRecordTheAuditTrail = script do
+  f <- setup
+  blockTree <- submitTree f.blocker do
+    exerciseCmd f.blocklist Blocklist_Block with account = f.alice; reason = "case-1"
+  [ExercisedEvent blockEvent] <- pure blockTree.rootEvents
+  blockEvent.choice === "Blocklist_Block"
+  fromAnyChoice @Blocklist blockEvent.argument
+    === Some (Blocklist_Block with account = f.alice; reason = "case-1")
+  [blocked] <- query @Blocklist f.blocker
+  unblockTree <- submitTree f.blocker do
+    exerciseCmd (fst blocked) Blocklist_Unblock with account = f.alice; reason = "case-1 closed"
+  [ExercisedEvent unblockEvent] <- pure unblockTree.rootEvents
+  unblockEvent.choice === "Blocklist_Unblock"
+  fromAnyChoice @Blocklist unblockEvent.argument
+    === Some (Blocklist_Unblock with account = f.alice; reason = "case-1 closed")
+
+-- Archival
+-------------------------------------------------------
+
+-- | The admin, as the only signatory, archives the blocklist. A guarded
+-- choice then fails closed: the fetch finds no active contract, so no
+-- transfer runs unchecked.
+test_archivedBlocklistFailsClosed : Script ()
+test_archivedBlocklistFailsClosed = script do
+  f <- setup
+  disclosure <- disclosureOf f.admin f.blocklist
+  submit f.admin do archiveCmd f.blocklist
+  result <- trySubmit (actAs f.alice <> discloseMany [disclosure]) do
+    exerciseCmd f.asset Asset_Transfer with newOwner = f.bob; blocklistCid = f.blocklist
+  case result of
+    Left (ContractNotFound {}) -> pure ()
+    Left (UnknownError _) -> pure ()
+    other -> fail ("expected an inactive-contract failure, got " <> show other)
+  Some a <- queryContractId f.alice f.asset
+  a.owner === f.alice

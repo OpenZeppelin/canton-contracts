@@ -1,0 +1,31 @@
+-- | Sandbox validation for the custom token's account blocklist: the
+-- blocklist tests of `OpenZeppelin.Examples.Token.Cip112.Custom.Test`, run
+-- by `scripts/check-sandbox.sh` against a static-time Canton sandbox over
+-- the Ledger API.
+--
+-- Every test allocates fresh parties and pins the clock to `t1`. A
+-- static-time ledger only moves its clock forward, so the one test that
+-- advances the clock past `t1` runs last.
+module OpenZeppelin.Examples.Token.Cip112.Custom.Test.Sandbox where
+
+import Daml.Script (Script)
+import OpenZeppelin.Examples.Token.Cip112.Custom.Test
+
+sandboxCustomTokenBlocklist : Script ()
+sandboxCustomTokenBlocklist = do
+  testBlockedSenderCannotTransfer
+  testBlockedReceiverCannotReceive
+  testBlockedReceiverCannotAcceptPendingTransfer
+  testBlockedSenderPendingTransferCannotComplete
+  testBlockedAccountCannotMintOrBurn
+  testBlockedAccountCannotAllocate
+  testBlockAfterCommitStopsSettlement
+  testBlockedSenderCannotSettle
+  testBlockedAuthorizerCannotSettle
+  testBlockedAuthorizerCannotWithdraw
+  testBlockedProviderBlocksItsAccounts
+  testBlockAndUnblockWhilePaused
+  testOnlyTheBlockerBlocks
+  testBlockerSeesNoHoldings
+  testRegistryRequiresItsBlocklist
+  testBlockedOwnerCannotUnlock

@@ -72,6 +72,47 @@ means the template implements both interfaces for life; dropping the `-v1`
 instance needs a new template version outside SCU and an offline contract
 migration that copies the flag.
 
+### Guards that read a shared contract
+
+Blocklist is the model for state that cannot live on the contract being
+exercised. A blocked party has many holdings and pending contracts, and a
+block must stop all of them at once, so the blocked set is one `Blocklist`
+contract that every guarded choice fetches. A caller supplies that contract,
+which is the substitution risk the Pausable section describes. Three rules
+contain it:
+
+- `fetchBlocklist` pins the template, the admin, and an `id` that the guarded
+  template takes from its own state. A caller who presents a blocklist of
+  their own fails the admin check. LF 2.1 has no contract keys, so uniqueness
+  per admin and `id` is the admin's responsibility.
+- A guarded choice that receives no blocklist fails. A token standard
+  interface choice has no blocklist argument, so the blocklist arrives in the
+  choice context, as the standard intends for registry-supplied contracts.
+- The admin is the only signatory. The informees of a `fetch` are the
+  signatories and the acting parties. If the blocker also signed, its
+  participant would confirm every guarded transaction and learn its timing.
+  As an observer, the blocker sees the blocklist and its changes only, and an
+  unavailable blocker never stops a transfer.
+
+The set stores SHA-256 digests of parties. Every submitter of a guarded
+transaction receives the whole contract by disclosure, so plain parties would
+show every blocked party to every user. A digest still lets a guard and a
+user test a known party.
+
+The key is a party, not an account record. A CIP-0112 account `id` is free
+text that its owner chooses, so a block on an `id` does not hold. The token
+checks the owner and the provider of each account.
+
+`Blocklist` is a template with no interface, so the component is one package.
+A guard reads the blocklist through the template, which it can pin; a frozen
+interface would admit implementations that it cannot pin.
+
+A token that needs a blocklist owns its templates and adds the checks, as
+`examples/token/token-cip112-custom` does. `openzeppelin-token-cip112-v1`
+stays independent of `openzeppelin-blocklist-v1`, because a dependency
+between implementation packages needs an architecture decision and an SCU
+lineage cannot drop it later.
+
 ### Utilities, types, and templates
 
 A component whose choice bodies consumers want to reuse with templates of

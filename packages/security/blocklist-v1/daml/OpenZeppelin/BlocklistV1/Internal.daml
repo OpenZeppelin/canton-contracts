@@ -1,0 +1,14 @@
+-- | Internal helpers for `OpenZeppelin.BlocklistV1`.
+module OpenZeppelin.BlocklistV1.Internal where
+
+import DA.Fail (FailureCategory, FailureStatus (..))
+import qualified DA.TextMap as TextMap
+
+-- | Build a `FailureStatus` under the `openzeppelin.com/blocklist-` error id
+-- prefix.
+blocklistFailure : Text -> FailureCategory -> Text -> [(Text, Text)] -> FailureStatus
+blocklistFailure name category message meta = FailureStatus with
+  errorId = "openzeppelin.com/blocklist-" <> name
+  category
+  message
+  meta = TextMap.fromList meta

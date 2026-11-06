@@ -11,7 +11,7 @@
 # set OZ_USE_EXTERNAL_LEDGER=1 together with OZ_LEDGER_HOST / OZ_LEDGER_PORT.
 # Use a fresh external static-time ledger for each suite. Scripts that advance
 # time run last. OZ_SANDBOX_SUITE selects token (default), authorization,
-# licensing, or treasury.
+# licensing, treasury, blocklist, or custom-token.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,6 +55,14 @@ licensing)
 treasury)
 	TEST_PKG="examples/treasury-rbac-v1-test"
 	SCRIPTS=(Example.TreasuryRbacV1SandboxTest:sandboxTreasury)
+	;;
+blocklist)
+	TEST_PKG="test/blocklist-v1-test"
+	SCRIPTS=(OpenZeppelin.BlocklistV1SandboxTest:sandboxBlocklist)
+	;;
+custom-token)
+	TEST_PKG="examples/token/token-cip112-custom-test"
+	SCRIPTS=(OpenZeppelin.Examples.Token.Cip112.Custom.Test.Sandbox:sandboxCustomTokenBlocklist)
 	;;
 *)
 	printf 'check-sandbox: unknown suite: %s\n' "$SUITE" >&2
