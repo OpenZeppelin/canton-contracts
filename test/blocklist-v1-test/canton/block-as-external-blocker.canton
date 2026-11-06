@@ -44,15 +44,20 @@ def execute(id: String, signers: Seq[Int]) = {
     Map(party -> signers.map(i => sign(prepared.preparedTransactionHash, i))),
     submissionId = id, hashingSchemeVersion = prepared.hashingSchemeVersion))
 }
-def expect(name: String, ok: Boolean): Boolean = {
+// Each step prints EXTERNAL-BLOCKER-STEP before its submission and PASS or
+// FAIL after it. A refused submission raises a bare CommandFailure; the
+// console logs the reason between the two lines, and check-sandbox.sh
+// requires the expected reason there.
+def step(name: String, expectRefusal: Boolean)(run: => Either[Throwable, _]): Boolean = {
+  println(s"EXTERNAL-BLOCKER-STEP $name")
+  val ok = run.isLeft == expectRefusal
   println(s"EXTERNAL-BLOCKER-${if (ok) "PASS" else "FAIL"} $name")
   ok
 }
 
 val results = Seq(
-  expect("a submission without signatures is refused",
-    attempt(p.ledger_api.commands.submit(Seq(party), Seq(block))).isLeft),
-  expect("one signature is refused", execute("external-one", Seq(0)).isLeft),
-  expect("two signatures by the same key are refused", execute("external-same", Seq(0, 0)).isLeft),
-  expect("two signatures by distinct keys block alice", execute("external-two", Seq(1, 2)).isRight))
+  step("no-signature", expectRefusal = true)(attempt(p.ledger_api.commands.submit(Seq(party), Seq(block)))),
+  step("one-signature", expectRefusal = true)(execute("external-one", Seq(0))),
+  step("same-key-twice", expectRefusal = true)(execute("external-same", Seq(0, 0))),
+  step("two-distinct-keys", expectRefusal = false)(execute("external-two", Seq(1, 2))))
 if (results.forall(ok => ok)) println("EXTERNAL-BLOCKER-OK")

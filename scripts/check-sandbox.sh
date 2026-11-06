@@ -176,7 +176,8 @@ fi
 run_console() {
 	local script="$1"
 	local marker="$2"
-	local log="$LOG_DIR/$(basename "$script" .canton).log"
+	local log
+	log="$LOG_DIR/$(basename "$script" .canton).log"
 	(cd "$LOG_DIR" && OZ_EXTERNAL_DIR="$LOG_DIR" dpm canton-console --no-tty \
 		--bootstrap "$ROOT/$TEST_PKG/canton/$script" < /dev/null > "$log" 2>&1) || true
 	grep -q "^$marker" "$log"
@@ -195,15 +196,46 @@ run_script_io() {
 
 fail=0
 passed=0
-if [ "$SUITE" = external-blocker ]; then
-	module=OpenZeppelin.BlocklistV1ExternalBlockerTest
-	if run_console onboard-external-blocker.canton EXTERNAL-BLOCKER-ONBOARDED &&
-		run_script_io "$module:setupExternalBlocker" "$LOG_DIR/party.json" "$LOG_DIR/fixture.json" &&
-		run_console block-as-external-blocker.canton EXTERNAL-BLOCKER-OK &&
-		run_script_io "$module:checkExternalBlocker" "$LOG_DIR/fixture.json"; then
-		printf 'check-sandbox: PASS external blocker with a two-of-three signing threshold\n'
-		passed=4
+unit=scripts
+
+pass_step() {
+	printf 'check-sandbox: PASS %s\n' "$1"
+	passed=$((passed + 1))
+}
+
+# Require the reason that the console logged between the start and the result
+# of one step of block-as-external-blocker.canton.
+check_refusal() {
+	local name="$1"
+	local reason="$2"
+	local log="$LOG_DIR/block-as-external-blocker.log"
+	if awk -v start="EXTERNAL-BLOCKER-STEP $name" -v done_pass="EXTERNAL-BLOCKER-PASS $name" \
+		'$0 == start { on = 1; next } $0 == done_pass { on = 0 } on' "$log" | grep -Fq "$reason"; then
+		pass_step "$name is refused: $reason"
 	else
+		printf 'check-sandbox: FAIL %s: expected the reason "%s" in %s\n' "$name" "$reason" "$log" >&2
+		return 1
+	fi
+}
+
+run_external_blocker() {
+	local module=OpenZeppelin.BlocklistV1ExternalBlockerTest
+	run_console onboard-external-blocker.canton EXTERNAL-BLOCKER-ONBOARDED || return 1
+	pass_step "onboard an external blocker that needs two of its three keys"
+	run_script_io "$module:setupExternalBlocker" "$LOG_DIR/party.json" "$LOG_DIR/fixture.json" || return 1
+	pass_step "create a blocklist whose blocker is the external party"
+	run_console block-as-external-blocker.canton EXTERNAL-BLOCKER-OK || return 1
+	check_refusal no-signature NO_SYNCHRONIZER_ON_WHICH_ALL_SUBMITTERS_CAN_SUBMIT || return 1
+	check_refusal one-signature "Received 1 valid signatures from distinct keys" || return 1
+	check_refusal same-key-twice "Received 1 valid signatures from distinct keys" || return 1
+	pass_step "two-distinct-keys blocks the party"
+	run_script_io "$module:checkExternalBlocker" "$LOG_DIR/fixture.json" || return 1
+	pass_step "the guard refuses the blocked party"
+}
+
+if [ "$SUITE" = external-blocker ]; then
+	unit=steps
+	if ! run_external_blocker; then
 		printf 'check-sandbox: FAIL external blocker (see %s)\n' "$LOG_DIR" >&2
 		fail=1
 	fi
@@ -226,4 +258,4 @@ done
 	printf 'check-sandbox: FAILED\n' >&2
 	exit 1
 }
-printf 'check-sandbox: OK - all %d %s scripts passed on the sandbox\n' "$passed" "$SUITE"
+printf 'check-sandbox: OK - all %d %s %s passed on the sandbox\n' "$passed" "$SUITE" "$unit"

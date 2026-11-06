@@ -29,19 +29,24 @@ moves:
   factory checks the authorizer and the other side of every leg, and the
   settlement factory checks every leg and every authorizer. An allocation
   committed before a block does not settle while the block holds.
+- Each allocation's settle checks its authorizer and the other side of every
+  leg again, so a direct `Allocation_Settle` by the admin and the executors
+  is checked too. The settlement factory passes it only the blocklist entry
+  of the batch's context.
 - Accepting a transfer, mint offer, or burn request checks the sender and the
-  receiver. Withdrawing a transfer or an allocation, also after the
-  settlement deadline, and `MyHolding_OwnerUnlock` check the account that
-  unlocks its own funds.
-- Reject, cancel, and admin expiry return locked funds to the account that
-  locked them, so they stay open for every account.
+  receiver.
+- Withdraw, reject, cancel, admin expiry, and `MyHolding_OwnerUnlock` return
+  locked funds to the account that locked them, so they stay open for a
+  blocked account. The funds stay there, and every later transfer from that
+  account is refused.
 - The blocker sees the blocklist only, never a holding, instruction,
   allocation, or the rules contract. Block and unblock do not read the pause
   switch, so they work while the registry is paused.
 
 The registry's off-ledger API supplies the blocklist contract id in
 `ExtraArgs.context` under `blocklistContextKey` (`blocklist`), with the
-contract as a disclosure. A call without it fails.
+contract as a disclosure. A call that needs it and lacks it fails with
+`eBlocklistMissing`.
 
 No workflow body changes. `token-cip112-custom-test` drives the token through the
 standard interfaces and checks each addition.

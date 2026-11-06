@@ -1,35 +1,37 @@
 # Blocklist V1
 
 An account blocklist for Daml applications. A designated blocker party blocks
-and unblocks parties, and the guards make a choice fail when it debits or
-credits a blocked party.
+and unblocks parties, and the guards make a choice fail when it moves value
+from or to a blocked party.
 
 | Field | Value |
 |---|---|
 | Package | `openzeppelin-blocklist-v1` |
 | Public module | `OpenZeppelin.BlocklistV1` |
 | Version | `0.1.0` |
+| Depends on | `splice-api-token-metadata-v1` `1.0.0` (the `ChoiceContext` type) |
 | Status | Pre-release; unaudited |
 
 ## What it provides
 
 - `Blocklist`: the template that holds the blocked set of one application.
   The admin signs it. The blocker observes it and exercises
-  `Blocklist_Block` and `Blocklist_Unblock`, each of which changes a list of
-  parties in one transaction. The admin exercises `Blocklist_SetBlocker` to
-  give the blocker role to another party.
+  `Blocklist_Block` and `Blocklist_Unblock`, each of which takes a list of
+  parties. The admin exercises `Blocklist_SetBlocker` to give the blocker
+  role to another party.
 - `fetchBlocklist`: fetches a caller-supplied `Blocklist` and fails unless
   its admin and id are the ones your template expects.
+- `fetchBlocklistFromContext`: the same check for a blocklist contract id
+  that arrives in a Splice `ChoiceContext` under `blocklistContextKey`
+  (`blocklist`).
 - `whenNotBlocked`: the guard a choice calls for each party it debits or
   credits. `isBlocked` returns the same check as a `Bool`.
 - `blockedKey`: the digest that represents a party in the blocked set.
-- `blocklistContextKey`: the key `blocklist`, under which an application that
-  passes `ExtraArgs` to its choices supplies the blocklist contract id.
-- `eAccountBlocked`, `eAlreadyBlocked`, `eNotBlocked`, `eAdminNotBlockable`,
-  `eNoAccounts`, `eBlocklistFull`, and `eWrongBlocklist`: the failure
-  statuses. Each has a stable `errorId`
-  under `openzeppelin.com/blocklist-`, so an off-ledger client matches the id
-  in the `DAML_FAILURE` error, and your tests compare the whole value.
+- `eAccountBlocked`, `eAdminNotBlockable`, `eBlocklistFull`,
+  `eWrongBlocklist`, and `eBlocklistMissing`: the failure statuses. Each has
+  a stable `errorId` under `openzeppelin.com/blocklist-`, so an off-ledger
+  client matches the id in the `DAML_FAILURE` error, and your tests compare
+  the whole value.
 
 `OpenZeppelin.BlocklistV1.Internal` is not public API. Its contents can change
 in any version, so do not import it.
@@ -38,7 +40,7 @@ in any version, so do not import it.
 
 **1. Create the blocklist.** The admin creates one `Blocklist` per `id`, with
 an empty set, the blocker party, and the largest set it accepts (see
-[Size](#size)):
+[Privacy and cost](#privacy-and-cost)):
 
 ```daml
 import qualified DA.Set as Set
@@ -49,7 +51,7 @@ blocklistCid <- create Blocklist with
   blocker = complianceParty
   id = "my-token"
   blocked = Set.empty
-  maxEntries = 10000
+  maxEntries = 5000
 ```
 
 **2. Guard every choice that moves value.** The choice takes the blocklist
@@ -71,15 +73,21 @@ runs on, never from the caller:
         create this with owner = newOwner
 ```
 
-The fetch needs the authority of a stakeholder of the blocklist, so call
-`fetchBlocklist` from a choice on a contract that the admin signs. The
-submitter is usually not a stakeholder: the admin gives the blocklist to it
-as an explicit disclosure, the same way it gives other shared contracts.
+A choice that receives `ExtraArgs` calls
+`fetchBlocklistFromContext issuer "my-token" extraArgs.context` instead.
 
-**3. Block and unblock.** The blocker exercises the choices with one party
-or with a list, such as one update of a screening list. A change is atomic:
-when one listed party fails a check, no party changes state. Each change
-replaces the contract, so clients take the successor id and disclosure:
+The fetch needs the authority of a stakeholder of the blocklist, so call it
+from a choice on a contract that the admin signs. The submitter is usually
+not a stakeholder: the admin gives the blocklist to it as an explicit
+disclosure, the same way it gives other shared contracts.
+
+**3. Block and unblock.** The blocker exercises the choices with a list of
+parties. A party that is already in the target state, or that the list names
+twice, is skipped, so a synchronization job can send the whole screening list
+each time. When the set changes, the call archives the contract and returns
+the successor; otherwise the contract stays active and the call returns its
+id. A call is atomic: when one listed party fails a check, no party changes
+state.
 
 ```daml
 blocklistCid' <- exercise blocklistCid Blocklist_Block with
@@ -107,35 +115,37 @@ hold, and a blocked provider blocks every account it provides. The CIP-0112
 mint and burn accounts have neither, so a mint or a burn checks the holder's
 side only.
 
-A token standard interface choice takes no blocklist argument. The registry's
-off-ledger API supplies the blocklist contract id in the choice context
-(`ExtraArgs.context`) under `blocklistContextKey`, together with the contract
-as a disclosure, and the choice body reads it from there. A context without the blocklist fails, so a
-caller cannot skip the check by leaving it out.
+A token standard interface choice takes no blocklist argument. The
+registry's off-ledger API supplies the blocklist contract id in the choice
+context under `blocklistContextKey`, together with the contract as a
+disclosure, and the choice body reads it with `fetchBlocklistFromContext`. A
+context without the blocklist fails with `eBlocklistMissing`, so a caller
+cannot skip the check by leaving it out.
 
-The checks run at the time value moves:
+The checks run when value moves between accounts:
 
 | Path | Accounts checked |
 |---|---|
 | Transfer factory, one step or two steps, including a burn | Sender and receiver |
 | Accept of a pending transfer, mint offer, or burn request | Sender and receiver |
 | Allocation factory | Authorizer and the other side of every leg |
-| Settlement factory | Sender and receiver of every leg, and the authorizer of every allocation |
-| Withdraw of a transfer or an allocation, also after the settlement deadline, and owner unlock of an expired lock | The account that unlocks its own funds |
-| Reject, cancel, admin expiry | None: each returns locked funds to the account that locked them |
+| Settlement factory | Every leg and every authorizer |
+| `Allocation_Settle`, from the factory or direct | Authorizer and the other side of every leg |
+| Withdraw, reject, cancel, admin expiry, owner unlock | None |
+
+The last row returns locked funds to the account that locked them, so it
+stays open for a blocked account. The funds stay in that account, and every
+later transfer from it is refused.
 
 An allocation committed before a block does not settle while the block holds.
 CIP-0112 states the exception in section 4.3.8, item 4: "it's acceptable to
-fail settlement if a trading account was added to a blocklist." The executors
-can cancel such an allocation, and the admin can expire it, which returns the
-funds to the authorizer's account.
+fail settlement if a trading account was added to a blocklist." The
+authorizer can withdraw the allocation after its settlement deadline, as
+section 4.3.3 asks, and the executors can cancel it before then.
 
-A blocked account takes no action on its own holdings, so a blocked
-authorizer cannot withdraw a committed allocation after its settlement
-deadline either. Section 4.3.3 asks that the authorizer can withdraw then.
-The funds still leave the lock at the deadline: the registry's allocation
-expiry is never later than the settlement deadline, and the admin's expiry
-returns them to the authorizer's account.
+The settlement factory passes the blocklist to each allocation's settle
+through the context argument of `settleBatchImpl` in
+`openzeppelin-token-cip112-utils`.
 [`examples/token/token-cip112-custom`](../../../examples/token/token-cip112-custom/)
 implements every row of the table.
 
@@ -149,30 +159,47 @@ implements every row of the table.
 - A key rotation of the blocker is a topology change of that party and
   leaves the blocklist unchanged.
 - The admin gives the role to another party with `Blocklist_SetBlocker`, in
-  one step. The blocker observes the contract and does not sign it, so the
-  new blocker's consent adds no authority, and the admin corrects a wrong
-  party with another `Blocklist_SetBlocker`. The blocked set carries over,
-  and the previous blocker loses the role and its view of later changes.
+  one step, with a `reason` for the audit trail. The blocker observes the
+  contract and does not sign it, so the new blocker's consent adds no
+  authority, and the admin corrects a wrong party with another
+  `Blocklist_SetBlocker`. The blocked set carries over, and the previous
+  blocker loses the role and its view of later changes.
 - The choices read no pause flag, so block and unblock work while the
   application is paused.
-- Block refuses an empty list, a party that is already blocked or listed
-  twice, the admin, and a set larger than `maxEntries`. Unblock refuses an
-  empty list and a party that is not blocked or is listed twice.
+- Block refuses the admin and a set larger than `maxEntries`. The `ensure`
+  clause holds both rules on every contract, also one that the admin creates
+  directly.
 
 ## Audit
 
-Each change is a consuming exercise on the blocklist. The Ledger API update
-carries the choice name, the argument (the parties and the `reason`), the acting
-party, and the ledger effective time. An indexer that reads the update stream
-of the admin or the blocker reconstructs who was blocked or unblocked, by
-which blocker, and when. The contract itself holds the current set only.
+Each block, unblock, or role change is an exercise on the blocklist. The
+Ledger API update carries the choice name, the argument (the parties and the
+`reason`), the acting party, and the ledger effective time. A call that
+changes the set also archives the contract and creates its successor. An
+indexer that reads the update stream of the admin or the blocker
+reconstructs who was blocked or unblocked, by which blocker, and when. The
+contract itself holds the current set only.
 
-## Size
+## Privacy and cost
+
+The set holds `blockedKey` digests: the unsalted SHA-256 of each party's text
+form. A digest keeps the party id out of the contract payload. It does not
+keep a party's blocked status confidential.
+
+| Party | What it can learn |
+|---|---|
+| Admin | The set, its history with parties and reasons, and every guarded transaction that it signs |
+| Blocker | The blocklist and its history, with parties and reasons. A guard reads the blocklist with a `fetch`, whose informees are the signatories and the acting parties, so the guarded transactions do not reach the blocker |
+| A submitter of a guarded transaction, and every other informee of the view that holds the fetch | The digest set at that time: its size, and the blocked status of every party id that it knows. Successive disclosures show which digests were added and removed, and when |
+| A holder of the digest set and a list of party ids, such as a participant's party list or the topology state | Which of those parties are blocked: the digest is unsalted |
+| A reader of the blocklists of two applications | Which parties both block: a party has the same digest in every blocklist |
 
 A change archives the blocklist and creates it again, so its transaction
-carries the set twice, about 150 bytes per entry. A guarded transaction
-fetches it and carries it once. On a local Canton sandbox with the default
-maximum request size of 10 MiB:
+carries the set twice. A guarded transaction fetches it and carries it once.
+Each copy is about 74 bytes per entry: a block of 75,000 entries produced a
+view of 11,103,144 bytes. A guarded transaction therefore grows by about 74
+bytes per entry, and its sequencer traffic grows with it. On a local Canton
+sandbox with the default maximum request size of 10 MiB:
 
 | Entries | Guarded transfer | Block |
 |---|---|---|
@@ -180,24 +207,15 @@ maximum request size of 10 MiB:
 | 10,000 | 0.38 s | 0.54 s |
 | 25,000 | 0.58 s | 0.74 s |
 | 50,000 | 0.85 s | 1.51 s |
-| 75,000 | 0.92 s | refused: the view of 11,103,144 bytes exceeds the maximum request size |
+| 75,000 | 0.92 s | refused: view too large |
 
-Above that size an unblock fails too, so `Blocklist_Block` refuses a set
-larger than `maxEntries`. Set `maxEntries` from the maximum request size of
-your synchronizer, at no more than one entry per 200 bytes of it.
+Set `maxEntries` from both limits:
 
-## Privacy
-
-- The blocker observes the blocklist and nothing else. A guard reads the
-  blocklist with a `fetch`, whose informees are the signatories and the
-  acting parties, so the guarded transactions do not reach the blocker. The
-  blocker needs no view of holdings or balances to block a party.
-- Each party that submits a guarded transaction receives the blocklist by
-  disclosure. The set holds `blockedKey` digests (SHA-256 of the party's text
-  form), so such a party can test a party it knows, but cannot list the
-  blocked parties.
-- The `reason` of a change is in the exercise argument only, which the admin
-  and the blocker see.
+- Request size: at most one entry per 200 bytes of the synchronizer's
+  maximum request size. Above that size no change fits, not even an unblock.
+- Traffic: each guarded transaction pays about 74 bytes per entry. At 1,000
+  entries that is about 74 KB per transfer; at 10,000 entries, about 740 KB.
+  Choose the largest set whose cost per transfer your traffic budget accepts.
 
 ## Scope and security caveats
 
@@ -208,16 +226,27 @@ your synchronizer, at no more than one entry per 200 bytes of it.
   active contract per id. The admin can also archive the blocklist and create
   it again with any set or blocker, outside the choices. Make the admin part
   of your compliance trust model.
+- The admin cannot be blocked, so an account that the admin owns, such as a
+  treasury or fee account, cannot be blocked either. The blocker's authority
+  ends at the admin: the admin is trusted with the accounts it owns.
 - If the admin archives the blocklist, every guarded choice fails, because
   the fetch finds no active contract.
 - Each change replaces the contract, so a guarded transaction that was
   prepared against the predecessor fails, and its submitter retries with the
-  successor. Batch the changes of one list update into one block or unblock.
-- Every guarded transaction carries the whole set. See [Size](#size).
-- An admin who creates the blocklist directly can store a set larger than
-  `maxEntries`. Only `Blocklist_Block` enforces the limit.
+  successor. Send the changes of one list update in one call.
+- Every guarded transaction carries the whole set. See
+  [Privacy and cost](#privacy-and-cost).
 - The blocklist restricts value movement only. Moving the funds of a blocked
   party to another account is out of scope.
+
+## Open questions
+
+- Confidential membership and per-transfer cost. A guarded transaction could
+  carry a Merkle root of the set and a proof of non-membership for its
+  parties, instead of the whole set. Each user would then learn nothing
+  beyond its own proof, and the cost per transfer would grow with the
+  logarithm of the set size. A simpler step shards the set by digest prefix,
+  so a transaction carries only the shards of its parties.
 
 ## Compatibility
 
@@ -239,6 +268,7 @@ DAML_PACKAGE=packages/security/blocklist-v1 dpm build
 
 ```yaml
 data-dependencies:
+  - ../canton-contracts/dars/vendor/splice-api-token-metadata-v1-1.0.0.dar
   - ../canton-contracts/packages/security/blocklist-v1/.daml/dist/openzeppelin-blocklist-v1-0.1.0.dar
 ```
 
