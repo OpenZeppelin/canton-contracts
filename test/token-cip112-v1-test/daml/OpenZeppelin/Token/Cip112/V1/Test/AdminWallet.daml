@@ -1,0 +1,244 @@
+-- | Tests for the admin's wallet actions on `TokenRules`. The admin is the
+-- only account party of the CIP-0112 mint and burn accounts, so it accepts
+-- and rejects burn requests, withdraws mint offers and special-account
+-- allocations, and cancels allocations it executes.
+--
+-- A standard interface choice runs the body of whichever template implements
+-- it. `ForeignInstruction` is an attacker's transfer instruction that the
+-- admin observes. Its accept body creates a `TokenHolding` for the attacker,
+-- which needs exactly the admin's authority plus the attacker's own
+-- signature. The admin's template-typed choices on `TokenRules` refuse it.
+module OpenZeppelin.Token.Cip112.V1.Test.AdminWallet where
+
+import DA.Assert ((===))
+import DA.Map qualified as Map
+import DA.Optional (isNone)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, senderSide)
+
+import OpenZeppelin.Token.Cip112.V1.Allocation
+import OpenZeppelin.Token.Cip112.V1.Holding
+import OpenZeppelin.Token.Cip112.V1.Registry
+import OpenZeppelin.Token.Cip112.V1.Transfer
+import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
+import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation
+  (ForeignAllocation(..), allocateUnder, forgedView, mustFailWith)
+
+-- The attacker's template
+--------------------------
+
+-- | A burn request in appearance. Every choice body mints to the attacker.
+template ForeignInstruction with
+    attacker : Party
+    admin : Party
+    claimedView : TransferInstructionV2.TransferInstructionView
+  where
+    signatory attacker
+    observer admin
+
+    interface instance TransferInstructionV2.TransferInstruction for ForeignInstruction where
+      view = claimedView
+      transferInstruction_acceptExtraObservers _ = []
+      transferInstruction_rejectExtraObservers _ = []
+      transferInstruction_withdrawExtraObservers _ = []
+      transferInstruction_acceptImpl _ _ = abuseLentAuthority this
+      transferInstruction_rejectImpl _ _ = abuseLentAuthority this
+      transferInstruction_withdrawImpl _ _ = abuseLentAuthority this
+
+-- | Runs with the admin's authority when the admin exercises an interface
+-- choice on the contract.
+abuseLentAuthority : ForeignInstruction -> Update TransferInstructionV2.TransferInstructionResult
+abuseLentAuthority this = do
+  holdingCid <- create TokenHolding with
+    holding = HoldingV2.HoldingView with
+      account = basicAccount this.attacker
+      instrumentId = HoldingV2.InstrumentId with admin = this.admin; id = "TOK"
+      amount = 1000000.0
+      lock = None
+      meta = emptyMetadata
+  pure TransferInstructionV2.TransferInstructionResult with
+    output = TransferInstructionV2.TransferInstructionResult_Completed
+      with receiverHoldingCids = [toInterfaceContractId holdingCid]
+    senderChangeCids = []
+    meta = emptyMetadata
+
+plantBurnRequest : Scenario -> Party -> Script (ContractId ForeignInstruction)
+plantBurnRequest s attacker =
+  submit attacker do
+    createCmd ForeignInstruction with
+      attacker
+      admin = s.admin
+      claimedView = TransferInstructionV2.TransferInstructionView with
+        originalInstructionCid = None
+        transfer = (burnTransfer s attacker 1.0 []) with sender = basicAccount attacker
+        expiresAt = Some t2
+        availableActions = Map.fromList [(TransferInstructionV2.TIA_Accept, [[s.admin]])]
+        meta = emptyMetadata
+
+-- | What a wallet that selects pending work by interface hands the admin.
+asInstruction : ContractId ForeignInstruction -> ContractId TokenTransferInstruction
+asInstruction = coerceContractId
+
+-- Genuine contracts
+--------------------
+
+-- | Each admin wallet action works through `TokenRules` on this package's
+-- templates: accept and reject a burn request, withdraw a mint offer,
+-- withdraw a mint-account allocation, and cancel an allocation the admin
+-- executes alone before its expiry.
+testAdminWalletActions : Script ()
+testAdminWalletActions = do
+  s@Scenario{..} <- setup
+  let asAdmin = actAs admin <> discloseMany [rulesDisclosure]
+      pinned = fromInterfaceContractId @TokenTransferInstruction
+
+  input <- mint admin alice 10.0
+  acceptedCid <- pendingCid =<< instructTransfer s [alice] (burnTransfer s alice 4.0 [input])
+  accepted <- submit asAdmin do
+    exerciseCmd rulesCid TokenRules_AcceptTransferInstruction with
+      instructionCid = pinned acceptedCid
+      extraArgs = emptyExtraArgs
+  completedHoldings accepted >>= (=== [])
+  holdingAmounts alice >>= (=== [6.0])
+
+  [(remaining, _)] <- query @TokenHolding alice
+  rejectedCid <- pendingCid =<< instructTransfer s [alice] (burnTransfer s alice 6.0 [remaining])
+  _ <- submit asAdmin do
+    exerciseCmd rulesCid TokenRules_RejectTransferInstruction with
+      instructionCid = pinned rejectedCid
+      extraArgs = emptyExtraArgs
+  holdingAmounts alice >>= (=== [6.0])
+  assertNoLocks alice
+
+  offerCid <- submit (actAs admin) (offerMintCmd s bob 5.0)
+  _ <- submit asAdmin do
+    exerciseCmd rulesCid TokenRules_WithdrawTransferInstruction with
+      instructionCid = pinned offerCid
+      extraArgs = emptyExtraArgs
+  offers <- queryInterface @TransferInstructionV2.TransferInstruction bob
+  offers === []
+
+  let mintLeg = (mkTransferLeg "mint-1" alice alice 10.0) with sender = mintAccount
+      mintSpec = (mkAllocationSpec admin admin [senderSide mintLeg]) with authorizer = mintAccount
+  mintAllocCid <- completedCid =<< submit asAdmin do
+    exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement
+        allocation = mintSpec
+        requestedAt = t0
+        inputHoldingCids = []
+        extraArgs = emptyExtraArgs
+        actors = [admin]
+  withdrawn <- submit asAdmin do
+    exerciseCmd rulesCid TokenRules_WithdrawAllocation with
+      allocationCid = fromInterfaceContractId @TokenAllocation mintAllocCid
+      extraArgs = emptyExtraArgs
+  withdrawn.output === AllocationV2.AllocationResult_Withdrawn
+
+  [(aliceHolding, _)] <- query @TokenHolding alice
+  let adminSettlement = settlement with executors = [admin]
+  executedCid <- allocateUnder s adminSettlement alice [senderSide (mkTransferLeg "leg-1" alice bob 6.0)] [aliceHolding]
+  cancelled <- submit asAdmin do
+    exerciseCmd rulesCid TokenRules_CancelAllocation with
+      allocationCid = fromInterfaceContractId @TokenAllocation executedCid
+      extraArgs = emptyExtraArgs
+  cancelled.output === AllocationV2.AllocationResult_Cancelled
+  holdingAmounts alice >>= (=== [6.0])
+  assertNoLocks alice
+  allocations <- queryInterface @AllocationV2.Allocation admin
+  allocations === []
+
+-- | The choices act only on this registry's contracts: an instruction of
+-- another registry, on which this admin is a sender party, is refused.
+testAdminWalletActionsRefuseOtherRegistry : Script ()
+testAdminWalletActionsRefuseOtherRegistry = do
+  s@Scenario{..} <- setup
+  other <- setupPrefixed "other-"
+  -- The admin of `s` holds the other registry's token and offers it to bob.
+  input <- mint other.admin admin 10.0
+  instrCid <- pendingCid =<< instructTransfer other [admin] (mkTransfer other admin bob 4.0 [input])
+  mustFailWith "transfer.instrumentId.admin" (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_WithdrawTransferInstruction with
+      instructionCid = fromInterfaceContractId @TokenTransferInstruction instrCid
+      extraArgs = emptyExtraArgs
+  -- Another registry's allocation, where this admin is the authorizer.
+  [(change, _)] <- queryFilter @TokenHolding admin (\h -> isNone h.holding.lock)
+  allocCid <- completedCid =<< allocateSpec other admin
+    (mkAllocationSpec other.admin admin [senderSide (mkTransferLeg "leg-x" admin bob 3.0)]) [change]
+  mustFailWith "allocation.admin" (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_WithdrawAllocation with
+      allocationCid = fromInterfaceContractId @TokenAllocation allocCid
+      extraArgs = emptyExtraArgs
+
+-- Foreign contracts
+--------------------
+
+-- | The hazard: the admin exercising the standard accept choice on an id it
+-- did not create runs the attacker's body with the admin's authority, and
+-- the attacker receives a genuine holding.
+testInterfaceAcceptLendsAdminAuthority : Script ()
+testInterfaceAcceptLendsAdminAuthority = do
+  s@Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+  plantedCid <- plantBurnRequest s attacker
+  -- The planted contract passes for a burn request in the admin's
+  -- interface query.
+  Some v <- queryInterfaceContractId @TransferInstructionV2.TransferInstruction admin
+    (toInterfaceContractId @TransferInstructionV2.TransferInstruction plantedCid)
+  v.transfer.receiver === burnAccount
+  _ <- submit (actAs admin) (acceptCmd admin (toInterfaceContractId plantedCid))
+  holdingAmounts attacker >>= (=== [1000000.0])
+
+-- | Every admin wallet action on `TokenRules` refuses the planted contract,
+-- and the attacker receives nothing.
+testAdminWalletActionsRefuseForeignInstruction : Script ()
+testAdminWalletActionsRefuseForeignInstruction = do
+  s@Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+  plantedCid <- plantBurnRequest s attacker
+  let asAdmin = actAs admin <> discloseMany [rulesDisclosure]
+      instructionCid = asInstruction plantedCid
+  mustFailWith wrongTemplate asAdmin do
+    exerciseCmd rulesCid TokenRules_AcceptTransferInstruction with
+      instructionCid; extraArgs = emptyExtraArgs
+  mustFailWith wrongTemplate asAdmin do
+    exerciseCmd rulesCid TokenRules_RejectTransferInstruction with
+      instructionCid; extraArgs = emptyExtraArgs
+  mustFailWith wrongTemplate asAdmin do
+    exerciseCmd rulesCid TokenRules_WithdrawTransferInstruction with
+      instructionCid; extraArgs = emptyExtraArgs
+  holdingAmounts attacker >>= (=== [])
+
+-- | The allocation choices refuse a planted allocation whose cancel body
+-- mints to the attacker.
+testAdminWalletActionsRefuseForeignAllocation : Script ()
+testAdminWalletActionsRefuseForeignAllocation = do
+  s@Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+  let adminSettlement = settlement with executors = [admin]
+  plantedCid <- submit attacker do
+    createCmd ForeignAllocation with
+      attacker
+      claimedView = forgedView admin adminSettlement attacker
+        [senderSide (mkTransferLeg "leg-x" attacker bob 1.0)] (Some t2)
+      extraObservers = [admin]
+      mintAmount = Some 1000000.0
+  let asAdmin = actAs admin <> discloseMany [rulesDisclosure]
+      allocationCid = coerceContractId @ForeignAllocation @TokenAllocation plantedCid
+  mustFailWith wrongTemplate asAdmin do
+    exerciseCmd rulesCid TokenRules_CancelAllocation with
+      allocationCid; extraArgs = emptyExtraArgs
+  mustFailWith wrongTemplate asAdmin do
+    exerciseCmd rulesCid TokenRules_WithdrawAllocation with
+      allocationCid; extraArgs = emptyExtraArgs
+  holdingAmounts attacker >>= (=== [])
+
+-- | The message a template-typed `fetch` fails with on another template.
+wrongTemplate : Text
+wrongTemplate = "wrong template type"
