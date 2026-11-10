@@ -15,7 +15,8 @@
 -- - A compliance freeze on holdings. A template field plus two choices, and
 --   the `MyHolding_Spend` hook refuses a frozen holding, so every workflow
 --   path (transfer, allocation, burn, unlock) refuses it without the
---   workflows knowing what a freeze is.
+--   workflows knowing what a freeze is. The freeze refuses a holding with a
+--   live lock, because that holding backs a pending contract.
 -- - A pause switch on the registry. A template field plus two choices,
 --   checked before each factory and the mint offer delegate to the workflow.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
@@ -29,6 +30,7 @@
 -- holding needs custom instruction and allocation templates too.
 module OpenZeppelin.Examples.Token.Cip112.Custom where
 
+import DA.Assert (assertDeadlineExceeded)
 import DA.Foldable (forA_)
 
 import Splice.Api.Token.MetadataV1
@@ -117,10 +119,17 @@ template MyHolding with
         require "holding is frozen" (not frozen)
         pure holding
 
+    -- | Refused while the holding carries a live lock. A pending transfer
+    -- instruction or allocation names its locked funding by contract id, and
+    -- every path that ends it consumes that id. Re-creating the holding
+    -- under a new id would leave the pending contract unable to complete,
+    -- release, or expire. A frozen holding never carries a live lock, so
+    -- `MyHolding_Unfreeze` needs no such check.
     choice MyHolding_Freeze : ContractId MyHolding
       controller roles.complianceOfficer
       do
         require "holding is already frozen" (not frozen)
+        requireLockReleased holding
         create this with frozen = True
 
     choice MyHolding_Unfreeze : ContractId MyHolding
@@ -140,6 +149,15 @@ template MyHolding with
 
     interface instance HoldingV2.Holding for MyHolding where
       view = holding
+
+-- | Fails while the holding carries a live lock, with the bound that
+-- `holdingOwnerUnlockImpl` applies before it re-creates a holding. Any
+-- consumer choice that re-creates or archives a holding outside the
+-- workflows has to make the same check.
+requireLockReleased : HoldingV2.HoldingView -> Update ()
+requireLockReleased holding = forA_ holding.lock $ \lock -> case lock.expiresAt of
+  None -> fail "holding is locked indefinitely"
+  Some expiresAt -> assertDeadlineExceeded "holding lock expiresAt" expiresAt
 
 -- Transfer instruction
 -----------------------

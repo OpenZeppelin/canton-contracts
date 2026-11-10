@@ -48,6 +48,13 @@ isValidRegistryConfig c =
 --------------------------------------------
 
 -- | What a workflow needs from the template owner. Not serializable.
+--
+-- A pending transfer instruction or allocation names its funding by
+-- contract id in `lockedHoldingCids`, and every path that ends it (accept,
+-- reject, withdraw, expire, settle, cancel) consumes exactly those ids. A
+-- holding with a live lock therefore belongs to its pending contract: no
+-- choice on the holding template may archive or re-create it before the
+-- lock's `expiresAt`. `holdingOwnerUnlockImpl` keeps this bound.
 data HoldingOps = HoldingOps with
     createHolding : HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
       -- ^ Create a holding from its standard view. Law: the created

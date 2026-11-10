@@ -12,10 +12,16 @@ What it adds, and where each addition lives:
 |---|---|
 | Pauser and compliance-officer roles | Controllers of consumer choices; the admin stays the signatory and holds neither power |
 | Auditor observing every contract and every holdings-change event | A consumer field on each template, reached through the closure that builds `HoldingOps`, plus the `eventObservers` operation |
-| Compliance freeze on holdings | A template field plus `MyHolding_Freeze` and `MyHolding_Unfreeze`; `MyHolding_Spend` refuses a frozen holding, so every workflow path refuses it |
+| Compliance freeze on holdings | A template field plus `MyHolding_Freeze` and `MyHolding_Unfreeze`; `MyHolding_Spend` refuses a frozen holding, so every workflow path refuses it. The freeze refuses a holding with a live lock |
 | Pause switch on the registry | A template field plus `MyRules_Pause` and `MyRules_Unpause`, checked before each factory delegates and before a mint offer |
 | Fee on every transfer except a burn | Two workflow calls composed in the factory body: a one-step fee transfer to the treasury, then the main transfer on the fee leg's change |
 | Executor allowlist | Checked before delegating to the allocation and settlement workflows |
+
+The freeze does not cover funds locked for a pending transfer instruction or
+allocation. The pending contract names its locked holding by contract id, and
+a freeze re-creates the holding under a new id. `MyHolding_Freeze` therefore
+refuses a holding until its lock expires, and the pending contract completes,
+releases, or expires as usual.
 
 The pause does not cover pending transfer instructions. Their accept choice
 does not read the rules contract, so a transfer, mint offer, or burn request
