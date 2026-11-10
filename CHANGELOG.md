@@ -67,3 +67,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   delivery-vs-burn settlement through the CIP-0112 mint and burn accounts,
   registry rules with mint offers from the mint account, and burns as
   transfers to the burn account.
+- Added the admin wallet choices `TokenRules_AcceptTransferInstruction`,
+  `TokenRules_RejectTransferInstruction`,
+  `TokenRules_WithdrawTransferInstruction`, `TokenRules_WithdrawAllocation`,
+  and `TokenRules_CancelAllocation`. Each choice fetches the contract by this
+  package's template and checks its admin before it exercises the standard
+  choice with the admin as the actor.

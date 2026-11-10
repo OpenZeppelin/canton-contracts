@@ -95,10 +95,99 @@ template TokenRules with
       controller config.admin
       do
         forA_ instructionCids $ \cid -> do
-          instr <- fetch cid
-          requireMatchExpected ("transfer.instrumentId.admin", instr.state.transfer.instrumentId.admin) config.admin
+          _ <- ownInstruction config cid
           _ <- exercise cid TokenTransferInstruction_Expire
           pure ()
+
+    -- Admin wallet actions. The admin is the only account party of the
+    -- CIP-0112 mint and burn accounts, so it acts on pending contracts as a
+    -- wallet: it accepts or rejects a burn request, withdraws a mint offer,
+    -- withdraws a special-account allocation, and cancels an allocation it
+    -- executes. A standard interface choice runs the body of whichever
+    -- template implements it, with the admin's authority. Each choice below
+    -- fetches the contract by this package's template first, so the admin's
+    -- authority only ever reaches this package's choice bodies.
+
+    nonconsuming choice TokenRules_AcceptTransferInstruction : TransferInstructionV2.TransferInstructionResult
+      -- ^ Accept, as the admin, a `TokenTransferInstruction` of this
+      -- registry, such as a burn request.
+      with
+        instructionCid : ContractId TokenTransferInstruction
+        extraArgs : ExtraArgs
+      controller config.admin
+      do
+        iid <- ownInstruction config instructionCid
+        exercise iid TransferInstructionV2.TransferInstruction_Accept with
+          actors = [config.admin]; extraArgs
+
+    nonconsuming choice TokenRules_RejectTransferInstruction : TransferInstructionV2.TransferInstructionResult
+      -- ^ Reject, as the admin, a `TokenTransferInstruction` of this
+      -- registry, such as a burn request.
+      with
+        instructionCid : ContractId TokenTransferInstruction
+        extraArgs : ExtraArgs
+      controller config.admin
+      do
+        iid <- ownInstruction config instructionCid
+        exercise iid TransferInstructionV2.TransferInstruction_Reject with
+          actors = [config.admin]; extraArgs
+
+    nonconsuming choice TokenRules_WithdrawTransferInstruction : TransferInstructionV2.TransferInstructionResult
+      -- ^ Withdraw, as the admin, a `TokenTransferInstruction` of this
+      -- registry, such as a mint offer.
+      with
+        instructionCid : ContractId TokenTransferInstruction
+        extraArgs : ExtraArgs
+      controller config.admin
+      do
+        iid <- ownInstruction config instructionCid
+        exercise iid TransferInstructionV2.TransferInstruction_Withdraw with
+          actors = [config.admin]; extraArgs
+
+    nonconsuming choice TokenRules_WithdrawAllocation : AllocationV2.AllocationResult
+      -- ^ Withdraw, as the admin, a `TokenAllocation` of this registry, such
+      -- as a mint-account or burn-account allocation.
+      with
+        allocationCid : ContractId TokenAllocation
+        extraArgs : ExtraArgs
+      controller config.admin
+      do
+        iid <- ownAllocation config allocationCid
+        exercise iid AllocationV2.Allocation_Withdraw with
+          actors = [config.admin]; extraArgs
+
+    nonconsuming choice TokenRules_CancelAllocation : AllocationV2.AllocationResult
+      -- ^ Cancel, as the admin, a `TokenAllocation` of this registry: at any
+      -- time when the admin is its only settlement executor, otherwise after
+      -- its `expiresAt`.
+      with
+        allocationCid : ContractId TokenAllocation
+        extraArgs : ExtraArgs
+      controller config.admin
+      do
+        iid <- ownAllocation config allocationCid
+        exercise iid AllocationV2.Allocation_Cancel with
+          actors = [config.admin]; extraArgs
+
+-- | Fetch a transfer instruction by this package's template and require that
+-- it belongs to this registry.
+ownInstruction
+  : RegistryConfig -> ContractId TokenTransferInstruction
+  -> Update (ContractId TransferInstructionV2.TransferInstruction)
+ownInstruction config cid = do
+  instr <- fetch cid
+  requireMatchExpected ("transfer.instrumentId.admin", instr.state.transfer.instrumentId.admin) config.admin
+  pure (toInterfaceContractId cid)
+
+-- | Fetch an allocation by this package's template and require that it
+-- belongs to this registry.
+ownAllocation
+  : RegistryConfig -> ContractId TokenAllocation
+  -> Update (ContractId AllocationV2.Allocation)
+ownAllocation config cid = do
+  alloc <- fetch cid
+  requireMatchExpected ("allocation.admin", alloc.state.allocation.admin) config.admin
+  pure (toInterfaceContractId cid)
 
 rulesOps : RegistryConfig -> HoldingOps
 rulesOps config = defaultHoldingOps config.admin

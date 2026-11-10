@@ -38,7 +38,8 @@ their own templates reuses directly.
   settlement and CIP-0112 iterated settlement.
 - `TokenRules` (`Registry`): the registry rules contract over a
   `RegistryConfig` payload, implementing the TSv2 transfer, allocation, and
-  settlement factories plus mint offers and expiry.
+  settlement factories plus mint offers, expiry, and the admin's wallet
+  actions.
 - `TokenEventLog` (`Base`): the holdings-change event-log host.
 - `defaultHoldingOps` (`Holding`): the operations record these templates run
   the utils functions with. A consumer that keeps `TokenHolding` but owns
@@ -70,12 +71,15 @@ interfaces or exceptions of its own.
 - The admin issues supply with `TokenRules_OfferMint`: a pending transfer
   instruction from the CIP-0112 mint account (`cip-112/mint`) that locks
   nothing. The receiver's account parties accept it to create the holding or
-  reject it. The admin can withdraw it until then and expire it after
+  reject it. The admin can withdraw it until then through
+  `TokenRules_WithdrawTransferInstruction` and expire it after
   `executeBefore`. A mint is always two-step.
 - A holder burns with `TransferFactory_Transfer` to the CIP-0112 burn account
   (`cip-112/burn`), whose only account party is the admin. The holder alone
   creates a burn request that locks the amount, and the admin accepts or
-  rejects it; the holder and the admin acting together burn in one step.
+  rejects it through `TokenRules_AcceptTransferInstruction` or
+  `TokenRules_RejectTransferInstruction`; the holder and the admin acting
+  together burn in one step.
   Accepting archives the locked amount and creates no holding for the burn
   account.
 - An allocation created with `nextIterationFunding` set enables iterated
@@ -92,7 +96,9 @@ interfaces or exceptions of its own.
 - Only regular (owned) accounts hold balances. The admin also authors
   allocations for the CIP-0112 mint and burn accounts, so a settlement batch
   can issue or redeem supply as one side of a trade. The special accounts
-  appear in events only as the other side of a supply change.
+  appear in events only as the other side of a supply change. The admin
+  withdraws such an allocation through `TokenRules_WithdrawAllocation`, and
+  cancels an allocation it executes through `TokenRules_CancelAllocation`.
 
 For multi-participant deployment, disclosure, and wallet integration, see
 [`integration-guide.md`](integration-guide.md).
@@ -136,6 +142,19 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   settle outside the factory. Operate the admin party so that it signs settles
   only through the settlement factory. See `ideas.md` on reintroducing the
   on-ledger guard that removes this trust assumption.
+- The admin is the only account party of the CIP-0112 mint and burn
+  accounts, so it acts as a wallet on pending contracts that other parties
+  present. A standard interface choice runs the body of whichever template
+  implements it, with the authority of the actors. A planted contract that
+  implements the interface and names the admin as an observer would run its
+  own code with the admin's authority, for example to create holdings. The
+  admin must therefore take every wallet action through the `TokenRules`
+  admin wallet choices, which fetch by this package's template first. It
+  must never exercise a standard interface choice on a contract id it did
+  not create, and it co-signs a one-step burn only on its own `TokenRules`
+  contract id. Template typing resolves by package name under smart contract
+  upgrades, so the participant that hosts the admin must vet only the
+  vendored Token Standard V2 DARs and the three library packages.
 - A mint-account or burn-account allocation commits the admin to that supply
   change. The executors decide whether and when it settles, until the
   settlement deadline or until the admin withdraws an uncommitted allocation.
