@@ -66,6 +66,18 @@ contract id enters through an operation the template owner wrote:
   controls, may create one. A factory body must refuse the mint account as a
   sender, as `transferFactoryImpl` does.
 
+## Operational assumptions
+
+`executeTransfer` makes the receiver's account parties lock holders of a
+two-step transfer's locked funding, and `allocationFactoryImpl` and
+`allocationSettleImpl` make the settlement executors lock holders of an
+allocation's funding. A holding template that follows `TokenHolding` makes
+lock holders observers, and a pending-contract template makes the receiver
+or the executors observers. Every path that releases the funds then needs
+their participants to be active and to have vetted the template packages.
+A template owner that reuses these functions inherits this dependency and
+documents it for its users.
+
 ## Build
 
 From the repository root:

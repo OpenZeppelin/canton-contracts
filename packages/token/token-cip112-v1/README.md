@@ -64,9 +64,10 @@ interfaces or exceptions of its own.
   receiver's parties see that holding while the offer is pending. Accept
   fails after `executeBefore`. Reject and withdraw have no deadline. Until
   the lock expires at `executeBefore` plus `lockGrace`, withdraw is the only
-  recovery the sender's parties can perform alone. After `executeBefore`, the
-  admin alone may also return the funds to the sender through
-  `TokenTransferInstruction_Expire`.
+  recovery the sender's parties submit without the receiver. After
+  `executeBefore`, the admin may also return the funds to the sender through
+  `TokenTransferInstruction_Expire`. Every one of these paths still needs the
+  receiver's participants, as described in the security caveats.
 - The admin issues supply with `TokenRules_OfferMint`: a pending transfer
   instruction from the CIP-0112 mint account (`cip-112/mint`) that locks
   nothing. The receiver's account parties accept it to create the holding or
@@ -156,6 +157,23 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   short for the admin's cleanup automation to act in leaves expiry to the
   owner-recovery path; size it to the automation's reaction time (minutes to
   hours), and size `maxTTL` to the longest workflow the registry accepts.
+- Every lock holder of a holding is an observer of it, and the receiver's
+  account parties and the settlement executors are observers of the pending
+  transfer instruction or allocation. Canton accepts a transaction only if
+  every informee is hosted on an active participant and every participant
+  that hosts an informee has vetted the packages. Every path that releases
+  locked funds archives the locked holding and, except
+  `TokenHolding_OwnerUnlock`, the pending contract. This includes withdraw,
+  reject, admin expiry, admin garbage collection, and the owner unlock after
+  the lock expires. A receiver whose participant goes offline, loses the
+  party, or unvets this package therefore blocks the release of every amount
+  locked toward it until the condition ends. The same holds for a settlement
+  executor and an allocation. A counterparty that operates its own
+  participant can cause this at will. Transfer to a receiver, and allocate
+  to executors, only when its operator is trusted to keep the party hosted
+  and the package vetted until the pending contract is archived. Hosting a
+  party on several participants protects against the loss of one node, but
+  every one of those participants must keep the package vetted.
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
   provider blocks recovery until it cooperates; single-party accounts avoid
