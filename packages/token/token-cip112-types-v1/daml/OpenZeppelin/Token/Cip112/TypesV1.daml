@@ -38,7 +38,9 @@ data TransferInstructionState = TransferInstructionState with
       -- ^ The transfer as instructed, with `inputHoldingCids` rewritten to
       -- the live locked funding.
     lockedHoldingCids : [ContractId HoldingV2.Holding]
-      -- ^ The locked funding backing the offer.
+      -- ^ The locked funding backing the offer. Every path that ends the
+      -- instruction consumes these exact ids, so no holding choice may
+      -- archive or re-create them before the lock's `expiresAt`.
     expiresAt : Time
       -- ^ Storage bound; the admin may expire the instruction after it.
     lockExpiresAt : Time
@@ -53,7 +55,9 @@ data AllocationState = AllocationState with
     settlement : AllocationV2.SettlementInfo
     allocation : AllocationV2.AllocationSpecification
     lockedHoldingCids : [ContractId HoldingV2.Holding]
-      -- ^ The locked funding backing the allocation.
+      -- ^ The locked funding backing the allocation. Every path that ends
+      -- the allocation consumes these exact ids, so no holding choice may
+      -- archive or re-create them before the lock's `expiresAt`.
     requestedAt : Time
       -- ^ The wallet-supplied request time.
     createdAt : Time

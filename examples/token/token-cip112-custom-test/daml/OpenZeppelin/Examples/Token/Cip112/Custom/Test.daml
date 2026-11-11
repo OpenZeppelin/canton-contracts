@@ -455,6 +455,23 @@ testFrozenHoldingCannotUnlock = do
   _ <- submit (actAs alice) do exerciseCmd thawedCid MyHolding_OwnerUnlock
   assertNoLocks alice
 
+-- | A holding with a live lock backs a pending contract that names it by
+-- contract id, so the freeze refuses it. The pending transfer stays intact:
+-- the receiver accepts it afterwards.
+testLockedHoldingCannotBeFrozen : Script ()
+testLockedHoldingCannotBeFrozen = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  result <- submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
+  instrCid <- pendingCid result
+  [(lockedCid, _)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock)
+  mustFailWith "holding lock expiresAt" (actAs complianceOfficer) do
+    exerciseCmd lockedCid MyHolding_Freeze
+  accept bob instrCid
+  balanceSeenBy bob bob >>= (=== [7.0])
+  balanceSeenBy alice alice >>= (=== [3.0])
+
 -- Pause switch
 ---------------
 
