@@ -24,13 +24,13 @@ Three roles interact with the package:
   contract observers and drive `SettlementFactory_SettleBatch` with the
   executors as actors.
 
-A receiver of a pending transfer instruction and the executors of an
-allocation are lock holders of its locked funding and observers of the
-pending contract. Each of their participants must stay connected, keep the
-party, and keep every package below vetted until the pending contract is
-archived. Otherwise no path can release the locked funds, including the
-sender's withdraw, the admin's expiry, and the owner unlock after the lock
-expires. The `README.md` security caveats describe the exposure.
+The receiver of a pending transfer instruction and the executors of an
+allocation observe the pending contract and its locked funding. Until the
+pending contract is archived, these parties must stay hosted, and every
+participant hosting them must keep the packages below vetted. Otherwise no
+path can release the locked funds, including the sender's withdraw, the
+admin's expiry, and the owner unlock after the lock expires. The `README.md`
+security caveats describe the exposure.
 
 Every participant needs these exact packages.
 [`dars/manifest.yaml`](../../../dars/manifest.yaml) records their package IDs,
