@@ -64,10 +64,10 @@ interfaces or exceptions of its own.
   receiver's parties see that holding while the offer is pending. Accept
   fails after `executeBefore`. Reject and withdraw have no deadline. Until
   the lock expires at `executeBefore` plus `lockGrace`, withdraw is the only
-  recovery the sender's parties submit without the receiver. After
+  recovery the sender's parties can authorize without the receiver. After
   `executeBefore`, the admin may also return the funds to the sender through
-  `TokenTransferInstruction_Expire`. All of these paths depend on the
-  receiver's participants; see the security caveats.
+  `TokenTransferInstruction_Expire`. Withdraw and expiry both need the
+  receiver's participants, as described in the security caveats.
 - The admin issues supply with `TokenRules_OfferMint`: a pending transfer
   instruction from the CIP-0112 mint account (`cip-112/mint`) that locks
   nothing. The receiver's account parties accept it to create the holding or
@@ -162,15 +162,17 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   rejects a transaction if one of its informees has no hosting participant,
   or if a participant hosting one has not vetted the packages. If either
   happens to a receiver or an executor, no path can release the funds locked
-  toward it: withdraw, reject, admin expiry, and the owner unlock after the
-  lock expires all fail, and so does admin garbage collection of the pending
-  contract. An operator can unvet and later re-vet the packages at will. A
-  party that loses its last hosting participant needs participant repair on
-  every stakeholder participant and a compensating mint. Transfer or
-  allocate only to counterparties whose operators are trusted to keep the
-  party hosted and the packages vetted until the pending contract is
-  archived. Hosting a party on several participants survives the loss of one
-  node, but each of them must keep the packages vetted.
+  toward it. Withdraw, reject, admin expiry, admin garbage collection of the
+  pending contract, and the owner unlock after the lock expires all fail. A
+  counterparty's operator can therefore hold the funds by unvetting the
+  packages and release them by vetting again. If a party loses its last
+  hosting participant, the operator of every participant hosting a
+  stakeholder has to remove the locked holding and the pending contract
+  through participant repair. The admin then mints the locked amount back to
+  its owner. Transfer or allocate only to counterparties whose operators are
+  trusted to keep the party hosted and the packages vetted until the pending
+  contract is archived. A party hosted on several participants survives the
+  loss of one of them, but each of them must keep the packages vetted.
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
   provider blocks recovery until it cooperates; single-party accounts avoid

@@ -71,12 +71,12 @@ contract id enters through an operation the template owner wrote:
 `executeTransfer` makes the receiver's account parties lock holders of a
 two-step transfer's funding, and `allocationFactoryImpl` and
 `allocationSettleImpl` make the settlement executors lock holders of an
-allocation's funding. With templates that follow `TokenHolding` and the
-default pending contracts, these parties observe the locked holding and the
-pending contract. Every release of the funds then needs them to stay hosted,
-and every participant hosting them to keep the packages vetted. A template
-owner that reuses these functions inherits this dependency and documents it
-for its users.
+allocation's funding. With templates that follow `TokenHolding`,
+`TokenTransferInstruction`, and `TokenAllocation`, these parties observe the
+locked holding and the pending contract. Every release of the funds then
+needs them to stay hosted, and every participant hosting them to keep the
+template packages vetted. A template owner that reuses these functions
+inherits this dependency and must document it for its users.
 
 ## Build
 
