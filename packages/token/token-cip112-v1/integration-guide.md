@@ -30,7 +30,10 @@ operator serves those holdings by explicit disclosure, as it serves
 `TokenRules`. A receiver's wallet attaches the holdings listed in the
 instruction view's `transfer.inputHoldingCids` when it accepts or rejects.
 A settlement app attaches the holdings listed in each allocation view's
-`holdingCids` when it settles or cancels.
+`holdingCids` when it settles or cancels. A disclosed holding shows the
+sender's account, the amount, and the lock context, and the recipient keeps
+it. Serve the funding per pending contract, and only to that contract's
+receiver account parties or settlement executors.
 
 The receiver and the executors still observe the pending contract. Until it
 is archived, these parties must stay hosted, and every participant hosting
