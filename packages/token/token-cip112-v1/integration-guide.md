@@ -144,9 +144,11 @@ Conformance notes:
   see this token (see the README's "Standards conformance").
 - Lock shape is restricted: locks always carry a finite `expiresAt` and never
   `expiresAfter`; holdings with `expiresAfter` locks are rejected at creation.
-- The standard's off-ledger halves — factory discovery, instrument metadata,
-  pause reporting — are deployment infrastructure outside this package. The
-  trading example substitutes explicit disclosure for discovery.
+- The standard's off-ledger halves are deployment infrastructure outside
+  this package: factory discovery, instrument metadata, pause reporting, and
+  the funding disclosures that receivers and executors attach to accept,
+  reject, settle, and cancel. The trading example substitutes explicit
+  disclosure for discovery and for the funding.
 
 The registry party model is a single `admin` party per instrument namespace:
 it signs the rules contract, co-signs every holding, and controls supply and
