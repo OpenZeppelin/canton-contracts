@@ -60,15 +60,17 @@ interfaces or exceptions of its own.
   authorize the same transaction. Otherwise the receiver accepts a pending
   instruction.
 - A two-step transfer locks the transfer amount in a sender holding whose
-  only lock holder is the admin. The receiver's wallet spends that holding
-  through explicit disclosure when it accepts or rejects. Accept fails after
-  `executeBefore`. Reject and withdraw have no deadline. After
-  `executeBefore`, the admin may also return the funds to the sender through
-  `TokenTransferInstruction_Expire`. Withdraw and expiry archive the pending
-  instruction, so they depend on the receiver's participants. Once the lock
-  expires at `executeBefore` plus `lockGrace`, the sender's parties can also
-  recover the funds through `TokenHolding_OwnerUnlock`, which does not
-  involve the receiver.
+  only lock holder is the admin. The registry serves that holding to the
+  receiver's wallet by explicit disclosure, and the wallet attaches it when
+  it accepts or rejects. Accept fails after `executeBefore`. Reject and
+  withdraw have no deadline. After `executeBefore`, the admin may also
+  return the funds to the sender through `TokenTransferInstruction_Expire`.
+  Withdraw and expiry archive the pending instruction, so they need the
+  receiver to stay hosted with the packages vetted (see
+  [Security caveats](#security-caveats)). Once the lock expires at
+  `executeBefore` plus `lockGrace`, the sender's parties can also recover the
+  funds through `TokenHolding_OwnerUnlock`, which does not involve the
+  receiver.
 - The admin issues supply with `TokenRules_OfferMint`: a pending transfer
   instruction from the CIP-0112 mint account (`cip-112/mint`) that locks
   nothing. The receiver's account parties accept it to create the holding or
@@ -163,20 +165,24 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   if one of its informees has no hosting participant, or if a participant
   hosting one has not vetted the packages. If either happens to a receiver
   or an executor, every choice on the pending contract fails, including
-  withdraw, admin expiry, and admin garbage collection. A counterparty's
-  operator can cause this at will by unvetting the packages. The funds then
-  stay locked until the lock expires: `lockGrace` after `executeBefore` for
-  a transfer, and `lockGrace` after the view's `expiresAt` for an
-  allocation. The owner then recovers them through
-  `TokenHolding_OwnerUnlock`, which involves only the owner's and the
-  admin's participants, because the admin is the only lock holder.
-  `TokenHolding` makes every lock holder an observer, so a workflow that
-  reuses it and names another party as lock holder makes the owner unlock
-  depend on that party's participants too. Size `maxTTL` and `lockGrace`
-  with this exposure in mind. The pending contract stays on the ledger until
-  the counterparty's participants accept transactions again, or until
+  withdraw, admin expiry, and the admin's last-resort cleanup through
+  `TokenTransferInstruction_AdminGC` or `TokenAllocation_AdminGC`. A
+  counterparty's operator can cause this at will by unvetting the packages.
+  The funds then stay locked until the lock expires: `lockGrace` after
+  `executeBefore` for a transfer, and `lockGrace` after the view's
+  `expiresAt` for an allocation. Both deadlines fall within `maxTTL` of the
+  pending contract's creation, so `maxTTL` plus `lockGrace` caps how long
+  the funds stay frozen. Size both settings with that cap in mind. The owner
+  then recovers the funds through `TokenHolding_OwnerUnlock`, which involves
+  only the owner's and the admin's participants, because the admin is the
+  only lock holder. The pending contract stays on the ledger until the
+  counterparty is hosted again with the packages vetted, or until
   [participant repair](https://docs.canton.network/global-synchronizer/production-operations/repair-canton-nodes)
   removes it if the party has lost its last hosting participant.
+- `TokenHolding` makes every lock holder an observer. If a workflow that
+  reuses it names another lock holder, `TokenHolding_OwnerUnlock` also fails
+  while that party has no hosting participant or a participant hosting it
+  has not vetted the packages.
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
   provider blocks recovery until it cooperates; single-party accounts avoid

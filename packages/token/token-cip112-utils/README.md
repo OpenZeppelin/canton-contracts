@@ -69,18 +69,21 @@ contract id enters through an operation the template owner wrote:
 ## Operational assumptions
 
 `executeTransfer`, `allocationFactoryImpl`, and `allocationSettleImpl` name
-the admin as the only lock holder of the funding they lock. With a holding
-template that follows `TokenHolding`, receivers and executors are not
-stakeholders of that funding: the registry serves it to them by explicit
-disclosure, and the owner's unlock after the lock expires involves only the
-holding's signatories. `TokenHolding` makes every lock holder an observer, so
-a workflow that names another lock holder makes the owner's unlock depend on
-that party's participants. A pending-contract template that follows
-`TokenTransferInstruction` or `TokenAllocation` makes the receiver or the
-executors observers, so every choice on it needs them to stay hosted and
-every participant hosting them to keep the template packages vetted. A
-template owner that reuses these functions inherits this dependency and
-must document it for its users.
+the admin as the only lock holder of the funding they lock. When the holding
+template's observers are its lock holders, as in `TokenHolding`, only the
+admin and the account parties see that funding. The registry serves it to
+receivers and executors by explicit disclosure, and the owner's unlock after
+the lock expires involves only the holding's signatories. A workflow that
+names another lock holder makes that party an observer. The unlock then also
+fails while that party has no hosting participant or a participant hosting
+it has not vetted the template packages.
+
+A template for transfer instructions or allocations can make the receiver or
+the executors observers, as `TokenTransferInstruction` and `TokenAllocation`
+do. Every choice on such a contract then needs those parties to stay hosted
+and every participant hosting them to keep the template packages vetted. A
+template owner that reuses these functions inherits these requirements and
+must document them for its users.
 
 ## Build
 

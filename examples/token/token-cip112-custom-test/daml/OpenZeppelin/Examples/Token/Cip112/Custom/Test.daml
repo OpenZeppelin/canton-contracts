@@ -224,8 +224,8 @@ settleBatchCmd App{..} legs finalizedAllocs =
       actors = [exchange]
       extraArgs = emptyExtraArgs
 
--- | What the exchange discloses to settle: the rules contract and the
--- locked funding of every allocation.
+-- | The disclosures the exchange attaches to a settlement: the rules
+-- contract and the locked funding of every allocation.
 settlementDisclosures : App -> [AllocationV2.FinalizedAllocation] -> Script [Disclosure]
 settlementDisclosures app finalizedAllocs = do
   holdingCids <- forA finalizedAllocs $ \f -> do
