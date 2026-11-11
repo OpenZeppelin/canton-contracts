@@ -292,6 +292,12 @@ testIteratedSettlementLifecycle = do
   v.originalAllocationCid === Some aliceAllocCid
   v.allocation.transferLegSides === []
   v.allocation.nextIterationFunding === Some (TextMap.fromList [("TOK", 7.0)])
+  -- The successor's reserve is locked to the admin alone, so the executor
+  -- sees no holding and reads the reserve through disclosure.
+  aliceReserve <- query @TokenHolding alice
+  [fmap (.holders) h.holding.lock | (_, h) <- aliceReserve, isSome h.holding.lock] === [Some [admin]]
+  executorHoldings <- query @TokenHolding app
+  executorHoldings === []
 
   -- Second iteration: bob sends 1 back; no further iterations, so every
   -- balance is released unlocked.
