@@ -162,11 +162,25 @@ settleBatchCmd App{..} legs finalizedAllocs =
       actors = [exchange]
       extraArgs = emptyExtraArgs
 
+-- | The disclosures the exchange attaches to a settlement: the rules contract
+-- and the locked funding of every allocation. The admin is the only lock holder, so the
+-- registry, which reads every holding as its signatory, serves the funding.
+settlementDisclosures : App -> [AllocationV2.FinalizedAllocation] -> Script [Disclosure]
+settlementDisclosures App{..} finalizedAllocs = do
+  holdingCids <- forA finalizedAllocs $ \f -> do
+    Some v <- queryInterfaceContractId admin f.allocationCid
+    pure v.holdingCids
+  funding <- forA (concat holdingCids) $ \cid -> do
+    Some d <- queryDisclosure admin (fromInterfaceContractId @TokenHolding cid)
+    pure d
+  pure (rulesDisclosure :: funding)
+
 settleBatch
   : App -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation]
   -> Script AllocationV2.SettlementFactory_SettleBatchResult
-settleBatch app legs finalizedAllocs =
-  submit (actAs app.exchange <> discloseMany [app.rulesDisclosure])
+settleBatch app legs finalizedAllocs = do
+  disclosures <- settlementDisclosures app finalizedAllocs
+  submit (actAs app.exchange <> discloseMany disclosures)
     (settleBatchCmd app legs finalizedAllocs)
 
 settledNext : AllocationV2.AllocationResult -> Script (Optional (ContractId AllocationV2.Allocation))
@@ -213,7 +227,8 @@ demoDvpSettlement = do
 
   -- FAILING: a batch whose legs are not exactly covered by the presented
   -- allocations is refused (bob's authorization is missing here).
-  submitMustFail (actAs exchange <> discloseMany [rulesDisclosure])
+  aliceOnly <- settlementDisclosures app [nonIteratedAllocation aliceAllocCid]
+  submitMustFail (actAs exchange <> discloseMany aliceOnly)
     (settleBatchCmd app [legTok, legUsd] [nonIteratedAllocation aliceAllocCid])
 
   -- HAPPY: the full batch settles both legs atomically.
@@ -239,10 +254,12 @@ demoIteratedSettlement = do
   -- FAILING: the exchange cannot reserve more than the settlement proceeds
   -- (100 locked minus the 30 fill leaves 70, less than the requested 80).
   let fill1 = mkLeg "fill-1" alice bob "TOK" 30.0
-  submitMustFail (actAs exchange <> discloseMany [rulesDisclosure])
-    (settleBatchCmd app [fill1]
-      [ finalized aliceDep [senderSide fill1] (reserveTok 80.0)
-      , finalized bobDep [receiverSide fill1] None ])
+      overReserved =
+        [ finalized aliceDep [senderSide fill1] (reserveTok 80.0)
+        , finalized bobDep [receiverSide fill1] None ]
+  overReservedDisclosures <- settlementDisclosures app overReserved
+  submitMustFail (actAs exchange <> discloseMany overReservedDisclosures)
+    (settleBatchCmd app [fill1] overReserved)
 
   -- HAPPY: first fill; both sides roll into successor deposits.
   r1 <- settleBatch app [fill1]

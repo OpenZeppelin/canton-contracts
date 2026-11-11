@@ -45,7 +45,8 @@ sandboxTransferLifecycle = do
   input2 <- mint admin alice 5.0
   twoStep <- instructTransfer s [alice] (mkTransfer s alice bob 2.0 [input2])
   instrCid <- pendingCid twoStep
-  _ <- submit (actAs bob) do
+  funding <- instructionDisclosures admin instrCid
+  _ <- submit (actAs bob <> discloseMany funding) do
     exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
       actors = [bob]
       extraArgs = emptyExtraArgs

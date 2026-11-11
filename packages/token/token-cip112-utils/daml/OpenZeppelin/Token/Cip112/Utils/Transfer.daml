@@ -181,14 +181,15 @@ executeTransfer config ops createInstruction oneStep transfer = do
         senderChangeCids
         meta = transfer.meta
     else do
-      -- The receiver's account parties are lock holders so they can read the
-      -- locked funding when accepting or rejecting. The lock outlives the
-      -- instruction's own expiry, so the admin's expiry path always runs
-      -- before the funding is re-spendable.
+      -- The admin is the only lock holder, so the owner's unlock after expiry
+      -- involves only the participants of the holding's signatories, and the
+      -- receiver gets the locked funding by explicit disclosure. The lock
+      -- outlives the instruction's own expiry, so the admin's expiry path
+      -- always runs before the funding is re-spendable.
       let instructionExpiresAt = transfer.executeBefore
           lockExpiresAt = instructionExpiresAt `addRelTime` config.lockGrace
           lock = HoldingV2.Lock with
-            holders = dedupSort (admin :: receiverParties transfer)
+            holders = [admin]
             expiresAt = Some lockExpiresAt
             expiresAfter = None
             context = Some $ if transfer.receiver == burnAccount
