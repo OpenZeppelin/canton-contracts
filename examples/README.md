@@ -39,6 +39,15 @@ and `openzeppelin-token-cip112-utils`. The custom token also consumes
 | [`token-cip112-trading-test`](token/token-cip112-trading-test/) | scripts only | Running the default templates of `openzeppelin-token-cip112-v1`: launching a token from the DAR, allocations funded through the standard factory, exact-cover DvP batch settlement, and the iterated-settlement deposit flow |
 | [`token-cip112-custom`](token/token-cip112-custom/) | [`token-cip112-custom-test`](token/token-cip112-custom-test/) | A compliance-grade consumer that owns its own holding, instruction, allocation, and registry templates and reuses `openzeppelin-token-cip112-types-v1` and `openzeppelin-token-cip112-utils` unchanged: roles, an auditor, a compliance freeze enforced through the spend hook, a pause switch, an account blocklist from `openzeppelin-blocklist-v1` checked on every path that moves value, a fee on transfer built from two workflow calls, and an executor allowlist |
 
+## Compliance
+
+Consumers of `openzeppelin-blocklist-v1` and
+`openzeppelin-scoped-authorization-grant-v1`.
+
+| Example | Tests | Shows |
+|---|---|---|
+| [`blocklist-delegation-v1`](compliance/blocklist-delegation-v1/) | [`blocklist-delegation-v1-test`](compliance/blocklist-delegation-v1-test/) | Several compliance parties that each block and unblock alone through grants that the issuer issues and revokes, enforced by the custom token |
+
 ## Build and run
 
 From the repository root, using the package path from `multi-package.yaml`:

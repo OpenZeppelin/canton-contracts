@@ -1,0 +1,33 @@
+-- | Authorization policy for blocklist delegation: the operations a delegate
+-- can hold, and the grant scope of each.
+module Example.BlocklistDelegationV1.Policy where
+
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+-- | An operation on the blocklist that the admin delegates. Each operation
+-- needs its own grant, so a delegate can hold one without the other.
+data BlocklistOperation = Block | Unblock
+  deriving (Eq, Show)
+
+delegationNamespace : Text
+delegationNamespace = "com.example.blocklist-delegation"
+
+delegationResourceType : Text
+delegationResourceType = "blocklist"
+
+-- | The scope permission of each operation.
+operationPermission : BlocklistOperation -> Text
+operationPermission Block = "block"
+operationPermission Unblock = "unblock"
+
+-- | The scope of a grant for `operation` on the blocklist `blocklistId`,
+-- bound to one delegation contract. A grant for another delegation, another
+-- blocklist, or another operation does not match.
+operationScope : ContractId delegation -> Text -> BlocklistOperation -> SAG.AuthorizationScope
+operationScope delegationCid blocklistId operation = SAG.AuthorizationScope with
+  namespace = delegationNamespace
+  resourceType = delegationResourceType
+  resourceId = blocklistId
+  permission = operationPermission operation
+  policyEpoch = 0
+  resourceInstanceCid = Some (coerceContractId delegationCid)

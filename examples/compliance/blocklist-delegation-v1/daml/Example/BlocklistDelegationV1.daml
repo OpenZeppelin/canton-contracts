@@ -1,0 +1,135 @@
+-- | Delegated blocking for `OpenZeppelin.BlocklistV1`. The blocker of a
+-- `Blocklist` signs one `BlockerDelegation`, and the blocklist's admin then
+-- issues scoped authorization grants to the parties that block and unblock
+-- for it, such as a compliance team and a compliance provider. Each delegate
+-- acts alone with its own grant. The admin revokes one grant, terminates the
+-- delegation, or ends every delegation with `Blocklist_SetBlocker`.
+--
+-- Example-only 0.x contracts; no upgrade compatibility is promised.
+module Example.BlocklistDelegationV1 where
+
+import DA.Functor (void)
+import Example.BlocklistDelegationV1.Policy (BlocklistOperation (..))
+import qualified Example.BlocklistDelegationV1.Policy as Policy
+import OpenZeppelin.BlocklistV1 (Blocklist, Blocklist_Block (..), Blocklist_Unblock (..), fetchBlocklist)
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+-- | The admin issues every grant, and each grant covers one operation on
+-- one delegation contract.
+instance SAG.HasAuthorizationPolicy BlockerDelegation BlocklistOperation where
+  authorizationRequirement delegation cid operation = SAG.AuthorizationRequirement with
+    expectedAuthority = delegation.admin
+    expectedScope = Policy.operationScope cid delegation.blocklistId operation
+
+-- | The blocker's consent that the parties the admin grants can block and
+-- unblock with the blocker's authority, on the admin's blocklist `blocklistId`
+-- only.
+--
+-- Signatories: `blocker`. Observers: `admin`. The blocker creates the
+-- contract once, with one submission. The admin controls the blocker role
+-- through `Blocklist_SetBlocker`, so this contract gives the admin no power
+-- beyond that role.
+--
+-- Controllers: the admin issues grants and terminates the delegation. A
+-- delegate exercises `BlockerDelegation_Block` and `BlockerDelegation_Unblock`
+-- as `authorization.actor`, with a grant for that operation that the admin
+-- issued for this contract.
+--
+-- Disclosure: a delegate is not a stakeholder of this contract or of the
+-- `Blocklist`. The admin discloses both to it. The delegate observes its
+-- grants.
+--
+-- Privacy: a delegate sees this contract, its grants, the `Blocklist` with
+-- its digests, and the transactions it submits. It sees no contract that the
+-- blocklist guards.
+--
+-- Audit: the admin is a choice observer of each delegated change. The
+-- exercise names the delegate as the acting party and holds the grant's
+-- contract id. The nested `AuthorizationGrant_Use` records the use of the
+-- grant, and the nested `Blocklist_Block` or `Blocklist_Unblock` records the
+-- accounts and the reason.
+--
+-- Archival: the admin terminates the contract, and the blocker archives it.
+-- Every grant is bound to this contract id, so no grant matches a later
+-- delegation. When the admin gives the blocker role to another party, the
+-- signatory of this contract is not a stakeholder of the `Blocklist`,
+-- so every delegated change fails for missing authority.
+template BlockerDelegation
+  with
+    blocker : Party
+      -- ^ The blocker of the `Blocklist`. Signs, and lends its authority to
+      -- the delegated changes.
+    admin : Party
+      -- ^ The admin of the `Blocklist`. Issues and revokes the grants.
+    blocklistId : Text
+      -- ^ The `id` of the `Blocklist` that the delegates change.
+  where
+    signatory blocker
+    observer admin
+
+    -- | Issue a grant for `operation` to `grantee`. The scope comes from this
+    -- contract, so the grant matches this delegation only.
+    nonconsuming choice BlockerDelegation_Grant : ContractId SAG.AuthorizationGrant
+      with
+        grantee : Party
+        operation : BlocklistOperation
+        validFrom : Optional Time
+          -- ^ The inclusive lower ledger-time bound, or none.
+        validUntil : Optional Time
+          -- ^ The exclusive upper ledger-time bound, or none.
+      controller admin
+      do
+        let requirement = SAG.authorizationRequirement this self operation
+        create SAG.AuthorizationGrant with
+          authority = requirement.expectedAuthority
+          grantee
+          scope = requirement.expectedScope
+          validFrom
+          validUntil
+
+    -- | Block `accounts` on the admin's blocklist as a delegate. Fails with
+    -- the grant package's statuses for a grant that does not match, with
+    -- `eWrongBlocklist` for another blocklist, and with the statuses of
+    -- `Blocklist_Block`. A grant that the actor does not observe, and a
+    -- blocklist whose blocker is another party, fail for missing authority.
+    nonconsuming choice BlockerDelegation_Block : ContractId Blocklist
+      with
+        authorization : SAG.Authorization
+          -- ^ The delegate and its grant for `Block`.
+        blocklistCid : ContractId Blocklist
+          -- ^ The current `Blocklist`.
+        accounts : [Party]
+        reason : Text
+          -- ^ A free-form reference for the audit trail.
+      observer admin
+      controller authorization.actor
+      do
+        void $ SAG.requirePermission this self Block authorization
+        void $ fetchBlocklist admin blocklistId blocklistCid
+        exercise blocklistCid Blocklist_Block with accounts; reason
+
+    -- | Unblock `accounts` on the admin's blocklist as a delegate, with a
+    -- grant for `Unblock`. Fails as `BlockerDelegation_Block` does.
+    nonconsuming choice BlockerDelegation_Unblock : ContractId Blocklist
+      with
+        authorization : SAG.Authorization
+          -- ^ The delegate and its grant for `Unblock`.
+        blocklistCid : ContractId Blocklist
+          -- ^ The current `Blocklist`.
+        accounts : [Party]
+        reason : Text
+          -- ^ A free-form reference for the audit trail.
+      observer admin
+      controller authorization.actor
+      do
+        void $ SAG.requirePermission this self Unblock authorization
+        void $ fetchBlocklist admin blocklistId blocklistCid
+        exercise blocklistCid Blocklist_Unblock with accounts; reason
+
+    -- | End the delegation. Every grant for it stops matching.
+    choice BlockerDelegation_Terminate : ()
+      with
+        reason : Text
+          -- ^ A free-form reference for the audit trail.
+      controller admin
+      do pure ()

@@ -1,0 +1,34 @@
+-- | Sandbox validation for the blocklist delegation example: the scripts
+-- that `dpm test` runs on the in-memory ledger, run by
+-- `scripts/check-sandbox.sh` against a static-time Canton sandbox over the
+-- Ledger API.
+--
+-- Every test allocates fresh parties and pins the clock to `t1`. A
+-- static-time ledger only moves its clock forward, so the one test that
+-- advances the clock runs last.
+module Example.BlocklistDelegationV1SandboxTest where
+
+import Daml.Script (Script, script)
+import Example.BlocklistDelegationV1Test
+import Example.BlocklistDelegationV1TokenTest
+
+-- | One runner keeps fresh party allocation across the shared ledger.
+sandboxBlocklistDelegation : Script ()
+sandboxBlocklistDelegation = script do
+  test_eachDelegateBlocksAndUnblocksAlone
+  test_grantServesManyChanges
+  test_blockerStillActsDirectly
+  test_wrongOperationGrantFails
+  test_wrongScopeGrantFails
+  test_wrongIssuerGrantFails
+  test_nonGranteeFails
+  test_revokedGrantFails
+  test_wrongBlocklistFails
+  test_setBlockerEndsEveryDelegation
+  test_terminationEndsTheDelegation
+  test_onlyTheAdminIssuesAndTerminates
+  test_onlyTheBlockerSignsTheDelegation
+  test_auditTrailNamesTheDelegateAndTheGrant
+  test_delegatedBlockStopsTheToken
+  test_delegatesSeeNoHoldings
+  test_grantOutsideItsWindowFails
