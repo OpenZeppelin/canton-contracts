@@ -119,23 +119,24 @@ template MyHolding with
         require "holding is frozen" (not frozen)
         pure holding
 
-    -- | Refused while the holding carries a live lock. A pending transfer
-    -- instruction or allocation names its locked funding by contract id, and
-    -- every path that ends it consumes that id. Re-creating the holding
-    -- under a new id would leave the pending contract unable to complete,
-    -- release, or expire. A frozen holding never carries a live lock, so
-    -- `MyHolding_Unfreeze` needs no such check.
+    -- | Re-create the holding as frozen, so `MyHolding_Spend` refuses it.
     choice MyHolding_Freeze : ContractId MyHolding
       controller roles.complianceOfficer
       do
         require "holding is already frozen" (not frozen)
+        -- A pending transfer instruction or allocation consumes its locked
+        -- holding by contract id, so re-creating the holding under a new id
+        -- would leave it unable to complete, release, or expire.
         requireLockReleased holding
         create this with frozen = True
 
+    -- | Re-create the holding as unfrozen, so `MyHolding_Spend` accepts it
+    -- again.
     choice MyHolding_Unfreeze : ContractId MyHolding
       controller roles.complianceOfficer
       do
         require "holding is not frozen" frozen
+        -- No lock check: a frozen holding never carries a live lock.
         create this with frozen = False
 
     -- | Refused while frozen: the workflow recreates the holding through
