@@ -18,8 +18,10 @@ Three roles interact with the package:
   consumers by explicit disclosure.
 - **Wallet users** hold accounts. Their participants upload the same DARs.
   A user's wallet needs the disclosed `TokenRules` contract in every
-  submission that exercises a factory choice; holdings, instructions, and
-  allocations are visible to the user directly as a stakeholder.
+  submission that exercises a factory choice, and the disclosed locked
+  funding to accept or reject an incoming transfer. The user's own holdings,
+  and the instructions and allocations the user takes part in, are visible
+  to the user directly as a stakeholder.
 - **Settlement apps** host executor parties. They receive allocations as
   contract observers and drive `SettlementFactory_SettleBatch` with the
   executors as actors.
@@ -160,6 +162,7 @@ cleanup.
 | Mistake | What happens | Fix |
 |---|---|---|
 | Submitting a factory exercise without the disclosed `TokenRules` contract | The submission fails to resolve the contract | Attach the disclosure to every factory submission |
+| Accepting or rejecting a transfer, or settling or cancelling an allocation, without its locked funding disclosed | The submission fails to resolve the locked holding | Attach the holdings the registry serves for the instruction view's `transfer.inputHoldingCids` or the allocation view's `holdingCids` |
 | Holding a `ContractId TokenHolding` across a balance change | The client holds a stale id and the next exercise fails | Re-query holdings after every transfer, allocation, or settle |
 | Funding one transfer with holdings of different instruments | `executeTransfer` fails: input holdings must all match the transfer's instrument | Split by instrument; only allocations take multi-instrument inputs |
 | Enabling iterated settlement with a zero reserve entry | Allocation is refused: reserve amounts must be positive | Use `Some TextMap.empty` for "iterated, no reserve" |

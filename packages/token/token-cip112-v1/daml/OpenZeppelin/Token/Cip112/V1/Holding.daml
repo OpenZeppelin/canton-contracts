@@ -25,10 +25,11 @@ import OpenZeppelin.Token.Cip112.V1.Base
 -- never hold.
 --
 -- Disclosure: the contract and its `HoldingV2.Holding` view are visible to
--- the admin and the account parties. Receivers and settlement executors get
--- locked funding from the registry by explicit disclosure. Creating a
--- holding requires the admin's and every account party's authority, so
--- holdings only ever appear through registry choices.
+-- the admin, the account parties, and any other party a lock names as
+-- holder. Receivers and settlement executors get locked funding from the
+-- registry by explicit disclosure. Creating a holding requires the admin's
+-- and every account party's authority, so holdings only ever appear through
+-- registry choices.
 template TokenHolding with
     holding : HoldingV2.HoldingView
   where
