@@ -29,8 +29,9 @@ allocation observe the pending contract and its locked funding. Until the
 pending contract is archived, these parties must stay hosted, and every
 participant hosting them must keep the packages below vetted. Otherwise no
 path can release the locked funds, including the sender's withdraw, the
-admin's expiry, and the owner unlock after the lock expires. The `README.md`
-security caveats describe the failure cases and recovery.
+admin's expiry, and the owner unlock after the lock expires. The
+[`README.md` security caveats](README.md#security-caveats) describe the
+failure cases and recovery.
 
 Every participant needs these exact packages.
 [`dars/manifest.yaml`](../../../dars/manifest.yaml) records their package IDs,

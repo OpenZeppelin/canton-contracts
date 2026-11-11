@@ -168,11 +168,12 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   packages and release them by vetting again. If a party loses its last
   hosting participant, the operator of every participant hosting a
   stakeholder has to remove the locked holding and the pending contract
-  through participant repair. The admin then mints the locked amount back to
-  its owner. Transfer or allocate only to counterparties whose operators are
-  trusted to keep the party hosted and the packages vetted until the pending
-  contract is archived. A party hosted on several participants survives the
-  loss of one of them, but each of them must keep the packages vetted.
+  through [participant repair](https://docs.canton.network/global-synchronizer/production-operations/repair-canton-nodes).
+  The admin then mints the locked amount back to its owner. Transfer or
+  allocate only to counterparties whose operators are trusted to keep the
+  party hosted and the packages vetted until the pending contract is
+  archived. A party hosted on several participants survives the loss of one
+  of them, but each of them must keep the packages vetted.
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
   provider blocks recovery until it cooperates; single-party accounts avoid
