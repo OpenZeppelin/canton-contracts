@@ -56,8 +56,8 @@ testNetSettlementHappyPath = do
 
 -- | Funding an allocation tells the executors nothing about the rest of the
 -- account: the funding event, which names the consumed input and the change,
--- is observed by the account parties only. The executors still see the
--- locked holding, as its lock holders.
+-- is observed by the account parties only. The admin is the only lock
+-- holder, so the executors see no holding at all.
 testFundingEventHiddenFromExecutors : Script ()
 testFundingEventHiddenFromExecutors = do
   Scenario{..} <- setup
@@ -77,9 +77,10 @@ testFundingEventHiddenFromExecutors = do
   length ev.outputHoldingCids === 2
   assertMsg "the account parties must observe the funding event" (alice `elem` ev.observers)
   assertMsg "the executors must not observe the funding event" (app `notElem` ev.observers)
-  -- The executor still sees the locked holding, and only that one.
   holdings <- query @TokenHolding app
-  [h.holding.amount | (_, h) <- holdings] === [10.0]
+  holdings === []
+  aliceHoldings <- query @TokenHolding alice
+  [fmap (.holders) h.holding.lock | (_, h) <- aliceHoldings, isSome h.holding.lock] === [Some [admin]]
 
 -- | The batch's arguments stay with the batch: each authorizer witnesses its
 -- own `Allocation_Settle`, and none carries the batch's metadata, which may
@@ -91,7 +92,8 @@ testSettleBatchRedactsBatchMeta = do
   aliceAllocCid <- completedCid =<< allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
   bobAllocCid <- completedCid =<< allocate s bob [receiverSide legAliceToBob, senderSide legBobToAlice] []
   let batchMeta = Metadata with values = TextMap.fromList [("venue.example/order-ref.carol-dave", "OTC-7781")]
-  tree <- submitTree (actAs app <> discloseMany [rulesDisclosure]) do
+  funding <- allocationDisclosures admin [aliceAllocCid, bobAllocCid]
+  tree <- submitTree (actAs app <> discloseMany (rulesDisclosure :: funding)) do
     exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
       AllocationV2.SettlementFactory_SettleBatch with
         settlement
@@ -134,7 +136,8 @@ testMissingAuthorizationFails = do
   aliceInput <- mint admin alice 10.0
   aliceResult <- allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
   aliceAllocCid <- completedCid aliceResult
-  submitMustFail (actAs app <> discloseMany [rulesDisclosure]) do
+  funding <- allocationDisclosures admin [aliceAllocCid]
+  submitMustFail (actAs app <> discloseMany (rulesDisclosure :: funding)) do
     exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
       AllocationV2.SettlementFactory_SettleBatch with
         settlement
@@ -154,7 +157,8 @@ testSuperfluousAuthorizationFails = do
   bobResult <- allocate s bob [receiverSide legAliceToBob, senderSide legBobToAlice] []
   bobAllocCid <- completedCid bobResult
   -- Present only leg-1 while the allocations authorize both legs.
-  submitMustFail (actAs app <> discloseMany [rulesDisclosure]) do
+  funding <- allocationDisclosures admin [aliceAllocCid, bobAllocCid]
+  submitMustFail (actAs app <> discloseMany (rulesDisclosure :: funding)) do
     exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
       AllocationV2.SettlementFactory_SettleBatch with
         settlement
@@ -192,7 +196,8 @@ testCancelPaths = do
       actors = [admin]
       extraArgs = emptyExtraArgs
   -- Executors may cancel at any time.
-  _ <- submit (actAs app) do
+  funding <- allocationDisclosures admin [aliceAllocCid]
+  _ <- submit (actAs app <> discloseMany funding) do
     exerciseCmd aliceAllocCid AllocationV2.Allocation_Cancel with
       actors = [app]
       extraArgs = emptyExtraArgs
@@ -230,8 +235,9 @@ settleBatchFinalizedCmd Scenario{..} legs finalized =
 settleBatchFinalized
   : Scenario -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation]
   -> Script AllocationV2.SettlementFactory_SettleBatchResult
-settleBatchFinalized s legs finalized =
-  submit (actAs s.app <> discloseMany [s.rulesDisclosure]) (settleBatchFinalizedCmd s legs finalized)
+settleBatchFinalized s legs finalized = do
+  funding <- allocationDisclosures s.admin (map (.allocationCid) finalized)
+  submit (actAs s.app <> discloseMany (s.rulesDisclosure :: funding)) (settleBatchFinalizedCmd s legs finalized)
 
 settledNext : AllocationV2.AllocationResult -> Script (Optional (ContractId AllocationV2.Allocation))
 settledNext result = case result.output of
@@ -349,7 +355,8 @@ testIteratedSettlementBounds = do
   -- Reserving more than the proceeds fails closed: 5 locked minus 3 sent
   -- leaves 2, less than the requested 3.
   let leg = mkTransferLeg "bd-1" alice bob 3.0
-  submitMustFail (actAs app <> discloseMany [rulesDisclosure])
+  funding <- allocationDisclosures admin [aliceAllocCid, bobAllocCid]
+  submitMustFail (actAs app <> discloseMany (rulesDisclosure :: funding))
     (settleBatchFinalizedCmd s [leg]
       [ AllocationV2.FinalizedAllocation with
           allocationCid = aliceAllocCid
@@ -368,7 +375,8 @@ testIteratedSettlementBounds = do
   bobNonIterResult <- allocate s bob [receiverSide legAliceToBob] []
   bobNonIter <- completedCid bobNonIterResult
   let extraLeg = mkTransferLeg "bd-2" alice bob 1.0
-  submitMustFail (actAs app <> discloseMany [rulesDisclosure])
+  nonIterFunding <- allocationDisclosures admin [aliceNonIter, bobNonIter]
+  submitMustFail (actAs app <> discloseMany (rulesDisclosure :: nonIterFunding))
     (settleBatchFinalizedCmd s [legAliceToBob, extraLeg]
       [ AllocationV2.FinalizedAllocation with
           allocationCid = aliceNonIter
@@ -376,7 +384,7 @@ testIteratedSettlementBounds = do
           nextIterationFunding = None
       , nonIteratedAllocation bobNonIter
       ])
-  submitMustFail (actAs app <> discloseMany [rulesDisclosure])
+  submitMustFail (actAs app <> discloseMany (rulesDisclosure :: nonIterFunding))
     (settleBatchFinalizedCmd s [legAliceToBob]
       [ AllocationV2.FinalizedAllocation with
           allocationCid = aliceNonIter
@@ -448,7 +456,13 @@ testTransferTwoStep = do
       actors = [admin]
       extraArgs = emptyExtraArgs
 
-  _ <- submit (actAs bob) do
+  -- The receiver is not a stakeholder of the locked funding: the admin is
+  -- its only lock holder, and the registry discloses it to the receiver.
+  [lockedCid] <- pure instrView.transfer.inputHoldingCids
+  bobViewOfLocked <- queryContractId bob (fromInterfaceContractId @TokenHolding lockedCid)
+  bobViewOfLocked === None
+  funding <- instructionDisclosures admin instrCid
+  _ <- submit (actAs bob <> discloseMany funding) do
     exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
       actors = [bob]
       extraArgs = emptyExtraArgs
@@ -507,7 +521,8 @@ testTransferRejectAndWithdraw = do
   aliceInput <- mint admin alice 10.0
   rejected <- instructTransfer s [alice] (mkTransfer s alice bob 7.0 [aliceInput])
   rejectedCid <- pendingCid rejected
-  _ <- submit (actAs bob) do
+  funding <- instructionDisclosures admin rejectedCid
+  _ <- submit (actAs bob <> discloseMany funding) do
     exerciseCmd rejectedCid TransferInstructionV2.TransferInstruction_Reject with
       actors = [bob]
       extraArgs = emptyExtraArgs
@@ -566,7 +581,8 @@ testTransferGuards = do
   result <- instructTransfer s [alice] (mkTransfer s alice bob 5.0 [smallInput])
   instrCid <- pendingCid result
   setTime t2
-  submitMustFail (actAs bob) do
+  funding <- instructionDisclosures admin instrCid
+  submitMustFail (actAs bob <> discloseMany funding) do
     exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
       actors = [bob]
       extraArgs = emptyExtraArgs
@@ -825,7 +841,8 @@ testDeliveryVsMint = do
   aliceAllocCid <- completedCid =<< allocate s alice [receiverSide mintLeg, senderSide payLeg] [aliceUsd]
   bobAllocCid <- completedCid =<< allocate s bob [receiverSide payLeg] []
 
-  tree <- submitTree (actAs app <> discloseMany [rulesDisclosure]) $
+  funding <- allocationDisclosures admin [adminAllocCid, aliceAllocCid, bobAllocCid]
+  tree <- submitTree (actAs app <> discloseMany (rulesDisclosure :: funding)) $
     settleBatchFinalizedCmd s [mintLeg, payLeg] (map nonIteratedAllocation [adminAllocCid, aliceAllocCid, bobAllocCid])
 
   aliceAfter <- instrumentHoldings alice
@@ -850,7 +867,8 @@ testDeliveryVsBurn = do
   aliceAllocCid <- completedCid =<< allocate s alice [senderSide burnLeg, receiverSide payLeg] [aliceTok]
   bobAllocCid <- completedCid =<< allocate s bob [senderSide payLeg] [bobUsd]
 
-  tree <- submitTree (actAs app <> discloseMany [rulesDisclosure]) $
+  funding <- allocationDisclosures admin [adminAllocCid, aliceAllocCid, bobAllocCid]
+  tree <- submitTree (actAs app <> discloseMany (rulesDisclosure :: funding)) $
     settleBatchFinalizedCmd s [burnLeg, payLeg] (map nonIteratedAllocation [adminAllocCid, aliceAllocCid, bobAllocCid])
 
   aliceAfter <- instrumentHoldings alice

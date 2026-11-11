@@ -68,15 +68,19 @@ contract id enters through an operation the template owner wrote:
 
 ## Operational assumptions
 
-`executeTransfer` makes the receiver's account parties lock holders of a
-two-step transfer's funding, and `allocationFactoryImpl` and
-`allocationSettleImpl` make the settlement executors lock holders of an
-allocation's funding. With templates that follow `TokenHolding`,
-`TokenTransferInstruction`, and `TokenAllocation`, these parties observe the
-locked holding and the pending contract. Every release of the funds then
-needs them to stay hosted, and every participant hosting them to keep the
-template packages vetted. A template owner that reuses these functions
-inherits this dependency and must document it for its users.
+`executeTransfer`, `allocationFactoryImpl`, and `allocationSettleImpl` name
+the admin as the only lock holder of the funding they lock. With a holding
+template that follows `TokenHolding`, receivers and executors are not
+stakeholders of that funding: the registry serves it to them by explicit
+disclosure, and the owner's unlock after the lock expires involves only the
+holding's signatories. `TokenHolding` makes every lock holder an observer, so
+a workflow that names another lock holder makes the owner's unlock depend on
+that party's participants. A pending-contract template that follows
+`TokenTransferInstruction` or `TokenAllocation` makes the receiver or the
+executors observers, so every choice on it needs them to stay hosted and
+every participant hosting them to keep the template packages vetted. A
+template owner that reuses these functions inherits this dependency and
+must document it for its users.
 
 ## Build
 

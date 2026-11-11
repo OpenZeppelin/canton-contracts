@@ -24,14 +24,21 @@ Three roles interact with the package:
   contract observers and drive `SettlementFactory_SettleBatch` with the
   executors as actors.
 
-The receiver of a pending transfer instruction and the executors of an
-allocation observe the pending contract and its locked funding. Until the
-pending contract is archived, these parties must stay hosted, and every
-participant hosting them must keep the packages below vetted. Otherwise no
-path can release the locked funds, including the sender's withdraw, the
-admin's expiry, and the owner unlock after the lock expires. The
+The admin is the only lock holder of locked funding, so receivers and
+executors are not stakeholders of the holdings they spend. The registry
+operator serves those holdings by explicit disclosure, as it serves
+`TokenRules`. A receiver's wallet attaches the holdings listed in the
+instruction view's `transfer.inputHoldingCids` when it accepts or rejects.
+A settlement app attaches the holdings listed in each allocation view's
+`holdingCids` when it settles or cancels.
+
+The receiver and the executors still observe the pending contract. Until it
+is archived, these parties must stay hosted, and every participant hosting
+them must keep the packages below vetted. Otherwise every choice on the
+pending contract fails, and the locked funds stay frozen until the lock
+expires and the owner recovers them through `TokenHolding_OwnerUnlock`. The
 [`README.md` security caveats](README.md#security-caveats) describe the
-failure cases and recovery.
+exposure.
 
 Every participant needs these exact packages.
 [`dars/manifest.yaml`](../../../dars/manifest.yaml) records their package IDs,

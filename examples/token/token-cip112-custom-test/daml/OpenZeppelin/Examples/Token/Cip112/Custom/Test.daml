@@ -152,9 +152,23 @@ pendingCid result = case result.output of
   TransferInstructionV2.TransferInstructionResult_Pending cid -> pure cid
   other -> abort ("expected pending instruction, got: " <> show other)
 
-accept : Party -> ContractId TransferInstructionV2.TransferInstruction -> Script ()
-accept receiver instrCid = do
-  _ <- submit (actAs receiver) do
+-- | Disclosures of locked funding, as the registry serves them: the admin is
+-- the only lock holder, and it reads every holding as a signatory.
+fundingDisclosures : App -> [ContractId HoldingV2.Holding] -> Script [Disclosure]
+fundingDisclosures App{..} cids = forA cids $ \cid -> do
+  Some d <- queryDisclosure admin (fromInterfaceContractId @MyHolding cid)
+  pure d
+
+-- | Disclosures of the locked funding of a pending transfer instruction.
+instructionDisclosures : App -> ContractId TransferInstructionV2.TransferInstruction -> Script [Disclosure]
+instructionDisclosures app instrCid = do
+  Some v <- queryInterfaceContractId app.admin instrCid
+  fundingDisclosures app v.transfer.inputHoldingCids
+
+accept : App -> Party -> ContractId TransferInstructionV2.TransferInstruction -> Script ()
+accept app receiver instrCid = do
+  funding <- instructionDisclosures app instrCid
+  _ <- submit (actAs receiver <> discloseMany funding) do
     exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
       actors = [receiver]
       extraArgs = emptyExtraArgs
@@ -210,9 +224,20 @@ settleBatchCmd App{..} legs finalizedAllocs =
       actors = [exchange]
       extraArgs = emptyExtraArgs
 
+-- | What the exchange discloses to settle: the rules contract and the
+-- locked funding of every allocation.
+settlementDisclosures : App -> [AllocationV2.FinalizedAllocation] -> Script [Disclosure]
+settlementDisclosures app finalizedAllocs = do
+  holdingCids <- forA finalizedAllocs $ \f -> do
+    Some v <- queryInterfaceContractId app.admin f.allocationCid
+    pure v.holdingCids
+  funding <- fundingDisclosures app (concat holdingCids)
+  pure (app.rulesDisclosure :: funding)
+
 settleBatch : App -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation] -> Script AllocationV2.SettlementFactory_SettleBatchResult
-settleBatch app legs finalizedAllocs =
-  submit (actAs app.exchange <> discloseMany [app.rulesDisclosure]) (settleBatchCmd app legs finalizedAllocs)
+settleBatch app legs finalizedAllocs = do
+  disclosures <- settlementDisclosures app finalizedAllocs
+  submit (actAs app.exchange <> discloseMany disclosures) (settleBatchCmd app legs finalizedAllocs)
 
 -- | `MyHolding_Spend` exercises anywhere in a transaction tree.
 countSpends : TransactionTree -> Int
@@ -267,7 +292,7 @@ testLateAcceptCreatesMyHolding = do
   instrCid <- pendingCid result
   -- The pending contract is the consumer's template, visible to the auditor.
   Some _ <- queryContractId auditor (fromInterfaceContractId @MyTransferInstruction instrCid)
-  accept bob instrCid
+  accept app bob instrCid
   balanceSeenBy bob bob >>= (=== [7.0])
   balanceSeenBy alice alice >>= (=== [3.0])
   -- The auditor and the compliance officer observe every holding without
@@ -358,7 +383,8 @@ testAuditorObservesEvents = do
     (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
   auditorSeesEvents auditor 1 instructTree
   instrCid <- pendingCid result
-  acceptTree <- submitTree (actAs bob) do
+  funding <- instructionDisclosures app instrCid
+  acceptTree <- submitTree (actAs bob <> discloseMany funding) do
     exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
       actors = [bob]
       extraArgs = emptyExtraArgs
@@ -527,7 +553,7 @@ testTransferFeeGoesToTreasury = do
   instrCid <- pendingCid result
   balanceSeenBy admin admin >>= (=== [1.0])
   balanceSeenBy alice alice >>= (=== [100.0, 149.0])
-  accept bob instrCid
+  accept app bob instrCid
   balanceSeenBy bob bob >>= (=== [100.0])
   balanceSeenBy alice alice >>= (=== [149.0])
   -- 149 covers a transfer of 149 but not its 1.49 fee.

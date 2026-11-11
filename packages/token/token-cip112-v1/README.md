@@ -60,14 +60,15 @@ interfaces or exceptions of its own.
   authorize the same transaction. Otherwise the receiver accepts a pending
   instruction.
 - A two-step transfer locks the transfer amount in a sender holding whose
-  lock holders are the admin and the receiver's account parties, so the
-  receiver's parties see that holding while the offer is pending. Accept
-  fails after `executeBefore`. Reject and withdraw have no deadline. Until
-  the lock expires at `executeBefore` plus `lockGrace`, withdraw is the only
-  recovery the sender's parties can authorize without the receiver. After
+  only lock holder is the admin. The receiver's wallet spends that holding
+  through explicit disclosure when it accepts or rejects. Accept fails after
+  `executeBefore`. Reject and withdraw have no deadline. After
   `executeBefore`, the admin may also return the funds to the sender through
-  `TokenTransferInstruction_Expire`. Withdraw and expiry both need the
-  receiver's participants, as described in the security caveats.
+  `TokenTransferInstruction_Expire`. Withdraw and expiry archive the pending
+  instruction, so they depend on the receiver's participants. Once the lock
+  expires at `executeBefore` plus `lockGrace`, the sender's parties can also
+  recover the funds through `TokenHolding_OwnerUnlock`, which does not
+  involve the receiver.
 - The admin issues supply with `TokenRules_OfferMint`: a pending transfer
   instruction from the CIP-0112 mint account (`cip-112/mint`) that locks
   nothing. The receiver's account parties accept it to create the holding or
@@ -158,22 +159,24 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   owner-recovery path; size it to the automation's reaction time (minutes to
   hours), and size `maxTTL` to the longest workflow the registry accepts.
 - The receiver's account parties and the settlement executors observe the
-  locked holding and the pending transfer instruction or allocation. Canton
-  rejects a transaction if one of its informees has no hosting participant,
-  or if a participant hosting one has not vetted the packages. If either
-  happens to a receiver or an executor, no path can release the funds locked
-  toward it. Withdraw, reject, admin expiry, admin garbage collection of the
-  pending contract, and the owner unlock after the lock expires all fail. A
-  counterparty's operator can therefore hold the funds by unvetting the
-  packages and release them by vetting again. If a party loses its last
-  hosting participant, the operator of every participant hosting a
-  stakeholder has to remove the locked holding and the pending contract
-  through [participant repair](https://docs.canton.network/global-synchronizer/production-operations/repair-canton-nodes).
-  The admin then mints the locked amount back to its owner. Transfer or
-  allocate only to counterparties whose operators are trusted to keep the
-  party hosted and the packages vetted until the pending contract is
-  archived. A party hosted on several participants survives the loss of one
-  of them, but each of them must keep the packages vetted.
+  pending transfer instruction or allocation. Canton rejects a transaction
+  if one of its informees has no hosting participant, or if a participant
+  hosting one has not vetted the packages. If either happens to a receiver
+  or an executor, every choice on the pending contract fails, including
+  withdraw, admin expiry, and admin garbage collection. A counterparty's
+  operator can cause this at will by unvetting the packages. The funds then
+  stay locked until the lock expires: `lockGrace` after `executeBefore` for
+  a transfer, and `lockGrace` after the view's `expiresAt` for an
+  allocation. The owner then recovers them through
+  `TokenHolding_OwnerUnlock`, which involves only the owner's and the
+  admin's participants, because the admin is the only lock holder.
+  `TokenHolding` makes every lock holder an observer, so a workflow that
+  reuses it and names another party as lock holder makes the owner unlock
+  depend on that party's participants too. Size `maxTTL` and `lockGrace`
+  with this exposure in mind. The pending contract stays on the ledger until
+  the counterparty's participants accept transactions again, or until
+  [participant repair](https://docs.canton.network/global-synchronizer/production-operations/repair-canton-nodes)
+  removes it if the party has lost its last hosting participant.
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
   provider blocks recovery until it cooperates; single-party accounts avoid
