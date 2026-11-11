@@ -11,7 +11,8 @@
 # set OZ_USE_EXTERNAL_LEDGER=1 together with OZ_LEDGER_HOST / OZ_LEDGER_PORT.
 # Use a fresh external static-time ledger for each suite. Scripts that advance
 # time run last. OZ_SANDBOX_SUITE selects token (default), authorization,
-# licensing, treasury, blocklist, custom-token, or external-blocker.
+# licensing, treasury, blocklist, custom-token, blocklist-delegation, or
+# external-blocker.
 #
 # The external-blocker suite onboards an external party that needs two of its
 # three signing keys, and blocks a party as that party through interactive
@@ -68,6 +69,10 @@ blocklist)
 custom-token)
 	TEST_PKG="examples/token/token-cip112-custom-test"
 	SCRIPTS=(OpenZeppelin.Examples.Token.Cip112.Custom.Test.Sandbox:sandboxCustomTokenBlocklist)
+	;;
+blocklist-delegation)
+	TEST_PKG="examples/compliance/blocklist-delegation-v1-test"
+	SCRIPTS=(Example.BlocklistDelegationV1SandboxTest:sandboxBlocklistDelegation)
 	;;
 external-blocker)
 	TEST_PKG="test/blocklist-v1-test"

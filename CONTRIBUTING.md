@@ -63,6 +63,7 @@ package lives beside it at `examples/<example>-vN-test`. Run the grant examples 
 ```sh
 DAML_PACKAGE=examples/licensing-app-v1-test dpm test --all
 DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all
+DAML_PACKAGE=examples/compliance/blocklist-delegation-v1-test dpm test --all
 ```
 
 CI runs the example tests without the coverage gate, because examples are not
@@ -73,10 +74,11 @@ Run `scripts/check-sandbox.sh` for the token sandbox gate. Set
 `OZ_SANDBOX_SUITE` to `authorization`, `licensing`, or `treasury` for the grant
 and integration-example Ledger API checks, to `blocklist` for the blocklist
 checks, to `custom-token` for the blocklist checks of the custom token
-example, or to `external-blocker` for a blocker that is an external party
+example, to `blocklist-delegation` for the blocklist delegation example, or
+to `external-blocker` for a blocker that is an external party
 with a two-of-three signing-key threshold. The `external-blocker` suite drives
 the sandbox with `dpm canton-console` and runs on the script-managed sandbox
-only. CI runs all seven suites on separate fresh static-time ledgers.
+only. CI runs all eight suites on separate fresh static-time ledgers.
 
 ## Choosing the right repository
 

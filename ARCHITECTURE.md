@@ -152,6 +152,20 @@ role that signs the contract; the blocker only observes it, and the admin
 can correct a wrong party at any time. A key rotation of an external blocker
 is a topology change that keeps the party, so it needs no ledger change.
 
+More than one party can change one blocklist in two ways. A threshold
+blocker is one external party whose changes need k of its n signing keys,
+and the topology enforces the threshold. Delegation lets several parties act
+alone: the blocker signs a delegation contract once, the admin issues a
+scoped authorization grant to each delegate, and the delegation's choices
+check the grant and exercise the blocklist choices with the blocker's
+authority. Delegation composes the two components in the consuming
+application, as `examples/compliance/blocklist-delegation-v1` does, so
+`openzeppelin-blocklist-v1` stays independent of
+`openzeppelin-scoped-authorization-grant-v1` and deployments with one blocker
+vet one package. The admin issues the grants because it already controls the
+blocker role and signs the blocklist: it revokes a grant alone, and a grant
+adds no confirming participant.
+
 `Blocklist` is a template with no interface, so the component is one package.
 A guard reads the blocklist through the template, which it can pin; a frozen
 interface would admit implementations that it cannot pin.

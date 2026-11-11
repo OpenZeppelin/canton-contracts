@@ -34,3 +34,5 @@ packages:
   - examples/token/token-cip112-trading-test
   - examples/token/token-cip112-custom
   - examples/token/token-cip112-custom-test
+  - examples/compliance/blocklist-delegation-v1
+  - examples/compliance/blocklist-delegation-v1-test

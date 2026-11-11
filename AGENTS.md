@@ -123,6 +123,8 @@ DAML_PACKAGE=examples/treasury-rbac-v1-test dpm damlc lint
 DAML_PACKAGE=examples/token/token-cip112-trading-test dpm damlc lint
 DAML_PACKAGE=examples/token/token-cip112-custom dpm damlc lint
 DAML_PACKAGE=examples/token/token-cip112-custom-test dpm damlc lint
+DAML_PACKAGE=examples/compliance/blocklist-delegation-v1 dpm damlc lint
+DAML_PACKAGE=examples/compliance/blocklist-delegation-v1-test dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/api-pausable-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/pausable-v1-test dpm test --all --show-coverage
@@ -137,12 +139,14 @@ DAML_PACKAGE=examples/pausable/vault-test dpm test --all
 DAML_PACKAGE=examples/treasury-rbac-v1-test dpm test --all
 DAML_PACKAGE=examples/token/token-cip112-trading-test dpm test --all
 DAML_PACKAGE=examples/token/token-cip112-custom-test dpm test --all
+DAML_PACKAGE=examples/compliance/blocklist-delegation-v1-test dpm test --all
 scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=authorization scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=licensing scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=treasury scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=blocklist scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=custom-token scripts/check-sandbox.sh
+OZ_SANDBOX_SUITE=blocklist-delegation scripts/check-sandbox.sh
 OZ_SANDBOX_SUITE=external-blocker scripts/check-sandbox.sh
 ```
 

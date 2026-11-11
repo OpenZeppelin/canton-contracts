@@ -1,0 +1,414 @@
+-- | Tests for `Example.BlocklistDelegationV1`: two delegates that each block
+-- and unblock alone, one test per guard of the delegated choices, the
+-- admin's controls, and the audit trail.
+module Example.BlocklistDelegationV1Test where
+
+import DA.Assert ((===))
+import DA.Date (Month (Jan), date)
+import DA.Fail (FailureStatus)
+import DA.Foldable (forA_)
+import DA.Optional (isSome)
+import qualified DA.Set as Set
+import DA.Stack (HasCallStack)
+import DA.Time (time)
+import Daml.Script
+
+import Example.BlocklistDelegationV1
+import Example.BlocklistDelegationV1.Policy (BlocklistOperation (..))
+import qualified Example.BlocklistDelegationV1.Policy as Policy
+import OpenZeppelin.BlocklistV1
+import qualified OpenZeppelin.ScopedAuthorizationGrantV1 as SAG
+
+-- Fixture
+----------
+
+t1, t2 : Time
+t1 = time (date 2026 Jan 1) 0 10 0
+t2 = time (date 2026 Jan 1) 0 20 0
+
+-- | The id of the blocklist that the delegation changes.
+tokenBlocklistId : Text
+tokenBlocklistId = "token"
+
+-- | The issuer's blocklist, its blocker's delegation, and two delegates that
+-- hold a block grant and an unblock grant each: the issuer's own compliance
+-- team and an external compliance provider.
+data World = World with
+    admin : Party
+    blocker : Party
+    complianceTeam : Party
+    complianceProvider : Party
+    outsider : Party
+    alice : Party
+    bob : Party
+    blocklistCid : ContractId Blocklist
+    delegationCid : ContractId BlockerDelegation
+    teamBlock : ContractId SAG.AuthorizationGrant
+    teamUnblock : ContractId SAG.AuthorizationGrant
+    providerBlock : ContractId SAG.AuthorizationGrant
+    providerUnblock : ContractId SAG.AuthorizationGrant
+
+-- | Pin the clock to `t1`, create the blocklist as the admin, sign the
+-- delegation as the blocker, and issue the four grants as the admin.
+setup : Script World
+setup = do
+  admin <- allocateParty "admin"
+  blocker <- allocateParty "blocker"
+  complianceTeam <- allocateParty "complianceTeam"
+  complianceProvider <- allocateParty "complianceProvider"
+  outsider <- allocateParty "outsider"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  setTime t1
+  blocklistCid <- submit admin do
+    createCmd Blocklist with admin; blocker; id = tokenBlocklistId; blocked = Set.empty; maxEntries = 1000
+  delegationCid <- submit blocker do
+    createCmd BlockerDelegation with blocker; admin; blocklistId = tokenBlocklistId
+  let issue grantee operation = submit admin do
+        exerciseCmd delegationCid BlockerDelegation_Grant with
+          grantee; operation; validFrom = None; validUntil = None
+  teamBlock <- issue complianceTeam Block
+  teamUnblock <- issue complianceTeam Unblock
+  providerBlock <- issue complianceProvider Block
+  providerUnblock <- issue complianceProvider Unblock
+  pure World with ..
+
+-- | The admin issues a grant with the given validity window.
+issueGrant
+  : World -> Party -> BlocklistOperation -> Optional Time -> Optional Time
+  -> Script (ContractId SAG.AuthorizationGrant)
+issueGrant w grantee operation validFrom validUntil = submit w.admin do
+  exerciseCmd w.delegationCid BlockerDelegation_Grant with grantee; operation; validFrom; validUntil
+
+-- | The submit options of a delegate: its own authority, and the delegation
+-- and the current blocklist disclosed by the admin.
+asDelegate : World -> Party -> Script SubmitOptions
+asDelegate w actor = do
+  Some delegation <- queryDisclosure @BlockerDelegation w.admin w.delegationCid
+  Some blocklist <- queryDisclosure @Blocklist w.admin w.blocklistCid
+  pure (actAs actor <> discloseMany [delegation, blocklist])
+
+blockCmd : World -> Party -> ContractId SAG.AuthorizationGrant -> [Party] -> Commands (ContractId Blocklist)
+blockCmd w actor grantCid accounts = exerciseCmd w.delegationCid BlockerDelegation_Block with
+  authorization = SAG.Authorization with actor; grantCid
+  blocklistCid = w.blocklistCid
+  accounts
+  reason = "case-1"
+
+unblockCmd : World -> Party -> ContractId SAG.AuthorizationGrant -> [Party] -> Commands (ContractId Blocklist)
+unblockCmd w actor grantCid accounts = exerciseCmd w.delegationCid BlockerDelegation_Unblock with
+  authorization = SAG.Authorization with actor; grantCid
+  blocklistCid = w.blocklistCid
+  accounts
+  reason = "case-1 closed"
+
+-- | `actor` blocks `accounts` with its grant; refresh the blocklist id.
+delegatedBlock : World -> Party -> ContractId SAG.AuthorizationGrant -> [Party] -> Script World
+delegatedBlock w actor grantCid accounts = do
+  options <- asDelegate w actor
+  cid <- submit options (blockCmd w actor grantCid accounts)
+  pure w with blocklistCid = cid
+
+-- | `actor` unblocks `accounts` with its grant; refresh the blocklist id.
+delegatedUnblock : World -> Party -> ContractId SAG.AuthorizationGrant -> [Party] -> Script World
+delegatedUnblock w actor grantCid accounts = do
+  options <- asDelegate w actor
+  cid <- submit options (unblockCmd w actor grantCid accounts)
+  pure w with blocklistCid = cid
+
+-- | The parties among `parties` that the current blocklist blocks.
+blockedAmong : World -> [Party] -> Script [Party]
+blockedAmong w parties = do
+  Some blocklist <- queryContractId w.admin w.blocklistCid
+  pure (filter (isBlocked blocklist) parties)
+
+-- | Require the ledger to reject a submission with exactly this status.
+mustFailWithStatus : HasCallStack => FailureStatus -> SubmitOptions -> Commands a -> Script ()
+mustFailWithStatus expected options cmds = do
+  result <- trySubmit options cmds
+  case result of
+    Left (FailureStatusError status) -> status === expected
+    Right _ -> abort "submission succeeded but was expected to fail"
+    Left err -> abort ("submission failed for an unexpected reason: " <> show err)
+
+-- | Require the ledger to reject a submission with a status of this id.
+mustFailWithErrorId : HasCallStack => Text -> SubmitOptions -> Commands a -> Script ()
+mustFailWithErrorId errorId options cmds = do
+  result <- trySubmit options cmds
+  case result of
+    Left (FailureStatusError status) -> status.errorId === errorId
+    Right _ -> abort "submission succeeded but was expected to fail"
+    Left err -> abort ("submission failed for an unexpected reason: " <> show err)
+
+-- | Require the ledger to reject a submission for missing authority.
+mustFailAuthorization : HasCallStack => SubmitOptions -> Commands a -> Script ()
+mustFailAuthorization options cmds = do
+  result <- trySubmit options cmds
+  case result of
+    Left (AuthorizationError _) -> pure ()
+    Right _ -> abort "submission succeeded but was expected to fail"
+    Left err -> abort ("expected an authorization failure, got " <> show err)
+
+-- | Require the ledger to reject a submission that uses an archived contract.
+mustFailInactive : HasCallStack => SubmitOptions -> Commands a -> Script ()
+mustFailInactive options cmds = do
+  result <- trySubmit options cmds
+  case result of
+    Left (ContractNotFound {}) -> pure ()
+    Left (UnknownError _) -> pure ()
+    Right _ -> abort "submission succeeded but was expected to fail"
+    Left err -> abort ("expected an inactive-contract failure, got " <> show err)
+
+grantError : Text -> Text
+grantError name = "openzeppelin.com/scoped-authorization-grant-" <> name
+
+-- Delegated changes
+--------------------
+
+-- | Each delegate blocks and unblocks alone, without the blocker or the
+-- other delegate, and each change applies to the admin's blocklist.
+test_eachDelegateBlocksAndUnblocksAlone : Script ()
+test_eachDelegateBlocksAndUnblocksAlone = script do
+  w0 <- setup
+  w1 <- delegatedBlock w0 w0.complianceTeam w0.teamBlock [w0.alice]
+  blockedAmong w1 [w1.alice, w1.bob] >>= (=== [w1.alice])
+  w2 <- delegatedBlock w1 w1.complianceProvider w1.providerBlock [w1.bob]
+  blockedAmong w2 [w2.alice, w2.bob] >>= (=== [w2.alice, w2.bob])
+  w3 <- delegatedUnblock w2 w2.complianceProvider w2.providerUnblock [w2.alice]
+  blockedAmong w3 [w3.alice, w3.bob] >>= (=== [w3.bob])
+  w4 <- delegatedUnblock w3 w3.complianceTeam w3.teamUnblock [w3.bob]
+  blockedAmong w4 [w4.alice, w4.bob] >>= (=== [])
+
+-- | A grant serves many changes: using it keeps it active.
+test_grantServesManyChanges : Script ()
+test_grantServesManyChanges = script do
+  w0 <- setup
+  w1 <- delegatedBlock w0 w0.complianceTeam w0.teamBlock [w0.alice]
+  w2 <- delegatedBlock w1 w1.complianceTeam w1.teamBlock [w1.bob]
+  blockedAmong w2 [w2.alice, w2.bob] >>= (=== [w2.alice, w2.bob])
+  active <- queryContractId w2.complianceTeam w2.teamBlock
+  assertMsg "a delegated change must keep the grant active" (isSome active)
+
+-- | The blocker keeps its own path: it blocks and unblocks directly while
+-- the delegation is active.
+test_blockerStillActsDirectly : Script ()
+test_blockerStillActsDirectly = script do
+  w <- setup
+  blocked <- submit w.blocker do
+    exerciseCmd w.blocklistCid Blocklist_Block with accounts = [w.alice]; reason = "case-1"
+  blockedAmong (w with blocklistCid = blocked) [w.alice] >>= (=== [w.alice])
+  unblocked <- submit w.blocker do
+    exerciseCmd blocked Blocklist_Unblock with accounts = [w.alice]; reason = "case-1 closed"
+  blockedAmong (w with blocklistCid = unblocked) [w.alice] >>= (=== [])
+
+-- Grant guards
+---------------
+
+-- | A grant for one operation does not authorize the other.
+test_wrongOperationGrantFails : Script ()
+test_wrongOperationGrantFails = script do
+  w0 <- setup
+  options <- asDelegate w0 w0.complianceTeam
+  mustFailWithErrorId (grantError "scope-mismatch") options
+    (blockCmd w0 w0.complianceTeam w0.teamUnblock [w0.alice])
+  w <- delegatedBlock w0 w0.complianceTeam w0.teamBlock [w0.alice]
+  options <- asDelegate w w.complianceTeam
+  mustFailWithErrorId (grantError "scope-mismatch") options
+    (unblockCmd w w.complianceTeam w.teamBlock [w.alice])
+
+-- | A grant for another delegation does not match: neither one for another
+-- blocklist id, nor one for a second delegation on the same blocklist.
+test_wrongScopeGrantFails : Script ()
+test_wrongScopeGrantFails = script do
+  w <- setup
+  otherBlocklist <- submit w.blocker do
+    createCmd BlockerDelegation with blocker = w.blocker; admin = w.admin; blocklistId = "other"
+  sameBlocklist <- submit w.blocker do
+    createCmd BlockerDelegation with blocker = w.blocker; admin = w.admin; blocklistId = tokenBlocklistId
+  forA_ [otherBlocklist, sameBlocklist] $ \delegation -> do
+    grant <- issueGrant (w with delegationCid = delegation) w.complianceTeam Block None None
+    options <- asDelegate w w.complianceTeam
+    mustFailWithErrorId (grantError "scope-mismatch") options
+      (blockCmd w w.complianceTeam grant [w.alice])
+
+-- | Only a grant that the admin issued counts: a grant with the right scope
+-- that the blocker or an outsider created fails.
+test_wrongIssuerGrantFails : Script ()
+test_wrongIssuerGrantFails = script do
+  w <- setup
+  forA_ [w.blocker, w.outsider] $ \issuer -> do
+    forged <- submit issuer do
+      createCmd SAG.AuthorizationGrant with
+        authority = issuer
+        grantee = w.complianceTeam
+        scope = Policy.operationScope w.delegationCid tokenBlocklistId Block
+        validFrom = None
+        validUntil = None
+    options <- asDelegate w w.complianceTeam
+    mustFailWithErrorId (grantError "authority-mismatch") options
+      (blockCmd w w.complianceTeam forged [w.alice])
+  blockedAmong w [w.alice] >>= (=== [])
+
+-- | A party without its own grant fails. The grant check fetches the grant
+-- with the actor's authority, so a party that does not observe the grant
+-- (an outsider, the blocker, or another delegate) fails for missing
+-- authority. The admin observes every grant and fails the grantee check.
+-- Claiming to be the grantee fails the controller check.
+test_nonGranteeFails : Script ()
+test_nonGranteeFails = script do
+  w <- setup
+  Some grantDisclosure <- queryDisclosure @SAG.AuthorizationGrant w.admin w.teamBlock
+  forA_ [w.outsider, w.blocker, w.complianceProvider] $ \actor -> do
+    options <- asDelegate w actor
+    mustFailAuthorization (options <> discloseMany [grantDisclosure])
+      (blockCmd w actor w.teamBlock [w.alice])
+  adminOptions <- asDelegate w w.admin
+  mustFailWithErrorId (grantError "grantee-mismatch") adminOptions
+    (blockCmd w w.admin w.teamBlock [w.alice])
+  outsiderOptions <- asDelegate w w.outsider
+  mustFailAuthorization (outsiderOptions <> discloseMany [grantDisclosure])
+    (blockCmd w w.complianceTeam w.teamBlock [w.alice])
+  blockedAmong w [w.alice] >>= (=== [])
+
+-- | The admin revokes one grant, and only that delegate loses the
+-- operation. A delegate also renounces its own grant.
+test_revokedGrantFails : Script ()
+test_revokedGrantFails = script do
+  w0 <- setup
+  submit w0.admin do exerciseCmd w0.teamBlock SAG.AuthorizationGrant_Revoke
+  options <- asDelegate w0 w0.complianceTeam
+  mustFailInactive options (blockCmd w0 w0.complianceTeam w0.teamBlock [w0.alice])
+  w1 <- delegatedBlock w0 w0.complianceProvider w0.providerBlock [w0.alice]
+  submit w1.complianceProvider do exerciseCmd w1.providerUnblock SAG.AuthorizationGrant_Renounce
+  options <- asDelegate w1 w1.complianceProvider
+  mustFailInactive options (unblockCmd w1 w1.complianceProvider w1.providerUnblock [w1.alice])
+  w2 <- delegatedUnblock w1 w1.complianceTeam w1.teamUnblock [w1.alice]
+  blockedAmong w2 [w2.alice] >>= (=== [])
+
+-- | A grant works inside its validity window only. This test advances the
+-- clock past `t1`, so a sandbox run holds it last.
+test_grantOutsideItsWindowFails : Script ()
+test_grantOutsideItsWindowFails = script do
+  w0 <- setup
+  early <- issueGrant w0 w0.complianceTeam Block (Some t2) None
+  expiring <- issueGrant w0 w0.complianceProvider Block None (Some t2)
+  options <- asDelegate w0 w0.complianceTeam
+  mustFailWithErrorId (grantError "not-yet-valid") options
+    (blockCmd w0 w0.complianceTeam early [w0.alice])
+  w1 <- delegatedBlock w0 w0.complianceProvider expiring [w0.alice]
+  setTime t2
+  options <- asDelegate w1 w1.complianceProvider
+  mustFailWithErrorId (grantError "expired") options
+    (blockCmd w1 w1.complianceProvider expiring [w1.bob])
+  w2 <- delegatedBlock w1 w1.complianceTeam early [w1.bob]
+  blockedAmong w2 [w2.alice, w2.bob] >>= (=== [w2.alice, w2.bob])
+
+-- Blocklist guards
+-------------------
+
+-- | A delegate cannot point the delegation at a blocklist of another admin,
+-- even one with the same blocker and id, to block or to unblock.
+test_wrongBlocklistFails : Script ()
+test_wrongBlocklistFails = script do
+  w <- setup
+  otherAdmin <- allocateParty "otherAdmin"
+  other <- submit otherAdmin do
+    createCmd Blocklist with
+      admin = otherAdmin; blocker = w.blocker; id = tokenBlocklistId
+      blocked = Set.fromList [blockedKey w.bob]; maxEntries = 1000
+  Some otherDisclosure <- queryDisclosure @Blocklist otherAdmin other
+  options <- asDelegate w w.complianceTeam
+  let wrong = w with blocklistCid = other
+  mustFailWithStatus (eWrongBlocklist w.admin tokenBlocklistId) (options <> discloseMany [otherDisclosure])
+    (blockCmd wrong w.complianceTeam w.teamBlock [w.alice])
+  mustFailWithStatus (eWrongBlocklist w.admin tokenBlocklistId) (options <> discloseMany [otherDisclosure])
+    (unblockCmd wrong w.complianceTeam w.teamUnblock [w.bob])
+  Some otherBlocklist <- queryContractId otherAdmin other
+  map (isBlocked otherBlocklist) [w.alice, w.bob] === [False, True]
+
+-- Admin controls
+-----------------
+
+-- | `Blocklist_SetBlocker` ends every delegation at once. The old blocker is
+-- no longer a stakeholder of the blocklist, so the delegates fail for missing
+-- authority, and their grants do not match the delegation that the new
+-- blocker signs.
+test_setBlockerEndsEveryDelegation : Script ()
+test_setBlockerEndsEveryDelegation = script do
+  w0 <- setup
+  newBlocker <- allocateParty "newBlocker"
+  rotated <- submit w0.admin do
+    exerciseCmd w0.blocklistCid Blocklist_SetBlocker with newBlocker; reason = "rotation"
+  let w = w0 with blocklistCid = rotated
+  forA_ [(w.complianceTeam, w.teamBlock), (w.complianceProvider, w.providerBlock)] $ \(delegate, grant) -> do
+    options <- asDelegate w delegate
+    mustFailAuthorization options (blockCmd w delegate grant [w.alice])
+  delegation <- submit newBlocker do
+    createCmd BlockerDelegation with blocker = newBlocker; admin = w.admin; blocklistId = tokenBlocklistId
+  let renewed = w with blocker = newBlocker; delegationCid = delegation
+  options <- asDelegate renewed w.complianceTeam
+  mustFailWithErrorId (grantError "scope-mismatch") options
+    (blockCmd renewed w.complianceTeam w.teamBlock [w.alice])
+  grant <- issueGrant renewed w.complianceTeam Block None None
+  w2 <- delegatedBlock renewed w.complianceTeam grant [w.alice]
+  blockedAmong w2 [w.alice] >>= (=== [w.alice])
+
+-- | The admin terminates the delegation, and no grant for it works after.
+-- The blocker can archive it too.
+test_terminationEndsTheDelegation : Script ()
+test_terminationEndsTheDelegation = script do
+  w <- setup
+  options <- asDelegate w w.complianceTeam
+  submit w.admin do
+    exerciseCmd w.delegationCid BlockerDelegation_Terminate with reason = "contract ended"
+  mustFailInactive options (blockCmd w w.complianceTeam w.teamBlock [w.alice])
+  second <- submit w.blocker do
+    createCmd BlockerDelegation with blocker = w.blocker; admin = w.admin; blocklistId = tokenBlocklistId
+  submit w.blocker do archiveCmd second
+  blockedAmong w [w.alice] >>= (=== [])
+
+-- | Only the admin issues grants and terminates the delegation.
+test_onlyTheAdminIssuesAndTerminates : Script ()
+test_onlyTheAdminIssuesAndTerminates = script do
+  w <- setup
+  forA_ [w.blocker, w.complianceTeam, w.outsider] $ \who -> do
+    options <- asDelegate w who
+    mustFailAuthorization options do
+      exerciseCmd w.delegationCid BlockerDelegation_Grant with
+        grantee = who; operation = Block; validFrom = None; validUntil = None
+    mustFailAuthorization options do
+      exerciseCmd w.delegationCid BlockerDelegation_Terminate with reason = "not mine"
+
+-- | Only the blocker signs a delegation: the admin cannot create one in its
+-- name.
+test_onlyTheBlockerSignsTheDelegation : Script ()
+test_onlyTheBlockerSignsTheDelegation = script do
+  w <- setup
+  result <- trySubmit (actAs w.admin) do
+    createCmd BlockerDelegation with blocker = w.blocker; admin = w.admin; blocklistId = tokenBlocklistId
+  case result of
+    Left (AuthorizationError _) -> pure ()
+    other -> abort ("expected an authorization failure, got " <> show other)
+
+-- Audit
+--------
+
+-- | A delegated change is one transaction whose root names the delegate as
+-- the acting party and holds its grant, with the grant's use and the
+-- blocklist change nested below it.
+test_auditTrailNamesTheDelegateAndTheGrant : Script ()
+test_auditTrailNamesTheDelegateAndTheGrant = script do
+  w <- setup
+  options <- asDelegate w w.complianceTeam
+  tree <- submitTree options (blockCmd w w.complianceTeam w.teamBlock [w.alice])
+  [ExercisedEvent root] <- pure tree.rootEvents
+  root.choice === "BlockerDelegation_Block"
+  Some arg <- pure (fromAnyChoice @BlockerDelegation root.argument : Optional BlockerDelegation_Block)
+  arg.authorization === SAG.Authorization with actor = w.complianceTeam; grantCid = w.teamBlock
+  arg.accounts === [w.alice]
+  arg.reason === "case-1"
+  map exercisedChoice root.childEvents === ["AuthorizationGrant_Use", "Blocklist_Block"]
+
+exercisedChoice : TreeEvent -> Text
+exercisedChoice (ExercisedEvent event) = event.choice
+exercisedChoice (CreatedEvent _) = "create"

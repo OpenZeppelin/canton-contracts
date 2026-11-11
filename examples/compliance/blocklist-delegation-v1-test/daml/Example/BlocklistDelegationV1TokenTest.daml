@@ -1,0 +1,166 @@
+-- | End-to-end tests of delegated blocking on the blocklist-integrated token
+-- of `OpenZeppelin.Examples.Token.Cip112.Custom`: a delegate's block stops
+-- the token for the blocked account, another delegate's unblock restores it,
+-- and no delegate sees a holding.
+module Example.BlocklistDelegationV1TokenTest where
+
+import DA.Assert ((===))
+import DA.Date (Month (Jan), date)
+import DA.Foldable (forA_)
+import DA.List (sort)
+import qualified DA.TextMap as TextMap
+import DA.Time (days, hours, time)
+import Daml.Script
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount)
+
+import OpenZeppelin.BlocklistV1
+import OpenZeppelin.Examples.Token.Cip112.Custom
+import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig (..))
+
+import Example.BlocklistDelegationV1
+import Example.BlocklistDelegationV1Test
+
+-- Token fixture
+----------------
+
+t0 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+
+-- | The token of the custom example, run by the admin of `World` and pinned
+-- to its blocklist.
+data Token = Token with
+    rulesCid : ContractId MyRules
+    rulesDisclosure : Disclosure
+
+launchToken : World -> Script Token
+launchToken w = do
+  auditor <- allocateParty "auditor"
+  complianceOfficer <- allocateParty "complianceOfficer"
+  pauser <- allocateParty "pauser"
+  rulesCid <- submit w.admin do
+    createCmd MyRules with
+      config = RegistryConfig with admin = w.admin; maxTTL = days 90; lockGrace = hours 1
+      roles = AppRoles with auditor; complianceOfficer; blocklistId = tokenBlocklistId
+      pauser
+      paused = False
+      transferFeeBps = 0
+      allowedExecutors = []
+  Some rulesDisclosure <- queryDisclosure @MyRules w.admin rulesCid
+  pure Token with rulesCid; rulesDisclosure
+
+-- | The choice context that the registry's off-ledger API supplies.
+blocklistArgs : World -> ExtraArgs
+blocklistArgs w = ExtraArgs with
+  context = ChoiceContext with
+    values = TextMap.fromList [(blocklistContextKey, AV_ContractId (coerceContractId w.blocklistCid))]
+  meta = emptyMetadata
+
+-- | The disclosures a wallet attaches: the rules contract and the current
+-- blocklist.
+walletOptions : World -> Token -> [Party] -> Script SubmitOptions
+walletOptions w token parties = do
+  Some blocklist <- queryDisclosure @Blocklist w.admin w.blocklistCid
+  pure (actAs parties <> discloseMany [token.rulesDisclosure, blocklist])
+
+-- | The admin offers a mint of `amount` to `owner`, and the owner accepts it.
+mint : World -> Token -> Party -> Decimal -> Script ()
+mint w token owner amount = do
+  offer <- submit w.admin do
+    exerciseCmd token.rulesCid MyRules_OfferMint with
+      receiver = basicAccount owner
+      instrumentId = "TOK"
+      amount
+      requestedAt = t0
+      executeBefore = t2
+      reason = "mint"
+  options <- walletOptions w token [owner]
+  _ <- submit options do
+    exerciseCmd offer TransferInstructionV2.TransferInstruction_Accept with
+      actors = [owner]; extraArgs = blocklistArgs w
+  pure ()
+
+-- | A one-step transfer of `amount` from `sender` to `receiver`, funded by
+-- every holding of the sender.
+transferCmd
+  : World -> Token -> Party -> Party -> Decimal -> [ContractId HoldingV2.Holding]
+  -> Commands TransferInstructionV2.TransferInstructionResult
+transferCmd w token sender receiver amount inputs =
+  exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory token.rulesCid)
+    TransferInstructionV2.TransferFactory_Transfer with
+      transfer = TransferInstructionV2.Transfer with
+        sender = basicAccount sender
+        receiver = basicAccount receiver
+        amount
+        instrumentId = HoldingV2.InstrumentId with admin = w.admin; id = "TOK"
+        requestedAt = t0
+        executeBefore = t2
+        inputHoldingCids = inputs
+        meta = emptyMetadata
+      actors = [sender, receiver]
+      extraArgs = blocklistArgs w
+
+holdingsOf : Party -> Script [ContractId HoldingV2.Holding]
+holdingsOf owner = do
+  holdings <- query @MyHolding owner
+  pure [toInterfaceContractId cid | (cid, h) <- holdings, h.holding.account.owner == Some owner]
+
+-- | The options of a one-step transfer, which both sides authorize.
+transferOptions : World -> Token -> Party -> Party -> Script SubmitOptions
+transferOptions w token sender receiver = walletOptions w token [sender, receiver]
+
+balanceOf : Party -> Script [Decimal]
+balanceOf owner = do
+  holdings <- query @MyHolding owner
+  pure (sort [h.holding.amount | (_, h) <- holdings, h.holding.account.owner == Some owner])
+
+-- Tests
+--------
+
+-- | The compliance team blocks alice through the delegation, and alice can
+-- neither send to bob nor receive from him. The compliance provider then
+-- unblocks her, and the same transfer goes through.
+test_delegatedBlockStopsTheToken : Script ()
+test_delegatedBlockStopsTheToken = script do
+  w0 <- setup
+  token <- launchToken w0
+  mint w0 token w0.alice 10.0
+  mint w0 token w0.bob 5.0
+  w1 <- delegatedBlock w0 w0.complianceTeam w0.teamBlock [w0.alice]
+  aliceHoldings <- holdingsOf w1.alice
+  bobHoldings <- holdingsOf w1.bob
+  options <- transferOptions w1 token w1.alice w1.bob
+  mustFailWithStatus (eAccountBlocked w1.alice) options
+    (transferCmd w1 token w1.alice w1.bob 4.0 aliceHoldings)
+  options <- transferOptions w1 token w1.bob w1.alice
+  mustFailWithStatus (eAccountBlocked w1.alice) options
+    (transferCmd w1 token w1.bob w1.alice 2.0 bobHoldings)
+  w2 <- delegatedUnblock w1 w1.complianceProvider w1.providerUnblock [w1.alice]
+  options <- transferOptions w2 token w2.alice w2.bob
+  _ <- submit options (transferCmd w2 token w2.alice w2.bob 4.0 aliceHoldings)
+  balanceOf w2.alice >>= (=== [6.0])
+  balanceOf w2.bob >>= (=== [4.0, 5.0])
+
+-- | The delegates see no token contract: after mints, a transfer, and a
+-- delegated block and unblock, neither sees a holding, an instruction, or
+-- the rules, and neither holds the blocklist as a stakeholder.
+test_delegatesSeeNoHoldings : Script ()
+test_delegatesSeeNoHoldings = script do
+  w0 <- setup
+  token <- launchToken w0
+  mint w0 token w0.alice 10.0
+  mint w0 token w0.bob 5.0
+  aliceHoldings <- holdingsOf w0.alice
+  options <- transferOptions w0 token w0.alice w0.bob
+  _ <- submit options (transferCmd w0 token w0.alice w0.bob 3.0 aliceHoldings)
+  w1 <- delegatedBlock w0 w0.complianceTeam w0.teamBlock [w0.bob]
+  w2 <- delegatedUnblock w1 w1.complianceProvider w1.providerUnblock [w1.bob]
+  forA_ [w2.complianceTeam, w2.complianceProvider] $ \delegate -> do
+    query @MyHolding delegate >>= (=== [])
+    query @MyTransferInstruction delegate >>= (=== [])
+    query @MyRules delegate >>= (=== [])
+    query @Blocklist delegate >>= (=== [])
+    query @BlockerDelegation delegate >>= (=== [])
