@@ -467,6 +467,11 @@ testTransferTwoStep = do
   [lockedCid] <- pure instrView.transfer.inputHoldingCids
   bobViewOfLocked <- queryContractId bob (fromInterfaceContractId @TokenHolding lockedCid)
   bobViewOfLocked === None
+  -- Without the disclosure, accepting cannot find the funding.
+  mustFailWith "Could not find contract" (actAs bob) do
+    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
   funding <- instructionDisclosures admin instrCid
   _ <- submit (actAs bob <> discloseMany funding) do
     exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
