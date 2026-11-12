@@ -45,5 +45,5 @@ template TokenTransferInstruction with
       controller state.transfer.instrumentId.admin
       do transferGcImpl state
 
-instructionOps : TransferInstructionState -> HoldingOps
+instructionOps : TransferInstructionState -> HoldingOps TokenHolding
 instructionOps s = defaultHoldingOps s.transfer.instrumentId.admin

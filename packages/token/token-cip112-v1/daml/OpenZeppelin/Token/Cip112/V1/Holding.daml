@@ -36,17 +36,18 @@ template TokenHolding with
       -- this template's signatories, so the account parties exercise alone.
       controller accountParties holding.instrumentId.admin holding.account
       do holdingOwnerUnlockImpl (defaultHoldingOps holding.instrumentId.admin)
-           (toInterfaceContractId self) holding
+           (toInterfaceContractId self) holding this
 
     interface instance HoldingV2.Holding for TokenHolding where
       view = holding
 
 -- | The operations the default templates run the workflows with: create
 -- `TokenHolding`, consume by archiving a pinned `TokenHolding`, and emit
--- through a transient `TokenEventLog`.
-defaultHoldingOps : Party -> HoldingOps
+-- through a transient `TokenEventLog`. `TokenHolding` has no field outside
+-- the standard view, so the sources are ignored.
+defaultHoldingOps : Party -> HoldingOps TokenHolding
 defaultHoldingOps admin = HoldingOps with
-  createHolding = \v -> toInterfaceContractId <$> create TokenHolding with holding = v
+  createHolding = \_ v -> toInterfaceContractId <$> create TokenHolding with holding = v
   consumeHolding = consumeByArchive @TokenHolding
   withEventLog = withTempEventLog admin
   eventObservers = const []

@@ -106,7 +106,7 @@ allocationAvailableActions s = Map.fromList $
 -- callable by admin plus executors, and a direct settle bypasses the
 -- factory's exact-cover check.
 allocationSettleImpl
-  : HoldingOps -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
+  : HoldingOps h -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
   -> AllocationV2.Allocation_Settle
   -> Update AllocationV2.AllocationResult
 allocationSettleImpl ops createSuccessor self s arg = do
@@ -127,7 +127,7 @@ allocationSettleImpl ops createSuccessor self s arg = do
 
 -- | `allocation_withdrawImpl`.
 allocationWithdrawImpl
-  : HoldingOps -> ContractId AllocationV2.Allocation -> AllocationState
+  : HoldingOps h -> ContractId AllocationV2.Allocation -> AllocationState
   -> AllocationV2.Allocation_Withdraw
   -> Update AllocationV2.AllocationResult
 allocationWithdrawImpl ops self s arg = do
@@ -143,7 +143,7 @@ allocationWithdrawImpl ops self s arg = do
 -- once `expiresAt` has passed (checked by the vendored default, which reads
 -- the interface value of the contract being exercised).
 allocationCancelImpl
-  : HoldingOps -> ContractId AllocationV2.Allocation -> AllocationState
+  : HoldingOps h -> ContractId AllocationV2.Allocation -> AllocationState
   -> AllocationV2.Allocation_Cancel
   -> Update AllocationV2.AllocationResult
 allocationCancelImpl ops self s arg = do
@@ -182,7 +182,7 @@ privateAssetAllocateExtraObservers arg
 -- | `allocationFactory_allocateImpl`: validate, lock net funding plus any
 -- next-iteration reserve, return the completed allocation and any change.
 allocationFactoryImpl
-  : RegistryConfig -> HoldingOps -> CreateAllocation
+  : RegistryConfig -> HoldingOps h -> CreateAllocation
   -> AllocationInstructionV2.AllocationFactory_Allocate
   -> Update AllocationInstructionV2.AllocationInstructionResult
 allocationFactoryImpl config ops createAllocation arg = do
@@ -237,20 +237,21 @@ allocationFactoryImpl config ops createAllocation arg = do
         expiresAfter = None
         context = Some ("allocation for settlement " <> arg.settlement.id)
 
-  inputAmounts <- debitHoldings (consumeUnlockedHolding ops admin authorizer) arg.inputHoldingCids
+  (inputAmounts, inputSources) <- debitHoldings (consumeUnlockedHolding ops admin authorizer) arg.inputHoldingCids
 
   lockedAndChange <- forA (TextMap.toList (textMapMergeWithDefault (0.0, 0.0) inputAmounts requiredAmounts)) $
     \(instrumentId, (inputAmount, requiredAmount)) -> do
       require' ("funding for " <> instrumentId, inputAmount)
         isGreaterOrEqualR ("required lock amount", requiredAmount)
+      let sources = sourcesFor instrumentId inputSources
       lockedCids <-
         if requiredAmount > 0.0
-          then (:: []) <$> newHolding ops admin authorizer instrumentId requiredAmount (Some lock)
+          then (:: []) <$> newHolding ops sources admin authorizer instrumentId requiredAmount (Some lock)
           else pure []
       changeCids <-
         if inputAmount - requiredAmount > 0.0
           then do
-            cid <- newHolding ops admin authorizer instrumentId (inputAmount - requiredAmount) None
+            cid <- newHolding ops sources admin authorizer instrumentId (inputAmount - requiredAmount) None
             pure [(instrumentId, [cid])]
           else pure []
       pure (lockedCids, changeCids)
@@ -295,7 +296,7 @@ allocationFactoryImpl config ops createAllocation arg = do
 -- When a reservation is requested a successor allocation is created through
 -- the owner's constructor.
 settleAllocation
-  : HoldingOps -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
+  : HoldingOps h -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
   -> [AllocationV2.TransferLegSide] -> Optional (TextMap.TextMap Decimal)
   -> Update AllocationV2.AllocationResult
 settleAllocation ops createSuccessor self s extraTransferLegSides nextIterationFunding = do
@@ -303,7 +304,7 @@ settleAllocation ops createSuccessor self s extraTransferLegSides nextIterationF
       authorizer = s.allocation.authorizer
       effectiveLegSides = s.allocation.transferLegSides <> extraTransferLegSides
       reserveAmounts = fromOptional TextMap.empty nextIterationFunding
-  lockedAmounts <- debitHoldings (consumeLockedHolding ops admin authorizer) s.lockedHoldingCids
+  (lockedAmounts, lockedSources) <- debitHoldings (consumeLockedHolding ops admin authorizer) s.lockedHoldingCids
   let netAmounts = netAllocationCreditAmounts authorizer effectiveLegSides
       totalAmounts = textMapUnionWith (+) lockedAmounts netAmounts
 
@@ -322,14 +323,15 @@ settleAllocation ops createSuccessor self s extraTransferLegSides nextIterationF
         isGreaterOrEqualR ("zero", 0.0)
       require' ("locked funds plus net credit for " <> instrumentId, total)
         isGreaterOrEqualR ("requested next-iteration funding", reserve)
+      let sources = sourcesFor instrumentId lockedSources
       newLockedCids <-
         if reserve > 0.0
-          then (:: []) <$> newHolding ops admin authorizer instrumentId reserve (Some lock)
+          then (:: []) <$> newHolding ops sources admin authorizer instrumentId reserve (Some lock)
           else pure []
       payoutCids <-
         if total - reserve > 0.0
           then do
-            cid <- newHolding ops admin authorizer instrumentId (total - reserve) None
+            cid <- newHolding ops sources admin authorizer instrumentId (total - reserve) None
             pure [(instrumentId, [cid])]
           else pure []
       pure (newLockedCids, payoutCids)
@@ -363,7 +365,7 @@ settleAllocation ops createSuccessor self s extraTransferLegSides nextIterationF
 
 -- | Release the locked holdings to the authorizer and log the change.
 unlockAndLog
-  : HoldingOps -> AllocationState -> Text
+  : HoldingOps h -> AllocationState -> Text
   -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
 unlockAndLog ops s reason = do
   let admin = s.allocation.admin

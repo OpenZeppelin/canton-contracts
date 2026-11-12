@@ -17,7 +17,12 @@ functions, with every template decision left to the caller.
   `createHolding`, `consumeHolding`, `withEventLog`, and `eventObservers`
   (extra informees of every holdings-change event, for auditors and
   regulators who must see the standard event stream). It holds functions,
-  so it is never stored.
+  so it is never stored. Its type parameter is the owner's per-holding
+  state, usually the holding template: `consumeHolding` returns it, and
+  `createHolding` receives the states of the holdings consumed to fund each
+  new one, so template fields outside the standard view can carry over when
+  a workflow re-creates a holding. A holding paid out from a settlement's net
+  credit alone, or minted, has no sources.
 - `consumeByArchive @T` and `pinAllocationTo @T`: the safe ways to write the
   consumption and allocation policies, pinned to one template.
 - `privateAssetAllocateExtraObservers`: the allocation factory's extra

@@ -70,7 +70,7 @@ receiverParties transfer = accountParties transfer.instrumentId.admin transfer.r
 -- | `transferInstruction_acceptImpl`: consume the locked funding, return any
 -- surplus to the sender, pay the receiver.
 transferAcceptImpl
-  : HoldingOps -> ContractId TransferInstructionV2.TransferInstruction -> TransferInstructionState
+  : HoldingOps h -> ContractId TransferInstructionV2.TransferInstruction -> TransferInstructionState
   -> TransferInstructionV2.TransferInstruction_Accept
   -> Update TransferInstructionV2.TransferInstructionResult
 transferAcceptImpl ops self s arg = do
@@ -78,7 +78,7 @@ transferAcceptImpl ops self s arg = do
   assertWithinDeadline "transfer.executeBefore" s.transfer.executeBefore
   let admin = s.transfer.instrumentId.admin
       transfer = s.transfer
-  lockedAmounts <- debitHoldings (consumeLockedHolding ops admin transfer.sender) s.lockedHoldingCids
+  (lockedAmounts, lockedSources) <- debitHoldings (consumeLockedHolding ops admin transfer.sender) s.lockedHoldingCids
   -- A mint offer locks nothing: the admin's signature on it authorizes the
   -- new holding.
   unless (transfer.sender == mintAccount) $
@@ -87,8 +87,9 @@ transferAcceptImpl ops self s arg = do
       isGreaterOrEqualR ("transfer.amount", transfer.amount)
   -- Return every unit of locked funding that is not the transferred amount,
   -- including any balance in a different instrument.
-  senderChangeCids <- returnLockedSurplus ops transfer lockedAmounts
-  receiverHoldingCids <- payReceiver ops transfer s.lockedHoldingCids senderChangeCids
+  senderChangeCids <- returnLockedSurplus ops transfer lockedAmounts lockedSources
+  receiverHoldingCids <- payReceiver ops (sourcesFor transfer.instrumentId.id lockedSources)
+    transfer s.lockedHoldingCids senderChangeCids
   pure TransferInstructionV2.TransferInstructionResult with
     output = TransferInstructionV2.TransferInstructionResult_Completed with receiverHoldingCids
     senderChangeCids
@@ -96,7 +97,7 @@ transferAcceptImpl ops self s arg = do
 
 -- | `transferInstruction_rejectImpl`.
 transferRejectImpl
-  : HoldingOps -> ContractId TransferInstructionV2.TransferInstruction -> TransferInstructionState
+  : HoldingOps h -> ContractId TransferInstructionV2.TransferInstruction -> TransferInstructionState
   -> TransferInstructionV2.TransferInstruction_Reject
   -> Update TransferInstructionV2.TransferInstructionResult
 transferRejectImpl ops self s arg = do
@@ -105,7 +106,7 @@ transferRejectImpl ops self s arg = do
 
 -- | `transferInstruction_withdrawImpl`.
 transferWithdrawImpl
-  : HoldingOps -> ContractId TransferInstructionV2.TransferInstruction -> TransferInstructionState
+  : HoldingOps h -> ContractId TransferInstructionV2.TransferInstruction -> TransferInstructionState
   -> TransferInstructionV2.TransferInstruction_Withdraw
   -> Update TransferInstructionV2.TransferInstructionResult
 transferWithdrawImpl ops self s arg = do
@@ -115,7 +116,7 @@ transferWithdrawImpl ops self s arg = do
 -- | Body of a consuming admin-expiry choice: the storage bound has passed and
 -- the locked funds return to the sender.
 transferExpireImpl
-  : HoldingOps -> TransferInstructionState
+  : HoldingOps h -> TransferInstructionState
   -> Update TransferInstructionV2.TransferInstructionResult
 transferExpireImpl ops s = do
   assertDeadlineExceeded "expiresAt" s.expiresAt
@@ -133,7 +134,7 @@ transferGcImpl s = assertDeadlineExceeded "lockExpiresAt" s.lockExpiresAt
 -- sender's account parties jointly initiate; including the receiver's account
 -- parties completes the transfer in one step.
 transferFactoryImpl
-  : RegistryConfig -> HoldingOps -> CreateTransferInstruction
+  : RegistryConfig -> HoldingOps h -> CreateTransferInstruction
   -> TransferInstructionV2.TransferFactory_Transfer
   -> Update TransferInstructionV2.TransferInstructionResult
 transferFactoryImpl config ops createInstruction arg = do
@@ -151,7 +152,7 @@ transferFactoryImpl config ops createInstruction arg = do
 --
 -- A transfer to the CIP-0112 burn account is a burn.
 executeTransfer
-  : RegistryConfig -> HoldingOps -> CreateTransferInstruction -> Bool
+  : RegistryConfig -> HoldingOps h -> CreateTransferInstruction -> Bool
   -> TransferInstructionV2.Transfer
   -> Update TransferInstructionV2.TransferInstructionResult
 executeTransfer config ops createInstruction oneStep transfer = do
@@ -161,21 +162,22 @@ executeTransfer config ops createInstruction oneStep transfer = do
   require "transfer receiver must be a regular account or the burn account"
     (isRegularAccount transfer.receiver || transfer.receiver == burnAccount)
 
-  inputAmounts <- debitHoldings (consumeUnlockedHolding ops admin transfer.sender) transfer.inputHoldingCids
+  (inputAmounts, inputSources) <- debitHoldings (consumeUnlockedHolding ops admin transfer.sender) transfer.inputHoldingCids
   funded <- case TextMap.toList inputAmounts of
     [(instrumentId, amount)] | instrumentId == transfer.instrumentId.id -> pure amount
     [] -> fail "transfer requires input holdings to fund it"
     _ -> fail "input holdings must all match the transfer's instrument"
   require' ("funding for " <> transfer.instrumentId.id, funded)
     isGreaterOrEqualR ("transfer.amount", transfer.amount)
+  let sources = sourcesFor transfer.instrumentId.id inputSources
   senderChangeCids <-
     if funded > transfer.amount
-      then (:: []) <$> newHolding ops admin transfer.sender transfer.instrumentId.id (funded - transfer.amount) None
+      then (:: []) <$> newHolding ops sources admin transfer.sender transfer.instrumentId.id (funded - transfer.amount) None
       else pure []
 
   if oneStep
     then do
-      receiverHoldingCids <- payReceiver ops transfer transfer.inputHoldingCids senderChangeCids
+      receiverHoldingCids <- payReceiver ops sources transfer transfer.inputHoldingCids senderChangeCids
       pure TransferInstructionV2.TransferInstructionResult with
         output = TransferInstructionV2.TransferInstructionResult_Completed with receiverHoldingCids
         senderChangeCids
@@ -194,7 +196,7 @@ executeTransfer config ops createInstruction oneStep transfer = do
             context = Some $ if transfer.receiver == burnAccount
               then "pending burn"
               else "pending transfer to " <> show transfer.receiver.owner
-      lockedCid <- newHolding ops admin transfer.sender transfer.instrumentId.id transfer.amount (Some lock)
+      lockedCid <- newHolding ops sources admin transfer.sender transfer.instrumentId.id transfer.amount (Some lock)
       instructionCid <- createInstruction TransferInstructionState with
         transfer = transfer with inputHoldingCids = [lockedCid]
         lockedHoldingCids = [lockedCid]
@@ -226,32 +228,35 @@ validateTransfer config transfer = do
     (now `subTime` transfer.requestedAt <= config.maxTTL)
 
 -- | Pay out any locked funding beyond the transferred amount, per
--- instrument, so accepting can never destroy value.
+-- instrument, so accepting can never destroy value. Each surplus holding is
+-- funded by the locked holdings of its instrument.
 returnLockedSurplus
-  : HoldingOps -> TransferInstructionV2.Transfer -> TextMap.TextMap Decimal
+  : HoldingOps h -> TransferInstructionV2.Transfer -> TextMap.TextMap Decimal
+  -> TextMap.TextMap [h]
   -> Update [ContractId HoldingV2.Holding]
-returnLockedSurplus ops transfer lockedAmounts = do
+returnLockedSurplus ops transfer lockedAmounts lockedSources = do
   let admin = transfer.instrumentId.admin
   changes <- forA (TextMap.toList lockedAmounts) $ \(instrumentId, amount) -> do
     let surplus =
           if instrumentId == transfer.instrumentId.id then amount - transfer.amount else amount
     if surplus > 0.0
-      then (:: []) <$> newHolding ops admin transfer.sender instrumentId surplus None
+      then (:: []) <$> newHolding ops (sourcesFor instrumentId lockedSources) admin transfer.sender instrumentId surplus None
       else pure []
   pure (concat changes)
 
 -- | Create the receiver's holding and log the transfer event. `inputCids`
--- are the holdings consumed to fund it. A burn creates no holding.
+-- are the holdings consumed to fund it and `sources` their states. A burn
+-- creates no holding.
 payReceiver
-  : HoldingOps -> TransferInstructionV2.Transfer
+  : HoldingOps h -> [h] -> TransferInstructionV2.Transfer
   -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
   -> Update [ContractId HoldingV2.Holding]
-payReceiver ops transfer inputCids senderChangeCids = do
+payReceiver ops sources transfer inputCids senderChangeCids = do
   let admin = transfer.instrumentId.admin
   receiverHoldingCids <-
     if transfer.receiver == burnAccount
       then pure []
-      else (:: []) <$> newHolding ops admin transfer.receiver transfer.instrumentId.id transfer.amount None
+      else (:: []) <$> newHolding ops sources admin transfer.receiver transfer.instrumentId.id transfer.amount None
   ops.withEventLog $ \eventLogCid ->
     logTransferEvents ops eventLogCid (transfer with inputHoldingCids = inputCids)
       senderChangeCids receiverHoldingCids
@@ -263,7 +268,7 @@ payReceiver ops transfer inputCids senderChangeCids = do
 -- transfer's own reason in its `extraArgs`, or names the workflow when the
 -- transfer has none.
 logTransferEvents
-  : HoldingOps -> ContractId TransferEventsV2.EventLog -> TransferInstructionV2.Transfer
+  : HoldingOps h -> ContractId TransferEventsV2.EventLog -> TransferInstructionV2.Transfer
   -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
   -> Update ()
 logTransferEvents ops eventLogCid transfer senderOutputHoldingCids receiverOutputHoldingCids = do
@@ -313,7 +318,7 @@ logTransferEvents ops eventLogCid transfer senderOutputHoldingCids receiverOutpu
 
 -- | Release the locked funding to the sender and log the change.
 returnFundsToSender
-  : HoldingOps -> TransferInstructionState -> Text
+  : HoldingOps h -> TransferInstructionState -> Text
   -> Update TransferInstructionV2.TransferInstructionResult
 returnFundsToSender ops s reason = do
   let admin = s.transfer.instrumentId.admin

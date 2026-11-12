@@ -74,16 +74,19 @@ template MyEventLog with
 
 -- | Built inside every choice body from the template's own fields. The
 -- closure over `roles` is how consumer fields reach `createHolding` without
--- the workflows knowing about them. New holdings are never frozen.
-myOps : Party -> AppRoles -> HoldingOps
+-- the workflows knowing about them. New holdings are never frozen: the
+-- sources never are either, since `MyHolding_Spend` refuses a frozen one.
+myOps : Party -> AppRoles -> HoldingOps MyHolding
 myOps admin roles = HoldingOps with
-  createHolding = \v -> toInterfaceContractId <$> create MyHolding with holding = v; roles; frozen = False
+  createHolding = \_ v -> toInterfaceContractId <$> create MyHolding with holding = v; roles; frozen = False
   consumeHolding = \cid -> do
     -- Pin the template first: a foreign `Holding` never reaches the spend.
     fetched <- fetchFromInterface @MyHolding cid
     case fetched of
       None -> fail "holding is not a MyHolding"
-      Some (tcid, _) -> exercise tcid MyHolding_Spend
+      Some (tcid, h) -> do
+        v <- exercise tcid MyHolding_Spend
+        pure (v, h)
   withEventLog = \emit -> do
     cid <- create MyEventLog with admin
     emit (toInterfaceContractId cid)
@@ -136,7 +139,7 @@ template MyHolding with
       controller accountParties holding.instrumentId.admin holding.account
       do
         require "holding is frozen" (not frozen)
-        holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
+        holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding this
 
     interface instance HoldingV2.Holding for MyHolding where
       view = holding
@@ -342,7 +345,7 @@ createAllocation rules s =
 
 -- | One class so every template builds its ops the same way.
 class HasOps t where
-  ops : t -> HoldingOps
+  ops : t -> HoldingOps MyHolding
 
 instance HasOps MyTransferInstruction where
   ops this = myOps this.state.transfer.instrumentId.admin this.roles

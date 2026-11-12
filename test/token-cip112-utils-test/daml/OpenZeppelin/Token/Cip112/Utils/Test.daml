@@ -13,7 +13,7 @@ import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
 import DA.List (dedupSort)
 import DA.Map qualified as Map
-import DA.Text (isInfixOf)
+import DA.Text (intercalate, isInfixOf)
 import DA.TextMap qualified as TextMap
 import DA.Time (addRelTime, days, hours, minutes, time)
 import Daml.Script
@@ -48,6 +48,22 @@ template UnitHolding with
     ensure isValidHoldingView holding
 
     interface instance HoldingV2.Holding for UnitHolding where
+      view = holding
+
+-- | A holding with a consumer field outside the standard view. Its owner
+-- unlock runs the shared body, so the replacement goes through `taggedOps`.
+template TaggedHolding with
+    holding : HoldingV2.HoldingView
+    tag : Text
+  where
+    signatory holding.instrumentId.admin, basicOwner holding
+    ensure isValidHoldingView holding
+
+    choice TaggedHolding_OwnerUnlock : ContractId HoldingV2.Holding
+      controller basicOwner holding
+      do holdingOwnerUnlockImpl taggedOps (toInterfaceContractId self) holding this
+
+    interface instance HoldingV2.Holding for TaggedHolding where
       view = holding
 
 -- | A holding signed by someone else entirely, claiming any view it likes.
@@ -103,7 +119,7 @@ template Harness with
     nonconsuming choice Harness_ConsumeByArchive : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; actors : [Party]
       controller actors
-      do consumeByArchive @UnitHolding cid
+      do fst <$> consumeByArchive @UnitHolding cid
 
     nonconsuming choice Harness_PinAllocation : AllocationV2.AllocationView
       with cid : ContractId AllocationV2.Allocation; actors : [Party]
@@ -113,24 +129,49 @@ template Harness with
     nonconsuming choice Harness_ConsumeLocked : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
       controller actors
-      do consumeLockedHolding unitOps admin expectedAccount cid
+      do fst <$> consumeLockedHolding unitOps admin expectedAccount cid
 
     nonconsuming choice Harness_ConsumeUnlocked : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
       controller actors
-      do consumeUnlockedHolding unitOps admin expectedAccount cid
+      do fst <$> consumeUnlockedHolding unitOps admin expectedAccount cid
 
     nonconsuming choice Harness_ExpireAllocations : ()
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]; actors : [Party]
       controller actors
       do expireAllocationsImpl (pinAllocationTo @UnitAllocation) admin cancelArgs
 
+    nonconsuming choice Harness_TaggedTransfer : TransferInstructionV2.TransferInstructionResult
+      with transfer : TransferInstructionV2.Transfer; actors : [Party]
+      controller actors
+      do executeTransfer (RegistryConfig with admin; maxTTL = days 1; lockGrace = hours 1)
+           taggedOps (\_ -> fail "one-step transfers create no instruction") True transfer
+
+    nonconsuming choice Harness_TaggedUnlock : TextMap.TextMap [ContractId HoldingV2.Holding]
+      with cids : [ContractId HoldingV2.Holding]; actors : [Party]
+      controller actors
+      do unlockHoldings taggedOps admin (basicAccount owner) cids
+
 -- | The operations the harness runs the bodies with. Events are not under
 -- test here, so emission does nothing.
-unitOps : HoldingOps
+unitOps : HoldingOps UnitHolding
 unitOps = HoldingOps with
-  createHolding = \v -> toInterfaceContractId <$> create UnitHolding with holding = v
+  createHolding = \_ v -> toInterfaceContractId <$> create UnitHolding with holding = v
   consumeHolding = consumeByArchive @UnitHolding
+  withEventLog = \_ -> pure ()
+  eventObservers = const []
+
+-- | Tags each new holding with the distinct tags of its sources, so a test
+-- can read which consumed holdings funded it. A holding with no source is
+-- tagged "new".
+taggedOps : HoldingOps TaggedHolding
+taggedOps = HoldingOps with
+  createHolding = \sources v -> toInterfaceContractId <$> create TaggedHolding with
+    holding = v
+    tag = case dedupSort (map (.tag) sources) of
+      [] -> "new"
+      tags -> intercalate "+" tags
+  consumeHolding = consumeByArchive @TaggedHolding
   withEventLog = \_ -> pure ()
   eventObservers = const []
 
@@ -398,8 +439,9 @@ testEventObserversFor = do
   provider <- allocateParty "provider"
   auditor <- allocateParty "auditor"
   let account = HoldingV2.Account with owner = Some alice; provider = Some provider; id = "custody"
+      ops : HoldingOps ()
       ops = HoldingOps with
-        createHolding = \_ -> fail "unused"
+        createHolding = \_ _ -> fail "unused"
         consumeHolding = \_ -> fail "unused"
         withEventLog = \_ -> fail "unused"
         eventObservers = const [auditor, alice]
@@ -520,3 +562,65 @@ testExpireAllocationsRefusesLiveAllocation = do
   f@Fixture{..} <- setup
   cmd <- expireUnit f (unitAllocationView admin alice) [admin]
   mustFailWith "strictly before deadline 'allocation.expiresAt'" (actAs admin) cmd
+
+-- Consumer state across re-creation
+------------------------------------
+
+-- | A `TaggedHolding` of `amount` in alice's basic account.
+taggedHolding : Fixture -> Text -> Decimal -> Optional HoldingV2.Lock -> Script (ContractId HoldingV2.Holding)
+taggedHolding Fixture{..} tag amount lock = do
+  cid <- submit (actAs [admin, alice]) do
+    createCmd TaggedHolding with holding = mkHoldingView admin (basicAccount alice) "TOK" amount lock; tag
+  pure (toInterfaceContractId cid)
+
+tagOf : Party -> ContractId HoldingV2.Holding -> Script Text
+tagOf party cid = do
+  Some h <- queryContractId party (fromInterfaceContractId @TaggedHolding cid)
+  pure h.tag
+
+-- | A transfer passes the inputs' states to the sender's change and to the
+-- receiver's holding.
+testTransferPassesInputStates : Script ()
+testTransferPassesInputStates = do
+  fixture@Fixture{..} <- setup
+  bob <- allocateParty "bob"
+  a <- taggedHolding fixture "a" 5.0 None
+  b <- taggedHolding fixture "b" 5.0 None
+  result <- submit (actAs [admin, alice, bob]) do
+    exerciseCmd harnessCid Harness_TaggedTransfer with
+      actors = [admin, alice, bob]
+      transfer = TransferInstructionV2.Transfer with
+        sender = basicAccount alice
+        receiver = basicAccount bob
+        amount = 7.0
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        requestedAt = t0
+        executeBefore = t2
+        inputHoldingCids = [a, b]
+        meta = emptyMetadata
+  [change] <- pure result.senderChangeCids
+  tagOf alice change >>= (=== "a+b")
+  TransferInstructionV2.TransferInstructionResult_Completed [paid] <- pure result.output
+  tagOf bob paid >>= (=== "a+b")
+
+-- | Releasing locked holdings passes each one's state to its replacement.
+testUnlockPassesEachState : Script ()
+testUnlockPassesEachState = do
+  fixture@Fixture{..} <- setup
+  x <- taggedHolding fixture "x" 5.0 (Some (lockUntil admin (Some t2)))
+  y <- taggedHolding fixture "y" 5.0 (Some (lockUntil admin (Some t2)))
+  released <- submit (actAs admin) do
+    exerciseCmd harnessCid Harness_TaggedUnlock with cids = [x, y]; actors = [admin]
+  tags <- mapA (tagOf alice) (concatMap snd (TextMap.toList released))
+  dedupSort tags === ["x", "y"]
+
+-- | The owner unlock passes the exercised holding's state to its
+-- replacement.
+testOwnerUnlockPassesState : Script ()
+testOwnerUnlockPassesState = do
+  fixture@Fixture{..} <- setup
+  locked <- taggedHolding fixture "x" 5.0 (Some (lockUntil admin (Some t2)))
+  setTime t3
+  unlocked <- submit alice do
+    exerciseCmd (fromInterfaceContractId @TaggedHolding locked) TaggedHolding_OwnerUnlock
+  tagOf alice unlocked >>= (=== "x")
