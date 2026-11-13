@@ -725,6 +725,36 @@ testPendingTransferCarriesStates = do
     exerciseCmd (fromInterfaceContractId @TaggedTransferInstruction expired) TaggedTransferInstruction_Expire
   returnedTag expireResult >>= (=== "a+b")
 
+-- | Accepting returns locked funding beyond the transferred amount with the
+-- states of the locked holdings of its instrument.
+testAcceptSurplusCarriesStates : Script ()
+testAcceptSurplusCarriesStates = do
+  fixture@Fixture{..} <- setup
+  bob <- allocateParty "bob"
+  let lock = Some (lockUntil admin (Some t3))
+  tok <- taggedHoldingOf fixture "TOK" "a" 10.0 lock
+  gld <- taggedHoldingOf fixture "GLD" "g" 4.0 lock
+  instruction <- submit (actAs [admin, alice]) do
+    createCmd TaggedTransferInstruction with
+      state = TransferInstructionState with
+        transfer = TransferInstructionV2.Transfer with
+          sender = basicAccount alice
+          receiver = basicAccount bob
+          amount = 7.0
+          instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+          requestedAt = t0
+          executeBefore = t2
+          inputHoldingCids = [tok, gld]
+          meta = emptyMetadata
+        lockedHoldingCids = [tok, gld]
+        expiresAt = t2
+        lockExpiresAt = t3
+  result <- submit (actAs bob <> readAs admin) do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferInstruction instruction)
+      TransferInstructionV2.TransferInstruction_Accept with actors = [bob]; extraArgs = emptyExtraArgs
+  tags <- mapA (tagOf alice) result.senderChangeCids
+  dedupSort tags === ["a", "g"]
+
 -- | A mint consumes nothing, so the minted holding has no sources.
 testMintHasNoSources : Script ()
 testMintHasNoSources = do

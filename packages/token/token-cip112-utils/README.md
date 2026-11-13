@@ -22,7 +22,8 @@ functions, with every template decision left to the caller.
   `createHolding` receives the states of the holdings consumed to fund each
   new one, so template fields outside the standard view can carry over when
   a workflow re-creates a holding. A holding paid out from a settlement's net
-  credit alone, or minted, has no sources. A field carries over only from a
+  credit alone, or minted, has no sources, so state follows value through a
+  transfer but not through a settlement. A field carries over only from a
   holding that a workflow consumes, so a rule for a whole account, such as a
   compliance freeze, belongs on a separate contract for the account and not
   on its holdings: a flag on a holding covers that holding only, and funds

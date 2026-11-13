@@ -64,12 +64,19 @@ data HoldingOps h = HoldingOps with
       -- view's instrument: the sender's inputs or locked holdings for the
       -- sender's change, the locked holding, or the receiver's payout, and
       -- the authorizer's inputs or locked holdings for an allocation's
-      -- locked funds, change, reserve, and payout. It is empty for a mint
-      -- and for a payout funded only by a settlement's net credit; the
-      -- counterparties' holdings behind that credit are never named. A
-      -- source may belong to another account than the view's, as on a
-      -- receiver's payout. Fields that come from neither, such as roles,
-      -- come from the closure that builds the record.
+      -- locked funds, change, reserve, and payout. A release or an owner
+      -- unlock passes the one holding it replaces. Every holding a step
+      -- creates in one instrument gets the same list, in the order the
+      -- holdings were consumed; the list is not split by amount. It is
+      -- empty for a mint and for a payout funded only by a settlement's
+      -- net credit; the counterparties' holdings behind that credit are
+      -- never named. State therefore does not cross a settlement: a
+      -- receiver's payout has no sources, and a payout that mixes locked
+      -- funds with net credit names only the authorizer's holdings. An
+      -- empty list does not mean new supply. A source may belong to
+      -- another account than the view's, as on a receiver's payout.
+      -- Fields that come from neither, such as roles, come from the
+      -- closure that builds the record.
     consumeHolding : ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h)
       -- ^ Remove a holding from the ledger and return the view and state it
       -- had. Law: fails unless the contract is an accepted implementation.
