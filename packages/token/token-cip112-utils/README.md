@@ -22,7 +22,12 @@ functions, with every template decision left to the caller.
   `createHolding` receives the states of the holdings consumed to fund each
   new one, so template fields outside the standard view can carry over when
   a workflow re-creates a holding. A holding paid out from a settlement's net
-  credit alone, or minted, has no sources.
+  credit alone, or minted, has no sources. A field carries over only from a
+  holding that a workflow consumes, so a rule for a whole account, such as a
+  compliance freeze, belongs on a separate contract for the account and not
+  on its holdings: a flag on a holding covers that holding only, and funds
+  that reach the account later, such as a returned transfer or a settlement
+  payout, are created from sources without it.
 - `consumeByArchive @T` and `pinAllocationTo @T`: the safe ways to write the
   consumption and allocation policies, pinned to one template.
 - `privateAssetAllocateExtraObservers`: the allocation factory's extra
@@ -58,8 +63,8 @@ contract id enters through an operation the template owner wrote:
 - The `PinAllocation` passed to `settleBatchImpl` and `expireAllocationsImpl`
   must fail on any allocation whose choice bodies the registry does not
   control. Use `pinAllocationTo @YourAllocation`.
-- `createHolding` must create a contract whose view equals the argument and
-  whose signatories include the admin and the account parties.
+- `createHolding` must create a contract whose view equals the view argument
+  and whose signatories include the admin and the account parties.
 - The settlement factory must settle through `settleBatchImpl`, or keep its
   exact-cover check: every leg in the batch needs a sending and a receiving
   allocation with the same amount. Without it, a settlement can create

@@ -3,9 +3,11 @@
 -- against a minimal local template it accepts and a foreign template it must
 -- refuse. The consumption and expiry bodies are run here too, for the
 -- guards that only a consumer's own `HoldingOps` or allocation template can
--- reach. The full workflows run under `test/token-cip112-v1-test` through the
--- default templates and under `examples/token/token-cip112-custom-test`
--- through a consumer's templates.
+-- reach, and the transfer and allocation bodies are run with a tagged
+-- holding, for the per-holding state the default templates do not have. The
+-- full workflows run under `test/token-cip112-v1-test` through the default
+-- templates and under `examples/token/token-cip112-custom-test` through a
+-- consumer's templates.
 module OpenZeppelin.Token.Cip112.Utils.Test where
 
 import DA.Action (unless)
@@ -57,6 +59,9 @@ template TaggedHolding with
     tag : Text
   where
     signatory holding.instrumentId.admin, basicOwner holding
+    -- A receiver holds the lock on a pending transfer's funding and reads it
+    -- when answering the offer.
+    observer lockHolders holding.lock
     ensure isValidHoldingView holding
 
     choice TaggedHolding_OwnerUnlock : ContractId HoldingV2.Holding
@@ -65,6 +70,44 @@ template TaggedHolding with
 
     interface instance HoldingV2.Holding for TaggedHolding where
       view = holding
+
+-- | A pending transfer whose bodies run with `taggedOps`.
+template TaggedTransferInstruction with
+    state : TransferInstructionState
+  where
+    signatory state.transfer.instrumentId.admin, senderParties state.transfer
+    observer receiverParties state.transfer
+    ensure isValidTransferInstructionState state
+
+    choice TaggedTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
+      controller state.transfer.instrumentId.admin
+      do transferExpireImpl taggedOps state
+
+    interface instance TransferInstructionV2.TransferInstruction for TaggedTransferInstruction where
+      view = transferInstructionView state
+      transferInstruction_acceptExtraObservers _ = []
+      transferInstruction_rejectExtraObservers _ = []
+      transferInstruction_withdrawExtraObservers _ = []
+      transferInstruction_acceptImpl self arg = transferAcceptImpl taggedOps self state arg
+      transferInstruction_rejectImpl self arg = transferRejectImpl taggedOps self state arg
+      transferInstruction_withdrawImpl self arg = transferWithdrawImpl taggedOps self state arg
+
+-- | An allocation whose bodies run with `taggedOps`.
+template TaggedAllocation with
+    state : AllocationState
+  where
+    signatory state.allocation.admin, accountParties state.allocation.admin state.allocation.authorizer
+    observer state.settlement.executors
+    ensure isValidAllocationState state
+
+    interface instance AllocationV2.Allocation for TaggedAllocation where
+      view = allocationView state
+      allocation_settleExtraObservers _ = []
+      allocation_cancelExtraObservers _ = []
+      allocation_withdrawExtraObservers _ = []
+      allocation_settleImpl self arg = allocationSettleImpl taggedOps createTaggedAllocation self state arg
+      allocation_withdrawImpl self arg = allocationWithdrawImpl taggedOps self state arg
+      allocation_cancelImpl self arg = allocationCancelImpl taggedOps self state arg
 
 -- | A holding signed by someone else entirely, claiming any view it likes.
 template ForeignHolding with
@@ -142,10 +185,19 @@ template Harness with
       do expireAllocationsImpl (pinAllocationTo @UnitAllocation) admin cancelArgs
 
     nonconsuming choice Harness_TaggedTransfer : TransferInstructionV2.TransferInstructionResult
-      with transfer : TransferInstructionV2.Transfer; actors : [Party]
+      with transfer : TransferInstructionV2.Transfer; oneStep : Bool; actors : [Party]
       controller actors
-      do executeTransfer (RegistryConfig with admin; maxTTL = days 1; lockGrace = hours 1)
-           taggedOps (\_ -> fail "one-step transfers create no instruction") True transfer
+      do executeTransfer (harnessConfig admin) taggedOps createTaggedInstruction oneStep transfer
+
+    nonconsuming choice Harness_TaggedMint : ContractId TransferInstructionV2.TransferInstruction
+      with amount : Decimal; actors : [Party]
+      controller actors
+      do offerMintImpl (harnessConfig admin) createTaggedInstruction (basicAccount owner) "TOK" amount t0 t2 "mint"
+
+    nonconsuming choice Harness_TaggedAllocate : AllocationInstructionV2.AllocationInstructionResult
+      with allocate : AllocationInstructionV2.AllocationFactory_Allocate
+      controller allocate.actors
+      do allocationFactoryImpl (harnessConfig admin) taggedOps createTaggedAllocation allocate
 
     nonconsuming choice Harness_TaggedUnlock : TextMap.TextMap [ContractId HoldingV2.Holding]
       with cids : [ContractId HoldingV2.Holding]; actors : [Party]
@@ -174,6 +226,18 @@ taggedOps = HoldingOps with
   consumeHolding = consumeByArchive @TaggedHolding
   withEventLog = \_ -> pure ()
   eventObservers = const []
+
+harnessConfig : Party -> RegistryConfig
+harnessConfig admin = RegistryConfig with admin; maxTTL = days 1; lockGrace = hours 1
+
+createTaggedInstruction : CreateTransferInstruction
+createTaggedInstruction s = toInterfaceContractId <$> create TaggedTransferInstruction with state = s
+
+createTaggedAllocation : CreateAllocation
+createTaggedAllocation s = toInterfaceContractId <$> create TaggedAllocation with state = s
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
 
 basicOwner : HoldingV2.HoldingView -> Party
 basicOwner v = case v.account.owner of
@@ -566,17 +630,48 @@ testExpireAllocationsRefusesLiveAllocation = do
 -- Consumer state across re-creation
 ------------------------------------
 
--- | A `TaggedHolding` of `amount` in alice's basic account.
-taggedHolding : Fixture -> Text -> Decimal -> Optional HoldingV2.Lock -> Script (ContractId HoldingV2.Holding)
-taggedHolding Fixture{..} tag amount lock = do
+-- | A `TaggedHolding` of `amount` of `instrumentId` in alice's basic account.
+taggedHoldingOf
+  : Fixture -> Text -> Text -> Decimal -> Optional HoldingV2.Lock -> Script (ContractId HoldingV2.Holding)
+taggedHoldingOf Fixture{..} instrumentId tag amount lock = do
   cid <- submit (actAs [admin, alice]) do
-    createCmd TaggedHolding with holding = mkHoldingView admin (basicAccount alice) "TOK" amount lock; tag
+    createCmd TaggedHolding with holding = mkHoldingView admin (basicAccount alice) instrumentId amount lock; tag
   pure (toInterfaceContractId cid)
+
+taggedHolding : Fixture -> Text -> Decimal -> Optional HoldingV2.Lock -> Script (ContractId HoldingV2.Holding)
+taggedHolding fixture = taggedHoldingOf fixture "TOK"
 
 tagOf : Party -> ContractId HoldingV2.Holding -> Script Text
 tagOf party cid = do
   Some h <- queryContractId party (fromInterfaceContractId @TaggedHolding cid)
   pure h.tag
+
+-- | The tags of the holdings an allocation has locked.
+lockedTags : Party -> ContractId AllocationV2.Allocation -> Script [Text]
+lockedTags party cid = do
+  Some allocation <- queryContractId party (fromInterfaceContractId @TaggedAllocation cid)
+  mapA (tagOf party) allocation.state.lockedHoldingCids
+
+-- | Alice transfers 7 TOK to `receiver`, funded by two holdings of 5 tagged
+-- "a" and "b". One step completes it; two steps leave it pending.
+taggedTransfer : Fixture -> Party -> Bool -> Script TransferInstructionV2.TransferInstructionResult
+taggedTransfer fixture@Fixture{..} receiver oneStep = do
+  a <- taggedHolding fixture "a" 5.0 None
+  b <- taggedHolding fixture "b" 5.0 None
+  let actors = if oneStep then [admin, alice, receiver] else [admin, alice]
+  submit (actAs actors) do
+    exerciseCmd harnessCid Harness_TaggedTransfer with
+      oneStep
+      actors
+      transfer = TransferInstructionV2.Transfer with
+        sender = basicAccount alice
+        receiver = basicAccount receiver
+        amount = 7.0
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        requestedAt = t0
+        executeBefore = t2
+        inputHoldingCids = [a, b]
+        meta = emptyMetadata
 
 -- | A transfer passes the inputs' states to the sender's change and to the
 -- receiver's holding.
@@ -584,24 +679,130 @@ testTransferPassesInputStates : Script ()
 testTransferPassesInputStates = do
   fixture@Fixture{..} <- setup
   bob <- allocateParty "bob"
-  a <- taggedHolding fixture "a" 5.0 None
-  b <- taggedHolding fixture "b" 5.0 None
-  result <- submit (actAs [admin, alice, bob]) do
-    exerciseCmd harnessCid Harness_TaggedTransfer with
-      actors = [admin, alice, bob]
-      transfer = TransferInstructionV2.Transfer with
-        sender = basicAccount alice
-        receiver = basicAccount bob
-        amount = 7.0
-        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
-        requestedAt = t0
-        executeBefore = t2
-        inputHoldingCids = [a, b]
-        meta = emptyMetadata
+  result <- taggedTransfer fixture bob True
   [change] <- pure result.senderChangeCids
   tagOf alice change >>= (=== "a+b")
   TransferInstructionV2.TransferInstructionResult_Completed [paid] <- pure result.output
   tagOf bob paid >>= (=== "a+b")
+
+-- | A pending transfer's locked holding carries the inputs' states, so the
+-- funds keep them however the transfer ends: returned to the sender on
+-- reject, withdraw, and expiry, or paid to the receiver on accept.
+testPendingTransferCarriesStates : Script ()
+testPendingTransferCarriesStates = do
+  fixture@Fixture{..} <- setup
+  bob <- allocateParty "bob"
+  let pending = do
+        result <- taggedTransfer fixture bob False
+        TransferInstructionV2.TransferInstructionResult_Pending cid <- pure result.output
+        pure cid
+      returnedTag (result : TransferInstructionV2.TransferInstructionResult) = do
+        [cid] <- pure result.senderChangeCids
+        tagOf alice cid
+
+  rejected <- pending
+  rejectResult <- submit bob do
+    exerciseCmd rejected TransferInstructionV2.TransferInstruction_Reject with
+      actors = [bob]; extraArgs = emptyExtraArgs
+  returnedTag rejectResult >>= (=== "a+b")
+
+  withdrawn <- pending
+  withdrawResult <- submit alice do
+    exerciseCmd withdrawn TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [alice]; extraArgs = emptyExtraArgs
+  returnedTag withdrawResult >>= (=== "a+b")
+
+  accepted <- pending
+  acceptResult <- submit bob do
+    exerciseCmd accepted TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]; extraArgs = emptyExtraArgs
+  TransferInstructionV2.TransferInstructionResult_Completed [paid] <- pure acceptResult.output
+  tagOf bob paid >>= (=== "a+b")
+
+  expired <- pending
+  setTime t3
+  expireResult <- submit admin do
+    exerciseCmd (fromInterfaceContractId @TaggedTransferInstruction expired) TaggedTransferInstruction_Expire
+  returnedTag expireResult >>= (=== "a+b")
+
+-- | A mint consumes nothing, so the minted holding has no sources.
+testMintHasNoSources : Script ()
+testMintHasNoSources = do
+  Fixture{..} <- setup
+  offer <- submit admin do
+    exerciseCmd harnessCid Harness_TaggedMint with amount = 5.0; actors = [admin]
+  result <- submit alice do
+    exerciseCmd offer TransferInstructionV2.TransferInstruction_Accept with
+      actors = [alice]; extraArgs = emptyExtraArgs
+  TransferInstructionV2.TransferInstructionResult_Completed [minted] <- pure result.output
+  tagOf alice minted >>= (=== "new")
+
+-- | An allocation passes each instrument's inputs to that instrument's locked
+-- holding and change, and to no other instrument's. Settlement passes the
+-- locked holdings' states to the next iteration's reserve and to the payout,
+-- and a payout funded only by the settlement's net credit has no sources.
+-- Withdrawing the successor returns the reserve with its state.
+testAllocationPassesStatesPerInstrument : Script ()
+testAllocationPassesStatesPerInstrument = do
+  fixture@Fixture{..} <- setup
+  bob <- allocateParty "bob"
+  tok <- taggedHoldingOf fixture "TOK" "a" 10.0 None
+  gld <- taggedHoldingOf fixture "GLD" "g" 10.0 None
+  let leg instrumentId sender receiver amount = AllocationV2.TransferLeg with
+        transferLegId = instrumentId
+        sender = basicAccount sender
+        receiver = basicAccount receiver
+        amount
+        instrumentId
+        meta = emptyMetadata
+      tagIn instrumentId (cids : TextMap.TextMap [ContractId HoldingV2.Holding]) = do
+        Some [cid] <- pure (TextMap.lookup instrumentId cids)
+        tagOf alice cid
+
+  -- Alice sends 4 TOK and 3 GLD, receives 2 SLV, and reserves 2 TOK: the
+  -- factory locks 6 TOK and 3 GLD and returns 4 TOK and 7 GLD.
+  allocated <- submit alice do
+    exerciseCmd harnessCid Harness_TaggedAllocate with
+      allocate = AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement = AllocationV2.SettlementInfo with executors = [bob]; id = "s"; cid = None; meta = emptyMetadata
+        allocation = AllocationV2.AllocationSpecification with
+          admin
+          authorizer = basicAccount alice
+          transferLegSides =
+            [ senderSide (leg "TOK" alice bob 4.0)
+            , senderSide (leg "GLD" alice bob 3.0)
+            , receiverSide (leg "SLV" bob alice 2.0)
+            ]
+          settlementDeadline = Some t2
+          nextIterationFunding = Some (TextMap.fromList [("TOK", 2.0)])
+          committed = False
+          meta = emptyMetadata
+        requestedAt = t0
+        inputHoldingCids = [tok, gld]
+        extraArgs = emptyExtraArgs
+        actors = [alice]
+  tagIn "TOK" allocated.authorizerChangeCids >>= (=== "a")
+  tagIn "GLD" allocated.authorizerChangeCids >>= (=== "g")
+  AllocationInstructionV2.AllocationInstructionResult_Completed allocationCid <- pure allocated.output
+  lockedTags alice allocationCid >>= (=== ["g", "a"])
+
+  -- Settling leaves 2 TOK and the 2 SLV credit: 1 TOK is reserved again, and
+  -- 1 TOK and 2 SLV are paid out.
+  settled <- submit (actAs [admin, bob]) do
+    exerciseCmd allocationCid AllocationV2.Allocation_Settle with
+      actors = [admin, bob]
+      extraTransferLegSides = []
+      nextIterationFunding = Some (TextMap.fromList [("TOK", 1.0)])
+      extraArgs = emptyExtraArgs
+  tagIn "TOK" settled.authorizerHoldingCids >>= (=== "a")
+  tagIn "SLV" settled.authorizerHoldingCids >>= (=== "new")
+  AllocationV2.AllocationResult_Settled (Some successorCid) <- pure settled.output
+  lockedTags alice successorCid >>= (=== ["a"])
+
+  withdrawn <- submit alice do
+    exerciseCmd successorCid AllocationV2.Allocation_Withdraw with
+      actors = [alice]; extraArgs = emptyExtraArgs
+  tagIn "TOK" withdrawn.authorizerHoldingCids >>= (=== "a")
 
 -- | Releasing locked holdings passes each one's state to its replacement.
 testUnlockPassesEachState : Script ()
