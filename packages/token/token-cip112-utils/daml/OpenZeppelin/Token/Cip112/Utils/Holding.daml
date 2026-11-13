@@ -52,31 +52,32 @@ isValidRegistryConfig c =
 -- `h` is the owner's per-holding state, typically the consumed template
 -- value. The workflows never read it: they take it from `consumeHolding` and
 -- hand it back to `createHolding` as the sources of each holding they
--- create, so template fields outside the standard view, such as a tag or an
--- issue date, can carry over when a workflow re-creates a holding.
+-- create. Template fields outside the standard view, such as a tag or an
+-- issue date, can therefore carry over when a workflow re-creates a holding.
 data HoldingOps h = HoldingOps with
     createHolding : [h] -> HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
       -- ^ Create a holding from its standard view. Law: the created
       -- contract's `Holding` view equals the view argument, and its
       -- signatories include `view.instrumentId.admin` and the account
-      -- parties. The first argument holds the states of the holdings
-      -- consumed in the same step whose value funds this one, all in the
-      -- view's instrument: the sender's inputs or locked holdings for the
-      -- sender's change, the locked holding, or the receiver's payout, and
-      -- the authorizer's inputs or locked holdings for an allocation's
-      -- locked funds, change, reserve, and payout. A release or an owner
-      -- unlock passes the one holding it replaces. Every holding a step
-      -- creates in one instrument gets the same list, in the order the
-      -- holdings were consumed; the list is not split by amount. It is
-      -- empty for a mint and for a payout funded only by a settlement's
-      -- net credit; the counterparties' holdings behind that credit are
-      -- never named. State therefore does not cross a settlement: a
-      -- receiver's payout has no sources, and a payout that mixes locked
-      -- funds with net credit names only the authorizer's holdings. An
-      -- empty list does not mean new supply. A source may belong to
-      -- another account than the view's, as on a receiver's payout.
-      -- Fields that come from neither, such as roles, come from the
-      -- closure that builds the record.
+      -- parties. The first argument lists the states of the new holding's
+      -- sources: the holdings consumed in the same step whose value funds
+      -- it, all in the view's instrument. In a transfer, the sender's inputs
+      -- or locked holdings fund the sender's change, the locked holding, and
+      -- the receiver's holding. In an allocation, the authorizer's inputs or
+      -- locked holdings fund its locked funds, change, reserve, and payout.
+      -- A release or an owner unlock passes the one holding it replaces.
+      -- Every holding a step creates in one instrument gets the same list,
+      -- in the order the holdings were consumed, whatever its amount. A
+      -- source may belong to an account other than the view's, as on a
+      -- transfer receiver's holding. The list is empty for a mint and for a
+      -- settlement payout funded only by net credit, because the workflow
+      -- never names the counterparties' holdings behind that credit. Only
+      -- the mint adds supply. State therefore does not follow value through
+      -- a settlement: a settlement receiver's payout has no sources, and a
+      -- payout that mixes locked funds with net credit names only the
+      -- authorizer's holdings. Fields found in neither the view nor the
+      -- sources, such as roles, come from the closure that builds the
+      -- record.
     consumeHolding : ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h)
       -- ^ Remove a holding from the ledger and return the view and state it
       -- had. Law: fails unless the contract is an accepted implementation.
@@ -146,8 +147,8 @@ newHolding ops sources admin account instrumentId amount lock =
 -- | Body of a consuming owner-unlock choice on a holding template: the lock
 -- has expired, so recreate the holding unlocked and emit an account-local
 -- `EventLog_HoldingsChange` naming the consumed holding and its replacement.
--- `self` is the holding being exercised and `state` its owner's state, the
--- replacement's only source; the choice itself archives it.
+-- `self` is the holding being exercised, which the choice itself archives,
+-- and `state` is its owner's state, the replacement's only source.
 holdingOwnerUnlockImpl
   : HoldingOps h -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> h
   -> Update (ContractId HoldingV2.Holding)

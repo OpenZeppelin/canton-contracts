@@ -74,8 +74,9 @@ template MyEventLog with
 
 -- | Built inside every choice body from the template's own fields. The
 -- closure over `roles` is how consumer fields reach `createHolding` without
--- the workflows knowing about them. New holdings are never frozen: the
--- sources never are either, since `MyHolding_Spend` refuses a frozen one.
+-- the workflows knowing about them. `createHolding` ignores the sources and
+-- creates every holding unfrozen, which matches them: `MyHolding_Spend`
+-- refuses a frozen holding, so no source is ever frozen.
 myOps : Party -> AppRoles -> HoldingOps MyHolding
 myOps admin roles = HoldingOps with
   createHolding = \_ v -> toInterfaceContractId <$> create MyHolding with holding = v; roles; frozen = False

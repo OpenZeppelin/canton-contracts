@@ -18,17 +18,20 @@ functions, with every template decision left to the caller.
   (extra informees of every holdings-change event, for auditors and
   regulators who must see the standard event stream). It holds functions,
   so it is never stored. Its type parameter is the owner's per-holding
-  state, usually the holding template: `consumeHolding` returns it, and
-  `createHolding` receives the states of the holdings consumed to fund each
-  new one, so template fields outside the standard view can carry over when
-  a workflow re-creates a holding. A holding paid out from a settlement's net
-  credit alone, or minted, has no sources, so state follows value through a
-  transfer but not through a settlement. A field carries over only from a
-  holding that a workflow consumes, so a rule for a whole account, such as a
-  compliance freeze, belongs on a separate contract for the account and not
-  on its holdings: a flag on a holding covers that holding only, and funds
-  that reach the account later, such as a returned transfer or a settlement
-  payout, are created from sources without it.
+  state, usually the holding template. `consumeHolding` returns the state of
+  each holding it consumes, and `createHolding` receives the states of a new
+  holding's sources, the holdings consumed to fund it. Template fields
+  outside the standard view can therefore carry over when a workflow
+  re-creates a holding. State follows value through a transfer but not
+  through a settlement, because a holding paid out from a settlement's net
+  credit alone has no sources, and neither has a minted one.
+
+  A field carries over only from a holding that a workflow consumes. A rule
+  for a whole account, such as a compliance freeze, therefore belongs on a
+  separate contract for the account rather than on its holdings. A flag on
+  a holding covers that holding only: funds that reach the account later,
+  such as a returned transfer or a settlement payout, are created from
+  sources without the flag.
 - `consumeByArchive @T` and `pinAllocationTo @T`: the safe ways to write the
   consumption and allocation policies, pinned to one template.
 - `privateAssetAllocateExtraObservers`: the allocation factory's extra
