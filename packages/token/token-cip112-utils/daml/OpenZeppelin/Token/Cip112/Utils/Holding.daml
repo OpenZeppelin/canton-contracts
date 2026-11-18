@@ -26,7 +26,7 @@ module OpenZeppelin.Token.Cip112.Utils.Holding where
 import DA.Assert (assertDeadlineExceeded)
 import DA.Foldable (forA_)
 import DA.List (dedupSort)
-import DA.Optional (isNone, isSome)
+import DA.Optional (fromOptional, isNone, isSome)
 import DA.TextMap qualified as TextMap
 import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime)
 
@@ -51,6 +51,15 @@ isValidRegistryConfig c =
 
 -- | What a workflow needs from the template owner. Not serializable.
 --
+-- `h` is the owner's per-holding state, usually the holding template. The
+-- workflows never read it: each consumption operation returns the state of
+-- the holding it consumes, and the workflow hands those states back to
+-- `createHolding` as the sources of every holding it creates in the same
+-- step. A template field outside the standard view, such as a tag, a tier,
+-- or an issue date, survives re-creation only if `createHolding` derives it
+-- from the sources. Every other field takes the closure's value, so it
+-- resets each time a workflow re-creates the holding.
+--
 -- Three operations consume holdings, one per direction the value moves:
 -- `fundHolding` for inputs a caller supplies, `deliverHolding` for locked
 -- funding paid out, and `returnHolding` for locked funding given back to its
@@ -58,7 +67,7 @@ isValidRegistryConfig c =
 -- for its paths, and each takes the `ChoiceContext` of the choice the
 -- workflow runs in, followed by the holding id. All three share one law:
 -- fail unless the contract is an accepted implementation, then remove the
--- holding from the ledger and return the view it had.
+-- holding from the ledger and return the view and state it had.
 --
 -- A rule in `deliverHolding` or `returnHolding` runs on funding the workflow
 -- locked itself. A refusal in one leaves the other's paths open, and a
@@ -73,7 +82,18 @@ isValidRegistryConfig c =
 -- can neither pay out nor return a holding that was replaced. A rule that
 -- should only stop new spending, such as a minimum holding age, belongs in
 -- `fundHolding` alone: the workflow creates locked funding, change, and
--- returned holdings when it runs, so each of them is new.
+-- returned holdings when it runs, so each of them is new unless
+-- `createHolding` carries the age over from the sources.
+--
+-- Carrying a field over does not keep a restriction on funds in flight. A
+-- holding whose field makes the spend rule refuse never enters a workflow,
+-- so no path re-creates it. Setting the field on locked funding replaces the
+-- holding, which the pending instruction or allocation can then neither pay
+-- out nor return. Funds that reach the account later, such as a receiver's
+-- holding or a settlement payout, are created from sources that never
+-- carried the field. A restriction that must hold while funds are in
+-- flight, such as a compliance freeze, belongs on a separate per-account
+-- contract.
 --
 -- A rule that tracks live registry state reads the current policy contract
 -- from the context, and the operation checks the contract it fetches: its
@@ -83,20 +103,51 @@ isValidRegistryConfig c =
 -- spend: a context cannot show that a contract is absent. The submitter
 -- also chooses which contract to pass, so the registry keeps one live
 -- policy contract for each admin and account.
-data HoldingOps = HoldingOps with
-    createHolding : HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
-      -- ^ Create a holding from its standard view. Law: the created
-      -- contract's `Holding` view equals the argument, and its signatories
-      -- include `view.instrumentId.admin` and the account parties. Extra
-      -- template fields come from the closure that builds the record.
-    fundHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
+data HoldingOps h = HoldingOps with
+    createHolding : [h] -> HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
+      -- ^ Create a holding from its sources and its standard view. Law: the
+      -- created contract's `Holding` view equals the view argument, and its
+      -- signatories include `view.instrumentId.admin` and the account
+      -- parties. The sources are the states of the holdings consumed in the
+      -- same step whose value funds the new one, all in the view's
+      -- instrument, in the order they were consumed:
+      --
+      -- - A transfer's inputs fund the sender's change, the locked funding
+      --   of a pending transfer, and the receiver's holding of a one-step
+      --   transfer.
+      -- - An accept's locked funding funds the surplus returned to the
+      --   sender and the receiver's holding. A mint offer locks nothing, so
+      --   the minted holding has no sources.
+      -- - An allocation's inputs fund its locked funding and the change.
+      -- - A settlement's locked funding funds the next-iteration reserve and
+      --   the authorizer's payout.
+      -- - A reject, withdraw, expiry, cancel, or owner unlock passes the one
+      --   locked holding each new holding replaces.
+      --
+      -- Every holding a step creates in one instrument gets the same list,
+      -- whatever its amount, and the submitter picks the order of a
+      -- factory's inputs. A field derived from the sources should therefore
+      -- not depend on their order, nor be a quantity that the outputs would
+      -- each receive in full: take the most restrictive value, such as the
+      -- latest issue date, not the first source's or a sum. A source may
+      -- belong to another account, as on a transfer receiver's holding;
+      -- compare its account with the view's to tell the account's own
+      -- holdings from a sender's. A settlement payout funded only by
+      -- net credit has no sources, because the workflow never names the
+      -- counterparties' holdings behind that credit, and a payout that mixes
+      -- locked funding with net credit names only the authorizer's locked
+      -- holdings. State therefore follows value through a transfer but not
+      -- through a settlement. Fields found in neither the view nor the
+      -- sources, such as roles, come from the closure that builds the
+      -- record.
+    fundHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h)
       -- ^ Consume a caller-supplied input holding that funds a new transfer
       -- or allocation, through `consumeUnlockedHolding`: the inputs of
       -- `transferFactoryImpl` and `executeTransfer`, including a one-step
       -- transfer and a burn, and of `allocationFactoryImpl`. An input may be
       -- a holding whose lock has expired, such as the funding of an
       -- instruction or allocation that never completed.
-    deliverHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
+    deliverHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h)
       -- ^ Consume locked funding to pay it out, through
       -- `consumeLockedHolding`: `transferAcceptImpl`, including the admin's
       -- accept of a burn request, and `allocationSettleImpl`. Both consume
@@ -106,7 +157,7 @@ data HoldingOps = HoldingOps with
       -- `settleBatchImpl` passes each `Allocation_Settle` an empty context,
       -- so a rule that requires a context entry refuses every batch
       -- settlement.
-    returnHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
+    returnHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h)
       -- ^ Consume locked funding to return it to its owner, through
       -- `unlockHoldings`: `transferRejectImpl`, `transferWithdrawImpl`,
       -- `transferExpireImpl`, `allocationWithdrawImpl`, and
@@ -122,29 +173,30 @@ data HoldingOps = HoldingOps with
 
 -- | Consume by archiving, pinned to template `t`: `fetchFromInterface @t`
 -- fails on every other implementation, so a foreign `Holding` whose view
--- claims this admin never reaches the workflow's accounting.
+-- claims this admin never reaches the workflow's accounting. The state is
+-- the archived template value.
 consumeByArchive
   : forall t. (HasFromInterface t HoldingV2.Holding, HasToInterface t HoldingV2.Holding, HasArchive t)
-  => ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
+  => ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, t)
 consumeByArchive cid = do
   fetched <- fetchFromInterface @t cid
   case fetched of
     None -> fail "holding is not an accepted implementation"
     Some (tcid, t) -> do
       archive tcid
-      pure (view (toInterface @HoldingV2.Holding t))
+      pure (view (toInterface @HoldingV2.Holding t), t)
 
 -- | An operations record whose three consumption operations are all
 -- `consumeByArchive @t`: every path accepts exactly template `t`, ignores
--- the context, and applies no spend rule. The other operations are the
--- arguments. Override a consumption operation with `with` to add a rule to
--- its paths only.
+-- the context, applies no spend rule, and passes the archived `t` as the
+-- source state. The other operations are the arguments. Override a
+-- consumption operation with `with` to add a rule to its paths only.
 holdingOpsFor
   : forall t. (HasFromInterface t HoldingV2.Holding, HasToInterface t HoldingV2.Holding, HasArchive t)
-  => (HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding))
+  => ([t] -> HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding))
   -> ((ContractId TransferEventsV2.EventLog -> Update ()) -> Update ())
   -> (HoldingV2.Account -> [Party])
-  -> HoldingOps
+  -> HoldingOps t
 holdingOpsFor createHolding withEventLog eventObservers = HoldingOps with
   createHolding
   fundHolding = \_ -> consumeByArchive @t
@@ -180,12 +232,12 @@ mkHoldingView admin account instrumentId amount lock = HoldingV2.HoldingView wit
   lock
   meta = emptyMetadata
 
--- | Create a holding through the owner's constructor.
+-- | Create a holding through the owner's constructor, funded by `sources`.
 newHolding
-  : HoldingOps -> Party -> HoldingV2.Account -> Text -> Decimal -> Optional HoldingV2.Lock
+  : HoldingOps h -> [h] -> Party -> HoldingV2.Account -> Text -> Decimal -> Optional HoldingV2.Lock
   -> Update (ContractId HoldingV2.Holding)
-newHolding ops admin account instrumentId amount lock =
-  ops.createHolding (mkHoldingView admin account instrumentId amount lock)
+newHolding ops sources admin account instrumentId amount lock =
+  ops.createHolding sources (mkHoldingView admin account instrumentId amount lock)
 
 -- Choice bodies
 ----------------
@@ -193,22 +245,23 @@ newHolding ops admin account instrumentId amount lock =
 -- | Body of a consuming owner-unlock choice on a holding template: the lock
 -- has expired, so recreate the holding unlocked and emit an account-local
 -- `EventLog_HoldingsChange` naming the consumed holding and its replacement.
--- `self` is the holding being exercised; the choice itself archives it.
+-- `self` is the holding being exercised, which the choice itself archives,
+-- and `state` is its owner's state, the replacement's only source.
 --
 -- None of the consumption operations runs here, so a rule that must block
 -- an owner unlock, such as a freeze, is checked inside the holding's own
 -- choice before it calls this body.
 holdingOwnerUnlockImpl
-  : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
+  : HoldingOps h -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> h
   -> Update (ContractId HoldingV2.Holding)
-holdingOwnerUnlockImpl ops self holding = do
+holdingOwnerUnlockImpl ops self holding state = do
   lock <- case holding.lock of
     None -> fail "holding is not locked"
     Some l -> pure l
   case lock.expiresAt of
     None -> fail "holding is locked indefinitely and cannot be unlocked by its owner"
     Some expiresAt -> assertDeadlineExceeded "lock expiresAt" expiresAt
-  newCid <- ops.createHolding (holding with lock = None)
+  newCid <- ops.createHolding [state] (holding with lock = None)
   emitHoldingsChange ops holding.instrumentId.admin holding.account [] [self] [newCid] []
     "expired lock released by owner"
   pure newCid
@@ -220,58 +273,68 @@ holdingOwnerUnlockImpl ops self holding = do
 -- validating its identity. `context` is the context of the choice the
 -- workflow runs in.
 consumeLockedHolding
-  : HoldingOps -> ChoiceContext -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
-  -> Update HoldingV2.HoldingView
+  : HoldingOps h -> ChoiceContext -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
+  -> Update (HoldingV2.HoldingView, h)
 consumeLockedHolding ops context admin expectedAccount cid =
   ops.deliverHolding context cid >>= checkLockedHolding admin expectedAccount
 
 -- | The identity checks on a consumed locked holding: this admin, the
 -- expected account, and a lock.
 checkLockedHolding
-  : Party -> HoldingV2.Account -> HoldingV2.HoldingView -> Update HoldingV2.HoldingView
-checkLockedHolding admin expectedAccount h = do
+  : Party -> HoldingV2.Account -> (HoldingV2.HoldingView, h) -> Update (HoldingV2.HoldingView, h)
+checkLockedHolding admin expectedAccount consumed@(h, _) = do
   require' ("inputHolding.instrumentId.admin", h.instrumentId.admin) isEqualR ("admin", admin)
   require' ("inputHolding.account", h.account) isEqualR ("expectedAccount", expectedAccount)
   require "input holding must be locked" (isSome h.lock)
-  pure h
+  pure consumed
 
 -- | Consume a caller-supplied input holding through `fundHolding` after
 -- validating its identity. A holding whose lock has expired is accepted,
 -- giving a combined unlock-and-use; unexpired or indefinite locks are
 -- rejected. `context` is the context of the choice the workflow runs in.
 consumeUnlockedHolding
-  : HoldingOps -> ChoiceContext -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
-  -> Update HoldingV2.HoldingView
+  : HoldingOps h -> ChoiceContext -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
+  -> Update (HoldingV2.HoldingView, h)
 consumeUnlockedHolding ops context admin expectedAccount cid = do
-  h <- ops.fundHolding context cid
+  consumed@(h, _) <- ops.fundHolding context cid
   require' ("inputHolding.instrumentId.admin", h.instrumentId.admin) isEqualR ("admin", admin)
   require' ("inputHolding.account", h.account) isEqualR ("expectedAccount", expectedAccount)
   forA_ h.lock $ \lock -> case lock.expiresAt of
     None -> fail "input holding is locked indefinitely and cannot fund an allocation"
     Some expiresAt -> assertDeadlineExceeded "input holding lock expiresAt" expiresAt
-  pure h
+  pure consumed
 
--- | Consume input holdings and tally the value they carried per instrument.
+-- | Consume input holdings and tally, per instrument, the value they carried
+-- and their states in the order they were consumed.
 debitHoldings
-  : (ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView)
+  : (ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h))
   -> [ContractId HoldingV2.Holding]
-  -> Update (TextMap.TextMap Decimal)
+  -> Update (TextMap.TextMap Decimal, TextMap.TextMap [h])
 debitHoldings consume cids = do
-  amounts <- forA cids $ \cid -> do
-    h <- consume cid
-    pure (h.instrumentId.id, h.amount)
-  pure (TextMap.fromListWithR (+) amounts)
+  consumed <- forA cids consume
+  pure
+    ( TextMap.fromListWithR (+) [(h.instrumentId.id, h.amount) | (h, _) <- consumed]
+      -- `fromListWithL (++)` prepends each state, so reversing once restores
+      -- the consumption order in linear time.
+    , reverse <$> TextMap.fromListWithL (++) [(h.instrumentId.id, [state]) | (h, state) <- consumed]
+    )
+
+-- | The states `debitHoldings` tallied for one instrument, the sources of
+-- every holding a step creates in it.
+sourcesFor : Text -> TextMap.TextMap [h] -> [h]
+sourcesFor instrumentId sources = fromOptional [] (TextMap.lookup instrumentId sources)
 
 -- | Release locked holdings back to their account through `returnHolding`,
--- returning the new unlocked holdings keyed by instrument id. `context` is
--- the context of the choice the workflow runs in.
+-- returning the new unlocked holdings keyed by instrument id. Each
+-- replacement's only source is the holding it replaces. `context` is the
+-- context of the choice the workflow runs in.
 unlockHoldings
-  : HoldingOps -> ChoiceContext -> Party -> HoldingV2.Account -> [ContractId HoldingV2.Holding]
+  : HoldingOps h -> ChoiceContext -> Party -> HoldingV2.Account -> [ContractId HoldingV2.Holding]
   -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
 unlockHoldings ops context admin expectedAccount cids = do
   unlocked <- forA cids $ \cid -> do
-    h <- ops.returnHolding context cid >>= checkLockedHolding admin expectedAccount
-    newCid <- ops.createHolding (h with lock = None)
+    (h, state) <- ops.returnHolding context cid >>= checkLockedHolding admin expectedAccount
+    newCid <- ops.createHolding [state] (h with lock = None)
     pure (h.instrumentId.id, [newCid])
   pure (TextMap.fromListWithR (++) unlocked)
 
@@ -281,7 +344,7 @@ unlockHoldings ops context admin expectedAccount cids = do
 -- | Emit a holdings-change event. `logHoldingsChange` suppresses events that
 -- are empty or on special (mint/burn) accounts.
 emitHoldingsChange
-  : HoldingOps -> Party -> HoldingV2.Account -> [Party]
+  : HoldingOps h -> Party -> HoldingV2.Account -> [Party]
   -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
   -> [TransferEventsV2.TransferLegSide] -> Text
   -> Update ()
@@ -300,7 +363,7 @@ emitHoldingsChange ops admin account executors inputs outputs legSides reason =
 
 -- | The informees of an event on an account: the account parties plus the
 -- owner's extra observers, deduplicated.
-eventObserversFor : HoldingOps -> Party -> HoldingV2.Account -> [Party]
+eventObserversFor : HoldingOps h -> Party -> HoldingV2.Account -> [Party]
 eventObserversFor ops admin account =
   dedupSort (accountParties admin account <> ops.eventObservers account)
 

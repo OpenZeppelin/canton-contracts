@@ -505,8 +505,8 @@ testUnfrozenHoldingCannotBeUnfrozen = do
   mustFailWith "holding is not frozen" (actAs complianceOfficer) do
     exerciseCmd (fromInterfaceContractId @MyHolding aliceTok) MyHolding_Unfreeze
 
--- | Owner unlock recreates the holding through `createHolding`, which would
--- drop the freeze, so a frozen holding whose lock has expired is refused.
+-- | Owner unlock recreates the holding through `createHolding`, which creates
+-- it unfrozen, so a frozen holding whose lock has expired is refused.
 -- Once unfrozen, the same unlock goes through.
 testFrozenHoldingCannotUnlock : Script ()
 testFrozenHoldingCannotUnlock = do
