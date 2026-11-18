@@ -76,13 +76,12 @@ template Treasury
       -- parameters and creates the successor with the pending list the
       -- library already reduced. The library has verified that the operation
       -- is pending on this treasury, so the branches read parameters only.
-      apply op pending' = case fromInterface @LimitChange op of
-        Some lc ->
-          toInterfaceContractId <$> create this with limit = lc.newLimit, pending = pending'
-        None -> case fromInterface @ConfigChange op of
-          Some cc ->
+      apply op pending'
+        | Some lc <- fromInterface @LimitChange op =
+            toInterfaceContractId <$> create this with limit = lc.newLimit, pending = pending'
+        | Some cc <- fromInterface @ConfigChange op =
             toInterfaceContractId <$> create this with config = cc.newConfig, pending = pending'
-          None -> failWithStatus eUnknownOperation
+        | otherwise = failWithStatus eUnknownOperation
 
       unschedule pending' = toInterfaceContractId <$> create this with pending = pending'
 
