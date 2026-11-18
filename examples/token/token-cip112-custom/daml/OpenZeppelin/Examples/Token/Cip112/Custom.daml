@@ -6,8 +6,10 @@
 -- What it adds over the defaults, and the mechanism each addition uses:
 --
 -- - Roles. A pauser and a compliance officer hold delegated powers as the
---   controllers of consumer choices. The admin stays the signatory of every
---   contract and holds neither power.
+--   controllers of consumer choices. The pauser also co-signs every holding,
+--   instruction, allocation, and rules contract, so the admin holds neither
+--   power: it cannot create any of those contracts, or spend a holding,
+--   without the pauser.
 -- - An auditor who observes every holding, instruction, and allocation, and
 --   is an informee of every holdings-change event. A consumer field on each
 --   template, reached through the closure that builds the operations
@@ -17,8 +19,8 @@
 --   which refuses a frozen holding, so a frozen holding cannot fund a
 --   transfer, an allocation, or a burn, and a payout of locked funding runs
 --   the same check, without the workflows knowing what a freeze is.
---   `returnHolding` stays the pinned archive, so no return path refuses a
---   holding for being frozen. `MyHolding_OwnerUnlock` checks the freeze
+--   `returnHolding` archives without the spend, so no return path refuses a
+--   holding for being frozen. `MyHolding_OwnerUnlock` makes the check
 --   itself. The freeze refuses a holding with a live lock, because that
 --   holding backs a pending contract.
 -- - A pause switch on the registry. A template field plus two choices,
@@ -32,6 +34,16 @@
 -- consumer forks: the pending contracts decide which holding is created when
 -- they complete, and a function cannot be stored in a payload, so a custom
 -- holding needs custom instruction and allocation templates too.
+--
+-- Binding the admin. A role on the rules contract alone restricts wallets,
+-- not the admin: the admin could sign a second `MyRules`, unpaused, fee-free,
+-- or with other executors or roles, and the workflows would accept this
+-- token's holdings through it. So the pauser co-signs all four templates,
+-- and every workflow runs with its authority because it runs inside a
+-- choice on a contract the pauser signed. The admin can still sign contracts that name
+-- a pauser it controls, so the operations, the allocation pin, and the
+-- instruction expiry also refuse a contract that names a different pauser.
+-- Together the admin and the pauser can create anything.
 module OpenZeppelin.Examples.Token.Cip112.Custom where
 
 import DA.Assert (assertDeadlineExceeded)
@@ -61,6 +73,9 @@ data AppRoles = AppRoles with
       -- ^ Observes every contract; holds no power.
     complianceOfficer : Party
       -- ^ Freezes and unfreezes holdings.
+    pauser : Party
+      -- ^ Flips the pause switch, and co-signs every contract so the admin
+      -- cannot create one without it.
   deriving (Eq, Show)
 
 -- Event-log host
@@ -82,16 +97,23 @@ template MyEventLog with
 -- closure over `roles` is how consumer fields reach `createHolding` without
 -- the workflows knowing about them. New holdings are never frozen. No
 -- operation reads the choice context.
+--
+-- An accepted holding is a `MyHolding` that names this contract's pauser.
+-- The template check stops a foreign `Holding`. The pauser check stops a
+-- `MyHolding` created through contracts the admin signed with a pauser it
+-- controls, which would otherwise fund or settle against this token.
 myOps : Party -> AppRoles -> HoldingOps
-myOps admin roles =
-    (holdingOpsFor @MyHolding createMyHolding withMyEventLog auditorObserves)
-      with
-        -- The freeze stops a holding from funding a workflow and from being
-        -- paid out of one. `returnHolding` stays the pinned archive: a
-        -- reject, withdraw, expiry, or cancel returns locked funds to their
-        -- owner without exercising the spend.
-        fundHolding = const spend
-        deliverHolding = const spend
+myOps admin roles = HoldingOps with
+    createHolding = createMyHolding
+    -- The freeze stops a holding from funding a workflow and from being
+    -- paid out of one. `returnHolding` archives without the spend: a
+    -- reject, withdraw, expiry, or cancel returns locked funds to their
+    -- owner without exercising it.
+    fundHolding = const spend
+    deliverHolding = const spend
+    returnHolding = const release
+    withEventLog = withMyEventLog
+    eventObservers = auditorObserves
   where
     createMyHolding v = toInterfaceContractId <$> create MyHolding with holding = v; roles; frozen = False
     withMyEventLog emit = do
@@ -101,12 +123,20 @@ myOps admin roles =
     -- The auditor is an informee of every holdings-change event, so it can
     -- follow the standard event stream, not only the contracts.
     auditorObserves _ = [roles.auditor]
-    -- Pin the template first: a foreign `Holding` never reaches the spend.
-    spend cid = do
+    accepted cid = do
       fetched <- fetchFromInterface @MyHolding cid
       case fetched of
         None -> fail "holding is not a MyHolding"
-        Some (tcid, _) -> exercise tcid MyHolding_Spend
+        Some (tcid, h) -> do
+          require "holding names a different pauser" (h.roles.pauser == roles.pauser)
+          pure (tcid, h)
+    spend cid = do
+      (tcid, _) <- accepted cid
+      exercise tcid MyHolding_Spend
+    release cid = do
+      (tcid, h) <- accepted cid
+      archive tcid
+      pure h.holding
 
 -- Holding
 ----------
@@ -119,16 +149,17 @@ template MyHolding with
     roles : AppRoles
     frozen : Bool
   where
-    signatory holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+    signatory holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account, roles.pauser
     observer lockHolders holding.lock, roles.auditor, roles.complianceOfficer
     ensure isValidHoldingView holding
 
     -- | How funding and payouts consume this holding. Controlled by the
-    -- parties whose authority a plain archive would need, so the
-    -- authorization model is unchanged; what changes is that the spend is a
-    -- named choice the auditor sees, with a consumer rule inside it.
+    -- parties whose authority a plain archive would need, the pauser among
+    -- them, so the authorization model is unchanged; what changes is that
+    -- the spend is a named choice the auditor sees, with a consumer rule
+    -- inside it.
     choice MyHolding_Spend : HoldingV2.HoldingView
-      controller holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+      controller holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account, roles.pauser
       do
         require "holding is frozen" (not frozen)
         pure holding
@@ -181,7 +212,7 @@ template MyTransferInstruction with
     state : TransferInstructionState
     roles : AppRoles
   where
-    signatory state.transfer.instrumentId.admin, senderParties state.transfer
+    signatory state.transfer.instrumentId.admin, senderParties state.transfer, roles.pauser
     observer receiverParties state.transfer, roles.auditor
     ensure isValidTransferInstructionState state
 
@@ -209,7 +240,7 @@ template MyAllocation with
     state : AllocationState
     roles : AppRoles
   where
-    signatory state.allocation.admin, accountParties state.allocation.admin state.allocation.authorizer
+    signatory state.allocation.admin, accountParties state.allocation.admin state.allocation.authorizer, roles.pauser
     observer state.settlement.executors, roles.auditor
     ensure isValidAllocationState state
 
@@ -234,11 +265,15 @@ template MyAllocation with
 -- switch, a fee on transfers, an executor allowlist, and supply operations.
 -- Pausing replaces the contract, so wallets need the new disclosure after
 -- a pause or unpause, as with any change to the rules contract.
+--
+-- The admin and the pauser both sign it. Creating it, archiving it, or
+-- replacing it with a new fee, allowlist, or roles needs both their
+-- authority in one transaction; the pause switch needs the pauser alone.
+-- A rules contract with a new pauser refuses every existing holding,
+-- instruction, and allocation, since each names the old pauser.
 template MyRules with
     config : RegistryConfig
     roles : AppRoles
-    pauser : Party
-      -- ^ Flips the pause switch. Holds no other power.
     paused : Bool
     transferFeeBps : Int
       -- ^ Basis points of every transfer amount paid to the treasury when
@@ -246,19 +281,19 @@ template MyRules with
     allowedExecutors : [Party]
       -- ^ The only settlement executors this registry accepts.
   where
-    signatory config.admin
-    observer pauser, roles.auditor
+    signatory config.admin, roles.pauser
+    observer roles.auditor
     ensure isValidRegistryConfig config
       && transferFeeBps >= 0 && transferFeeBps <= 10000
 
     choice MyRules_Pause : ContractId MyRules
-      controller pauser
+      controller roles.pauser
       do
         require "registry is already paused" (not paused)
         create this with paused = True
 
     choice MyRules_Unpause : ContractId MyRules
-      controller pauser
+      controller roles.pauser
       do
         require "registry is not paused" paused
         create this with paused = False
@@ -270,7 +305,7 @@ template MyRules with
       settlementFactory_settleBatchImpl self arg = do
         whenNotPaused this
         requireAllowedExecutors this arg.settlement.executors
-        settleBatchImpl (pinAllocationTo @MyAllocation) config.admin self arg
+        settleBatchImpl (pinMyAllocation roles) config.admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for MyRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
@@ -309,7 +344,7 @@ template MyRules with
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
       controller config.admin
-      do expireAllocationsImpl (pinAllocationTo @MyAllocation) config.admin cancelArgs
+      do expireAllocationsImpl (pinMyAllocation roles) config.admin cancelArgs
 
     nonconsuming choice MyRules_ExpireTransferInstructions : ()
       with
@@ -319,6 +354,7 @@ template MyRules with
         forA_ instructionCids $ \cid -> do
           instr <- fetch cid
           requireMatchExpected ("transfer.instrumentId.admin", instr.state.transfer.instrumentId.admin) config.admin
+          require "transfer instruction names a different pauser" (instr.roles.pauser == roles.pauser)
           _ <- exercise cid MyTransferInstruction_Expire
           pure ()
 
@@ -332,6 +368,19 @@ requireAllowedExecutors : MyRules -> [Party] -> Update ()
 requireAllowedExecutors rules executors =
   require "a settlement executor is not approved by this registry"
     (all (`elem` rules.allowedExecutors) executors)
+
+-- | The allocation policy: a `MyAllocation` that names this registry's
+-- pauser. An allocation naming another pauser settles with operations this
+-- pauser never signed, so it could cover a leg of this token with funding
+-- from outside it.
+pinMyAllocation : AppRoles -> PinAllocation
+pinMyAllocation roles cid = do
+  fetched <- fetchFromInterface @MyAllocation cid
+  case fetched of
+    None -> fail "allocation is not an accepted implementation"
+    Some (_, alloc) -> do
+      require "allocation names a different pauser" (alloc.roles.pauser == roles.pauser)
+      pure (view (toInterface @AllocationV2.Allocation alloc))
 
 -- | The fee account: a regular account owned by the admin. A one-step
 -- transfer into it needs the admin's authority on the receiving side, which

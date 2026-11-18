@@ -71,6 +71,14 @@ contract id enters through an operation the template owner wrote:
   the holding does not follow later registry changes, and a policy contract
   id stored in the holding fails every spend once the registry replaces that
   contract.
+- Roles and policy on a rules contract restrict wallets only. The operations
+  cannot tell which rules contract a holding came from: any check they make
+  compares fields, and the admin can copy those fields into a contract it
+  signs alone, such as a second rules contract without the first one's
+  roles. A control that must bind the admin has to be held by a party that
+  signs the holdings and the pending contracts, and the operations must
+  refuse a holding that names a different such party.
+  `examples/token/token-cip112-custom` does this with its pauser.
 - `settleBatchImpl` passes each `Allocation_Settle` an empty context, so a
   `deliverHolding` rule that requires a context entry refuses every batch
   settlement. `expireAllocationsImpl` cancels its allocations in one
