@@ -14,10 +14,16 @@ functions, with every template decision left to the caller.
 ## What it provides
 
 - `HoldingOps`: the record a template owner builds inside a choice body with
-  `createHolding`, `consumeHolding`, `withEventLog`, and `eventObservers`
-  (extra informees of every holdings-change event, for auditors and
-  regulators who must see the standard event stream). It holds functions,
-  so it is never stored.
+  `createHolding`, three consumption operations, `withEventLog`, and
+  `eventObservers` (extra informees of every holdings-change event, for
+  auditors and regulators who must see the standard event stream). The
+  consumption operations split by where the value goes: `fundHolding` for
+  caller-supplied inputs, `deliverHolding` for locked funding paid out, and
+  `returnHolding` for locked funding returned to its owner. Each receives the
+  `ChoiceContext` the submitter passed. The record holds functions, so it is
+  never stored.
+- `holdingOpsFor @T`: a `HoldingOps` whose three consumption operations are
+  `consumeByArchive @T`, ready to override one operation with `with`.
 - `consumeByArchive @T` and `pinAllocationTo @T`: the safe ways to write the
   consumption and allocation policies, pinned to one template.
 - `privateAssetAllocateExtraObservers`: the allocation factory's extra
@@ -46,10 +52,37 @@ package. Versions follow semver, and the package name carries no `vN` suffix.
 The workflows trust nothing they did not just create. Every caller-supplied
 contract id enters through an operation the template owner wrote:
 
-- `consumeHolding` must fail on any holding that is not an accepted
-  implementation. Use `consumeByArchive @YourHolding`, or a custom spend
+- `fundHolding`, `deliverHolding`, and `returnHolding` must each fail on any
+  holding that is not an accepted implementation, and otherwise archive it
+  and return its view. Use `holdingOpsFor @YourHolding`, or a custom spend
   choice reached through `fetchFromInterface @YourHolding`. Never archive a
   caller-supplied id by interface.
+- Each consumption operation runs on its own paths. `fundHolding` consumes
+  the inputs of the transfer and allocation factories, including one-step
+  transfers and burns. `deliverHolding` consumes all locked funding on accept
+  and settle, including an accept's surplus and the part of a settlement that
+  stays with the authorizer. `returnHolding` consumes locked funding on a
+  transfer's reject, withdraw, and expiry, and on an allocation's withdraw
+  and cancel.
+- A refusal in `deliverHolding` or `returnHolding` keeps locked funds locked
+  until the rule passes, and after the lock expires only the holding's
+  owner-unlock choice recovers them. Put a rule there only if a known party
+  can lift it without re-creating the locked holding: pending instructions
+  and allocations name their locked holdings by id, so a replaced holding
+  orphans them. A rule that only limits new spending, such as a minimum
+  holding age, belongs in `fundHolding`.
+- A rule that tracks live registry state reads the current policy contract
+  from the context and checks the contract it fetches. A value copied into
+  the holding does not follow later registry changes, and a policy contract
+  id stored in the holding fails every spend once the registry replaces that
+  contract.
+- `settleBatchImpl` passes each `Allocation_Settle` an empty context, so a
+  `deliverHolding` rule that requires a context entry refuses every batch
+  settlement. `expireAllocationsImpl` cancels its allocations in one
+  transaction, so one refusing `returnHolding` fails the whole batch.
+- `holdingOwnerUnlockImpl` runs none of the consumption operations. A rule
+  that must block an owner unlock, such as a freeze, is checked inside the
+  holding's own owner-unlock choice.
 - The `PinAllocation` passed to `settleBatchImpl` and `expireAllocationsImpl`
   must fail on any allocation whose choice bodies the registry does not
   control. Use `pinAllocationTo @YourAllocation`.

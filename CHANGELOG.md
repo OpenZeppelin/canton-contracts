@@ -80,6 +80,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   parameterised over the caller's templates through a `HoldingOps` record and
   constructor and pinning operations. It defines no serializable types and
   depends on `openzeppelin-token-cip112-types-v1`.
+- `HoldingOps` consumes holdings through three operations, `fundHolding`
+  for caller-supplied inputs, `deliverHolding` for locked funding paid out,
+  and `returnHolding` for locked funding returned to its owner, so a spend
+  rule runs only on its own paths. Each receives the exercising choice's
+  `ChoiceContext` and the holding id. `holdingOpsFor @T` sets all three to
+  `consumeByArchive @T`.
 
 ### `openzeppelin-token-cip112-v1`
 
