@@ -54,9 +54,11 @@ contract id enters through an operation the template owner wrote:
 
 - `fundHolding`, `deliverHolding`, and `returnHolding` must each fail on any
   holding that is not an accepted implementation, and otherwise archive it
-  and return its view. Use `holdingOpsFor @YourHolding`, or a custom spend
-  choice reached through `fetchFromInterface @YourHolding`. Never archive a
-  caller-supplied id by interface.
+  and return its view. The workflows credit that view, so an operation that
+  leaves the holding live lets it be spent again. Use
+  `holdingOpsFor @YourHolding`, or a consuming spend choice reached through
+  `fetchFromInterface @YourHolding`. Never archive a caller-supplied id by
+  interface.
 - A refusal in `deliverHolding` or `returnHolding` leaves the other
   operation's paths open, and a refusal in both holds the locked funds until
   the lock expires. After that the owner recovers them through the holding's
@@ -75,6 +77,9 @@ contract id enters through an operation the template owner wrote:
   `deliverHolding` rule that requires a context entry refuses every batch
   settlement. `expireAllocationsImpl` cancels its allocations in one
   transaction, so one refusing `returnHolding` fails the whole batch.
+- The owner-unlock choice that runs `holdingOwnerUnlockImpl` must be
+  consuming. Otherwise the locked holding stays live beside its replacement,
+  and each exercise creates tokens.
 - `holdingOwnerUnlockImpl` runs none of the consumption operations. A rule
   that must block an owner unlock, such as a freeze, is checked inside the
   holding's own owner-unlock choice. A rule that must hold funds after the
