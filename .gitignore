@@ -14,6 +14,7 @@ Thumbs.db
 
 # Local agent and editor state
 .codex/
+.claude/
 .coverage
 .vscode/
 CLAUDE.local.md
@@ -33,6 +34,3 @@ test-reports/
 # Dev3 Results
 artifacts/
 post-core/
-
-# Extension ideas for CIP112
-packages/token/token-cip112-v1/ideas.md
