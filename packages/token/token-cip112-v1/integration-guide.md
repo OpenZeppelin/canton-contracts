@@ -71,7 +71,7 @@ lets it expire. `examples/token/token-cip112-trading-test` and the test scripts
 
 Authorization: sender parties initiate; receiver parties accept or reject;
 sender parties withdraw; the admin expires after the instruction's storage
-bound.
+bound (see "Expiry and cleanup").
 
 ### Delivery-versus-payment settlement
 
@@ -107,6 +107,42 @@ shape.
 
 Authorization: as DvP, per iteration; the authorizer withdraws the current
 successor to exit.
+
+### Expiry and cleanup
+
+The registry operator's automation ends stale workflow contracts once their
+`expiresAt` has passed. Transfer instructions end through
+`TokenRules_ExpireTransferInstructions`, with one
+`TokenTransferInstruction_Expire` argument per instruction. Allocations end
+through `TokenRules_ExpireAllocations`, with one `Allocation_Cancel` argument
+per allocation and `actors = [admin]`. Each argument carries its own
+`extraArgs`, whose choice context may hold Splice's `expire-lock` flag, so
+automation written for Amulet builds the same batches:
+
+- A missing flag, or `AV_Bool True`, releases the funding to its account
+  and emits the `EventLog_HoldingsChange` that wallets track returned funds
+  by. Use it by default: it fails, rolling back the whole batch, if the
+  funding is already gone.
+- `AV_Bool False` clears the flag: the expiry skips the funding and emits
+  nothing, and it fails before `lockExpiresAt`. Use it only for a contract
+  whose locked holdings the automation has found no longer active, after the
+  owner unlocked or spent them once the lock expired.
+
+The ledger cannot check that the funding is gone, so the automation must
+look before it clears a flag. The flag covers every locked holding of the
+contract, and an allocation locks one holding per instrument, so the
+automation checks each of them. A flag cleared while a holding is still
+locked ends the contract and leaves that holding locked; the admin returns
+it with `TokenHolding_AdminUnlock`, without the account's provider. For allocations,
+the flag is read whenever the actors are exactly `[admin]`, including when
+the admin is the allocation's only executor, and ignored for executors, so
+an executor cancel always releases the funding. The test scripts
+`testLockGraceAndOwnerUnlock`, `testAllocationExpiryWithFlagCleared`, and
+`testAdminUnlockRepairsEarlyClearedFlag` cover these paths.
+
+Authorization: the admin alone expires, clears flags, and runs the admin
+unlock; the executors cancel an allocation at any time, always releasing its
+funding.
 
 ## Token Standard
 
@@ -145,4 +181,6 @@ cleanup.
 | Creating a committed allocation without a settlement deadline | Refused at the factory and by the template | Set `settlementDeadline`; commitment ends at the deadline |
 | Requesting a deadline or execution window beyond the registry's `maxTTL` | Refused outright, not truncated | Keep workflow deadlines within `maxTTL` of submission time |
 | Expecting the admin to expire a live workflow | Expiry choices fail before the workflow deadline | Wait for `expiresAt`; only executors cancel early |
+| Clearing the `expire-lock` flag on every contract past `lockExpiresAt` | A contract whose funding is still locked ends, and its holding stays locked | Clear the flag only after finding the locked holdings archived; return a holding left locked with `TokenHolding_AdminUnlock` |
+| Running the default expiry after the owner unlocked or spent the funding | The expiry fails on the archived holding, and so does its whole batch | Expire that contract with `expire-lock` set to `AV_Bool False` |
 | Reading `availableActions` as "exercisable now" | A committed allocation advertises withdraw that still fails before the deadline | Treat the map as the actor sets; check the deadline separately |

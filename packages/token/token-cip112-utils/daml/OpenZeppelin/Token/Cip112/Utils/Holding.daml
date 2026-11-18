@@ -126,17 +126,64 @@ newHolding ops admin account instrumentId amount lock =
 holdingOwnerUnlockImpl
   : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
   -> Update (ContractId HoldingV2.Holding)
-holdingOwnerUnlockImpl ops self holding = do
+holdingOwnerUnlockImpl ops self holding =
+  releaseExpiredLock ops self holding "its owner" "expired lock released by owner"
+
+-- | Body of a consuming admin-unlock choice on a holding template, controlled
+-- by the admin alone: as `holdingOwnerUnlockImpl`, with its own event reason.
+-- It returns funding that an expiry with the `expire-lock` flag cleared left
+-- locked, without the account parties, so an account with a distinct
+-- provider recovers without it. It moves no value: the holding returns
+-- unlocked to the same account, and only once its lock has expired, when
+-- `consumeUnlockedHolding` already accepts it as funding.
+holdingAdminUnlockImpl
+  : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
+  -> Update (ContractId HoldingV2.Holding)
+holdingAdminUnlockImpl ops self holding =
+  releaseExpiredLock ops self holding "the admin" "expired lock released by admin"
+
+-- | Recreate a holding whose lock has expired without its lock, and log the
+-- change with `reason`. `releaser` names who unlocks, for the failure on an
+-- indefinite lock.
+releaseExpiredLock
+  : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> Text -> Text
+  -> Update (ContractId HoldingV2.Holding)
+releaseExpiredLock ops self holding releaser reason = do
   lock <- case holding.lock of
     None -> fail "holding is not locked"
     Some l -> pure l
   case lock.expiresAt of
-    None -> fail "holding is locked indefinitely and cannot be unlocked by its owner"
+    None -> fail ("holding is locked indefinitely and cannot be unlocked by " <> releaser)
     Some expiresAt -> assertDeadlineExceeded "lock expiresAt" expiresAt
   newCid <- ops.createHolding (holding with lock = None)
-  emitHoldingsChange ops holding.instrumentId.admin holding.account [] [self] [newCid] []
-    "expired lock released by owner"
+  emitHoldingsChange ops holding.instrumentId.admin holding.account [] [self] [newCid] [] reason
   pure newCid
+
+-- Admin expiry
+---------------
+
+-- | The choice-context key an admin expiry reads to decide whether to release
+-- the funding of the contract it ends. It is Splice's key, so admin
+-- automation written for Amulet works unchanged.
+expireLockKey : Text
+expireLockKey = "expire-lock"
+
+-- | Read the `expire-lock` flag of an admin expiry. A missing entry or
+-- `AV_Bool True` releases the funding. `AV_Bool False` clears the flag: the
+-- expiry skips the funding, which it allows only once the funding lock has
+-- expired. Any other value fails. A mistyped key reads as missing, so the
+-- expiry releases, which fails loudly when the funding is already gone.
+--
+-- Clear the flag only after finding the locked holdings no longer active.
+-- The ledger cannot check this, because fetching an archived holding aborts.
+-- A flag cleared while the funding is still locked ends the pending contract
+-- and leaves the holding locked; the holding template's admin unlock
+-- (`holdingAdminUnlockImpl`) returns it.
+expireLockFromContext : ChoiceContext -> Update Bool
+expireLockFromContext context = case TextMap.lookup expireLockKey context.values of
+  None -> pure True
+  Some (AV_Bool expireLock) -> pure expireLock
+  Some _ -> fail ("choice context entry '" <> expireLockKey <> "' must be a Bool")
 
 -- Consumption
 --------------

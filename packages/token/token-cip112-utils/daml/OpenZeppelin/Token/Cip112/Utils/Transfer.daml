@@ -112,19 +112,27 @@ transferWithdrawImpl ops self s arg = do
   archiveAndCheckActors self arg.actors [senderParties s.transfer]
   returnFundsToSender ops s "transfer withdrawn"
 
--- | Body of a consuming admin-expiry choice: the storage bound has passed and
--- the locked funds return to the sender.
+-- | Body of a consuming admin-expiry choice, once the storage bound has
+-- passed. It reads the `expire-lock` flag from `extraArgs.context` (see
+-- `expireLockFromContext`). Missing or set, the locked funds return to the
+-- sender. Cleared, the funding is skipped: this needs `lockExpiresAt` to
+-- have passed too, and it creates nothing and emits no event, since the
+-- funding's owner already logged its end. Either way the instruction ends
+-- with `TransferInstructionResult_Failed`.
 transferExpireImpl
-  : HoldingOps -> TransferInstructionState
+  : HoldingOps -> TransferInstructionState -> ExtraArgs
   -> Update TransferInstructionV2.TransferInstructionResult
-transferExpireImpl ops s = do
+transferExpireImpl ops s extraArgs = do
   assertDeadlineExceeded "expiresAt" s.expiresAt
-  returnFundsToSender ops s "transfer instruction expired"
-
--- | Body of a consuming last-resort admin cleanup choice for an instruction
--- whose funding was already reclaimed. Creates nothing.
-transferGcImpl : TransferInstructionState -> Update ()
-transferGcImpl s = assertDeadlineExceeded "lockExpiresAt" s.lockExpiresAt
+  expireLock <- expireLockFromContext extraArgs.context
+  if expireLock
+    then returnFundsToSender ops s "transfer instruction expired"
+    else do
+      assertDeadlineExceeded "lockExpiresAt" s.lockExpiresAt
+      pure TransferInstructionV2.TransferInstructionResult with
+        output = TransferInstructionV2.TransferInstructionResult_Failed
+        senderChangeCids = []
+        meta = s.transfer.meta
 
 -- Factory body
 ---------------

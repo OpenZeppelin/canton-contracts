@@ -142,6 +142,17 @@ allocationWithdrawImpl ops self s arg = do
 -- | `allocation_cancelImpl`. Executors may cancel any time; the admin only
 -- once `expiresAt` has passed (checked by the vendored default, which reads
 -- the interface value of the contract being exercised).
+--
+-- A cancel whose actors are exactly the admin is an admin expiry, and reads
+-- the `expire-lock` flag from `arg.extraArgs.context` (see
+-- `expireLockFromContext`). Missing or set, the funding is released.
+-- Cleared, it is skipped once `lockExpiresAt` has passed, and the result
+-- carries no holdings. The flag is read also when the admin is the
+-- allocation's only executor. The vendored default then treats the cancel as
+-- an executor cancel and checks no expiry, so the `lockExpiresAt` check is
+-- the only time guard. For every other actor set the flag is ignored and the
+-- funding is released, so executors cannot end an allocation without
+-- releasing its funding.
 allocationCancelImpl
   : HoldingOps -> ContractId AllocationV2.Allocation -> AllocationState
   -> AllocationV2.Allocation_Cancel
@@ -149,13 +160,17 @@ allocationCancelImpl
 allocationCancelImpl ops self s arg = do
   this <- fetch self
   allocationV2_cancelDefaultImpl this self arg $ do
-    holdings <- unlockAndLog ops s "allocation cancelled"
-    pure (holdings, emptyMetadata)
-
--- | Body of a consuming last-resort admin cleanup choice for an allocation
--- whose funding was already reclaimed. Creates nothing.
-allocationGcImpl : AllocationState -> Update ()
-allocationGcImpl s = assertDeadlineExceeded "allocation lockExpiresAt" s.lockExpiresAt
+    expireLock <-
+      if dedupSort arg.actors == [s.allocation.admin]
+        then expireLockFromContext arg.extraArgs.context
+        else pure True
+    if expireLock
+      then do
+        holdings <- unlockAndLog ops s "allocation cancelled"
+        pure (holdings, emptyMetadata)
+      else do
+        assertDeadlineExceeded "allocation lockExpiresAt" s.lockExpiresAt
+        pure (TextMap.empty, emptyMetadata)
 
 -- Factory body
 ---------------

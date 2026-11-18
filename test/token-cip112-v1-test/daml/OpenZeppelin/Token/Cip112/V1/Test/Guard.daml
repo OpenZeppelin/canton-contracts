@@ -102,6 +102,42 @@ testOwnerUnlockRefusesIndefiniteLock = do
   mustFailWith "holding is locked indefinitely" (actAs alice) do
     exerciseCmd cid TokenHolding_OwnerUnlock
 
+testAdminUnlockRefusesUnlockedHolding : Script ()
+testAdminUnlockRefusesUnlockedHolding = do
+  Scenario{..} <- setup
+  cid <- mint admin alice 10.0
+  mustFailWith "holding is not locked" (actAs admin) do
+    exerciseCmd cid TokenHolding_AdminUnlock
+
+-- | An indefinite lock never expires, so the admin can never release it.
+testAdminUnlockRefusesIndefiniteLock : Script ()
+testAdminUnlockRefusesIndefiniteLock = do
+  Scenario{..} <- setup
+  cid <- holdingIn admin (basicAccount alice) "TOK" 10.0 (lockedBy [admin] None)
+  setTime t4
+  mustFailWith "holding is locked indefinitely and cannot be unlocked by the admin" (actAs admin) do
+    exerciseCmd cid TokenHolding_AdminUnlock
+
+-- | The admin cannot release a live lock, so it cannot pull funding out from
+-- under a pending contract before its lock expires.
+testAdminUnlockRefusesLiveLock : Script ()
+testAdminUnlockRefusesLiveLock = do
+  Scenario{..} <- setup
+  cid <- holdingIn admin (basicAccount alice) "TOK" 10.0 (lockedBy [admin] (Some t4))
+  setTime t3
+  mustFailWith "strictly before deadline 'lock expiresAt'" (actAs admin) do
+    exerciseCmd cid TokenHolding_AdminUnlock
+
+-- | Only the admin controls the admin unlock: the owner alone, who sees the
+-- holding as a signatory, cannot exercise it.
+testAdminUnlockRequiresAdmin : Script ()
+testAdminUnlockRequiresAdmin = do
+  Scenario{..} <- setup
+  cid <- holdingIn admin (basicAccount alice) "TOK" 10.0 (lockedBy [admin] (Some t3))
+  setTime t4
+  submitMustFail (actAs alice) do
+    exerciseCmd cid TokenHolding_AdminUnlock
+
 -- Transfer factory
 -------------------
 
@@ -241,15 +277,31 @@ testAcceptRefusesUnderfundedLock = do
     exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferInstruction instrCid)
       TransferInstructionV2.TransferInstruction_Accept with actors = [bob]; extraArgs = emptyExtraArgs
 
--- | Admin cleanup waits until the funding lock has expired, so the sender
--- can always recover the funds first.
-testTransferAdminGCWaitsForLockExpiry : Script ()
-testTransferAdminGCWaitsForLockExpiry = do
+-- | An expiry with the `expire-lock` flag cleared waits until the funding
+-- lock has expired, so the sender can always recover the funds first.
+testTransferExpiryWithFlagClearedWaitsForLockExpiry : Script ()
+testTransferExpiryWithFlagClearedWaitsForLockExpiry = do
   s@Scenario{..} <- setup
   instrCid <- pendingTransfer s
   setTime t3
-  mustFailWith "strictly before deadline 'lockExpiresAt'" (actAs admin) do
-    exerciseCmd (fromInterfaceContractId @TokenTransferInstruction instrCid) TokenTransferInstruction_AdminGC
+  mustFailWith "strictly before deadline 'lockExpiresAt'" (actAs admin)
+    (expireInstructionCmd instrCid (expireLockArgs False))
+
+-- | The `expire-lock` flag must be a Bool: any other value fails, on both
+-- the transfer and the allocation expiry.
+testExpiryRefusesMalformedFlag : Script ()
+testExpiryRefusesMalformedFlag = do
+  s@Scenario{..} <- setup
+  instrCid <- pendingTransfer s
+  input <- mint admin alice 5.0
+  allocCid <- completedCid =<< allocateSpec s alice
+    (mkAllocationSpec admin alice [senderSide (mkTransferLeg "leg-9" alice bob 5.0)]) [input]
+  setTime t4
+  let malformed = expireLockEntry (AV_Text "false")
+  mustFailWith "choice context entry 'expire-lock' must be a Bool" (actAs admin)
+    (expireInstructionCmd instrCid malformed)
+  mustFailWith "choice context entry 'expire-lock' must be a Bool" (actAs admin)
+    (cancelCmd allocCid [admin] malformed)
 
 -- Allocation factory
 ---------------------
@@ -435,4 +487,4 @@ testExpireTransferInstructionsRefusesOtherRegistry = do
   setTime t3
   mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs admin) do
     exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
-      instructionCids = [fromInterfaceContractId @TokenTransferInstruction instrCid]; observers = []
+      expireArgs = [(fromInterfaceContractId @TokenTransferInstruction instrCid, TokenTransferInstruction_Expire with extraArgs = emptyExtraArgs)]; observers = []

@@ -7,7 +7,8 @@ module OpenZeppelin.Token.Cip112.V1.Test.Fixtures where
 import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
 import DA.List (sort)
-import DA.Optional (isNone, optionalToList)
+import DA.Optional (isNone, isSome, optionalToList)
+import DA.TextMap qualified as TextMap
 import DA.Time (days, hours, time)
 import Daml.Script
 
@@ -22,6 +23,7 @@ import Splice.TokenStandard.Utils (basicAccount, burnAccount, nonIteratedAllocat
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Token.Cip112.V1.Holding
 import OpenZeppelin.Token.Cip112.V1.Registry
+import OpenZeppelin.Token.Cip112.V1.Transfer
 
 t0, t1, t2, t3, t4 : Time
 t0 = time (date 2026 Jan 1) 0 0 0
@@ -43,6 +45,40 @@ data Scenario = Scenario with
 
 emptyExtraArgs : ExtraArgs
 emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- | `ExtraArgs` whose choice context holds `value` under the `expire-lock`
+-- key. The key is spelled out, not taken from the utils package, so the
+-- tests pin Splice's key.
+expireLockEntry : AnyValue -> ExtraArgs
+expireLockEntry value = ExtraArgs with
+  context = ChoiceContext with values = TextMap.fromList [("expire-lock", value)]
+  meta = emptyMetadata
+
+-- | The `expire-lock` flag of an admin expiry: `False` clears it, so the
+-- expiry skips the funding.
+expireLockArgs : Bool -> ExtraArgs
+expireLockArgs = expireLockEntry . AV_Bool
+
+-- | An admin expiry of a transfer instruction, with the given `ExtraArgs`.
+expireInstructionCmd
+  : ContractId TransferInstructionV2.TransferInstruction -> ExtraArgs
+  -> Commands TransferInstructionV2.TransferInstructionResult
+expireInstructionCmd instrCid extraArgs =
+  exerciseCmd (fromInterfaceContractId @TokenTransferInstruction instrCid)
+    TokenTransferInstruction_Expire with extraArgs
+
+-- | `Allocation_Cancel` by `actors`, with the given `ExtraArgs`.
+cancelCmd
+  : ContractId AllocationV2.Allocation -> [Party] -> ExtraArgs
+  -> Commands AllocationV2.AllocationResult
+cancelCmd allocCid actors extraArgs =
+  exerciseCmd allocCid AllocationV2.Allocation_Cancel with actors; extraArgs
+
+-- | The locked holdings of `owner`.
+lockedHoldingsOf : Party -> Script [ContractId TokenHolding]
+lockedHoldingsOf owner = do
+  holdings <- query @TokenHolding owner
+  pure [cid | (cid, h) <- holdings, isSome h.holding.lock]
 
 mkTransferLeg : Text -> Party -> Party -> Decimal -> AllocationV2.TransferLeg
 mkTransferLeg legId sender receiver amount = AllocationV2.TransferLeg with

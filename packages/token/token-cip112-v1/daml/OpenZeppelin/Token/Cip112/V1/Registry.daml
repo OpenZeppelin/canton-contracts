@@ -63,7 +63,12 @@ template TokenRules with
 
     nonconsuming choice TokenRules_ExpireAllocations : ()
       -- ^ Batched admin expiry of stale allocations through the standard
-      -- cancel choice, each pinned to `TokenAllocation`.
+      -- cancel choice, each pinned to `TokenAllocation`. Each cancel argument
+      -- has `actors = [admin]` and carries its own `expire-lock` flag, which
+      -- is read even when the admin is the allocation's only executor. Clear
+      -- a flag only after finding that allocation's locked holdings no
+      -- longer active: `TokenHolding_AdminUnlock` repairs one cleared too
+      -- early.
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
         observers : [Party]
@@ -86,18 +91,23 @@ template TokenRules with
       do offerMintImpl config createInstruction receiver instrumentId amount requestedAt executeBefore reason
 
     nonconsuming choice TokenRules_ExpireTransferInstructions : ()
-      -- ^ Batched admin expiry of stale transfer instructions. Template-typed
-      -- on purpose: the registry only ever expires its own instructions.
+      -- ^ Batched admin expiry of stale transfer instructions, each with its
+      -- own `TokenTransferInstruction_Expire` argument and so its own
+      -- `expire-lock` flag. Clear a flag only after finding that
+      -- instruction's locked holdings no longer active:
+      -- `TokenHolding_AdminUnlock` repairs one cleared too early.
+      -- Template-typed on purpose: the registry only ever expires its own
+      -- instructions.
       with
-        instructionCids : [ContractId TokenTransferInstruction]
+        expireArgs : [(ContractId TokenTransferInstruction, TokenTransferInstruction_Expire)]
         observers : [Party]
       observer observers
       controller config.admin
       do
-        forA_ instructionCids $ \cid -> do
+        forA_ expireArgs $ \(cid, expireArg) -> do
           instr <- fetch cid
           requireMatchExpected ("transfer.instrumentId.admin", instr.state.transfer.instrumentId.admin) config.admin
-          _ <- exercise cid TokenTransferInstruction_Expire
+          _ <- exercise cid expireArg
           pure ()
 
 rulesOps : RegistryConfig -> HoldingOps

@@ -29,6 +29,18 @@ functions, with every template decision left to the caller.
   needs: `transferFactoryImpl`, `transferAcceptImpl`, `allocationFactoryImpl`,
   `allocationSettleImpl`, `settleBatchImpl`, `offerMintImpl`, and the
   rest.
+- `holdingOwnerUnlockImpl` and `holdingAdminUnlockImpl`: the bodies of a
+  holding template's two unlock choices for an expired lock, one controlled
+  by the account parties and one by the admin alone. A consumer holding
+  template exposes both. The admin unlock is how funding left locked by an
+  expiry with the `expire-lock` flag cleared returns to its account without
+  the account's provider.
+- `expireLockFromContext`: how `transferExpireImpl` and `allocationCancelImpl`
+  read Splice's `expire-lock` flag from the choice context. A missing flag, or
+  `AV_Bool True`, releases the funding; `AV_Bool False` skips it once
+  `lockExpiresAt` has passed. `allocationCancelImpl` reads it only when the
+  actors are exactly the admin, including when the admin is the only
+  executor.
 
 The functions read and return the `RegistryConfig`,
 `TransferInstructionState`, and `AllocationState` records of

@@ -23,7 +23,6 @@ import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, reasonFromMeta, reasonToMeta, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
-import OpenZeppelin.Token.Cip112.V1.Allocation
 import OpenZeppelin.Token.Cip112.V1.Holding
 import OpenZeppelin.Token.Cip112.V1.Registry
 import OpenZeppelin.Token.Cip112.V1.Transfer
@@ -585,13 +584,13 @@ testTransferAdminExpiry = do
   instrCid <- pendingCid result
   let templateCid = fromInterfaceContractId @TokenTransferInstruction instrCid
   -- Not yet expired: the admin cannot reclaim early.
-  submitMustFail (actAs admin) do
-    exerciseCmd templateCid TokenTransferInstruction_Expire
+  submitMustFail (actAs admin) (expireInstructionCmd instrCid emptyExtraArgs)
   setTime t3
   -- Batched expiry through the rules contract, mirroring allocation expiry.
+  -- A flag set to release behaves as a missing one.
   _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
-      instructionCids = [templateCid]
+      expireArgs = [(templateCid, TokenTransferInstruction_Expire with extraArgs = expireLockArgs True)]
       observers = []
   assertNoLocks alice
   aliceAfter <- holdingAmounts alice
@@ -659,7 +658,8 @@ testCommittedRequiresDeadline = do
 
 -- | The funding lock outlives the instruction's own expiry, so the
 -- admin's expiry path always has a window in which it is guaranteed to work,
--- and once the lock does expire the sender can self-recover.
+-- and once the lock does expire the sender can self-recover. The admin then
+-- ends the instruction with the `expire-lock` flag cleared.
 testLockGraceAndOwnerUnlock : Script ()
 testLockGraceAndOwnerUnlock = do
   s@Scenario{..} <- setup
@@ -671,8 +671,7 @@ testLockGraceAndOwnerUnlock = do
   -- Just past executeBefore: the lock has NOT yet expired, so the locked
   -- holding cannot be re-spent as an input.
   setTime t3
-  lockedHoldings <- query @TokenHolding alice
-  let lockedCids = [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock]
+  lockedCids <- lockedHoldingsOf alice
   submitMustFail (actAs alice <> discloseMany [rulesDisclosure]) do
     exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
       TransferInstructionV2.TransferFactory_Transfer with
@@ -686,25 +685,29 @@ testLockGraceAndOwnerUnlock = do
     submitMustFail (actAs alice <> actAs admin) do
       exerciseCmd cid TokenHolding_OwnerUnlock
 
-  -- After the grace window the owner can always self-recover, which is what
-  -- makes admin GC safe.
+  -- After the grace window the owner recovers the funding. On this
+  -- single-party account the owner's parties suffice. An account with a
+  -- distinct provider needs the provider too, or the admin unlock
+  -- (`testAdminUnlockRepairsEarlyClearedFlag`).
   setTime t4
   forA_ lockedCids $ \cid ->
-    submit (actAs alice <> actAs admin) do
+    submit (actAs alice) do
       exerciseCmd cid TokenHolding_OwnerUnlock
   assertNoLocks alice
   aliceAfter <- holdingAmounts alice
   sum aliceAfter === 10.0
 
-  -- The instruction shell now references an archived holding, so the normal
-  -- fund-returning paths fail — and admin GC is the escape hatch that keeps it
-  -- from being permanently unremovable.
-  submitMustFail (actAs admin) do
-    exerciseCmd templateCid TokenTransferInstruction_Expire
-  _ <- submit (actAs admin) do
-    exerciseCmd templateCid TokenTransferInstruction_AdminGC
-  gcd <- queryContractId admin templateCid
-  gcd === None
+  -- The instruction now references an archived holding, so the default
+  -- expiry, which releases the funding, fails. With the `expire-lock` flag
+  -- cleared it skips the funding and ends with the standard failed result.
+  submitMustFail (actAs admin) (expireInstructionCmd instrCid emptyExtraArgs)
+  (expired, tree) <- submitResultAndTree (actAs admin) (expireInstructionCmd instrCid (expireLockArgs False))
+  expired.output === TransferInstructionV2.TransferInstructionResult_Failed
+  expired.senderChangeCids === []
+  holdingsChangeEvents tree === []
+  gone <- queryContractId admin templateCid
+  gone === None
+  sum <$> holdingAmounts alice >>= (=== 10.0)
 
 -- | Owner unlock is a holdings change like any other (CIP-0112 §4.3.5): it
 -- emits one account-local `EventLog_HoldingsChange` naming the archived
@@ -958,30 +961,134 @@ testAvailableActionsMatchImpl = do
   Map.lookup AllocationV2.AA_Withdraw v.availableActions === Some [[alice]]
   Map.lookup AllocationV2.AA_Settle v.availableActions === Some [[admin, app]]
 
--- | The allocation-side admin GC mirrors the transfer-side one: unavailable
--- while the funding lock is live, and once the lock has expired the shell can
--- be removed while the authorizer self-recovers the funding.
-testAllocationAdminGC : Script ()
-testAllocationAdminGC = do
+-- | The allocation side mirrors the transfer side. Once the funding lock has
+-- expired the authorizer reclaims the funding first, and the admin then
+-- expires the allocation through the batch with the `expire-lock` flag
+-- cleared. Before `lockExpiresAt` the cleared flag is refused, even past
+-- `expiresAt`.
+testAllocationExpiryWithFlagCleared : Script ()
+testAllocationExpiryWithFlagCleared = do
   s@Scenario{..} <- setup
   aliceInput <- mint admin alice 10.0
-  aliceResult <- allocate s alice [senderSide legAliceToBob] [aliceInput]
-  aliceAllocCid <- completedCid aliceResult
-  let templateCid = fromInterfaceContractId @TokenAllocation aliceAllocCid
-  submitMustFail (actAs admin) do
-    exerciseCmd templateCid TokenAllocation_AdminGC
+  allocCid <- completedCid =<< allocate s alice [senderSide legAliceToBob] [aliceInput]
+  -- t3 is past expiresAt (the settlementDeadline t2), before lockExpiresAt.
+  setTime t3
+  mustFailWith "strictly before deadline 'allocation lockExpiresAt'" (actAs admin)
+    (cancelCmd allocCid [admin] (expireLockArgs False))
   -- t4 is past lockExpiresAt (settlementDeadline t2 + lockGrace 1h).
   setTime t4
-  _ <- submit (actAs admin) do
-    exerciseCmd templateCid TokenAllocation_AdminGC
-  gcd <- queryContractId admin templateCid
-  gcd === None
-  lockedHoldings <- query @TokenHolding alice
-  forA_ [cid | (cid, h) <- lockedHoldings, isSome h.holding.lock] $ \cid ->
-    submit (actAs alice <> actAs admin) do
-      exerciseCmd cid TokenHolding_OwnerUnlock
+  lockedCids <- lockedHoldingsOf alice
+  forA_ lockedCids $ \cid -> submit (actAs alice) do exerciseCmd cid TokenHolding_OwnerUnlock
+  -- The default expiry would release the archived funding, and fails.
+  submitMustFail (actAs admin) (cancelCmd allocCid [admin] emptyExtraArgs)
+  tree <- submitTree (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireAllocations with
+      cancelArgs =
+        [ (allocCid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = expireLockArgs False) ]
+      observers = []
+  holdingsChangeEvents tree === []
+  allocations <- queryInterface @AllocationV2.Allocation admin
+  allocations === []
   aliceAfter <- holdingAmounts alice
   aliceAfter === [10.0]
+
+-- | A direct admin cancel with the flag cleared returns the standard
+-- cancelled result, with no holdings.
+testAllocationCancelWithFlagClearedResult : Script ()
+testAllocationCancelWithFlagClearedResult = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  allocCid <- completedCid =<< allocate s alice [senderSide legAliceToBob] [aliceInput]
+  setTime t4
+  lockedCids <- lockedHoldingsOf alice
+  forA_ lockedCids $ \cid -> submit (actAs alice) do exerciseCmd cid TokenHolding_OwnerUnlock
+  result <- submit (actAs admin) (cancelCmd allocCid [admin] (expireLockArgs False))
+  result.output === AllocationV2.AllocationResult_Cancelled
+  result.authorizerHoldingCids === TextMap.empty
+  reasonFromMeta result.meta === "cancelled expired allocation"
+
+-- | With the admin as the allocation's only executor, the vendored cancel
+-- default treats a cancel by `[admin]` as an executor cancel and checks no
+-- expiry. The flag is still read, so the cleared flag's own `lockExpiresAt`
+-- check is the only time guard: it refuses the cancel at `t1`, before even
+-- `expiresAt`.
+testAdminOnlyExecutorCancelReadsFlag : Script ()
+testAdminOnlyExecutorCancelReadsFlag = do
+  s0@Scenario{..} <- setup
+  let s = s0 with settlement = settlement with executors = [admin]
+  aliceInput <- mint admin alice 10.0
+  allocCid <- completedCid =<< allocate s alice [senderSide legAliceToBob] [aliceInput]
+  mustFailWith "strictly before deadline 'allocation lockExpiresAt'" (actAs admin)
+    (cancelCmd allocCid [admin] (expireLockArgs False))
+  setTime t4
+  lockedCids <- lockedHoldingsOf alice
+  forA_ lockedCids $ \cid -> submit (actAs alice) do exerciseCmd cid TokenHolding_OwnerUnlock
+  result <- submit (actAs admin) (cancelCmd allocCid [admin] (expireLockArgs False))
+  result.output === AllocationV2.AllocationResult_Cancelled
+  result.authorizerHoldingCids === TextMap.empty
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+-- | Executors cannot end an allocation without releasing its funding: the
+-- flag is ignored for every actor set other than `[admin]`, so a cleared
+-- flag on an executor cancel still releases it, even past `lockExpiresAt`.
+testExecutorCancelIgnoresClearedFlag : Script ()
+testExecutorCancelIgnoresClearedFlag = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  allocCid <- completedCid =<< allocate s alice [senderSide legAliceToBob] [aliceInput]
+  setTime t4
+  result <- submit (actAs app) (cancelCmd allocCid [app] (expireLockArgs False))
+  result.output === AllocationV2.AllocationResult_Cancelled
+  map fst (TextMap.toList result.authorizerHoldingCids) === ["TOK"]
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+
+-- | On an account with a distinct provider, the owner cannot recover funding
+-- alone. An expiry that clears the `expire-lock` flag while the funding is
+-- still locked ends the instruction and leaves the holding locked; the admin
+-- unlock returns it to the same account without the provider, and logs the
+-- change with its own reason.
+testAdminUnlockRepairsEarlyClearedFlag : Script ()
+testAdminUnlockRepairsEarlyClearedFlag = do
+  s@Scenario{..} <- setup
+  provider <- allocateParty "provider"
+  let custody = HoldingV2.Account with owner = Some alice; provider = Some provider; id = "custody"
+  input <- submit (actAs [admin, alice, provider]) do
+    createCmd TokenHolding with
+      holding = HoldingV2.HoldingView with
+        account = custody
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        amount = 10.0
+        lock = None
+        meta = emptyMetadata
+  instrCid <- pendingCid =<< instructTransfer s [alice, provider]
+    ((mkTransfer s alice bob 7.0 [input]) with sender = custody)
+  setTime t4
+  -- Cleared too early: the funding is still locked and stays so.
+  expired <- submit (actAs admin) (expireInstructionCmd instrCid (expireLockArgs False))
+  expired.senderChangeCids === []
+  [lockedCid] <- lockedHoldingsOf alice
+  -- The owner alone cannot recover it; owner unlock needs the provider too.
+  submitMustFail (actAs alice) do exerciseCmd lockedCid TokenHolding_OwnerUnlock
+  -- The admin alone returns it, unlocked, to the same account.
+  (newCid, tree) <- submitResultAndTree (actAs admin) do exerciseCmd lockedCid TokenHolding_AdminUnlock
+  Some unlocked <- queryInterfaceContractId @HoldingV2.Holding alice newCid
+  unlocked.account === custody
+  unlocked.amount === 7.0
+  unlocked.lock === None
+  ev <- expectOneHoldingsChange tree
+  ev.account === custody
+  ev.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding lockedCid]
+  ev.outputHoldingCids === [newCid]
+  ev.transferLegSides === []
+  reasonFromMeta ev.extraArgs.meta === "expired lock released by admin"
+  assertMsg "the owner must observe the event" (alice `elem` ev.observers)
+  assertMsg "the provider must observe the event" (provider `elem` ev.observers)
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [3.0, 7.0]
 
 -- | The registry rules contract is archivable by its signatory, so stale
 -- configuration does not accumulate on the ledger.
@@ -1064,7 +1171,7 @@ testOfferMintNotAccepted = do
   submitMustFail (actAs alice) (acceptCmd alice expiredCid)
   _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
-      instructionCids = [fromInterfaceContractId @TokenTransferInstruction expiredCid]
+      expireArgs = [(fromInterfaceContractId @TokenTransferInstruction expiredCid, TokenTransferInstruction_Expire with extraArgs = emptyExtraArgs)]
       observers = []
   instructions <- queryInterface @TransferInstructionV2.TransferInstruction alice
   instructions === []
@@ -1160,7 +1267,7 @@ testBurnRequestAdminExpiry = do
   submitMustFail (actAs admin) (acceptCmd admin requestCid)
   _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
-      instructionCids = [fromInterfaceContractId @TokenTransferInstruction requestCid]
+      expireArgs = [(fromInterfaceContractId @TokenTransferInstruction requestCid, TokenTransferInstruction_Expire with extraArgs = emptyExtraArgs)]
       observers = []
   aliceAfter <- holdingAmounts alice
   aliceAfter === [4.0, 6.0]
