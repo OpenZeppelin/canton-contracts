@@ -63,7 +63,7 @@ test_scheduleAfterDerivesTheView = script do
   v.readyAt === addRelTime t0 (days 3)
   v.expiresAt === Some (addRelTime t0 (days 10))
 
--- | A `readyAt` closer than `minDelay` is refused. INV-1.
+-- | A `readyAt` closer than `minDelay` is refused.
 test_scheduleAtRejectsShortDelay : Script ()
 test_scheduleAtRejectsShortDelay = script do
   Fixture{..} <- setup
@@ -81,7 +81,7 @@ test_scheduleAtAcceptsExactMinDelay = script do
       config = oneDayWeekGrace, readyAt = addRelTime t0 (days 1)
   pure ()
 
--- | A relative delay shorter than `minDelay` is refused. INV-1.
+-- | A relative delay shorter than `minDelay` is refused.
 test_scheduleAfterRejectsShortDelay : Script ()
 test_scheduleAfterRejectsShortDelay = script do
   Fixture{..} <- setup
@@ -111,7 +111,7 @@ test_scheduleNearMaxTimeFails = script do
 
 -- | A zero grace period leaves no ledger time at which an operation is ready,
 -- so the schedule refuses the policy instead of creating a stillborn
--- operation. INV-7.
+-- operation.
 test_zeroGracePeriodRejected : Script ()
 test_zeroGracePeriodRejected = script do
   Fixture{..} <- setup
@@ -124,7 +124,7 @@ test_zeroGracePeriodRejected = script do
   expectFailure eInvalidConfig r2
 
 -- | A negative minimum delay would widen the acceptance window instead of
--- disabling the delay, so it is refused. INV-7.
+-- disabling the delay, so it is refused.
 test_negativeMinDelayRejected : Script ()
 test_negativeMinDelayRejected = script do
   Fixture{..} <- setup
@@ -133,7 +133,7 @@ test_negativeMinDelayRejected = script do
     exerciseCmd probe Probe_ScheduleAt with config, readyAt = t0
   expectFailure eInvalidConfig r
 
--- | Both fields at zero is the most extreme misconfiguration. INV-7.
+-- | Both fields at zero is the most extreme misconfiguration.
 test_bothZeroRejected : Script ()
 test_bothZeroRejected = script do
   Fixture{..} <- setup
@@ -151,7 +151,7 @@ test_bothZeroRejected = script do
 -------------------------------------------------------
 
 -- | `addPending` records an operation, and `takePending` removes it or fails
--- with `eNotPending`. INV-3.
+-- with `eNotPending`.
 test_takePendingRequiresMembership : Script ()
 test_takePendingRequiresMembership = script do
   f@Fixture{..} <- setup

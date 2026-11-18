@@ -134,7 +134,7 @@ test_noGracePeriodNeverExpires = script do
 -------------------------------------------------------
 
 -- | The full lifecycle: schedule, wait, execute. The operation leaves the
--- ledger and the pending list, and the treasury carries the new limit. INV-2.
+-- ledger and the pending list, and the treasury carries the new limit.
 test_executeAfterDelay : Script ()
 test_executeAfterDelay = script do
   f@Fixture{..} <- setup
@@ -149,7 +149,7 @@ test_executeAfterDelay = script do
   old <- queryContractId admin t1
   old === None
 
--- | Executing before `readyAt` fails with `eNotReady`. INV-2.
+-- | Executing before `readyAt` fails with `eNotReady`.
 test_executeBeforeReadyFails : Script ()
 test_executeBeforeReadyFails = script do
   f@Fixture{..} <- setup
@@ -169,7 +169,7 @@ test_executeAtReadyAtSucceeds = script do
   _ <- execute executor t1 op
   pure ()
 
--- | Executing at or after `expiresAt` fails with `eExpired`. INV-3.
+-- | Executing at or after `expiresAt` fails with `eExpired`.
 test_executeAfterExpiryFails : Script ()
 test_executeAfterExpiryFails = script do
   f@Fixture{..} <- setup
@@ -189,7 +189,7 @@ test_executeJustBeforeExpirySucceeds = script do
   pure ()
 
 -- | An operation executes at most once: the execute choice archives it and
--- the successor drops it from the pending list. INV-4.
+-- the successor drops it from the pending list.
 test_operationExecutesOnce : Script ()
 test_operationExecutesOnce = script do
   f@Fixture{..} <- setup
@@ -199,7 +199,7 @@ test_operationExecutesOnce = script do
   submitMustFail executor do
     exerciseCmd (opOf op) Operation_Execute with actor = executor, target = targetOf t2
 
--- | Only an executor named on the operation may execute. INV-9.
+-- | Only an executor named on the operation may execute.
 test_onlyNamedExecutorsMayExecute : Script ()
 test_onlyNamedExecutorsMayExecute = script do
   f@Fixture{..} <- setup
@@ -211,7 +211,7 @@ test_onlyNamedExecutorsMayExecute = script do
   expectFailure eNotExecutor r2
 
 -- | With `executors = None`, any party that holds the contracts may execute:
--- the open executor. INV-9.
+-- the open executor.
 test_openExecutor : Script ()
 test_openExecutor = script do
   admin <- allocateParty "admin"
@@ -244,7 +244,7 @@ test_onlyTheConsumersProposerMaySchedule = script do
 -------------------------------------------------------
 
 -- | An operation that the admin creates directly, ready at once, is absent
--- from the pending list and is refused with `eNotPending`. INV-8.
+-- from the pending list and is refused with `eNotPending`.
 test_directlyCreatedOperationRefused : Script ()
 test_directlyCreatedOperationRefused = script do
   Fixture{..} <- setup
@@ -259,7 +259,7 @@ test_directlyCreatedOperationRefused = script do
 
 -- | Two treasuries of the same admin with the same policy are told apart by
 -- their pending lists alone: an operation scheduled on one is absent from the
--- other's list, so the other refuses it. INV-5, INV-8.
+-- other's list, so the other refuses it.
 test_operationBoundToItsTarget : Script ()
 test_operationBoundToItsTarget = script do
   f@Fixture{..} <- setup
@@ -274,7 +274,7 @@ test_operationBoundToItsTarget = script do
 
 -- | The binding holds across the lineage: after other operations reshape the
 -- treasury, the pending operation still applies on the latest successor and
--- on no earlier contract. INV-5.
+-- on no earlier contract.
 test_bindingFollowsTheLineage : Script ()
 test_bindingFollowsTheLineage = script do
   f@Fixture{..} <- setup
@@ -294,7 +294,7 @@ test_bindingFollowsTheLineage = script do
 
 -- | An operation scheduled by another admin's treasury carries the other
 -- admin's signature, so exercising `Timelock_Apply` under this treasury's
--- authority fails. INV-5, INV-8.
+-- authority fails.
 test_operationFromAnotherAdminRejected : Script ()
 test_operationFromAnotherAdminRejected = script do
   Fixture{..} <- setup
@@ -310,7 +310,7 @@ test_operationFromAnotherAdminRejected = script do
     exerciseCmd (opOf forged) Operation_Execute with actor = executor, target = targetOf treasury
 
 -- | Two pending operations survive each other's application: the second
--- executes on the treasury the first produced. INV-5.
+-- executes on the treasury the first produced.
 test_operationSurvivesTargetStateChange : Script ()
 test_operationSurvivesTargetStateChange = script do
   f@Fixture{..} <- setup
@@ -343,7 +343,7 @@ test_twoOperationsAtTheSameInstant = script do
   t.limit === 30.0
 
 -- | An operation with a signatory outside the timelock's signatories is
--- refused for every actor, including an executor who is that signatory. INV-5.
+-- refused for every actor, including an executor who is that signatory.
 test_operationSignatoryOutsideTheTimelockRejected : Script ()
 test_operationSignatoryOutsideTheTimelockRejected = script do
   admin <- allocateParty "admin"
@@ -366,7 +366,7 @@ test_operationSignatoryOutsideTheTimelockRejected = script do
 
 -- | An `apply` or `unschedule` that keeps the operation in the pending list is
 -- refused. The check detects a mis-wired method; the archive before `apply`
--- already prevents a second execution. INV-4.
+-- already prevents a second execution.
 test_applyRetainingTheOperationFails : Script ()
 test_applyRetainingTheOperationFails = script do
   admin <- allocateParty "admin"
@@ -386,7 +386,7 @@ test_applyRetainingTheOperationFails = script do
   expectFailure ePendingMismatch r2
 
 -- | An `apply` or `unschedule` that removes another operation's entry is
--- refused, so a mis-wired method cannot strand a pending operation. INV-4.
+-- refused, so a mis-wired method cannot strand a pending operation.
 test_methodDroppingAnotherEntryFails : Script ()
 test_methodDroppingAnotherEntryFails = script do
   admin <- allocateParty "admin"
@@ -425,7 +425,7 @@ test_cancelledOperationCannotExecute = script do
   submitMustFail executor do
     exerciseCmd (opOf op) Operation_Execute with actor = executor, target = targetOf t2
 
--- | Only a canceller named on the operation may cancel. INV-9.
+-- | Only a canceller named on the operation may cancel.
 test_onlyNamedCancellersMayCancel : Script ()
 test_onlyNamedCancellersMayCancel = script do
   f@Fixture{..} <- setup
@@ -436,7 +436,7 @@ test_onlyNamedCancellersMayCancel = script do
   pure ()
 
 -- | Cleanup is refused while the operation can still execute, and accepted once
--- it has expired. INV-3.
+-- it has expired.
 test_cleanupOnlyAfterExpiry : Script ()
 test_cleanupOnlyAfterExpiry = script do
   f@Fixture{..} <- setup
@@ -545,7 +545,7 @@ test_configChangeCancel = script do
   submitMustFail executor do
     exerciseCmd (opOf op) Operation_Execute with actor = executor, target = targetOf t2
 
--- | An expired config change is cleaned up, and only after expiry. INV-3.
+-- | An expired config change is cleaned up, and only after expiry.
 test_configChangeCleanupAfterExpiry : Script ()
 test_configChangeCleanupAfterExpiry = script do
   Fixture{..} <- setup
@@ -565,7 +565,7 @@ test_configChangeCleanupAfterExpiry = script do
 -------------------------------------------------------
 
 -- | The protected template refuses an invalid policy at creation, through
--- `isValidConfig` in its `ensure` clause. INV-7.
+-- `isValidConfig` in its `ensure` clause.
 test_treasuryWithInvalidPolicyIsRefused : Script ()
 test_treasuryWithInvalidPolicyIsRefused = script do
   admin <- allocateParty "admin"
@@ -577,7 +577,7 @@ test_treasuryWithInvalidPolicyIsRefused = script do
       config = TimelockConfig with minDelay = days 1, gracePeriod = Some (hours 0)
 
 -- | A config change to a stillborn policy is refused when it is scheduled,
--- because the consumer's schedule choice validates the new policy. INV-7.
+-- because the consumer's schedule choice validates the new policy.
 test_configChangeToInvalidPolicyIsRefused : Script ()
 test_configChangeToInvalidPolicyIsRefused = script do
   Fixture{..} <- setup
@@ -591,7 +591,7 @@ test_configChangeToInvalidPolicyIsRefused = script do
 -------------------------------------------------------
 
 -- | The views are readable by every stakeholder of the operation and by nobody
--- else. INV-6.
+-- else.
 test_viewVisibilityFollowsTheTemplate : Script ()
 test_viewVisibilityFollowsTheTemplate = script do
   f@Fixture{..} <- setup
