@@ -88,11 +88,17 @@ tolerance, one minute by default.
   `gracePeriod` of `T` or less can let another party remove an operation
   before an executor can run it. `isValidConfig` accepts any positive
   `gracePeriod`; choose one well above `T` plus the executor's submission
-  latency.
+  latency. Under the default one-minute tolerance, a `gracePeriod` of
+  minutes is unsafe; measure it in hours or days.
 - `scheduleAfter` computes `readyAt` from the scheduling transaction's ledger time.
   Its `getTime` call fixes that timestamp during preparation.
   It does not eliminate clock skew or guarantee an exact record-time delay.
   Use `scheduleAt` for workflows that need a longer preparation window.
+- `scheduleAt` holds the bound `ledger time <= readyAt - minDelay`. A
+  `readyAt` of exactly now plus `minDelay`, chosen while preparing the
+  schedule, fails once ledger time passes the preparation instant. Request a
+  `readyAt` with deliberate slack over the minimum, and show the proposer
+  the latest time at which the submission stays valid.
 - `Time` arithmetic near the representable bounds can abort the transaction.
   A schedule that overflows fails before an operation is created.
 

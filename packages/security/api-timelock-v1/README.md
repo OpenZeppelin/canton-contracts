@@ -164,6 +164,13 @@ template LimitChange
         cancellers = [proposer, admin]
 ```
 
+One template per kind fits operations whose executors, cancellers,
+signatories, or visibility differ. Operations that share all of those can
+share one template whose payload is a variant, such as
+`data Action = SetLimit Decimal | SetPolicy TimelockConfig`, with `apply`
+matching on the payload instead of the template. Both shapes keep the
+parameters typed and committed at scheduling time.
+
 **4. Schedule from a consuming choice on the timelock template.** The
 choice's controller is your proposer authority. Validate the parameters,
 then call `scheduleAt`, which refuses a `readyAt` closer than `minDelay`. The
@@ -332,8 +339,24 @@ An interface query also returns operations that were created directly and
 have no pending entry. Match the results against the canonical timelock's
 `TimelockView.pending` before presenting them as scheduled operations.
 
+An operation that leaves the active set did not necessarily execute:
+execution, cancellation, cleanup, and a direct archive by its signatories all
+archive it. The lifecycle choices are nonconsuming, so the timelock's
+observers see the archive and the successor, not which choice ran. Tell the
+outcomes apart from the exercise events on the operation, from the successor
+timelock's state, or from a receipt that your `apply` creates for the
+parties that need the answer.
+
 ## Scope and security caveats
 
+- The component is delayed governance over consumer-held state. The frozen
+  choices carry no execution-time inputs: `Operation_Execute` takes the actor
+  and the current timelock alone, so an operation's parameters are committed
+  on it at scheduling time, and the state `apply` reads lives on contracts
+  the timelock template records, as `target` does in the example. A workflow
+  that needs inputs presented at execution, such as asset ids or a
+  credential, writes its own choice on the timelock template with
+  `takePending` and `requireReady`, or waits for a later API generation.
 - The delay covers the privileged choices that demand a matured operation.
   Route every privileged choice through an operation; the library has no way
   to detect one that bypasses it.

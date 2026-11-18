@@ -175,8 +175,11 @@ template TreasuryTimelock
 
     -- Recovery: remove pending entries whose operations `admin` archived
     -- directly. The lifecycle functions fetch the operation, so they cannot
-    -- remove such an entry. `admin` is also a canceller, so the choice grants
-    -- no new power: removing a live operation's entry cancels it.
+    -- remove such an entry. Pruning a live operation's entry does not archive
+    -- the operation: the contract stays active but inert, outside every
+    -- lifecycle choice, until `admin` archives it directly. Cancel live
+    -- operations through `Operation_Cancel`; `admin` is a canceller, so this
+    -- choice grants no new power.
     choice TreasuryTimelock_Prune : ContractId TreasuryTimelock
       with
         stale : Timelock.Pending

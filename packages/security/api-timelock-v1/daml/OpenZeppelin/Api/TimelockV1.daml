@@ -79,7 +79,9 @@ data TimelockView = TimelockView with
 data OperationView = OperationView with
     executors : Optional [Party]
       -- ^ The parties that may call `Operation_Execute`. `None` lets any
-      --   party that holds the operation and the timelock execute.
+      --   party that holds the operation and the timelock execute. `Some []`
+      --   names no executor: the operation can only be cancelled, cleaned up
+      --   after expiry, or archived by its signatories.
     cancellers : [Party]
       -- ^ The parties that may call `Operation_Cancel`.
   deriving (Eq, Show)
