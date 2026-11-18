@@ -2,9 +2,10 @@
 -- each consumer addition: the auditor sees every contract, funding and
 -- payouts run `MyHolding_Spend` while returns do not, a late acceptance
 -- creates a `MyHolding`, iteration successors are `MyAllocation`s, a frozen
--- holding cannot fund any workflow,
+-- holding cannot fund any workflow or be merged or split,
 -- the pause switch blocks the factories, mint offers, and burns, the fee
--- leg pays the treasury and exempts burns, the
+-- leg pays the treasury and exempts burns, merges and splits bypass both
+-- the pause and the fee, the
 -- executor allowlist is enforced, roles are separate, expired funding is
 -- reclaimed, and a foreign holding or allocation is refused.
 module OpenZeppelin.Examples.Token.Cip112.Custom.Test where
@@ -847,3 +848,88 @@ testExpireTransferInstructionsRefusesOtherRegistry = do
   mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs admin) do
     exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
       instructionCids = [fromInterfaceContractId @MyTransferInstruction instrCid]
+
+-- Rebalancing
+--------------
+
+mergeCmd : ContractId HoldingV2.Holding -> [ContractId HoldingV2.Holding] -> Commands (ContractId HoldingV2.Holding)
+mergeCmd cid inputs = exerciseCmd (fromInterfaceContractId @MyHolding cid) MyHolding_Merge with inputHoldingCids = inputs
+
+splitCmd : ContractId HoldingV2.Holding -> [Decimal] -> Commands [ContractId HoldingV2.Holding]
+splitCmd cid amounts = exerciseCmd (fromInterfaceContractId @MyHolding cid) MyHolding_Split with amounts
+
+-- | A merge or split recreates holdings through `createHolding`, which
+-- would drop the freeze. So a frozen holding can be neither merged into,
+-- merged as an input (its spend refuses it), nor split. Once unfrozen, the
+-- same merge goes through, the inputs run the spend, and the merged holding
+-- is not frozen.
+testFrozenHoldingCannotRebalance : Script ()
+testFrozenHoldingCannotRebalance = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  other <- mint app alice 5.0
+  frozenCid <- submit (actAs complianceOfficer) do
+    exerciseCmd (fromInterfaceContractId @MyHolding aliceTok) MyHolding_Freeze
+  let frozenIface = toInterfaceContractId @HoldingV2.Holding frozenCid
+  mustFailWith "holding is frozen" (actAs alice) (mergeCmd frozenIface [other])
+  mustFailWith "holding is frozen" (actAs alice) (mergeCmd other [frozenIface])
+  mustFailWith "holding is frozen" (actAs alice) (splitCmd frozenIface [4.0, 6.0])
+  thawedCid <- submit (actAs complianceOfficer) do exerciseCmd frozenCid MyHolding_Unfreeze
+  (mergedCid, tree) <- submitResultAndTree (actAs alice)
+    (mergeCmd other [toInterfaceContractId @HoldingV2.Holding thawedCid])
+  countSpends tree === 1
+  Some merged <- queryContractId alice (fromInterfaceContractId @MyHolding mergedCid)
+  merged.holding.amount === 15.0
+  merged.frozen === False
+  merged.roles.auditor === auditor
+
+-- | Merges and splits do not go through the rules contract, so the pause
+-- does not stop them and they pay no fee, while a self-transfer for the
+-- same rebalance is paused and charged. The auditor is an informee of both
+-- events, through `eventObservers`.
+testRebalanceBypassesRegistryPolicy : Script ()
+testRebalanceBypassesRegistryPolicy = do
+  app <- setupWith 100
+  let App{..} = app
+  in1 <- mint app alice 40.0
+  in2 <- mint app alice 60.0
+  paused <- pauseRegistry app
+  mustFailWith "registry is paused" (actAs alice <> discloseMany [paused.rulesDisclosure])
+    (transferCmd paused [alice] (mkTransfer paused alice alice 100.0 [in1, in2]))
+  (mergedCid, mergeTree) <- submitResultAndTree (actAs alice) (mergeCmd in1 [in2])
+  auditorSeesEvents auditor 1 mergeTree
+  (parts, splitTree) <- submitResultAndTree (actAs alice) (splitCmd mergedCid [30.0, 70.0])
+  auditorSeesEvents auditor 1 splitTree
+  length parts === 2
+  balanceSeenBy alice alice >>= (=== [30.0, 70.0])
+  balanceSeenBy admin admin >>= (=== [])
+  -- The same consolidation as a self-transfer pays the fee once unpaused.
+  live <- unpauseRegistry paused
+  _ <- submit (actAs alice <> discloseMany [live.rulesDisclosure])
+    (transferCmd live [alice] (mkTransfer live alice alice 99.0 parts))
+  balanceSeenBy admin admin >>= (=== [0.99])
+
+-- | The merged holding carries the exercised holding's roles, so a merge
+-- refuses an input of other roles: otherwise a holder could move value
+-- away from the auditor and compliance officer it was issued under. A
+-- registry with a new auditor issues holdings that merge only among
+-- themselves.
+testMergeRefusesInputsOfOtherRoles : Script ()
+testMergeRefusesInputsOfOtherRoles = do
+  app@App{..} <- setup
+  newAuditor <- allocateParty "newAuditor"
+  Some rules <- queryContractId admin rulesCid
+  newRulesCid <- submit admin do createCmd rules with roles = rules.roles with auditor = newAuditor
+  Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
+  let reissued = app with rulesCid = newRulesCid; rulesDisclosure = newDisclosure
+  oldTok <- mint app alice 10.0
+  newTok <- mint reissued alice 5.0
+  newTok2 <- mint reissued alice 1.0
+  mustFailWith "input holding carries other roles" (actAs alice) (mergeCmd oldTok [newTok])
+  mustFailWith "input holding carries other roles" (actAs alice) (mergeCmd newTok [oldTok])
+  mergedCid <- submit (actAs alice) (mergeCmd newTok [newTok2])
+  Some merged <- queryContractId alice (fromInterfaceContractId @MyHolding mergedCid)
+  merged.roles.auditor === newAuditor
+  merged.holding.amount === 6.0
+  -- Naming the exercised holding as an input still gets the body's refusal.
+  mustFailWith "merge inputs must be distinct" (actAs alice) (mergeCmd oldTok [oldTok])

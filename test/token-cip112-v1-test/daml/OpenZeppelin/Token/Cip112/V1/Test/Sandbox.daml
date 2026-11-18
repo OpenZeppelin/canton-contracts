@@ -1,6 +1,6 @@
 -- | Sandbox validation for the token package: mint offers, transfers,
--- querying, and burn requests against a real Canton ledger over the Ledger
--- API.
+-- querying, burn requests, and merges and splits against a real Canton
+-- ledger over the Ledger API.
 -- `scripts/check-sandbox.sh` runs each script over gRPC against a static-time
 -- sandbox; the same scripts also run under `dpm test` on the in-memory
 -- ledger.
@@ -14,7 +14,7 @@ import Daml.Script
 
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 
-import OpenZeppelin.Token.Cip112.V1.Holding (TokenHolding)
+import OpenZeppelin.Token.Cip112.V1.Holding (TokenHolding, TokenHolding_Merge(..), TokenHolding_Split(..))
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
 
 -- | Token creation and querying: holdings appear in owner queries, and the
@@ -71,3 +71,20 @@ sandboxMintAndBurn = do
   _ <- submit (actAs admin) (acceptCmd admin requestCid)
   aliceAfter <- holdingAmounts alice
   aliceAfter === []
+
+-- | The account parties rebalance outside the registry: two holdings merge
+-- into one, which then splits into two other amounts.
+sandboxMergeAndSplit : Script ()
+sandboxMergeAndSplit = do
+  Scenario{..} <- setupPrefixed "mergeandsplit-"
+  h1 <- mint admin alice 3.0
+  h2 <- mint admin alice 7.0
+  mergedCid <- submit (actAs alice) do
+    exerciseCmd h1 TokenHolding_Merge with inputHoldingCids = [toInterfaceContractId h2]
+  merged <- holdingAmounts alice
+  merged === [10.0]
+  _ <- submit (actAs alice) do
+    exerciseCmd (fromInterfaceContractId @TokenHolding mergedCid) TokenHolding_Split with amounts = [4.0, 6.0]
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [4.0, 6.0]
+  assertNoLocks alice

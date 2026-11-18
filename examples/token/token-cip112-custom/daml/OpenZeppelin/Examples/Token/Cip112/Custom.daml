@@ -18,10 +18,14 @@
 --   transfer, an allocation, or a burn, and a payout of locked funding runs
 --   the same check, without the workflows knowing what a freeze is.
 --   `returnHolding` stays the pinned archive, so no return path refuses a
---   holding for being frozen. `MyHolding_OwnerUnlock` makes the check
---   itself.
+--   holding for being frozen. `MyHolding_OwnerUnlock`, `MyHolding_Merge`,
+--   and `MyHolding_Split` make the check themselves on the holding they
+--   are exercised on; a merge's other inputs go through `fundHolding`
+--   and must carry the exercised holding's roles.
 -- - A pause switch on the registry. A template field plus two choices,
 --   checked before each factory and the mint offer delegate to the workflow.
+--   Merges and splits do not read the rules contract, so they run while the
+--   registry is paused and pay no fee.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
 --   account. The factory composes two workflow calls: a one-step fee
 --   transfer, then the main transfer funded by the fee leg's change.
@@ -150,7 +154,39 @@ template MyHolding with
       controller accountParties holding.instrumentId.admin holding.account
       do
         require "holding is frozen" (not frozen)
-        holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
+        holdingOwnerUnlockImpl (ops this) (toInterfaceContractId self) holding
+
+    -- | Refused while frozen, for the same reason as the owner unlock: the
+    -- merged holding comes from `createHolding`, so merging a frozen holding
+    -- would unfreeze it. The other inputs go through `fundHolding`, whose
+    -- spend refuses a frozen one. Every input must carry this holding's
+    -- roles: the merged holding carries them, so merging a holding of other
+    -- roles would move its value away from its auditor and compliance
+    -- officer. No operation reads the context.
+    choice MyHolding_Merge : ContractId HoldingV2.Holding
+      with
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+      controller accountParties holding.instrumentId.admin holding.account
+      do
+        require "holding is frozen" (not frozen)
+        -- A foreign input fetches as `None` and the spend refuses it. The
+        -- exercised holding is already archived; the body refuses it as an
+        -- input.
+        forA_ (filter (/= toInterfaceContractId self) inputHoldingCids) $ \cid -> do
+          fetched <- fetchFromInterface @MyHolding cid
+          forA_ fetched $ \(_, input) ->
+            require "input holding carries other roles" (input.roles == roles)
+        holdingMergeImpl (ops this) emptyChoiceContext (toInterfaceContractId self) holding inputHoldingCids
+
+    -- | Refused while frozen: every part comes from `createHolding`, so
+    -- splitting a frozen holding would unfreeze it.
+    choice MyHolding_Split : [ContractId HoldingV2.Holding]
+      with
+        amounts : [Decimal]
+      controller accountParties holding.instrumentId.admin holding.account
+      do
+        require "holding is frozen" (not frozen)
+        holdingSplitImpl (ops this) (toInterfaceContractId self) holding amounts
 
     interface instance HoldingV2.Holding for MyHolding where
       view = holding
@@ -357,6 +393,9 @@ createAllocation rules s =
 -- | One class so every template builds its ops the same way.
 class HasOps t where
   ops : t -> HoldingOps
+
+instance HasOps MyHolding where
+  ops this = myOps this.holding.instrumentId.admin this.roles
 
 instance HasOps MyTransferInstruction where
   ops this = myOps this.state.transfer.instrumentId.admin this.roles
