@@ -109,15 +109,15 @@ template PolicyHolding with
 
     choice PolicyHolding_OwnerUnlock : ContractId HoldingV2.Holding
       controller accountParties holding.instrumentId.admin holding.account
-      do holdingOwnerUnlockImpl (policyOps policy) (toInterfaceContractId self) holding
+      do holdingOwnerUnlockImpl (policyOps policy) (toInterfaceContractId self) holding this
 
     interface instance HoldingV2.Holding for PolicyHolding where
       view = holding
 
 -- | Events are not under test here, so emission does nothing.
-policyOps : Policy -> HoldingOps
+policyOps : Policy -> HoldingOps PolicyHolding
 policyOps policy = HoldingOps with
-    createHolding = \v -> do
+    createHolding = \_ v -> do
       now <- getTime
       toInterfaceContractId <$> create PolicyHolding with holding = v; policy; createdAt = now
     fundHolding = viaChoice PolicyHolding_Fund
@@ -129,12 +129,14 @@ policyOps policy = HoldingOps with
 viaChoice
   : HasExercise PolicyHolding c HoldingV2.HoldingView
   => (ChoiceContext -> c) -> ChoiceContext -> ContractId HoldingV2.Holding
-  -> Update HoldingV2.HoldingView
+  -> Update (HoldingV2.HoldingView, PolicyHolding)
 viaChoice mkChoice context cid = do
   fetched <- fetchFromInterface @PolicyHolding cid
   case fetched of
     None -> fail "holding is not a PolicyHolding"
-    Some (tcid, _) -> exercise tcid (mkChoice context)
+    Some (tcid, h) -> do
+      v <- exercise tcid (mkChoice context)
+      pure (v, h)
 
 template PolicyInstruction with
     state : TransferInstructionState

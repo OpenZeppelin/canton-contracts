@@ -80,9 +80,12 @@ template MyEventLog with
 
 -- | Built inside every choice body from the template's own fields. The
 -- closure over `roles` is how consumer fields reach `createHolding` without
--- the workflows knowing about them. New holdings are never frozen. No
--- operation reads the choice context.
-myOps : Party -> AppRoles -> HoldingOps
+-- the workflows knowing about them. No operation reads the choice context.
+--
+-- `createHolding` creates every holding unfrozen. Every source is unfrozen
+-- too: `MyHolding_Spend`, `MyHolding_Freeze`, and `MyHolding_OwnerUnlock`
+-- keep a frozen holding out of every path that re-creates one.
+myOps : Party -> AppRoles -> HoldingOps MyHolding
 myOps admin roles =
     (holdingOpsFor @MyHolding createMyHolding withMyEventLog auditorObserves)
       with
@@ -93,7 +96,7 @@ myOps admin roles =
         fundHolding = const spend
         deliverHolding = const spend
   where
-    createMyHolding v = toInterfaceContractId <$> create MyHolding with holding = v; roles; frozen = False
+    createMyHolding _sources v = toInterfaceContractId <$> create MyHolding with holding = v; roles; frozen = False
     withMyEventLog emit = do
       cid <- create MyEventLog with admin
       emit (toInterfaceContractId cid)
@@ -106,7 +109,9 @@ myOps admin roles =
       fetched <- fetchFromInterface @MyHolding cid
       case fetched of
         None -> fail "holding is not a MyHolding"
-        Some (tcid, _) -> exercise tcid MyHolding_Spend
+        Some (tcid, h) -> do
+          v <- exercise tcid MyHolding_Spend
+          pure (v, h)
 
 -- Holding
 ----------
@@ -154,13 +159,13 @@ template MyHolding with
         create this with frozen = False
 
     -- | Refused while frozen: the workflow recreates the holding through
-    -- `createHolding`, which would drop the freeze. Any consumer choice that
+    -- `createHolding`, which creates it unfrozen. Any consumer choice that
     -- recreates a holding has to make the same check.
     choice MyHolding_OwnerUnlock : ContractId HoldingV2.Holding
       controller accountParties holding.instrumentId.admin holding.account
       do
         require "holding is frozen" (not frozen)
-        holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
+        holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding this
 
     interface instance HoldingV2.Holding for MyHolding where
       view = holding
@@ -375,7 +380,7 @@ createAllocation rules s =
 
 -- | One class so every template builds its ops the same way.
 class HasOps t where
-  ops : t -> HoldingOps
+  ops : t -> HoldingOps MyHolding
 
 instance HasOps MyTransferInstruction where
   ops this = myOps this.state.transfer.instrumentId.admin this.roles

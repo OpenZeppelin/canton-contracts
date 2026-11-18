@@ -86,6 +86,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   one operation runs only on that operation's paths. Each receives the
   exercising choice's `ChoiceContext` and the holding id. `holdingOpsFor @T`
   sets all three to `consumeByArchive @T`.
+- `HoldingOps h` takes the owner's per-holding state as a type parameter.
+  The consumption operations return each consumed holding's view and state,
+  and `createHolding` receives the states of the holdings that fund the new
+  one, so a consumer template field can survive re-creation on transfers,
+  allocations, returns, and owner unlocks. `consumeByArchive @T` returns the
+  archived `T`, `holdingOpsFor @T` builds a `HoldingOps T`, and
+  `holdingOwnerUnlockImpl` takes the exercised holding's state.
 
 ### `openzeppelin-token-cip112-v1`
 

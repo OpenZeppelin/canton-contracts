@@ -38,7 +38,7 @@ template TokenAllocation with
       controller state.allocation.admin
       do allocationGcImpl state
 
-allocationOps : AllocationState -> HoldingOps
+allocationOps : AllocationState -> HoldingOps TokenHolding
 allocationOps s = defaultHoldingOps s.allocation.admin
 
 -- | Iteration successors are the same template with a new payload.

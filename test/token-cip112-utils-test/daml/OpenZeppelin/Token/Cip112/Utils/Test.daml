@@ -104,7 +104,7 @@ template Harness with
     nonconsuming choice Harness_ConsumeByArchive : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; actors : [Party]
       controller actors
-      do consumeByArchive @UnitHolding cid
+      do fst <$> consumeByArchive @UnitHolding cid
 
     nonconsuming choice Harness_PinAllocation : AllocationV2.AllocationView
       with cid : ContractId AllocationV2.Allocation; actors : [Party]
@@ -114,12 +114,12 @@ template Harness with
     nonconsuming choice Harness_ConsumeLocked : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
       controller actors
-      do consumeLockedHolding unitOps emptyChoiceContext admin expectedAccount cid
+      do fst <$> consumeLockedHolding unitOps emptyChoiceContext admin expectedAccount cid
 
     nonconsuming choice Harness_ConsumeUnlocked : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
       controller actors
-      do consumeUnlockedHolding unitOps emptyChoiceContext admin expectedAccount cid
+      do fst <$> consumeUnlockedHolding unitOps emptyChoiceContext admin expectedAccount cid
 
     nonconsuming choice Harness_UnlockHoldings : ()
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
@@ -135,9 +135,9 @@ template Harness with
 
 -- | The operations the harness runs the bodies with. Events are not under
 -- test here, so emission does nothing.
-unitOps : HoldingOps
+unitOps : HoldingOps UnitHolding
 unitOps = holdingOpsFor @UnitHolding
-  (\v -> toInterfaceContractId <$> create UnitHolding with holding = v)
+  (\_ v -> toInterfaceContractId <$> create UnitHolding with holding = v)
   (\_ -> pure ())
   (const [])
 
@@ -405,8 +405,9 @@ testEventObserversFor = do
   provider <- allocateParty "provider"
   auditor <- allocateParty "auditor"
   let account = HoldingV2.Account with owner = Some alice; provider = Some provider; id = "custody"
+      ops : HoldingOps ()
       ops = HoldingOps with
-        createHolding = \_ -> fail "unused"
+        createHolding = \_ _ -> fail "unused"
         fundHolding = \_ _ -> fail "unused"
         deliverHolding = \_ _ -> fail "unused"
         returnHolding = \_ _ -> fail "unused"
