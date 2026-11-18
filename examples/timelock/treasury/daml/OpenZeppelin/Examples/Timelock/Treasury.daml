@@ -100,6 +100,12 @@ template Treasury
         t <- create this with balance = balance - amount
         pure (t, payout)
 
+-- | The most operations the schedule choices admit at once. The cap is an
+-- admission check in the schedule choices alone, so a full list still
+-- permits applying, cancelling, cleaning up, and pruning.
+maxPending : Int
+maxPending = 8
+
 -- | The timelock. `admin` signs it and is the authority that applies
 -- operations, so every operation created in one of its choices carries
 -- `admin`'s signature. `pending` lists the operations the schedule choices
@@ -159,6 +165,7 @@ template TreasuryTimelock
       controller proposer
       do
         assertMsg "Treasury: the limit must be zero or greater" (newLimit >= 0.0)
+        assertMsg "Treasury: the pending list is full" (length pending < maxPending)
         s <- Timelock.scheduleAt config readyAt
         op <- create LimitChange with
           admin; proposer; executor; newLimit
@@ -188,6 +195,7 @@ template TreasuryTimelock
       controller proposer
       do
         Timelock.requireValidConfig newConfig
+        assertMsg "Treasury: the pending list is full" (length pending < maxPending)
         s <- Timelock.scheduleAt config readyAt
         op <- create ConfigChange with
           admin; proposer; executor; newConfig

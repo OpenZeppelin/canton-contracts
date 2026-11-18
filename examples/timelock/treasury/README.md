@@ -28,7 +28,8 @@ policy change only through timelocked operations.
 - `LimitChange` and `ConfigChange`, one operation template per operation
   kind, each implementing `Operation` and `Timelocked`.
 - `TreasuryTimelock_ScheduleLimit` and `TreasuryTimelock_ScheduleConfig`, the
-  consumer-written schedule choices. They call `scheduleAt` and `addPending`.
+  consumer-written schedule choices. They call `scheduleAt` and `addPending`,
+  and admit at most `maxPending` pending operations.
 - `TreasuryTimelock_Prune`, a recovery choice that removes pending entries of
   operations that `admin` archived directly.
 - Self-administration: a change to the delay policy waits out the current

@@ -21,6 +21,15 @@ currentConfig p t = do
   Some tl <- queryContractId p t
   pure tl.target
 
+-- | Schedule `n` limit changes of 1.0 ready at `readyAt`, chaining successors.
+scheduleN : Party -> Time -> Int -> ContractId TreasuryTimelock -> Script (ContractId TreasuryTimelock)
+scheduleN proposer readyAt n t
+  | n <= 0 = pure t
+  | otherwise = do
+      (t', _) <- submit proposer do
+        exerciseCmd t TreasuryTimelock_ScheduleLimit with newLimit = 1.0, readyAt
+      scheduleN proposer readyAt (n - 1) t'
+
 -- | A limit change that waits out its delay, one that a proposer cancels, one
 -- that expires, and a delay-policy change that goes through the same timelock.
 demo : Script ()
@@ -212,6 +221,35 @@ demo = script do
     exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
       newLimit = 600.0, readyAt = addRelTime now (hours 6)
 
+  pure ()
+
+-- | The schedule choices admit at most `maxPending` operations. The cap is an
+-- admission check: a full list still permits cancellation, which frees a slot.
+test_pendingCap : Script ()
+test_pendingCap = script do
+  admin <- allocateParty "admin"
+  proposer <- allocateParty "proposer"
+  executor <- allocateParty "executor"
+  t0 <- getTime
+  let config = Timelock.TimelockConfig with minDelay = days 1, gracePeriod = None
+  cfg <- submit admin do
+    createCmd TreasuryConfig with admin; executor; treasuryId = "operations"; limit = 100.0
+  timelock <- submit admin do
+    createCmd TreasuryTimelock with
+      admin; proposer; executor; treasuryId = "operations"; config; pending = []; target = cfg
+  (timelock, firstOp) <- submit proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = 1.0, readyAt = addRelTime t0 (days 2)
+  timelock <- scheduleN proposer (addRelTime t0 (days 2)) (maxPending - 1) timelock
+  submitMustFail proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = 1.0, readyAt = addRelTime t0 (days 2)
+  timelock <- fromInterfaceContractId @TreasuryTimelock <$> submit proposer do
+    exerciseCmd (toInterfaceContractId @Timelock.Operation firstOp)
+      Timelock.Operation_Cancel with actor = proposer, target = toInterfaceContractId timelock
+  _ <- submit proposer do
+    exerciseCmd timelock TreasuryTimelock_ScheduleLimit with
+      newLimit = 1.0, readyAt = addRelTime t0 (days 2)
   pure ()
 
 -- | `admin` archives a payout and the treasury.

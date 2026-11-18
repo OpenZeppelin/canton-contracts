@@ -368,10 +368,17 @@ have no pending entry. Match the results against the canonical timelock's
   template whose parameters list several effects, applied atomically in one
   choice body. Ordering between operations is a precondition on the governed
   state.
-- The pending list has no size bound, and every schedule, apply, and drop
-  copies and scans it. A proposer can fill it with operations whose
-  `readyAt` lies far in the future. Cap the list in your schedule choice, or
-  set a `gracePeriod` so that cleanup can remove old entries.
+- The pending list has no size bound in the library, and every schedule,
+  apply, and drop copies and scans it. A proposer can fill it with operations
+  whose `readyAt` lies far in the future. A `gracePeriod` does not bound the
+  list: expiry is `readyAt + gracePeriod`, so a far-future operation stays
+  pending through its whole wait, and grace does not limit how many
+  operations are admitted meanwhile. Cap the list's size in your schedule
+  choices, as the example's `maxPending` does, and bound `readyAt` to a
+  scheduling horizon when far-future operations have no use. Keep both as
+  admission checks, so that a full list still permits applying, cancelling,
+  and cleaning up. Cancellation and a finite `gracePeriod` then shrink a
+  list the cap admitted.
 - Every stakeholder of an operation sees its parameters. Keep sensitive
   parameters off an operation that many parties observe.
 - `Timelock_Apply` and `Timelock_Drop` are nonconsuming, and the lifecycle
