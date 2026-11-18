@@ -17,6 +17,10 @@ policy change only through timelocked operations.
   operations, `TreasuryConfig` holds the spending limit, and `Treasury` holds
   the balance. Payments consume only the treasury, so they do not contend
   with governance.
+- A shared `treasuryId` on the three contracts. `Treasury_Pay` refuses a
+  config whose identifier names another treasury, so configs that the same
+  signatories issued for sibling treasuries cannot substitute for each
+  other.
 - The `interface instance Timelock for TreasuryTimelock`: the view, the
   `apply` and `unschedule` methods, and the `applyImpl` and `dropImpl`
   methods, which call `applyOperation` and `dropOperation`.
@@ -38,9 +42,12 @@ and a policy change.
 
 `admin` is the sole signatory of the three contracts and the `authority` of
 the timelock. `proposer` schedules, `executor` executes, and `proposer` and
-`admin` cancel. A sole signatory can create a config or a timelock outside
-the lineage, so the delay binds the proposer and the executor but not
-`admin`. Use several signatories to bind the delay on the signatories too.
+`admin` cancel. The signatories issue one config per `treasuryId` at
+deployment. A sole signatory can still create a config with this treasury's
+`treasuryId` outside the lineage, so the delay binds the proposer and the
+executor but not `admin`. Use several signatories to bind the delay on the
+signatories too: a duplicate config for the same `treasuryId` then needs
+every signatory, so one signatory that refuses blocks it.
 
 ## Build and run
 

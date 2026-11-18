@@ -36,12 +36,12 @@ demo = script do
         minDelay = days 2
         gracePeriod = Some (days 7)
   cfg <- submit admin do
-    createCmd TreasuryConfig with admin; executor; limit = 100.0
+    createCmd TreasuryConfig with admin; executor; treasuryId = "operations"; limit = 100.0
   timelock <- submit admin do
     createCmd TreasuryTimelock with
-      admin; proposer; executor; config; pending = []; target = cfg
+      admin; proposer; executor; treasuryId = "operations"; config; pending = []; target = cfg
   treasury <- submit admin do
-    createCmd Treasury with admin; balance = 10000.0
+    createCmd Treasury with admin; treasuryId = "operations"; balance = 10000.0
 
   -- The protected operation: a payment above the limit is refused.
   (treasury, _) <- submit admin do
@@ -53,15 +53,24 @@ demo = script do
   -- fetch succeeds and the signatory check refuses it.
   other <- allocateParty "other"
   foreign <- submit other do
-    createCmd TreasuryConfig with admin = other; executor = admin; limit = 1000.0
+    createCmd TreasuryConfig with admin = other; executor = admin; treasuryId = "operations"; limit = 1000.0
   submitMustFail admin do
     exerciseCmd treasury Treasury_Pay with configCid = foreign, recipient = supplier, amount = 250.0
 
+  -- A config that the same signatories honestly issued for another treasury
+  -- is refused: the `treasuryId` check binds the payment to this treasury's
+  -- scope, so sibling configs cannot substitute for each other.
+  grantsCfg <- submit admin do
+    createCmd TreasuryConfig with admin; executor; treasuryId = "grants"; limit = 1000.0
+  submitMustFail admin do
+    exerciseCmd treasury Treasury_Pay with configCid = grantsCfg, recipient = supplier, amount = 250.0
+  submit admin do archiveCmd grantsCfg
+
   -- The sole signatory is not bound: a config that `admin` creates directly
-  -- passes the signatory check. The application identifies the canonical
-  -- config, which is the one the timelock records.
+  -- with this treasury's `treasuryId` passes both checks. The application
+  -- identifies the canonical config, which is the one the timelock records.
   direct <- submit admin do
-    createCmd TreasuryConfig with admin; executor; limit = 1000.0
+    createCmd TreasuryConfig with admin; executor; treasuryId = "operations"; limit = 1000.0
   (treasury, _) <- submit admin do
     exerciseCmd treasury Treasury_Pay with configCid = direct, recipient = supplier, amount = 250.0
   canonical <- currentConfig admin timelock
@@ -210,9 +219,9 @@ test_adminArchives = script do
   executor <- allocateParty "executor"
   supplier <- allocateParty "supplier"
   cfg <- submit admin do
-    createCmd TreasuryConfig with admin; executor; limit = 100.0
+    createCmd TreasuryConfig with admin; executor; treasuryId = "operations"; limit = 100.0
   treasury <- submit admin do
-    createCmd Treasury with admin; balance = 1000.0
+    createCmd Treasury with admin; treasuryId = "operations"; balance = 1000.0
   (treasury, payout) <- submit admin do
     exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 10.0
   submit admin do archiveCmd payout

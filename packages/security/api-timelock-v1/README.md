@@ -70,13 +70,16 @@ schedule choices, and the methods.
 
 **1. Write the governed config.** Give it no choices, so that only the
 timelock replaces it. Make the executors observers, because the execute
-transaction archives it:
+transaction archives it. Give it the identifier of the resource it governs,
+so the business choice can refuse a config issued for another resource; the
+successors a matured operation creates preserve the identifier:
 
 ```daml
 template TreasuryConfig
   with
     admin : Party
     executor : Party
+    treasuryId : Text
     limit : Decimal
   where
     signatory admin
@@ -85,7 +88,8 @@ template TreasuryConfig
 ```
 
 **2. Implement `Timelock` on the timelock template.** Add a `TimelockConfig`
-field, a `Pending` field, and the id of the current governed config. Check the
+field, a `Pending` field, the id of the current governed config, and the
+resource identifier. Check the
 policy with `isValidConfig` in the `ensure` clause, so that the template
 refuses a policy that cannot schedule operations. The view names the
 signatory that applies operations. `apply` dispatches on the operation's
@@ -101,6 +105,7 @@ template TreasuryTimelock
     admin : Party
     proposer : Party
     executor : Party
+    treasuryId : Text
     config : TimelockConfig
     pending : Pending
     target : ContractId TreasuryConfig
@@ -179,7 +184,10 @@ successor records the operation as pending:
 
 **5. Read the governed config in the business choices.** Take the config id
 as a choice argument, fetch it, and check that its signatories are the
-business contract's signatories:
+business contract's signatories and that it carries the business contract's
+resource identifier. The signatory comparison authenticates the issuers; the
+identifier refuses a config that the same signatories issued for another
+resource:
 
 ```daml
     choice Treasury_Pay : (ContractId Treasury, ContractId Payout)
@@ -190,7 +198,8 @@ business contract's signatories:
       controller admin
       do
         cfg <- fetch configCid
-        assertMsg "the config has other signatories" (signatory cfg == signatory this)
+        assertMsg "the config has other signatories" (sort (signatory cfg) == sort (signatory this))
+        assertMsg "the config belongs to another treasury" (cfg.treasuryId == treasuryId)
         assertMsg "amount exceeds the spending limit" (amount <= cfg.limit)
         payout <- create Payout with payer = admin, recipient, amount
         t <- create this with balance = balance - amount
@@ -241,21 +250,27 @@ from the timelock's signatories and the actor only, so a substituted timelock
 cannot use the operation's signatory authority.
 
 The pending list rejects operations created outside the schedule choices.
-It does not bind the governed config. The signatories, acting together, can
-still create a config with other settings, or a second timelock with its own
-config and policy. The signatory check in step 5 accepts both. The delay
-therefore binds a party only when that party cannot create such contracts
-alone:
+It does not bind the governed config: the two checks in step 5 do. The
+signatory comparison authenticates the config's issuers, and the identifier
+binds it to one resource. Without the identifier, configs that the same
+signatories honestly issued for other resources substitute for each other,
+so adding signatories alone does not isolate resources. The signatories,
+acting together, can still create a config with the same identifier and
+other settings, or a second timelock with its own config and policy. The
+delay therefore binds a party only when that party cannot create such
+contracts alone:
 
 - With one signatory, as in the example, the timelock shows the mechanics
   and binds the proposer and the executors, but it does not bind the
   signatory.
-- With several signatories, a config or timelock outside the canonical
-  lineage needs every signatory's authorization, so one signatory that
+- With several signatories, a duplicate config or timelock for the same
+  identifier needs every signatory's authorization, so one signatory that
   refuses blocks it.
 
-Applications must establish a canonical timelock and config lineage and review
-every choice that creates successors.
+Applications must establish a canonical timelock and config lineage: the
+signatories issue one config per identifier at deployment, the application
+treats the identifier as unique by that issuance, and every choice that
+creates successors preserves it.
 
 - A role credential fits in the schedule choice: the choice takes the caller
   and the credential as arguments and verifies them in its body, as

@@ -19,14 +19,21 @@
 -- the timelock and the config. Payments consume only the treasury, so they do
 -- not contend with governance.
 --
+-- The three contracts share a `treasuryId`. `Treasury_Pay` refuses a config
+-- for another treasury, so configs that the same signatories honestly issued
+-- for sibling treasuries cannot substitute for each other. The signatories
+-- issue one config per `treasuryId` at deployment.
+--
 -- `admin` is the sole signatory of all three contracts, so `admin` can create
--- a config or a timelock outside this lineage. The example shows the
+-- a config with this `treasuryId` outside the lineage. The example shows the
 -- mechanics, and binds the proposer and the executor. To bind the delay on
--- the signatories as well, use several signatories, so that one signatory
--- that refuses blocks such a contract.
+-- the signatories as well, use several signatories: a duplicate config for
+-- the same `treasuryId` then needs every signatory, so one signatory that
+-- refuses blocks it.
 module OpenZeppelin.Examples.Timelock.Treasury where
 
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import DA.List (sort)
 import qualified DA.TextMap as TextMap
 
 import qualified OpenZeppelin.Api.TimelockV1 as Timelock
@@ -46,11 +53,13 @@ template Payout
 -- | The settings that matured operations change. The template has no choices:
 -- `TreasuryTimelock` archives it and creates the successor when a limit change
 -- executes. The executor observes it because the execute transaction archives
--- it.
+-- it. `treasuryId` names the treasury the config governs, and every successor
+-- preserves it.
 template TreasuryConfig
   with
     admin : Party
     executor : Party
+    treasuryId : Text
     limit : Decimal
   where
     signatory admin
@@ -59,12 +68,15 @@ template TreasuryConfig
 
 -- | The business state. `Treasury_Pay` reads the spending limit from the
 -- `TreasuryConfig` that the caller passes, and refuses a config whose
--- signatories differ from the treasury's. The check does not identify the
--- canonical config: the application does, as it identifies the canonical
--- treasury.
+-- signatories differ from the treasury's or whose `treasuryId` names another
+-- treasury. The signatories authenticate the issuers, and the identifier
+-- selects this treasury's scope. Within that scope the canonical config is
+-- the one the timelock records, unique because the signatories issue no
+-- duplicate for the same `treasuryId`.
 template Treasury
   with
     admin : Party
+    treasuryId : Text
     balance : Decimal
   where
     signatory admin
@@ -78,7 +90,8 @@ template Treasury
       controller admin
       do
         cfg <- fetch configCid
-        assertMsg "Treasury: the config has other signatories" (signatory cfg == signatory this)
+        assertMsg "Treasury: the config has other signatories" (sort (signatory cfg) == sort (signatory this))
+        assertMsg "Treasury: the config belongs to another treasury" (cfg.treasuryId == treasuryId)
         assertMsg "Treasury: amount exceeds the spending limit" (amount <= cfg.limit)
         payout <- create Payout with payer = admin, recipient, amount
         t <- create this with balance = balance - amount
@@ -90,13 +103,15 @@ template Treasury
 -- created; the library's lifecycle functions accept only those, so an operation
 -- that `admin` creates directly has no effect. `target` is the current
 -- `TreasuryConfig`: `apply` replaces the config and records the successor's
--- id.
+-- id. `treasuryId` names the governed treasury, so the application finds the
+-- canonical timelock for a treasury by this field.
 -- `proposer` schedules; `executor` executes; the proposer and the admin cancel.
 template TreasuryTimelock
   with
     admin : Party
     proposer : Party
     executor : Party
+    treasuryId : Text
     config : Timelock.TimelockConfig
     pending : Timelock.Pending
     target : ContractId TreasuryConfig
