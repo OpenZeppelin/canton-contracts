@@ -114,16 +114,15 @@ template TreasuryTimelock
     interface instance Timelock.Timelock for TreasuryTimelock where
       view = Timelock.TimelockView with authority = admin; config; pending
 
-      apply op pending' = case fromInterface @LimitChange op of
-        Some lc -> do
-          current <- fetch target
-          archive target
-          target' <- create current with limit = lc.newLimit
-          toInterfaceContractId <$> create this with target = target', pending = pending'
-        None -> case fromInterface @ConfigChange op of
-          Some cc ->
+      apply op pending'
+        | Some lc <- fromInterface @LimitChange op = do
+            current <- fetch target
+            archive target
+            target' <- create current with limit = lc.newLimit
+            toInterfaceContractId <$> create this with target = target', pending = pending'
+        | Some cc <- fromInterface @ConfigChange op =
             toInterfaceContractId <$> create this with config = cc.newConfig, pending = pending'
-          None -> failWithStatus eUnknownOperation
+        | otherwise = failWithStatus eUnknownOperation
 
       unschedule pending' = toInterfaceContractId <$> create this with pending = pending'
 
