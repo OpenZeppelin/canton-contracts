@@ -86,6 +86,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   one operation runs only on that operation's paths. Each receives the
   exercising choice's `ChoiceContext` and the holding id. `holdingOpsFor @T`
   sets all three to `consumeByArchive @T`.
+- `settleBatchImpl` takes a selector, given each allocation's view and the
+  batch's choice context, that picks the context its `Allocation_Settle`
+  receives, so a registry can forward each authorizer its own entries. The
+  batch metadata never reaches an allocation.
 
 ### `openzeppelin-token-cip112-v1`
 

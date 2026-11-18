@@ -44,8 +44,10 @@ template TokenRules with
       -- No extra observers: batch participants must not learn about the
       -- other allocations being settled.
       settlementFactory_settleBatchExtraObservers _ = []
+      -- The default operations read no context, so no allocation receives
+      -- any part of the batch's.
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @TokenAllocation) config.admin self arg
+        settleBatchImpl (pinAllocationTo @TokenAllocation) (\_ _ -> emptyChoiceContext) config.admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for TokenRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata

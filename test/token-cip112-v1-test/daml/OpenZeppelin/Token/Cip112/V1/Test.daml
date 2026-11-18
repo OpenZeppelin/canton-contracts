@@ -27,6 +27,7 @@ import OpenZeppelin.Token.Cip112.V1.Allocation
 import OpenZeppelin.Token.Cip112.V1.Holding
 import OpenZeppelin.Token.Cip112.V1.Registry
 import OpenZeppelin.Token.Cip112.V1.Transfer
+import OpenZeppelin.Token.Cip112.V1.Test.AuthorizerContext
 import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (mustFailWith)
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
 
@@ -84,7 +85,8 @@ testFundingEventHiddenFromExecutors = do
 
 -- | The batch's arguments stay with the batch: each authorizer witnesses its
 -- own `Allocation_Settle`, and none carries the batch's metadata, which may
--- describe other authorizers' trades.
+-- describe other authorizers' trades. `TokenRules` forwards no part of the
+-- batch context either, not even an entry keyed for the authorizer.
 testSettleBatchRedactsBatchMeta : Script ()
 testSettleBatchRedactsBatchMeta = do
   s@Scenario{..} <- setup
@@ -92,6 +94,10 @@ testSettleBatchRedactsBatchMeta = do
   aliceAllocCid <- completedCid =<< allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
   bobAllocCid <- completedCid =<< allocate s bob [receiverSide legAliceToBob, senderSide legBobToAlice] []
   let batchMeta = Metadata with values = TextMap.fromList [("venue.example/order-ref.carol-dave", "OTC-7781")]
+      batchContext = ChoiceContext $ TextMap.fromList
+        [ (authorizerKey (basicAccount alice), AV_Text "alice's entry")
+        , (authorizerKey (basicAccount bob), AV_Text "bob's entry")
+        , ("venue.example/batch-only", AV_Text "batch entry") ]
   funding <- allocationDisclosures admin [aliceAllocCid, bobAllocCid]
   tree <- submitTree (actAs app <> discloseMany (rulesDisclosure :: funding)) do
     exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
@@ -100,10 +106,55 @@ testSettleBatchRedactsBatchMeta = do
         transferLegs = [legAliceToBob, legBobToAlice]
         allocations = map nonIteratedAllocation [aliceAllocCid, bobAllocCid]
         actors = [app]
-        extraArgs = emptyExtraArgs with meta = batchMeta
+        extraArgs = ExtraArgs with context = batchContext; meta = batchMeta
   let settles = concatMap allocationSettlesIn tree.rootEvents
   length settles === 2
   forA_ settles $ \settle -> settle.extraArgs === emptyExtraArgs
+
+-- | A selector that keys on the authorizer forwards each `Allocation_Settle`
+-- its own authorizer's entry and nothing else: not the other authorizer's
+-- entry, not an entry keyed for nobody, and not the batch's metadata. An
+-- authorizer the batch context has no entry for receives an empty context.
+testSettleBatchForwardsEachAuthorizerItsOwnEntry : Script ()
+testSettleBatchForwardsEachAuthorizerItsOwnEntry = do
+  s@Scenario{..} <- setup
+  carol <- allocateParty "carol"
+  (factoryCid, factoryDisclosure) <- createAuthorizerContextRules admin
+  aliceInput <- mint admin alice 10.0
+  let legBobToCarol = mkTransferLeg "leg-3" bob carol 1.0
+  aliceAllocCid <- completedCid =<< allocate s alice [senderSide legAliceToBob, receiverSide legBobToAlice] [aliceInput]
+  bobAllocCid <- completedCid =<< allocate s bob
+    [receiverSide legAliceToBob, senderSide legBobToAlice, senderSide legBobToCarol] []
+  carolAllocCid <- completedCid =<< allocate s carol [receiverSide legBobToCarol] []
+  let batchContext = ChoiceContext $ TextMap.fromList
+        [ (authorizerKey (basicAccount alice), AV_Text "alice's entry")
+        , (authorizerKey (basicAccount bob), AV_Text "bob's entry")
+        , ("venue.example/batch-only", AV_Text "batch entry") ]
+      only value = ExtraArgs with
+        context = ChoiceContext with values = TextMap.fromList [(entryKey, AV_Text value)]
+        meta = emptyMetadata
+  funding <- allocationDisclosures admin [aliceAllocCid, bobAllocCid, carolAllocCid]
+  tree <- submitTree (actAs app <> discloseMany (factoryDisclosure :: funding)) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory factoryCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob, legBobToAlice, legBobToCarol]
+        allocations = map nonIteratedAllocation [aliceAllocCid, bobAllocCid, carolAllocCid]
+        actors = [app]
+        extraArgs = ExtraArgs with
+          context = batchContext
+          meta = Metadata with values = TextMap.fromList [("venue.example/order-ref", "OTC-7781")]
+  let settles = concatMap allocationSettlesWithCid tree.rootEvents
+      extraArgsOf cid = (.extraArgs) <$> lookup (fromInterfaceContractId @TokenAllocation cid) settles
+  length settles === 3
+  extraArgsOf aliceAllocCid === Some (only "alice's entry")
+  extraArgsOf bobAllocCid === Some (only "bob's entry")
+  extraArgsOf carolAllocCid === Some emptyExtraArgs
+  -- Alice locked 6 of her 10 and kept 4 as change; the 6 paid her net
+  -- debit. Bob nets 10 - 4 - 1 and locked nothing.
+  holdingAmounts alice >>= (=== [4.0])
+  holdingAmounts bob >>= (=== [5.0])
+  holdingAmounts carol >>= (=== [1.0])
 
 -- | Every `Allocation_Settle` exercised anywhere below a tree event.
 allocationSettlesIn : TreeEvent -> [AllocationV2.Allocation_Settle]

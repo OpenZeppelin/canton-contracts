@@ -1,6 +1,6 @@
 -- | Sandbox validation for the token package: mint offers, transfers,
--- querying, and burn requests against a real Canton ledger over the Ledger
--- API.
+-- querying, burn requests, and what each authorizer of a batch settlement
+-- witnesses, against a real Canton ledger over the Ledger API.
 -- `scripts/check-sandbox.sh` runs each script over gRPC against a static-time
 -- sandbox; the same scripts also run under `dpm test` on the in-memory
 -- ledger.
@@ -10,11 +10,17 @@
 module OpenZeppelin.Token.Cip112.V1.Test.Sandbox where
 
 import DA.Assert ((===))
+import DA.TextMap qualified as TextMap
 import Daml.Script
 
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount, nonIteratedAllocation, receiverSide, senderSide)
 
+import OpenZeppelin.Token.Cip112.V1.Allocation (TokenAllocation)
 import OpenZeppelin.Token.Cip112.V1.Holding (TokenHolding)
+import OpenZeppelin.Token.Cip112.V1.Test.AuthorizerContext
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
 
 -- | Token creation and querying: holdings appear in owner queries, and the
@@ -72,3 +78,72 @@ sandboxMintAndBurn = do
   _ <- submit (actAs admin) (acceptCmd admin requestCid)
   aliceAfter <- holdingAmounts alice
   aliceAfter === []
+
+-- | The contracts a party must and must not witness. Contract ids are
+-- coerced to one type so the list serializes as JSON.
+data Witnessing = Witnessing with
+    party : Party
+    witnessed : [ContractId ()]
+    hidden : [ContractId ()]
+  deriving (Eq, Show)
+
+-- | A batch settlement shows each authorizer its own entry of the batch
+-- context and nothing else. Alice sends Bob 10 TOK for 4 USD through a
+-- factory whose selector keys on the authorizer. The batch context holds an
+-- entry for Alice, one for Bob, and one for neither, each the id of a
+-- contract only the admin knows. The executor's tree shows each
+-- `Allocation_Settle` carrying its own authorizer's entry.
+--
+-- Daml Script reads a transaction only as its submitter, the executor, so
+-- the script returns what each authorizer must witness, its settled
+-- allocation and its payout, and the entries it must not see anywhere.
+-- `scripts/check-sandbox.sh` reads each authorizer's own transactions from
+-- the JSON Ledger API and checks them against that list.
+sandboxSettleBatchContextWitnesses : Script [Witnessing]
+sandboxSettleBatchContextWitnesses = do
+  s@Scenario{..} <- setupPrefixed "settlecontext-"
+  (factoryCid, factoryDisclosure) <- createAuthorizerContextRules admin
+  let legUsd = (mkTransferLeg "leg-usd" bob alice 4.0) with instrumentId = "USD"
+  aliceInput <- mint admin alice 10.0
+  bobInput <- mintOf admin bob "USD" 4.0
+  aliceAlloc <- completedCid =<< allocate s alice [senderSide legAliceToBob, receiverSide legUsd] [aliceInput]
+  bobAlloc <- completedCid =<< allocate s bob [receiverSide legAliceToBob, senderSide legUsd] [bobInput]
+  aliceEntry <- newEntry admin "alice"
+  bobEntry <- newEntry admin "bob"
+  batchEntry <- newEntry admin "batch"
+  funding <- allocationDisclosures admin [aliceAlloc, bobAlloc]
+  (result, tree) <- submitResultAndTree (actAs app <> discloseMany (factoryDisclosure :: funding)) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory factoryCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [legAliceToBob, legUsd]
+        allocations = map nonIteratedAllocation [aliceAlloc, bobAlloc]
+        actors = [app]
+        extraArgs = ExtraArgs with
+          context = ChoiceContext $ TextMap.fromList
+            [ (authorizerKey (basicAccount alice), entryValue aliceEntry)
+            , (authorizerKey (basicAccount bob), entryValue bobEntry)
+            , ("venue.example/batch-only", entryValue batchEntry) ]
+          meta = emptyMetadata
+  let settles = concatMap allocationSettlesWithCid tree.rootEvents
+      contextOf cid = (.extraArgs.context.values) <$> lookup (fromInterfaceContractId @TokenAllocation cid) settles
+  contextOf aliceAlloc === Some (TextMap.fromList [(entryKey, entryValue aliceEntry)])
+  contextOf bobAlloc === Some (TextMap.fromList [(entryKey, entryValue bobEntry)])
+  [aliceResult, bobResult] <- pure result.allocationSettleResults
+  Some [alicePayout] <- pure (TextMap.lookup "USD" aliceResult.authorizerHoldingCids)
+  Some [bobPayout] <- pure (TextMap.lookup "TOK" bobResult.authorizerHoldingCids)
+  holdingAmounts alice >>= (=== [4.0])
+  holdingAmounts bob >>= (=== [10.0])
+
+  let anyCid : ContractId t -> ContractId ()
+      anyCid = coerceContractId
+  pure
+    [ Witnessing with
+        party = alice
+        witnessed = [anyCid aliceAlloc, anyCid alicePayout]
+        hidden = [anyCid bobEntry, anyCid batchEntry]
+    , Witnessing with
+        party = bob
+        witnessed = [anyCid bobAlloc, anyCid bobPayout]
+        hidden = [anyCid aliceEntry, anyCid batchEntry]
+    ]

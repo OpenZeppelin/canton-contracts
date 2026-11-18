@@ -8,8 +8,9 @@
 -- The scripts check that a rule on new spending leaves locked funding free
 -- to move, that a refusing payout or return blocks only its own paths, that
 -- every operation receives the context its submitter passed, and the two
--- limits of that delivery: batch settlement passes an empty context, and one
--- refusal fails a whole expiry batch.
+-- limits of that delivery: batch settlement passes each allocation only what
+-- the factory's selector picks for its authorizer, and one refusal fails a
+-- whole expiry batch.
 module OpenZeppelin.Token.Cip112.Utils.Test.Operations where
 
 import DA.Action (replicateA, unless)
@@ -203,12 +204,24 @@ template PolicyRules with
       settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
       settlementFactory_settleBatchExtraObservers _ = []
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @PolicyAllocation) config.admin self arg
+        settleBatchImpl (pinAllocationTo @PolicyAllocation) authorizerPath config.admin self arg
 
     nonconsuming choice PolicyRules_ExpireAllocations : ()
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
       controller config.admin
       do expireAllocationsImpl (pinAllocationTo @PolicyAllocation) config.admin cancelArgs
+
+-- | The batch-settlement selector: each allocation receives the batch's
+-- entry for its authorizer, under `test/path`, and nothing else.
+authorizerPath : AllocationV2.AllocationView -> ChoiceContext -> ChoiceContext
+authorizerPath v batch = ChoiceContext with
+  values = TextMap.fromList
+    [ ("test/path", value)
+    | value <- optionalToList (TextMap.lookup (pathKeyFor v.allocation.authorizer) batch.values) ]
+
+-- | The batch-context key of an authorizer's entry.
+pathKeyFor : HoldingV2.Account -> Text
+pathKeyFor account = "test/path/" <> optional "" partyToText account.owner
 
 createPolicyInstruction : Policy -> CreateTransferInstruction
 createPolicyInstruction policy s =
@@ -581,7 +594,8 @@ testRefusingReturnRuleBlocksOnlyReturns = do
 -- for every input it funds, and each accept, reject, withdraw, expiry,
 -- direct settle, allocation withdraw, and cancel its own, including a
 -- cancel run from the admin's expiry batch. Batch settlement passes
--- `deliverHolding` an empty context whatever the batch carried.
+-- `deliverHolding` only the batch's entry for the authorizer: neither the
+-- other authorizer's entry nor the batch's own `test/path`.
 testOperationsReceiveTheSubmittersContext : Script ()
 testOperationsReceiveTheSubmittersContext = do
   w@World{..} <- setupWith allowAll
@@ -629,8 +643,14 @@ testOperationsReceiveTheSubmittersContext = do
 
   trade@(tradeAlloc, tradeBobAlloc) <- allocateTrade w [i9]
   settleAs <- asExecutor w [tradeAlloc, tradeBobAlloc]
-  tree <- submitTree settleAs (settleBatchCmd w (ctx "batch") trade)
-  opCalls tree === [OpCall "deliver" emptyChoiceContext]
+  let batch = ChoiceContext $ TextMap.fromList
+        [ (pathKeyFor (basicAccount alice), AV_Text "batch for alice")
+        , (pathKeyFor (basicAccount bob), AV_Text "batch for bob")
+        , ("test/path", AV_Text "batch") ]
+  tree <- submitTree settleAs (settleBatchCmd w batch trade)
+  -- Bob's receiving allocation locks nothing, so only alice's funding is
+  -- delivered.
+  opCalls tree === [OpCall "deliver" (ctx "batch for alice")]
 
   (expiringAlloc, _) <- allocateTrade w [i10]
   setTime expiredAt
