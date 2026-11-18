@@ -9,7 +9,7 @@ import DA.Date (date, Month(Sep))
 import DA.Foldable (forA_)
 import DA.Optional (optionalToList)
 import DA.TextMap qualified as TextMap
-import DA.Time (addRelTime, days, hours, minutes, time)
+import DA.Time (addRelTime, days, hours, microseconds, minutes, time)
 import Daml.Script
 
 import Splice.Api.Token.MetadataV1
@@ -296,6 +296,31 @@ testAllocateRefusesStaleRequestedAt = do
   mustFailWith "requestedAt is older than the registry's maximum TTL" (actAs alice <> discloseMany [rulesDisclosure])
     (allocateCmd s [alice] (mkAllocationSpec admin alice [senderSide legAliceToBob]) staleTime [input])
 
+-- | The storage bound counts from `requestedAt`, so the deadline must fall
+-- within `maxTTL` of it. Here it is within `maxTTL` of ledger time (`t1`)
+-- but one microsecond past `requestedAt` plus `maxTTL`; accepting it would
+-- set `expiresAt`, and the lock, before the deadline.
+testAllocateRefusesDeadlineBeyondMaxTTLFromRequestedAt : Script ()
+testAllocateRefusesDeadlineBeyondMaxTTLFromRequestedAt = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let spec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with
+        settlementDeadline = Some (t0 `addRelTime` (days 90 + microseconds 1))
+  mustFailWith "settlement deadline exceeds the registry's maximum TTL after requestedAt"
+    (actAs alice <> discloseMany [rulesDisclosure])
+    (allocateCmd s [alice] spec t0 [input])
+
+-- | Without a deadline the storage bound is `requestedAt` plus `maxTTL`. A
+-- request exactly `maxTTL` old passes the inclusive age check, but its
+-- allocation would be expired on creation.
+testAllocateRefusesExpiredStorageBound : Script ()
+testAllocateRefusesExpiredStorageBound = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let spec = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with settlementDeadline = None
+  mustFailWith "at or past deadline 'allocation.expiresAt'" (actAs alice <> discloseMany [rulesDisclosure])
+    (allocateCmd s [alice] spec (t1 `addRelTime` negate (days 90)) [input])
+
 -- Allocations
 --------------
 
@@ -313,6 +338,28 @@ testSettleRefusesAfterDeadline = do
   bobAlloc <- completedCid =<< allocate s bob [receiverSide legAliceToBob] []
   setTime t3
   mustFailWith "at or past deadline 'allocation.settlementDeadline'" (actAs [admin, app]) (settleCmd bobAlloc [admin, app] [])
+
+-- | A successor's storage bound is the previous `expiresAt` plus `maxTTL`.
+-- Once ledger time reaches it, a settlement that creates a successor is
+-- refused, since the successor would be expired on creation.
+testSettleRefusesExpiredSuccessorBound : Script ()
+testSettleRefusesExpiredSuccessorBound = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  let reserve = Some (TextMap.fromList [("TOK", 10.0)])
+      spec = (mkAllocationSpec admin alice []) with
+        settlementDeadline = None
+        nextIterationFunding = reserve
+  aliceAlloc <- completedCid =<< submit (actAs alice <> discloseMany [rulesDisclosure])
+    (allocateCmd s [alice] spec t0 [input])
+  -- `expiresAt` is `t0` plus 90 days, so a successor's would be `t0` plus 180.
+  setTime (t0 `addRelTime` days 180)
+  mustFailWith "at or past deadline 'allocation.expiresAt'" (actAs [admin, app]) $
+    exerciseCmd aliceAlloc AllocationV2.Allocation_Settle with
+      actors = [admin, app]
+      extraTransferLegSides = []
+      nextIterationFunding = reserve
+      extraArgs = emptyExtraArgs
 
 -- | A settlement can never leave the authorizer with less than nothing: an
 -- extra leg larger than the locked funds is refused.

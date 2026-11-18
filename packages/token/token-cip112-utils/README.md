@@ -66,6 +66,38 @@ contract id enters through an operation the template owner wrote:
   controls, may create one. A factory body must refuse the mint account as a
   sender, as `transferFactoryImpl` does.
 
+## Time bounds
+
+No workflow reads the time with `getTime`. Every time check is a
+ledger-time bound, which constrains the ledger time the participant picks
+when the transaction executes instead of fixing it when the transaction is
+prepared. An externally signed submission therefore executes whenever its
+bounds still hold, not only within the ledger-time tolerance of its
+preparation.
+
+- A transfer, including a mint offer, needs `requestedAt` at or before
+  ledger time and `executeBefore` after it. `executeBefore` may be at most
+  `maxTTL` after ledger time and `requestedAt` at most `maxTTL` before it.
+- An allocation counts its storage bound from the request's `requestedAt`.
+  `expiresAt` is the settlement deadline, or `requestedAt` plus `maxTTL`
+  without one, and must lie after ledger time. A settlement deadline more
+  than `maxTTL` after `requestedAt` is refused, so a deadline is always the
+  allocation's `expiresAt`, and the lock never expires before it.
+- The authorizer's wallet chooses `requestedAt`, up to `maxTTL` in the past.
+  An older value shortens the allocation's life, and `createdAt`, which is
+  `requestedAt`, reports it. Executors must not treat `createdAt` as the
+  time the ledger created the allocation.
+- A settlement that creates a successor moves `expiresAt` to the previous
+  `expiresAt` plus the allocation's `maxTTL`, capped by the settlement
+  deadline, and refuses a result that has already passed. A settlement
+  without a successor sets no new bound.
+- Without a settlement deadline, each settlement adds a full `maxTTL`, so
+  the executors can push an iterated allocation's `expiresAt`, and its
+  reserve's lock, well past `maxTTL` from ledger time by settling it
+  repeatedly. This is intended. The executors are already trusted with the
+  reserve, and an allocation without a deadline is never committed, so its
+  authorizer can withdraw it, and end the chain, at any time.
+
 ## Build
 
 From the repository root:

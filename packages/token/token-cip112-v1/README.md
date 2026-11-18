@@ -84,9 +84,15 @@ interfaces or exceptions of its own.
   reserve funding for a successor allocation created in the same transaction.
   A settle with no reservation ends the chain and releases all proceeds
   unlocked. Successors carry the original settlement deadline and commitment,
-  clear the leg set, and bump the storage expiry using the registry
-  configuration snapshotted at allocation time. The authorizer withdraws a
-  successor like any other allocation.
+  clear the leg set, and extend the previous storage expiry by the `maxTTL`
+  snapshotted at allocation time, capped by the settlement deadline. The
+  authorizer withdraws a successor like any other allocation.
+- No choice reads the time with `getTime`; every time check is a ledger-time
+  bound. An externally signed transfer or allocation therefore executes
+  whenever its bounds still hold, not only within the ledger-time tolerance
+  of its preparation. An allocation's storage expiry counts from its
+  `requestedAt`. The time bounds section of the `token-cip112-utils`
+  [`README.md`](../token-cip112-utils/README.md) lists each check.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors
@@ -144,9 +150,11 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   In each iteration they choose the authorizer's extra legs, which may send
   the reserve to any account that allocates to receive it, and whether to keep
   a reserve for the next iteration, which renews the allocation's expiry and
-  lock. The authorizer bounds this with a settlement deadline, or by
-  withdrawing an uncommitted allocation. Enable iterated settlement only with
-  executors trusted with the amount reserved.
+  lock. Without a settlement deadline each renewal adds a full `maxTTL` to
+  the previous expiry, so repeated settlements can keep the reserve locked
+  well past `maxTTL` from ledger time. The authorizer bounds this with a
+  settlement deadline, or by withdrawing an uncommitted allocation. Enable
+  iterated settlement only with executors trusted with the amount reserved.
 - The vendored settlement-factory default does not validate a
   `FinalizedAllocation.nextIterationFunding`; the check in
   `allocation_settleImpl` is the effective guard. Registry forks that replace
@@ -154,7 +162,9 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
 - `maxTTL` and `lockGrace` are only required to be positive. A `lockGrace` too
   short for the admin's cleanup automation to act in leaves expiry to the
   owner-recovery path; size it to the automation's reaction time (minutes to
-  hours), and size `maxTTL` to the longest workflow the registry accepts.
+  hours), and size `maxTTL` to the longest workflow the registry accepts,
+  counted from ledger time for a transfer and from `requestedAt` for an
+  allocation.
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
   provider blocks recovery until it cooperates; single-party accounts avoid
