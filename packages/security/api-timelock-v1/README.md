@@ -60,8 +60,11 @@ The recommended integration uses three contracts:
 | The business contract | The frequently updated state, for example a balance | The business choices run; each reads the governed config |
 
 Scheduling consumes only the timelock, and applying consumes the timelock and
-the config. The business contract never takes part in governance, so its
-choices do not contend with it.
+the config. Scheduling, cancellation, and cleanup therefore do not contend
+with the business choices through shared contracts. Applying a change that
+replaces the config does: a business choice fetches the config that the apply
+archives, so a submission in flight at that moment fails and is rebuilt
+against the successor, as [Contract ids](#contract-ids) describes.
 
 Adopting the timelock is five steps. This package supplies the execute,
 cancel, and cleanup choices; `OpenZeppelin.TimelockV1` supplies the lifecycle

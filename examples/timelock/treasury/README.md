@@ -15,8 +15,9 @@ policy change only through timelocked operations.
 
 - Three contracts: `TreasuryTimelock` holds the delay policy and the pending
   operations, `TreasuryConfig` holds the spending limit, and `Treasury` holds
-  the balance. Payments consume only the treasury, so they do not contend
-  with governance.
+  the balance. Payments consume only the treasury: scheduling, cancellation,
+  and cleanup do not contend with them, and only an applied limit change
+  invalidates payments that read the replaced config.
 - A shared `treasuryId` on the three contracts. `Treasury_Pay` refuses a
   config whose identifier names another treasury, so configs that the same
   signatories issued for sibling treasuries cannot substitute for each

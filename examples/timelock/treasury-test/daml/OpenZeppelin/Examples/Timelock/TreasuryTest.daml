@@ -134,6 +134,8 @@ demo = script do
   -- operation and the config, and records the new config on the timelock.
   passTime (days 3)
   timelock <- execute executor timelock raise
+  -- A payment still referencing the replaced config fails: the apply archived
+  -- it. The client reads the current config from the timelock and resubmits.
   submitMustFail admin do
     exerciseCmd treasury Treasury_Pay with configCid = cfg, recipient = supplier, amount = 250.0
   cfg <- currentConfig admin timelock

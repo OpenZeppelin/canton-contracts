@@ -16,8 +16,11 @@
 --   `TreasuryConfig`.
 --
 -- Scheduling consumes only the timelock, and applying a limit change consumes
--- the timelock and the config. Payments consume only the treasury, so they do
--- not contend with governance.
+-- the timelock and the config. Scheduling, cancellation, and cleanup do not
+-- contend with payments through shared contracts. Applying a limit change
+-- can: a payment fetches the config that the apply archives, so a payment in
+-- flight at that moment fails and is resubmitted against the successor
+-- config.
 --
 -- The three contracts share a `treasuryId`. `Treasury_Pay` refuses a config
 -- for another treasury, so configs that the same signatories honestly issued
