@@ -141,22 +141,26 @@ interface Timelock where
     -- ^ The body of `Timelock_Drop`. Implement it as
     --   `dropImpl self arg = dropOperation (toInterface @Timelock this) self arg`.
 
-  -- Apply a pending operation. `applyOperation` fails unless the operation is
-  -- pending, the actor is an executor, and the operation is ready.
   nonconsuming choice Timelock_Apply : ContractId Timelock
+    -- ^ Apply a pending operation and return the successor timelock.
+    --   `applyOperation` fails unless the operation is pending, the actor is
+    --   an executor, and the operation is ready.
     with
       actor : Party
       op : ContractId Operation
+        -- ^ The pending operation to apply.
     controller actor
     do
       applyImpl this self arg
 
-  -- Remove a pending operation without applying it. `dropOperation` fails
-  -- unless the operation is pending and the `reason` holds.
   nonconsuming choice Timelock_Drop : ContractId Timelock
+    -- ^ Remove a pending operation without applying it, and return the
+    --   successor timelock. `dropOperation` fails unless the operation is
+    --   pending and the `reason` holds.
     with
       actor : Party
       op : ContractId Operation
+        -- ^ The pending operation to remove.
       reason : DropReason
     controller actor
     do
@@ -179,29 +183,37 @@ interface Timelock where
 interface Operation requires Timelocked where
   viewtype OperationView
 
-  -- Execute the operation on `target`. The actor must be an executor.
   nonconsuming choice Operation_Execute : ContractId Timelock
+    -- ^ Execute the operation on `target` and return the successor timelock.
+    --   The actor must be an executor.
     with
       actor : Party
       target : ContractId Timelock
+        -- ^ The current timelock. Its contract id changes on every schedule,
+        --   apply, cancel, and cleanup, so read it from the ledger when
+        --   submitting.
     controller actor
     do
       exercise target Timelock_Apply with actor, op = self
 
-  -- Cancel the operation. The actor must be a canceller.
   nonconsuming choice Operation_Cancel : ContractId Timelock
+    -- ^ Cancel the operation and return the successor timelock. The actor
+    --   must be a canceller.
     with
       actor : Party
       target : ContractId Timelock
+        -- ^ The current timelock, read from the ledger when submitting.
     controller actor
     do
       exercise target Timelock_Drop with actor, op = self, reason = CancelOperation
 
-  -- Remove the operation after it expires. Any actor may call it.
   nonconsuming choice Operation_Cleanup : ContractId Timelock
+    -- ^ Remove the operation after it expires, and return the successor
+    --   timelock. Any actor may call it.
     with
       actor : Party
       target : ContractId Timelock
+        -- ^ The current timelock, read from the ledger when submitting.
     controller actor
     do
       exercise target Timelock_Drop with actor, op = self, reason = CleanupOperation
