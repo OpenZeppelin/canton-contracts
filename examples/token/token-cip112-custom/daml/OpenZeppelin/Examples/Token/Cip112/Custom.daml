@@ -12,10 +12,14 @@
 --   is an informee of every holdings-change event. A consumer field on each
 --   template, reached through the closure that builds the operations
 --   record, plus the `eventObservers` operation.
--- - A compliance freeze on holdings. A template field plus two choices, and
---   the `MyHolding_Spend` hook refuses a frozen holding, so every workflow
---   path (transfer, allocation, burn, unlock) refuses it without the
---   workflows knowing what a freeze is.
+-- - A compliance freeze on holdings. A template field plus two choices. The
+--   `fundHolding` and `deliverHolding` operations exercise `MyHolding_Spend`,
+--   which refuses a frozen holding, so a frozen holding cannot fund a
+--   transfer, an allocation, or a burn, and a payout of locked funding runs
+--   the same check, without the workflows knowing what a freeze is.
+--   `returnHolding` stays the pinned archive, so no return path refuses a
+--   holding for being frozen. `MyHolding_OwnerUnlock` makes the check
+--   itself.
 -- - A pause switch on the registry. A template field plus two choices,
 --   checked before each factory and the mint offer delegate to the workflow.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
@@ -74,23 +78,33 @@ template MyEventLog with
 
 -- | Built inside every choice body from the template's own fields. The
 -- closure over `roles` is how consumer fields reach `createHolding` without
--- the workflows knowing about them. New holdings are never frozen.
+-- the workflows knowing about them. New holdings are never frozen. No
+-- operation reads the choice context.
 myOps : Party -> AppRoles -> HoldingOps
-myOps admin roles = HoldingOps with
-  createHolding = \v -> toInterfaceContractId <$> create MyHolding with holding = v; roles; frozen = False
-  consumeHolding = \cid -> do
+myOps admin roles =
+    (holdingOpsFor @MyHolding createMyHolding withMyEventLog auditorObserves)
+      with
+        -- The freeze stops a holding from funding a workflow and from being
+        -- paid out of one. `returnHolding` stays the pinned archive: a
+        -- reject, withdraw, expiry, or cancel returns locked funds to their
+        -- owner without exercising the spend.
+        fundHolding = const spend
+        deliverHolding = const spend
+  where
+    createMyHolding v = toInterfaceContractId <$> create MyHolding with holding = v; roles; frozen = False
+    withMyEventLog emit = do
+      cid <- create MyEventLog with admin
+      emit (toInterfaceContractId cid)
+      archive cid
+    -- The auditor is an informee of every holdings-change event, so it can
+    -- follow the standard event stream, not only the contracts.
+    auditorObserves _ = [roles.auditor]
     -- Pin the template first: a foreign `Holding` never reaches the spend.
-    fetched <- fetchFromInterface @MyHolding cid
-    case fetched of
-      None -> fail "holding is not a MyHolding"
-      Some (tcid, _) -> exercise tcid MyHolding_Spend
-  withEventLog = \emit -> do
-    cid <- create MyEventLog with admin
-    emit (toInterfaceContractId cid)
-    archive cid
-  -- The auditor is an informee of every holdings-change event, so it can
-  -- follow the standard event stream, not only the contracts.
-  eventObservers = const [roles.auditor]
+    spend cid = do
+      fetched <- fetchFromInterface @MyHolding cid
+      case fetched of
+        None -> fail "holding is not a MyHolding"
+        Some (tcid, _) -> exercise tcid MyHolding_Spend
 
 -- Holding
 ----------
@@ -107,10 +121,10 @@ template MyHolding with
     observer lockHolders holding.lock, roles.auditor, roles.complianceOfficer
     ensure isValidHoldingView holding
 
-    -- | The only way value leaves this holding. Controlled by the parties
-    -- whose authority a plain archive would need, so the authorization
-    -- model is unchanged; what changes is that the spend is a named choice
-    -- the auditor sees, with a consumer rule inside it.
+    -- | How funding and payouts consume this holding. Controlled by the
+    -- parties whose authority a plain archive would need, so the
+    -- authorization model is unchanged; what changes is that the spend is a
+    -- named choice the auditor sees, with a consumer rule inside it.
     choice MyHolding_Spend : HoldingV2.HoldingView
       controller holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
       do
@@ -163,7 +177,7 @@ template MyTransferInstruction with
 
     choice MyTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
       controller state.transfer.instrumentId.admin
-      do transferExpireImpl (ops this) state
+      do transferExpireImpl (ops this) emptyChoiceContext state
 
     choice MyTransferInstruction_AdminGC : ()
       controller state.transfer.instrumentId.admin
@@ -325,7 +339,7 @@ transferWithFee rules arg = do
   inputs <-
     if fee > 0.0
       then do
-        feeResult <- executeTransfer rules.config (ops rules) (createInstruction rules) True
+        feeResult <- executeTransfer rules.config (ops rules) arg.extraArgs.context (createInstruction rules) True
           (transfer with receiver = treasury rules; amount = fee)
         pure feeResult.senderChangeCids
       else pure transfer.inputHoldingCids

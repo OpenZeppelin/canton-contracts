@@ -123,7 +123,7 @@ allocationSettleImpl ops createSuccessor self s arg = do
   require "extra transfer-leg sides must be valid allocation legs"
     (isValidAllocationSpecificationV2 (const True)
       (s.allocation with transferLegSides = s.allocation.transferLegSides <> arg.extraTransferLegSides))
-  settleAllocation ops createSuccessor self s arg.extraTransferLegSides arg.nextIterationFunding
+  settleAllocation ops arg.extraArgs.context createSuccessor self s arg.extraTransferLegSides arg.nextIterationFunding
 
 -- | `allocation_withdrawImpl`.
 allocationWithdrawImpl
@@ -133,7 +133,7 @@ allocationWithdrawImpl
 allocationWithdrawImpl ops self s arg = do
   archiveAndCheckActors self arg.actors [accountParties s.allocation.admin s.allocation.authorizer]
   ensureWithdrawIsAllowed s.allocation
-  holdings <- unlockAndLog ops s "allocation withdrawn"
+  holdings <- unlockAndLog ops arg.extraArgs.context s "allocation withdrawn"
   pure AllocationV2.AllocationResult with
     output = AllocationV2.AllocationResult_Withdrawn
     authorizerHoldingCids = holdings
@@ -149,7 +149,7 @@ allocationCancelImpl
 allocationCancelImpl ops self s arg = do
   this <- fetch self
   allocationV2_cancelDefaultImpl this self arg $ do
-    holdings <- unlockAndLog ops s "allocation cancelled"
+    holdings <- unlockAndLog ops arg.extraArgs.context s "allocation cancelled"
     pure (holdings, emptyMetadata)
 
 -- | Body of a consuming last-resort admin cleanup choice for an allocation
@@ -237,7 +237,7 @@ allocationFactoryImpl config ops createAllocation arg = do
         expiresAfter = None
         context = Some ("allocation for settlement " <> arg.settlement.id)
 
-  inputAmounts <- debitHoldings (consumeUnlockedHolding ops admin authorizer) arg.inputHoldingCids
+  inputAmounts <- debitHoldings (consumeUnlockedHolding ops arg.extraArgs.context admin authorizer) arg.inputHoldingCids
 
   lockedAndChange <- forA (TextMap.toList (textMapMergeWithDefault (0.0, 0.0) inputAmounts requiredAmounts)) $
     \(instrumentId, (inputAmount, requiredAmount)) -> do
@@ -293,17 +293,18 @@ allocationFactoryImpl config ops createAllocation arg = do
 -- every total to be non-negative, reserve the requested next-iteration
 -- funding as freshly locked holdings, and pay out the remainder unlocked.
 -- When a reservation is requested a successor allocation is created through
--- the owner's constructor.
+-- the owner's constructor. `context` reaches `deliverHolding` for every
+-- locked holding.
 settleAllocation
-  : HoldingOps -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
+  : HoldingOps -> ChoiceContext -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
   -> [AllocationV2.TransferLegSide] -> Optional (TextMap.TextMap Decimal)
   -> Update AllocationV2.AllocationResult
-settleAllocation ops createSuccessor self s extraTransferLegSides nextIterationFunding = do
+settleAllocation ops context createSuccessor self s extraTransferLegSides nextIterationFunding = do
   let admin = s.allocation.admin
       authorizer = s.allocation.authorizer
       effectiveLegSides = s.allocation.transferLegSides <> extraTransferLegSides
       reserveAmounts = fromOptional TextMap.empty nextIterationFunding
-  lockedAmounts <- debitHoldings (consumeLockedHolding ops admin authorizer) s.lockedHoldingCids
+  lockedAmounts <- debitHoldings (consumeLockedHolding ops context admin authorizer) s.lockedHoldingCids
   let netAmounts = netAllocationCreditAmounts authorizer effectiveLegSides
       totalAmounts = textMapUnionWith (+) lockedAmounts netAmounts
 
@@ -363,11 +364,11 @@ settleAllocation ops createSuccessor self s extraTransferLegSides nextIterationF
 
 -- | Release the locked holdings to the authorizer and log the change.
 unlockAndLog
-  : HoldingOps -> AllocationState -> Text
+  : HoldingOps -> ChoiceContext -> AllocationState -> Text
   -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
-unlockAndLog ops s reason = do
+unlockAndLog ops context s reason = do
   let admin = s.allocation.admin
-  holdings <- unlockHoldings ops admin s.allocation.authorizer s.lockedHoldingCids
+  holdings <- unlockHoldings ops context admin s.allocation.authorizer s.lockedHoldingCids
   emitHoldingsChange ops admin s.allocation.authorizer s.settlement.executors
     s.lockedHoldingCids
     (concat (textMapValues holdings))

@@ -42,11 +42,11 @@ template TokenHolding with
       view = holding
 
 -- | The operations the default templates run the workflows with: create
--- `TokenHolding`, consume by archiving a pinned `TokenHolding`, and emit
+-- `TokenHolding`, consume by archiving a pinned `TokenHolding` on every
+-- path with no spend rule and no use of the choice context, and emit
 -- through a transient `TokenEventLog`.
 defaultHoldingOps : Party -> HoldingOps
-defaultHoldingOps admin = HoldingOps with
-  createHolding = \v -> toInterfaceContractId <$> create TokenHolding with holding = v
-  consumeHolding = consumeByArchive @TokenHolding
-  withEventLog = withTempEventLog admin
-  eventObservers = const []
+defaultHoldingOps admin = holdingOpsFor @TokenHolding
+  (\v -> toInterfaceContractId <$> create TokenHolding with holding = v)
+  (withTempEventLog admin)
+  (const [])
