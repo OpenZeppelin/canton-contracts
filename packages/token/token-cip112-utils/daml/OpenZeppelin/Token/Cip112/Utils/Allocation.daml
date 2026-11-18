@@ -23,7 +23,7 @@ import DA.List (dedupSort)
 import DA.Map qualified as Map
 import DA.Optional (fromOptional, isNone, isSome)
 import DA.TextMap qualified as TextMap
-import DA.Time (addRelTime, subTime, convertMicrosecondsToRelTime)
+import DA.Time (addRelTime, convertMicrosecondsToRelTime, isLedgerTimeLE)
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
@@ -215,17 +215,23 @@ allocationFactoryImpl config ops createAllocation arg = do
   assertDeadlineExceeded "requestedAt" arg.requestedAt
   forA_ allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
 
-  now <- getTime
+  -- Every time below comes from `requestedAt` and ledger-time bounds, never
+  -- `getTime`, for the reason `validateTransfer` gives.
+  -- ledger time <= requestedAt + maxTTL
+  requestWithinTTL <- isLedgerTimeLE (arg.requestedAt `addRelTime` config.maxTTL)
+  require "requestedAt is older than the registry's maximum TTL" requestWithinTTL
+  -- The storage bound counts from `requestedAt`, which may lie up to `maxTTL`
+  -- in the past. A deadline within the bound becomes `expiresAt`, so the lock
+  -- cannot expire before the deadline.
   forA_ allocation.settlementDeadline $ \deadline ->
-    require "settlement deadline exceeds the registry's maximum TTL"
-      (deadline <= now `addRelTime` config.maxTTL)
-  require "requestedAt is older than the registry's maximum TTL"
-    (now `subTime` arg.requestedAt <= config.maxTTL)
+    require "settlement deadline exceeds the registry's maximum TTL after requestedAt"
+      (deadline <= arg.requestedAt `addRelTime` config.maxTTL)
+  let expiresAt = computeStorageExpiry config.maxTTL arg.requestedAt allocation.settlementDeadline
+  assertWithinDeadline "allocation.expiresAt" expiresAt
 
   -- Net funding: only the negative part of the authorizer's net credit needs
   -- to be locked, plus any next-iteration reserve.
-  let expiresAt = computeStorageExpiry config.maxTTL now allocation.settlementDeadline
-      lockExpiresAt = expiresAt `addRelTime` config.lockGrace
+  let lockExpiresAt = expiresAt `addRelTime` config.lockGrace
       netAmounts = netAllocationCreditAmounts authorizer allocation.transferLegSides
       reserveAmounts = fromOptional TextMap.empty allocation.nextIterationFunding
       requiredAmounts = textMapUnionWith (+)
@@ -264,7 +270,8 @@ allocationFactoryImpl config ops createAllocation arg = do
     allocation
     lockedHoldingCids
     requestedAt = arg.requestedAt
-    createdAt = now
+    -- As Amulet does: reading the creation time would need `getTime`.
+    createdAt = arg.requestedAt
     numIterations = 0
     expiresAt
     lockExpiresAt
@@ -307,14 +314,21 @@ settleAllocation ops createSuccessor self s extraTransferLegSides nextIterationF
   let netAmounts = netAllocationCreditAmounts authorizer effectiveLegSides
       totalAmounts = textMapUnionWith (+) lockedAmounts netAmounts
 
-  now <- getTime
-  let newExpiresAt = computeStorageExpiry s.maxTTL now s.allocation.settlementDeadline
+  -- A successor's storage bound extends the previous `expiresAt`, as Amulet
+  -- does, rather than reading the time. With a settlement deadline it stays
+  -- the deadline. Without one, every settlement adds a full `maxTTL`, so
+  -- repeated settlements can push it more than `maxTTL` past ledger time; the
+  -- package `README.md` explains why that is accepted.
+  let newExpiresAt = computeStorageExpiry s.maxTTL s.expiresAt s.allocation.settlementDeadline
       newLockExpiresAt = newExpiresAt `addRelTime` s.lockGrace
       lock = HoldingV2.Lock with
         holders = [admin]
         expiresAt = Some newLockExpiresAt
         expiresAfter = None
         context = Some ("allocation for settlement " <> s.settlement.id)
+  -- Only the successor and its reserve carry the new bound, so only a
+  -- settlement that creates them requires it to lie in the future.
+  forA_ nextIterationFunding $ \_ -> assertWithinDeadline "allocation.expiresAt" newExpiresAt
 
   lockedAndPayouts <- forA (TextMap.toList (textMapMergeWithDefault (0.0, 0.0) totalAmounts reserveAmounts)) $
     \(instrumentId, (total, reserve)) -> do

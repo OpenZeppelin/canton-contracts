@@ -7,7 +7,7 @@ import DA.Assert ((===), (=/=))
 import DA.Date (date, Month(Jan))
 import DA.Foldable (forA_)
 import DA.List (sort)
-import DA.Time (addRelTime, days, hours, minutes, time)
+import DA.Time (addRelTime, days, hours, microseconds, minutes, time)
 import Daml.Script
 
 import DA.Map qualified as Map
@@ -29,6 +29,7 @@ import OpenZeppelin.Token.Cip112.V1.Registry
 import OpenZeppelin.Token.Cip112.V1.Transfer
 import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (mustFailWith)
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
+import OpenZeppelin.Token.Cip112.V1.Test.Guard (allocateCmd, transferCmd)
 
 -- | Happy path: two-leg DvP with net funding. Alice sends 10 and receives 4,
 -- so only 6 is locked; Bob nets +6 and locks nothing. After settlement Alice
@@ -292,6 +293,8 @@ testIteratedSettlementLifecycle = do
   v.originalAllocationCid === Some aliceAllocCid
   v.allocation.transferLegSides === []
   v.allocation.nextIterationFunding === Some (TextMap.fromList [("TOK", 7.0)])
+  -- With a settlement deadline, the successor's storage bound stays there.
+  v.expiresAt === Some t2
   -- The successor's reserve is locked to the admin alone, so the executor
   -- sees no holding and reads the reserve through disclosure.
   aliceReserve <- query @TokenHolding alice
@@ -646,9 +649,9 @@ testDirectSettleAllowed = do
   bobAfter <- holdingAmounts bob
   bobAfter === [10.0]
 
--- | A settlement deadline beyond the registry's maxTTL is rejected
--- outright, so `expiresAt` can never precede the deadline and the admin can
--- never expire a live allocation.
+-- | A settlement deadline more than the registry's maxTTL after `requestedAt`
+-- is rejected outright, so `expiresAt` can never precede the deadline and the
+-- admin can never expire a live allocation.
 testDeadlineBoundedByMaxTTL : Script ()
 testDeadlineBoundedByMaxTTL = do
   s@Scenario{..} <- setup
@@ -664,6 +667,164 @@ testDeadlineBoundedByMaxTTL = do
         inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding aliceInput]
         extraArgs = emptyExtraArgs
         actors = [alice]
+
+-- Ledger-time bounds
+---------------------
+
+-- | Settle one allocation directly, with no extra legs, keeping `reserve`
+-- for a successor.
+settleAlone
+  : Scenario -> ContractId AllocationV2.Allocation -> Optional (TextMap.TextMap Decimal)
+  -> Script (Optional (ContractId AllocationV2.Allocation))
+settleAlone Scenario{..} cid reserve = do
+  result <- submit (actAs [admin, app]) do
+    exerciseCmd cid AllocationV2.Allocation_Settle with
+      actors = [admin, app]
+      extraTransferLegSides = []
+      nextIterationFunding = reserve
+      extraArgs = emptyExtraArgs
+  settledNext result
+
+-- | The expiry of every lock on the owner's holdings.
+lockExpiries : Party -> Script [Optional Time]
+lockExpiries owner = do
+  holdings <- query @TokenHolding owner
+  pure (sort [l.expiresAt | (_, h) <- holdings, Some l <- [h.holding.lock]])
+
+-- | An iterated allocation for `alice` without a settlement deadline,
+-- reserving all 10 TOK of a fresh holding, requested at `t0`.
+allocateOpenIterated : Scenario -> Script (ContractId AllocationV2.Allocation, Optional (TextMap.TextMap Decimal))
+allocateOpenIterated s@Scenario{..} = do
+  input <- mint admin alice 10.0
+  let reserve = Some (TextMap.fromList [("TOK", 10.0)])
+  cid <- completedCid =<<
+    allocateSpec s alice ((mkIteratedSpec admin alice reserve) with settlementDeadline = None) [input]
+  pure (cid, reserve)
+
+-- | Both `maxTTL` checks on a transfer are inclusive and measured from ledger
+-- time (`t1`): an execution window ending exactly `maxTTL` ahead and a
+-- request exactly `maxTTL` old are accepted, one microsecond more is
+-- refused. Mint offers run the same checks.
+testTransferMaxTTLBoundaries : Script ()
+testTransferMaxTTLBoundaries = do
+  s@Scenario{..} <- setup
+  let latest = t1 `addRelTime` days 90
+      oldest = t1 `addRelTime` negate (days 90)
+      asAlice = actAs alice <> discloseMany [rulesDisclosure]
+      offerCmd executeBefore =
+        exerciseCmd rulesCid TokenRules_OfferMint with
+          receiver = basicAccount bob
+          instrumentId = "TOK"
+          amount = 1.0
+          requestedAt = t0
+          executeBefore
+          reason = "mint"
+  input1 <- mint admin alice 10.0
+  input2 <- mint admin alice 10.0
+  input3 <- mint admin alice 10.0
+  _ <- pendingCid =<< instructTransfer s [alice]
+    ((mkTransfer s alice bob 7.0 [input1]) with executeBefore = latest)
+  mustFailWith "transfer execution window exceeds the registry's maximum TTL" asAlice
+    (transferCmd s [alice] ((mkTransfer s alice bob 7.0 [input2]) with executeBefore = latest `addRelTime` microseconds 1))
+  _ <- pendingCid =<< instructTransfer s [alice]
+    ((mkTransfer s alice bob 7.0 [input2]) with requestedAt = oldest)
+  mustFailWith "transfer requestedAt is older than the registry's maximum TTL" asAlice
+    (transferCmd s [alice] ((mkTransfer s alice bob 7.0 [input3]) with requestedAt = oldest `addRelTime` negate (microseconds 1)))
+  _ <- submit admin (offerCmd latest)
+  mustFailWith "transfer execution window exceeds the registry's maximum TTL" (actAs admin)
+    (offerCmd (latest `addRelTime` microseconds 1))
+
+-- | An allocation's `maxTTL` bounds count from `requestedAt` (`t0`). A
+-- deadline exactly `maxTTL` after it is accepted and becomes `expiresAt`.
+-- Without a deadline, a request one microsecond short of `maxTTL` old is
+-- accepted and one microsecond past it is refused as stale. The cases in
+-- between are guard tests: a deadline one microsecond later
+-- (`testAllocateRefusesDeadlineBeyondMaxTTLFromRequestedAt`) and a request
+-- exactly `maxTTL` old (`testAllocateRefusesExpiredStorageBound`).
+testAllocationMaxTTLBoundaries : Script ()
+testAllocationMaxTTLBoundaries = do
+  s@Scenario{..} <- setup
+  let spec = mkAllocationSpec admin alice [senderSide legAliceToBob]
+      open = spec with settlementDeadline = None
+      latest = t0 `addRelTime` days 90
+      oldest = t1 `addRelTime` negate (days 90)
+      asAlice = actAs alice <> discloseMany [rulesDisclosure]
+  input1 <- mint admin alice 10.0
+  input2 <- mint admin alice 10.0
+  input3 <- mint admin alice 10.0
+
+  atDeadline <- completedCid =<< submit asAlice
+    (allocateCmd s [alice] (spec with settlementDeadline = Some latest) t0 [input1])
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation alice atDeadline
+  v.expiresAt === Some latest
+
+  almostStale <- completedCid =<< submit asAlice
+    (allocateCmd s [alice] open (oldest `addRelTime` microseconds 1) [input2])
+  Some v2 <- queryInterfaceContractId @AllocationV2.Allocation alice almostStale
+  v2.expiresAt === Some (t1 `addRelTime` microseconds 1)
+  mustFailWith "requestedAt is older than the registry's maximum TTL" asAlice
+    (allocateCmd s [alice] open (oldest `addRelTime` negate (microseconds 1)) [input3])
+
+-- | Expiry comes from the submission, not from when the factory runs.
+-- Created at `t1` from a request at `t0` without a deadline, an allocation
+-- expires `maxTTL` after `t0` and reports `t0` as `createdAt`. Settled at
+-- `t3`, its successor expires `maxTTL` after the previous `expiresAt`, not
+-- after `t3`.
+testAllocationExpiryFromSubmission : Script ()
+testAllocationExpiryFromSubmission = do
+  s@Scenario{..} <- setup
+  (cid, reserve) <- allocateOpenIterated s
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation alice cid
+  v.expiresAt === Some (t0 `addRelTime` days 90)
+  v.createdAt === t0
+  locks <- lockExpiries alice
+  locks === [Some (t0 `addRelTime` (days 90 + hours 1))]
+
+  setTime t3
+  Some next <- settleAlone s cid reserve
+  Some v2 <- queryInterfaceContractId @AllocationV2.Allocation alice next
+  v2.expiresAt === Some (t0 `addRelTime` days 180)
+  v2.createdAt === t0
+  locks2 <- lockExpiries alice
+  locks2 === [Some (t0 `addRelTime` (days 180 + hours 1))]
+
+-- | Without a settlement deadline, every settlement adds a full `maxTTL` to
+-- the previous `expiresAt`, as Amulet does. Three settlements at one ledger
+-- time push it to four times `maxTTL` past the request, well beyond `maxTTL`
+-- from ledger time, and the lock stays `lockGrace` behind. Such an
+-- allocation is never committed, so the authorizer can still withdraw it.
+testRepeatedSettlementsWithoutDeadline : Script ()
+testRepeatedSettlementsWithoutDeadline = do
+  s@Scenario{..} <- setup
+  (cid0, reserve) <- allocateOpenIterated s
+  Some cid1 <- settleAlone s cid0 reserve
+  Some cid2 <- settleAlone s cid1 reserve
+  Some cid3 <- settleAlone s cid2 reserve
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation alice cid3
+  v.numIterations === 3
+  v.expiresAt === Some (t0 `addRelTime` days 360)
+  locks <- lockExpiries alice
+  locks === [Some (t0 `addRelTime` (days 360 + hours 1))]
+  _ <- submit (actAs alice) do
+    exerciseCmd cid3 AllocationV2.Allocation_Withdraw with
+      actors = [alice]
+      extraArgs = emptyExtraArgs
+  assertNoLocks alice
+  amounts <- holdingAmounts alice
+  amounts === [10.0]
+
+-- | A settlement that creates no successor sets no new storage bound, so it
+-- still succeeds after the bound a successor would get has passed. Creating
+-- a successor then is refused (`testSettleRefusesExpiredSuccessorBound`).
+testLateFinalSettle : Script ()
+testLateFinalSettle = do
+  s@Scenario{..} <- setup
+  (cid, _) <- allocateOpenIterated s
+  setTime (t0 `addRelTime` days 180)
+  None <- settleAlone s cid None
+  assertNoLocks alice
+  amounts <- holdingAmounts alice
+  amounts === [10.0]
 
 -- | A committed allocation without a settlement deadline could never be
 -- withdrawn, so creating one is refused.

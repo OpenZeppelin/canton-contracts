@@ -168,6 +168,7 @@ cleanup.
 | Enabling iterated settlement with a zero reserve entry | Allocation is refused: reserve amounts must be positive | Use `Some TextMap.empty` for "iterated, no reserve" |
 | Passing `extraTransferLegSides` or `nextIterationFunding` when settling a non-iterated allocation | The settle fails | Reserve iteration arguments for allocations created with `nextIterationFunding` set |
 | Creating a committed allocation without a settlement deadline | Refused at the factory and by the template | Set `settlementDeadline`; commitment ends at the deadline |
-| Requesting a deadline or execution window beyond the registry's `maxTTL` | Refused outright, not truncated | Keep workflow deadlines within `maxTTL` of submission time |
+| Requesting a deadline or execution window beyond the registry's `maxTTL` | Refused outright, not truncated | Keep `executeBefore` within `maxTTL` of ledger time, and a settlement deadline within `maxTTL` of the allocation's `requestedAt` |
+| Setting an allocation's `requestedAt` long before the request | The allocation expires `maxTTL` after `requestedAt`, and a later deadline is refused | Set `requestedAt` to the wall-clock time at which the wallet prepares the request |
 | Expecting the admin to expire a live workflow | Expiry choices fail before the workflow deadline | Wait for `expiresAt`; only executors cancel early |
 | Reading `availableActions` as "exercisable now" | A committed allocation advertises withdraw that still fails before the deadline | Treat the map as the actor sets; check the deadline separately |
