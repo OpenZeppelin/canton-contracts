@@ -446,7 +446,11 @@ For a consumer this means:
   templates are yours, so you add fields through Smart Contract
   Upgrade of your package while this package stays fixed. `TimelockConfig`
   as a field of your template is safe under Smart Contract Upgrade because the
-  record is frozen and keeps its shape.
+  record is frozen and keeps its shape. The freeze also makes the policy
+  surface final: `minDelay` and `gracePeriod` are the whole `TimelockConfig`
+  for the life of this package. A further rule, such as the `minSetback` of
+  `AccessManager`, lives in your schedule choice, and a new policy field
+  needs a sibling API generation.
 - Adopting a sibling API requires an explicit migration plan.
   SCU cannot remove an interface instance or replace a field's API-package type.
   Adding v2 instances leaves v1 interface choices available.
