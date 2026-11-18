@@ -19,7 +19,7 @@ Three interfaces and their views. The package holds no logic:
   `Pending` list of scheduled operations. Its choices, `Timelock_Apply` and
   `Timelock_Drop`, call the `applyImpl` and `dropImpl` methods. You implement
   those methods with `applyOperation` and `dropOperation` from
-  `OpenZeppelin.TimelockV1`. These functions authenticate the actor and verify
+  `OpenZeppelin.Timelock.Utils`. These functions authenticate the actor and verify
   pending membership, shared authority, permissions, and time bounds. They
   archive the operation before calling your `apply` or `unschedule` method.
   The method creates the successor with the reduced pending list.
@@ -41,7 +41,7 @@ Three interfaces and their views. The package holds no logic:
 
 The lifecycle functions, the schedule functions, the pending-list functions,
 the policy validation, the time guards, and the failure statuses live in
-[`openzeppelin-timelock-v1`](../timelock-v1/). That package ships separately,
+[`openzeppelin-timelock-utils`](../timelock-utils/). That package ships separately,
 so a fix to a check does not move this frozen package.
 
 Ledger state lives in the consumer's templates. A scheduled operation is a contract of the consumer's
@@ -67,7 +67,7 @@ archives, so a submission in flight at that moment fails and is rebuilt
 against the successor, as [Contract ids](#contract-ids) describes.
 
 Adopting the timelock is five steps. This package supplies the execute,
-cancel, and cleanup choices; `OpenZeppelin.TimelockV1` supplies the lifecycle
+cancel, and cleanup choices; `OpenZeppelin.Timelock.Utils` supplies the lifecycle
 checks and the functions the snippets call; you supply the templates, the
 schedule choices, and the methods.
 
@@ -377,7 +377,7 @@ parties that need the answer.
   `Operation_Cancel`, `Operation_Cleanup`, `Timelock_Apply`, and
   `Timelock_Drop` keep their names, arguments, and bodies for the life of
   `openzeppelin-api-timelock-v1`. The bodies only forward to methods, so the
-  checks upgrade with `openzeppelin-timelock-v1`.
+  checks upgrade with `openzeppelin-timelock-utils`.
 - The interface does not enforce the checks. They run because your
   `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`. A
   method that skips them lets an executor apply an operation without the
@@ -425,14 +425,14 @@ parties that need the answer.
 - The time bounds hold within the synchronizer's ledger-time tolerance, so the
   effective delay can be shorter than `minDelay`, and the execution window
   can be shorter than `gracePeriod`. Size both as
-  [Time on Canton](../timelock-v1/README.md#time-on-canton) describes.
+  [Time on Canton](../timelock-utils/README.md#time-on-canton) describes.
 
 ## Compatibility
 
 The released API package is frozen. Daml interface definitions sit outside
 Smart Contract Upgrade (SCU). The choices share the interface's package ID
 and remain fixed with it. The choice bodies only call methods, so a fix to a
-lifecycle check ships in `openzeppelin-timelock-v1`, and your package picks it
+lifecycle check ships in `openzeppelin-timelock-utils`, and your package picks it
 up through SCU.
 A different API generation uses a sibling `openzeppelin-api-timelock-v2` package
 with module `OpenZeppelin.Api.TimelockV2`.
@@ -465,7 +465,7 @@ From the repository root:
 
 ```sh
 DAML_PACKAGE=packages/security/api-timelock-v1 dpm build
-DAML_PACKAGE=packages/security/timelock-v1 dpm build
+DAML_PACKAGE=packages/security/timelock-utils dpm build
 ```
 
 ## Consume a local build
@@ -473,12 +473,12 @@ DAML_PACKAGE=packages/security/timelock-v1 dpm build
 ```yaml
 data-dependencies:
   - ../canton-contracts/packages/security/api-timelock-v1/.daml/dist/openzeppelin-api-timelock-v1-0.1.0.dar
-  - ../canton-contracts/packages/security/timelock-v1/.daml/dist/openzeppelin-timelock-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/timelock-utils/.daml/dist/openzeppelin-timelock-utils-0.1.0.dar
 ```
 
 ```daml
 import OpenZeppelin.Api.TimelockV1
-import OpenZeppelin.TimelockV1
+import OpenZeppelin.Timelock.Utils
 ```
 
 ## Examples

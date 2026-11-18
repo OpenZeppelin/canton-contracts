@@ -40,7 +40,7 @@ import DA.List (sort)
 import qualified DA.TextMap as TextMap
 
 import qualified OpenZeppelin.Api.TimelockV1 as Timelock
-import qualified OpenZeppelin.TimelockV1 as Timelock
+import qualified OpenZeppelin.Timelock.Utils as Timelock
 
 -- | What the treasury pays out.
 template Payout

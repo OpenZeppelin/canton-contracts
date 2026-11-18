@@ -1,6 +1,6 @@
--- | Tests for `OpenZeppelin.TimelockV1`: the schedule functions, the
+-- | Tests for `OpenZeppelin.Timelock.Utils`: the schedule functions, the
 -- pending-list functions, the guards, and the failure statuses.
-module OpenZeppelin.TimelockV1Test where
+module OpenZeppelin.Timelock.Utils.Test where
 
 import DA.Assert ((===))
 import DA.Fail (FailureStatus)
@@ -8,8 +8,8 @@ import DA.Time (addRelTime, days, hours, minutes, microseconds)
 import Daml.Script
 
 import OpenZeppelin.Api.TimelockV1
-import OpenZeppelin.TimelockV1
-import OpenZeppelin.TimelockV1TestFixtures
+import OpenZeppelin.Timelock.Utils
+import OpenZeppelin.Timelock.Utils.Test.Fixtures
 
 data Fixture = Fixture with
   caller : Party

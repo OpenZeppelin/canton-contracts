@@ -30,7 +30,7 @@ Consumers of `openzeppelin-api-pausable-v1` and `openzeppelin-pausable-v1`.
 
 ## `timelock`
 
-Consumers of `openzeppelin-api-timelock-v1` and `openzeppelin-timelock-v1`.
+Consumers of `openzeppelin-api-timelock-v1` and `openzeppelin-timelock-utils`.
 
 | Example | Tests | Shows |
 |---|---|---|

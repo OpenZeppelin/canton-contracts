@@ -1,5 +1,5 @@
 -- | Tests for the interfaces in OpenZeppelin.Api.TimelockV1, wired to the
--- lifecycle functions of OpenZeppelin.TimelockV1.
+-- lifecycle functions of OpenZeppelin.Timelock.Utils.
 module OpenZeppelin.Api.TimelockV1Test where
 
 import DA.Assert ((===))
@@ -8,7 +8,7 @@ import DA.Time (RelTime, addRelTime, days, hours, minutes)
 import Daml.Script
 
 import OpenZeppelin.Api.TimelockV1
-import OpenZeppelin.TimelockV1
+import OpenZeppelin.Timelock.Utils
 import OpenZeppelin.Api.TimelockV1TestFixtures
 
 data Fixture = Fixture with

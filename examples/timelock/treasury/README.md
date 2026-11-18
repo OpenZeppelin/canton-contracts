@@ -9,7 +9,7 @@ policy change only through timelocked operations.
 | Module | `OpenZeppelin.Examples.Timelock.Treasury` |
 | Tests | `OpenZeppelin.Examples.Timelock.TreasuryTest` in [`treasury-test`](../treasury-test) |
 | Templates | `TreasuryTimelock`, `TreasuryConfig`, `Treasury`, `Payout`, `LimitChange`, `ConfigChange` |
-| Consumes | `openzeppelin-api-timelock-v1` `0.1.0`, `openzeppelin-timelock-v1` `0.1.0` |
+| Consumes | `openzeppelin-api-timelock-v1` `0.1.0`, `openzeppelin-timelock-utils` `0.1.0` |
 
 ## What it shows
 

@@ -1,7 +1,7 @@
--- | Internal helpers for `OpenZeppelin.TimelockV1`: the failure statuses,
+-- | Internal helpers for `OpenZeppelin.Timelock.Utils`: the failure statuses,
 -- which the public module re-exports, and the checks of the lifecycle
 -- functions.
-module OpenZeppelin.TimelockV1.Internal where
+module OpenZeppelin.Timelock.Utils.Internal where
 
 import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)

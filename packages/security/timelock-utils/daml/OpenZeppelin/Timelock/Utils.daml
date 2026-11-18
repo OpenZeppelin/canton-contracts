@@ -30,7 +30,7 @@
 --     t <- create this with pending = addPending op pending
 --     pure (t, op)
 -- ```
-module OpenZeppelin.TimelockV1
+module OpenZeppelin.Timelock.Utils
   ( applyOperation
   , dropOperation
   , isValidConfig
@@ -62,7 +62,7 @@ import DA.Optional (whenSome)
 import DA.Time (RelTime, addRelTime, isLedgerTimeGE, isLedgerTimeLE, isLedgerTimeLT, microseconds)
 
 import OpenZeppelin.Api.TimelockV1
-import OpenZeppelin.TimelockV1.Internal
+import OpenZeppelin.Timelock.Utils.Internal
 
 -- | The body of `Timelock_Apply`: apply a pending operation. Call it from the
 -- timelock's `applyImpl` method with the timelock as `target`.

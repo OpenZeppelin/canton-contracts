@@ -12,8 +12,8 @@ packages:
   - test/pausable-v1-test
   - packages/security/api-timelock-v1
   - test/api-timelock-v1-test
-  - packages/security/timelock-v1
-  - test/timelock-v1-test
+  - packages/security/timelock-utils
+  - test/timelock-utils-test
   - packages/token/token-cip112-types-v1
   - test/token-cip112-types-v1-test
   - packages/token/token-cip112-utils

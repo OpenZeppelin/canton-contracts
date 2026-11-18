@@ -13,8 +13,8 @@
 -- The package holds no logic. Each interface choice calls a method of the
 -- implementing template. The consumer writes the schedule choices and the
 -- `apply` and `unschedule` methods, and implements `applyImpl` and `dropImpl`
--- with the lifecycle functions of the `openzeppelin-timelock-v1` package,
--- module `OpenZeppelin.TimelockV1`. That package also holds the schedule
+-- with the lifecycle functions of the `openzeppelin-timelock-utils` package,
+-- module `OpenZeppelin.Timelock.Utils`. That package also holds the schedule
 -- functions, the time guards, and the failure statuses.
 module OpenZeppelin.Api.TimelockV1 where
 
@@ -101,7 +101,7 @@ data DropReason
 --
 -- `Timelock_Apply` and `Timelock_Drop` call the `applyImpl` or `dropImpl`
 -- method. Implement these two methods with `applyOperation` and
--- `dropOperation` from `OpenZeppelin.TimelockV1`. Those functions check the
+-- `dropOperation` from `OpenZeppelin.Timelock.Utils`. Those functions check the
 -- operation, archive it and the timelock, and then call the `apply` or
 -- `unschedule` method, which creates the successor timelock. The timelock's
 -- contract id changes on every schedule, apply, cancel, and cleanup. Both

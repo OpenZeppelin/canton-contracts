@@ -1,4 +1,4 @@
-# Timelock V1
+# Timelock Utils
 
 The lifecycle functions, the schedule functions, the pending-list functions,
 the time guards, and the failure statuses for the interfaces in
@@ -6,8 +6,8 @@ the time guards, and the failure statuses for the interfaces in
 
 | Field | Value |
 |---|---|
-| Package | `openzeppelin-timelock-v1` |
-| Public module | `OpenZeppelin.TimelockV1` |
+| Package | `openzeppelin-timelock-utils` |
+| Public module | `OpenZeppelin.Timelock.Utils` |
 | Version | `0.1.0` |
 | Depends on | `openzeppelin-api-timelock-v1` `0.1.0` |
 | Status | Pre-release; unaudited |
@@ -52,7 +52,7 @@ shows the whole integration. The functions appear in four places:
 
 ```daml
 import OpenZeppelin.Api.TimelockV1
-import OpenZeppelin.TimelockV1
+import OpenZeppelin.Timelock.Utils
 
     choice TreasuryTimelock_ScheduleLimit : (ContractId TreasuryTimelock, ContractId LimitChange)
       with
@@ -139,7 +139,7 @@ From the repository root, after building `openzeppelin-api-timelock-v1`:
 
 ```sh
 DAML_PACKAGE=packages/security/api-timelock-v1 dpm build
-DAML_PACKAGE=packages/security/timelock-v1 dpm build
+DAML_PACKAGE=packages/security/timelock-utils dpm build
 ```
 
 ## Consume a local build
@@ -147,12 +147,12 @@ DAML_PACKAGE=packages/security/timelock-v1 dpm build
 ```yaml
 data-dependencies:
   - ../canton-contracts/packages/security/api-timelock-v1/.daml/dist/openzeppelin-api-timelock-v1-0.1.0.dar
-  - ../canton-contracts/packages/security/timelock-v1/.daml/dist/openzeppelin-timelock-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/timelock-utils/.daml/dist/openzeppelin-timelock-utils-0.1.0.dar
 ```
 
 ```daml
 import OpenZeppelin.Api.TimelockV1
-import OpenZeppelin.TimelockV1
+import OpenZeppelin.Timelock.Utils
 ```
 
 Runnable consumer projects live under [`examples/timelock/`](../../../examples/timelock/).

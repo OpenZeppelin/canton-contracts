@@ -1,11 +1,11 @@
--- | Fixtures for `OpenZeppelin.TimelockV1`: an operation that implements
+-- | Fixtures for `OpenZeppelin.Timelock.Utils`: an operation that implements
 -- `Timelocked` only, and a probe that calls each function in a choice.
-module OpenZeppelin.TimelockV1TestFixtures where
+module OpenZeppelin.Timelock.Utils.Test.Fixtures where
 
 import DA.Time (RelTime)
 
 import OpenZeppelin.Api.TimelockV1
-import OpenZeppelin.TimelockV1
+import OpenZeppelin.Timelock.Utils
 
 -- | A scheduled operation with no effect.
 template Scheduled

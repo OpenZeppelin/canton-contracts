@@ -21,12 +21,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   `applyImpl` and `dropImpl` methods of the implementing template.
   `Timelock_Drop` takes a `DropReason` for cancellation or expiry cleanup.
 
-### `openzeppelin-timelock-v1`
+### `openzeppelin-timelock-utils`
 
 #### Added
 
-- Added the function package `openzeppelin-timelock-v1` with public module
-  `OpenZeppelin.TimelockV1`, holding `applyOperation`, `dropOperation`,
+- Added the function package `openzeppelin-timelock-utils` with public module
+  `OpenZeppelin.Timelock.Utils`, holding `applyOperation`, `dropOperation`,
   `scheduleAt`, `scheduleAfter`, `isValidConfig`, `requireValidConfig`,
   `addPending`, `takePending`, `requireReady`, `requireExpired`, `isReadyAt`,
   `isExpiredAt`, and the ten failure statuses of the component. It depends on

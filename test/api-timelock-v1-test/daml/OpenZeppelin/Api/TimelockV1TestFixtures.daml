@@ -10,7 +10,7 @@ import qualified DA.TextMap as TextMap
 import DA.Time (days)
 
 import OpenZeppelin.Api.TimelockV1
-import OpenZeppelin.TimelockV1
+import OpenZeppelin.Timelock.Utils
 
 -- | An effect that requires the claimed authority's signature.
 template UnauthorizedEffect

@@ -36,8 +36,10 @@ When a component defines an interface, use two production packages:
 
 ```text
 openzeppelin-api-<component>-v1    Frozen interfaces, exceptions, API types
-openzeppelin-<component>-v1        Templates or functions implementing the API
-openzeppelin-<component>-v1-test   Daml Script tests; never released
+openzeppelin-<component>-v1        Templates implementing the API
+openzeppelin-<component>-utils     Functions implementing the API; nothing
+                                   serializable
+openzeppelin-<component>-*-test    Daml Script tests; never released
 ```
 
 API packages may depend only on other API packages. A template-only component
@@ -75,6 +77,11 @@ standard follows the same split, keeping its helper functions in
 Timelock ships no template for a different reason. A scheduled operation is a
 contract of the consumer's own template, typed by its fields, because a Daml
 choice applies typed contract data rather than forwarding an encoded call.
+Its function package is `openzeppelin-timelock-utils`: it defines nothing
+serializable, which is what lets a consumer rebuild against any version, so
+it takes the utils name and the repository check that enforces the property.
+`openzeppelin-pausable-v1` predates that naming and keeps the Pausable guards
+and failure statuses under a `-v1` name.
 
 The API package follows the `openzeppelin-api-<component>-vN` freeze rule: no
 templates, no SCU, and a breaking change ships as a sibling `-v2` package. The
