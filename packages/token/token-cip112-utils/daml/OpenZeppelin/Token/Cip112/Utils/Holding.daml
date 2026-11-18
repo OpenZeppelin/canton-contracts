@@ -18,9 +18,9 @@
 -- caller-supplied holding id only ever enters through `fundHolding`, and the
 -- workflows consume the funding they locked through `deliverHolding` or
 -- `returnHolding`. Each must establish that the contract is an accepted
--- implementation before the workflow credits its amount. `consumeByArchive`
--- is the safe default; an interface `fetch` followed by an interface
--- `archive` is not.
+-- implementation, and archive it, before the workflow credits its amount.
+-- `consumeByArchive` is the safe default; an interface `fetch` followed by
+-- an interface `archive` is not.
 module OpenZeppelin.Token.Cip112.Utils.Holding where
 
 import DA.Assert (assertDeadlineExceeded)
@@ -57,8 +57,23 @@ isValidRegistryConfig c =
 -- owner. Each is both the accepted-implementation policy and the spend rule
 -- for its paths, and each takes the `ChoiceContext` of the choice the
 -- workflow runs in, followed by the holding id. All three share one law:
--- fail unless the contract is an accepted implementation, then remove the
--- holding from the ledger and return the view it had.
+-- fail unless the contract is an accepted implementation, then archive that
+-- holding and return the view it had.
+--
+-- The workflows pay a consumed holding's value into the holdings they
+-- create: `debitHoldings` tallies the view each operation returns as spent,
+-- and `unlockHoldings` re-creates that view unlocked. Only the archive stops
+-- the holding from being spent again, including an id repeated in one
+-- call's inputs, and the workflows cannot check it, because the only lookup
+-- by contract id, a fetch, aborts on an archived contract. So an operation
+-- must archive with a template-typed `archive`, as `consumeByArchive` does,
+-- or through a consuming choice on the pinned template. A second law covers
+-- the owner unlock: the choice that runs `holdingOwnerUnlockImpl` must be
+-- consuming, because the body creates the unlocked replacement and leaves
+-- archiving the locked holding to the choice. A consumer that breaks either
+-- law keeps the consumed holding live beside whatever the workflow made from
+-- it: transfers, allocations, settlements, returns, and owner unlocks create
+-- tokens, and a burn destroys none. The default templates keep both laws.
 --
 -- A rule in `deliverHolding` or `returnHolding` runs on funding the workflow
 -- locked itself. A refusal in one leaves the other's paths open, and a
@@ -193,7 +208,10 @@ newHolding ops admin account instrumentId amount lock =
 -- | Body of a consuming owner-unlock choice on a holding template: the lock
 -- has expired, so recreate the holding unlocked and emit an account-local
 -- `EventLog_HoldingsChange` naming the consumed holding and its replacement.
--- `self` is the holding being exercised; the choice itself archives it.
+-- `self` is the holding being exercised. The body never archives it, so the
+-- choice must be consuming: under a nonconsuming one the locked holding
+-- stays live beside its replacement, and each further exercise creates
+-- another.
 --
 -- None of the consumption operations runs here, so a rule that must block
 -- an owner unlock, such as a freeze, is checked inside the holding's own
@@ -252,6 +270,8 @@ consumeUnlockedHolding ops context admin expectedAccount cid = do
   pure h
 
 -- | Consume input holdings and tally the value they carried per instrument.
+-- The tally counts each view `consume` returns as spent, so `consume` must
+-- archive the holding it receives (see `HoldingOps`).
 debitHoldings
   : (ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView)
   -> [ContractId HoldingV2.Holding]
