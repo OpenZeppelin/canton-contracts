@@ -25,12 +25,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   module `OpenZeppelin.Api.PausableV1`, holding the `Pausable` interface and
   `PausableView`.
 
-### `openzeppelin-pausable-v1`
+### `openzeppelin-pausable-utils`
 
 #### Added
 
-- Added the function package `openzeppelin-pausable-v1` with public module
-  `OpenZeppelin.PausableV1`, holding the guards `whenNotPaused` and
+- Added the function package `openzeppelin-pausable-utils` with public module
+  `OpenZeppelin.Pausable.Utils`, holding the guards `whenNotPaused` and
   `whenPaused`, `isPaused`, and the failure statuses `eEnforcedPause` and
   `eExpectedPause`. It depends on `openzeppelin-api-pausable-v1`.
 

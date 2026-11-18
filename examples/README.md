@@ -20,7 +20,7 @@ Tests live in
 
 ## Pausable
 
-Consumers of `openzeppelin-api-pausable-v1` and `openzeppelin-pausable-v1`.
+Consumers of `openzeppelin-api-pausable-v1` and `openzeppelin-pausable-utils`.
 
 | Example | Tests | Shows |
 |---|---|---|
