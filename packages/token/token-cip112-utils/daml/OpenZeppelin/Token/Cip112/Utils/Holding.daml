@@ -61,15 +61,19 @@ isValidRegistryConfig c =
 -- then remove the holding from the ledger and return the view it had.
 --
 -- A rule in `deliverHolding` or `returnHolding` runs on funding the workflow
--- locked itself, so a refusal holds the locked funds until the rule passes.
--- Once the lock expires, only the holding's owner-unlock choice recovers
--- them. Put a rule there only if a known party can lift it without
--- re-creating the locked holding, such as a compliance officer lifting a
--- freeze kept on a separate per-account contract: a pending instruction or
--- allocation names its locked holdings by id, so replacing one orphans it.
--- A rule that should only stop new spending belongs in `fundHolding` alone.
--- A minimum holding age is one: the workflow creates locked funding, change,
--- and returned holdings when it runs, so each of them is new.
+-- locked itself. A refusal in one leaves the other's paths open, and a
+-- refusal in both holds the funds until the lock expires. After that the
+-- owner recovers them through the holding's owner-unlock choice, or by
+-- passing the holding to a factory, which runs `fundHolding`. A rule that
+-- must hold them longer is also checked in that choice and in `fundHolding`.
+-- Put a rule in `deliverHolding` or `returnHolding` only if a known party
+-- can lift it without re-creating the locked holding, such as a compliance
+-- officer lifting a freeze kept on a separate per-account contract. A
+-- pending instruction or allocation names its locked holdings by id, so it
+-- can neither pay out nor return a holding that was replaced. A rule that
+-- should only stop new spending, such as a minimum holding age, belongs in
+-- `fundHolding` alone: the workflow creates locked funding, change, and
+-- returned holdings when it runs, so each of them is new.
 --
 -- A rule that tracks live registry state reads the current policy contract
 -- from the context, and the operation checks the contract it fetches: its
