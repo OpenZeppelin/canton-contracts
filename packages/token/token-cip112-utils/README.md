@@ -64,13 +64,17 @@ contract id enters through an operation the template owner wrote:
   stays with the authorizer. `returnHolding` consumes locked funding on a
   transfer's reject, withdraw, and expiry, and on an allocation's withdraw
   and cancel.
-- A refusal in `deliverHolding` or `returnHolding` keeps locked funds locked
-  until the rule passes, and after the lock expires only the holding's
-  owner-unlock choice recovers them. Put a rule there only if a known party
-  can lift it without re-creating the locked holding: pending instructions
-  and allocations name their locked holdings by id, so a replaced holding
-  orphans them. A rule that only limits new spending, such as a minimum
-  holding age, belongs in `fundHolding`.
+- A refusal in `deliverHolding` or `returnHolding` leaves the other
+  operation's paths open, and a refusal in both holds the locked funds until
+  the lock expires. After that the owner recovers them through the holding's
+  owner-unlock choice or by passing the holding to a factory, which runs
+  `fundHolding`. A rule that must hold them longer is also checked in that
+  choice and in `fundHolding`. Put a rule in `deliverHolding` or
+  `returnHolding` only if a known party can lift it without re-creating the
+  locked holding: pending instructions and allocations name their locked
+  holdings by id, so they can neither pay out nor return a replaced holding.
+  A rule that only limits new spending, such as a minimum holding age,
+  belongs in `fundHolding`.
 - A rule that tracks live registry state reads the current policy contract
   from the context and checks the contract it fetches. A value copied into
   the holding does not follow later registry changes, and a policy contract
