@@ -448,6 +448,10 @@ testTransferTwoStep = do
   -- 3.0 change unlocked, 7.0 locked pending acceptance.
   aliceMid <- holdingAmounts alice
   aliceMid === [3.0, 7.0]
+  -- The lock context names the receiver party, not an `Optional` wrapper.
+  lockedHoldings <- query @TokenHolding alice
+  [l.context | (_, h) <- lockedHoldings, Some l <- [h.holding.lock]]
+    === [Some ("pending transfer to " <> partyToText bob)]
 
   -- Wallets see who can act on the pending instruction, and the view points at
   -- the live locked funding rather than the consumed inputs.

@@ -194,7 +194,7 @@ executeTransfer config ops createInstruction oneStep transfer = do
             expiresAfter = None
             context = Some $ if transfer.receiver == burnAccount
               then "pending burn"
-              else "pending transfer to " <> show transfer.receiver.owner
+              else "pending transfer to " <> partyToText (regularAccountOwner transfer.receiver)
       lockedCid <- newHolding ops admin transfer.sender transfer.instrumentId.id transfer.amount (Some lock)
       instructionCid <- createInstruction TransferInstructionState with
         transfer = transfer with inputHoldingCids = [lockedCid]
