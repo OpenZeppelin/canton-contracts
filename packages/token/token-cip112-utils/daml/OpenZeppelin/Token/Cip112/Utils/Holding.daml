@@ -104,8 +104,7 @@ data HoldingOps = HoldingOps with
       -- accept of a burn request, and `allocationSettleImpl`. Both consume
       -- all of the locked funding here, including any part that stays with
       -- its owner: an accept's surplus, a settlement's payout to the
-      -- authorizer, and a reserve rolled into the next iteration. A refusal
-      -- blocks accept and settle; every return path still runs.
+      -- authorizer, and a reserve rolled into the next iteration.
       -- `settleBatchImpl` passes each `Allocation_Settle` an empty context,
       -- so a rule that requires a context entry refuses every batch
       -- settlement.
@@ -113,9 +112,7 @@ data HoldingOps = HoldingOps with
       -- ^ Consume locked funding to return it to its owner, through
       -- `unlockHoldings`: `transferRejectImpl`, `transferWithdrawImpl`,
       -- `transferExpireImpl`, `allocationWithdrawImpl`, and
-      -- `allocationCancelImpl`. A refusal blocks every one of those paths;
-      -- accept and settle still run. `expireAllocationsImpl` cancels its
-      -- allocations in turn, so one refusal fails the whole batch.
+      -- `allocationCancelImpl`.
     withEventLog : (ContractId TransferEventsV2.EventLog -> Update ()) -> Update ()
       -- ^ Run one emission against an `EventLog` host. The default templates
       -- supply a transient host created and archived within the transaction.
