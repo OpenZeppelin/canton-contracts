@@ -12,7 +12,8 @@ privileged operation and its execution.
 
 ## What it provides
 
-Three interfaces and their views. The package holds no logic:
+Three interfaces and their views, the vocabulary a consumer's templates
+implement:
 
 - `Timelock`: the interface for the timelock template. Its view, `TimelockView`, carries the
   `authority` that applies operations, the `TimelockConfig` in force, and the
@@ -259,12 +260,12 @@ functions fail with `eInvalidAuthority` otherwise. The choices take authority
 from the timelock's signatories and the actor only, so a substituted timelock
 cannot use the operation's signatory authority.
 
-The pending list rejects operations created outside the schedule choices.
-It does not bind the governed config: the two checks in step 5 do. The
-signatory comparison authenticates the config's issuers, and the identifier
-binds it to one resource. Without the identifier, configs that the same
-signatories honestly issued for other resources substitute for each other,
-so adding signatories alone does not isolate resources. The signatories,
+The pending list rejects operations created outside the schedule choices,
+and the two checks in step 5 bind the governed config. The signatory
+comparison authenticates the config's issuers, and the identifier binds it
+to one resource. The identifier is what isolates resources: without it,
+configs that the same signatories honestly issued for other resources
+substitute for each other, however many signatories there are. The signatories,
 acting together, can still create a config with the same identifier and
 other settings, or a second timelock with its own config and policy. The
 delay therefore binds a party only when that party cannot create such
@@ -339,9 +340,9 @@ An interface query also returns operations that were created directly and
 have no pending entry. Match the results against the canonical timelock's
 `TimelockView.pending` before presenting them as scheduled operations.
 
-An operation that leaves the active set did not necessarily execute:
-execution, cancellation, cleanup, and a direct archive by its signatories all
-archive it. The lifecycle choices are nonconsuming, so the timelock's
+Execution, cancellation, cleanup, and a direct archive by its signatories
+all remove an operation from the active set, so its absence does not mean
+it executed. The lifecycle choices are nonconsuming, so the timelock's
 observers see the archive and the successor, not which choice ran. Tell the
 outcomes apart from the exercise events on the operation, from the successor
 timelock's state, or from a receipt that your `apply` creates for the
@@ -349,11 +350,11 @@ parties that need the answer.
 
 ## Scope and security caveats
 
-- The component is delayed governance over consumer-held state. The frozen
-  choices carry no execution-time inputs: `Operation_Execute` takes the actor
-  and the current timelock alone, so an operation's parameters are committed
-  on it at scheduling time, and the state `apply` reads lives on contracts
-  the timelock template records, as `target` does in the example. A workflow
+- The component is delayed governance over consumer-held state. Every input
+  an operation needs is committed on it at scheduling time:
+  `Operation_Execute` takes only the actor and the current timelock, and the
+  state `apply` reads lives on contracts the timelock template records, as
+  `target` does in the example. A workflow
   that needs inputs presented at execution, such as asset ids or a
   credential, writes its own choice on the timelock template with
   `takePending` and `requireReady`, or waits for a later API generation.
@@ -378,10 +379,10 @@ parties that need the answer.
   `Timelock_Drop` keep their names, arguments, and bodies for the life of
   `openzeppelin-api-timelock-v1`. The bodies only forward to methods, so the
   checks upgrade with `openzeppelin-timelock-utils`.
-- The interface does not enforce the checks. They run because your
-  `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`. A
-  method that skips them lets an executor apply an operation without the
-  delay.
+- The checks run because your `applyImpl` and `dropImpl` call
+  `applyOperation` and `dropOperation`; nothing in the interface enforces
+  that wiring. A method that skips them lets an executor apply an operation
+  without the delay.
 - Every choice that changes the pending list archives the timelock, so
   scheduling and applying contend on the timelock. Two proposers scheduling in the same
   instant see one of them fail and resubmit against the successor. Keep the
@@ -391,8 +392,9 @@ parties that need the answer.
   template whose parameters list several effects, applied atomically in one
   choice body. Ordering between operations is a precondition on the governed
   state.
-- The pending list has no size bound in the library, and every schedule,
-  apply, and drop copies and scans it. A proposer can fill it with operations
+- Bounding the pending list is the consumer's job: the library admits every
+  schedule, and every schedule, apply, and drop copies and scans the list.
+  A proposer can fill it with operations
   whose `readyAt` lies far in the future. A `gracePeriod` does not bound the
   list: expiry is `readyAt + gracePeriod`, so a far-future operation stays
   pending through its whole wait, and grace does not limit how many

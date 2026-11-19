@@ -10,11 +10,12 @@
 -- * `Timelocked`, on each operation template: when the operation is ready and
 --   when it expires.
 --
--- The package holds no logic. Each interface choice calls a method of the
--- implementing template. The consumer writes the schedule choices and the
--- `apply` and `unschedule` methods, and implements `applyImpl` and `dropImpl`
--- with the lifecycle functions of the `openzeppelin-timelock-utils` package,
--- module `OpenZeppelin.Timelock.Utils`. That package also holds the schedule
+-- The package defines the interfaces alone. Each interface choice calls a
+-- method of the implementing template. The consumer writes the schedule
+-- choices and the `apply` and `unschedule` methods, and implements
+-- `applyImpl` and `dropImpl` with the lifecycle functions of the
+-- `openzeppelin-timelock-utils` package, module `OpenZeppelin.Timelock.Utils`.
+-- That package also holds the schedule
 -- functions, the time guards, and the failure statuses.
 module OpenZeppelin.Api.TimelockV1 where
 
@@ -110,8 +111,8 @@ data DropReason
 --
 -- Requirements:
 --
--- * `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`.
---   The interface does not enforce the checks itself.
+-- * `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`;
+--   the checks run only through that wiring.
 -- * `authority` signs the timelock and every operation. The lifecycle
 --   functions fail with `eInvalidAuthority` otherwise.
 -- * Every signatory of the operation is a signatory of the timelock. The
