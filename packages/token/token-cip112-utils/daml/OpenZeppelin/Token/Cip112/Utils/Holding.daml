@@ -55,10 +55,10 @@ isValidRegistryConfig c =
 -- `fundHolding` for inputs a caller supplies, `deliverHolding` for locked
 -- funding paid out, and `returnHolding` for locked funding given back to its
 -- owner. Each is both the accepted-implementation policy and the spend rule
--- for its paths, and each takes the `ChoiceContext` the submitter passed to
--- the choice the workflow runs in, followed by the holding id. All three
--- share one law: fail unless the contract is an accepted implementation,
--- then remove the holding from the ledger and return the view it had.
+-- for its paths, and each takes the `ChoiceContext` of the choice the
+-- workflow runs in, followed by the holding id. All three share one law:
+-- fail unless the contract is an accepted implementation, then remove the
+-- holding from the ledger and return the view it had.
 --
 -- A rule in `deliverHolding` or `returnHolding` runs on funding the workflow
 -- locked itself. A refusal in one leaves the other's paths open, and a
