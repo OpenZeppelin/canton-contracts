@@ -1,0 +1,223 @@
+-- | OpenZeppelin Blocklist - an account blocklist that a designated blocker
+-- party maintains, and the guards a consuming template calls so that a
+-- blocked party can neither send nor receive.
+--
+-- A `Blocklist` contract holds the blocked set. The admin signs it, and the
+-- blocker observes it and blocks and unblocks parties. The consumer's own
+-- choices read the set: each choice that moves value fetches the contract
+-- with `fetchBlocklist`, which pins the template, the admin, and the id, and
+-- then calls `whenNotBlocked` for every party the move debits or credits.
+--
+-- ```
+-- choice Asset_Transfer : ContractId Asset
+--   with
+--     newOwner : Party
+--     blocklistCid : ContractId Blocklist
+--   controller owner
+--   do
+--     blocklist <- fetchBlocklist issuer "asset" blocklistCid
+--     whenNotBlocked blocklist owner
+--     whenNotBlocked blocklist newOwner
+--     create this with owner = newOwner
+-- ```
+--
+-- The key is a party. An application that keys its balances on another
+-- identifier, such as an account record with an owner and a provider, maps
+-- the identifier to its parties and checks each of them. A choice that takes
+-- a Splice `ExtraArgs` reads the blocklist with `fetchBlocklistFromContext`.
+module OpenZeppelin.BlocklistV1 where
+
+import DA.Action (unless, when)
+import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
+import DA.Set (Set)
+import qualified DA.Set as Set
+import DA.Text (sha256)
+import qualified DA.TextMap as TextMap
+import Splice.Api.Token.MetadataV1 (AnyValue (..), ChoiceContext (..))
+import qualified OpenZeppelin.BlocklistV1.Internal as Internal
+
+-- | The blocked set of one application, and the party that maintains it.
+--
+-- Signatories: `admin`. Observers: `blocker`. The blocker sees this contract
+-- and its history, and no contract that a guard protects: a `fetch` makes
+-- only the signatories and the acting parties informees, so the guarded
+-- transactions do not reach the blocker.
+--
+-- Controllers: the blocker exercises `Blocklist_Block` and
+-- `Blocklist_Unblock`; the admin exercises `Blocklist_SetBlocker`. The blocker
+-- can be any party, including an external party whose submissions need a
+-- threshold of its signing keys. The topology enforces that threshold, so
+-- the template needs no multi-signature logic, and a key rotation of the
+-- blocker changes the topology, not this contract.
+--
+-- Disclosure: every party that submits a guarded transaction, and every
+-- informee of its view, receives this contract with its whole `blocked` set.
+-- The set holds unsalted `blockedKey` digests. A digest hides a party only
+-- from a reader who cannot list candidate parties: a reader who knows a party
+-- id computes its digest, successive disclosures show which digests were
+-- added and removed, and the same party has the same digest in every
+-- blocklist.
+--
+-- Audit: each call is an exercise whose Ledger API update carries the choice
+-- name, its argument (the parties and the reason), the acting party, and the
+-- ledger effective time. The admin and the blocker at the time of the call
+-- see the update.
+--
+-- Canonical instance: there is no contract key, so `fetchBlocklist` accepts
+-- any active `Blocklist` with the expected `admin` and `id`. The admin is
+-- trusted to keep one active contract per `id`. The admin can also archive
+-- the contract and create it again with any set or blocker, outside the
+-- choices.
+--
+-- Size: a change archives the contract and creates its successor, so its
+-- transaction carries the set twice, about 74 bytes per entry per copy. A
+-- guarded transaction carries it once. `maxEntries` keeps a change within the
+-- synchronizer's maximum request size. A transaction that fetches the
+-- predecessor fails, and its submitter retries with the successor.
+template Blocklist
+  with
+    admin : Party
+      -- ^ Signs the contract and controls the blocker role. Never blocked.
+    blocker : Party
+      -- ^ Blocks and unblocks parties.
+    id : Text
+      -- ^ The identity a consumer pins with `fetchBlocklist`, unique per
+      -- admin.
+    blocked : Set Text
+      -- ^ The `blockedKey` of every blocked party.
+    maxEntries : Int
+      -- ^ The largest `blocked` set. A change carries about 150 bytes per
+      -- entry, so 50000 entries fit the default synchronizer maximum
+      -- request size of 10 MiB with room for the rest of the transaction.
+  where
+    signatory admin
+    observer blocker
+    ensure maxEntries > 0
+      && Set.size blocked <= maxEntries
+      && not (Set.member (blockedKey admin) blocked)
+
+    nonconsuming choice Blocklist_Block : ContractId Blocklist
+      -- ^ Add `accounts` to the blocked set. A party that is already blocked,
+      -- or listed twice, is skipped. When the set changes, the contract is
+      -- archived and its successor returned; otherwise the contract stays
+      -- active and its id is returned. Fails with `eAdminNotBlockable` for
+      -- the admin and with `eBlocklistFull` when the set would exceed
+      -- `maxEntries`. A failure leaves the set unchanged.
+      with
+        accounts : [Party]
+          -- ^ The parties to block.
+        reason : Text
+          -- ^ A free-form reference for the audit trail, such as a case
+          -- number. Visible to the stakeholders of this contract only.
+      controller blocker
+      do
+        when (admin `elem` accounts) (failWithStatus eAdminNotBlockable)
+        let newBlocked = foldl (\set account -> Set.insert (blockedKey account) set) blocked accounts
+        when (Set.size newBlocked > maxEntries) (failWithStatus (eBlocklistFull maxEntries))
+        Internal.replaceIfChanged self this blocked newBlocked
+
+    nonconsuming choice Blocklist_Unblock : ContractId Blocklist
+      -- ^ Remove `accounts` from the blocked set. A party that is not
+      -- blocked, or is listed twice, is skipped. When the set changes, the
+      -- contract is archived and its successor returned; otherwise the
+      -- contract stays active and its id is returned.
+      with
+        accounts : [Party]
+          -- ^ The parties to unblock.
+        reason : Text
+          -- ^ A free-form reference for the audit trail.
+      controller blocker
+      do
+        let newBlocked = foldl (\set account -> Set.delete (blockedKey account) set) blocked accounts
+        Internal.replaceIfChanged self this blocked newBlocked
+
+    choice Blocklist_SetBlocker : ContractId Blocklist
+      -- ^ Give the blocker role to `newBlocker`. The blocked set is
+      -- unchanged. The previous blocker sees this change and loses the role.
+      with
+        newBlocker : Party
+        reason : Text
+          -- ^ A free-form reference for the audit trail.
+      controller admin
+      do create this with blocker = newBlocker
+
+-- | The choice-context key under which an application that passes
+-- `ExtraArgs` to its choices, such as a CIP-0112 registry, supplies the
+-- blocklist contract id.
+blocklistContextKey : Text
+blocklistContextKey = "blocklist"
+
+-- | The entry that represents `party` in the blocked set: the unsalted
+-- SHA-256 digest of the party's text form. Anyone who knows the party id
+-- computes the same digest.
+blockedKey : Party -> Text
+blockedKey party = sha256 (partyToText party)
+
+-- | `True` when `party` is blocked.
+isBlocked : Blocklist -> Party -> Bool
+isBlocked blocklist party = Set.member (blockedKey party) blocklist.blocked
+
+-- | Fail with `eAccountBlocked` when `party` is blocked. Call it for every
+-- party that a choice debits or credits, before the state change.
+whenNotBlocked : Blocklist -> Party -> Update ()
+whenNotBlocked blocklist party =
+  when (isBlocked blocklist party) (failWithStatus (eAccountBlocked party))
+
+-- | Fetch a caller-supplied `Blocklist` and fail with `eWrongBlocklist`
+-- unless its admin and id are the expected ones. Take `admin` and `id` from
+-- trusted state, such as the contract being exercised. The fetch needs the
+-- authority of a stakeholder, so call it from a choice on a contract that
+-- the admin signs.
+fetchBlocklist : Party -> Text -> ContractId Blocklist -> Update Blocklist
+fetchBlocklist admin id cid = do
+  blocklist <- fetch cid
+  unless (blocklist.admin == admin && blocklist.id == id)
+    (failWithStatus (eWrongBlocklist admin id))
+  pure blocklist
+
+-- | `fetchBlocklist` for the contract id under `blocklistContextKey` in a
+-- Splice `ChoiceContext`. Fails with `eBlocklistMissing` when the key is
+-- absent or holds no contract id, so a caller cannot skip the guard by
+-- leaving the blocklist out.
+fetchBlocklistFromContext : Party -> Text -> ChoiceContext -> Update Blocklist
+fetchBlocklistFromContext admin id context =
+  case TextMap.lookup blocklistContextKey context.values of
+    Some (AV_ContractId cid) -> fetchBlocklist admin id (coerceContractId cid)
+    _ -> failWithStatus eBlocklistMissing
+
+-- Failure statuses. Each reaches the Ledger API as a `DAML_FAILURE` error
+-- carrying the `errorId` below, so a client matches on the id.
+
+-- | Raised when a guarded choice debits or credits a blocked party.
+-- `errorId`: `openzeppelin.com/blocklist-account-blocked`. `meta` holds the
+-- party under `account`.
+eAccountBlocked : Party -> FailureStatus
+eAccountBlocked party = Internal.blocklistFailure "account-blocked" InvalidGivenCurrentSystemStateOther
+  "Blocklist: the account is blocked" [("account", partyToText party)]
+
+-- | Raised when a block would make the set larger than `maxEntries`.
+-- `errorId`: `openzeppelin.com/blocklist-full`. `meta` holds the limit under
+-- `maxEntries`.
+eBlocklistFull : Int -> FailureStatus
+eBlocklistFull maxEntries = Internal.blocklistFailure "full" InvalidGivenCurrentSystemStateOther
+  "Blocklist: the blocklist is full" [("maxEntries", show maxEntries)]
+
+-- | Raised when the blocker blocks the admin.
+-- `errorId`: `openzeppelin.com/blocklist-admin-not-blockable`.
+eAdminNotBlockable : FailureStatus
+eAdminNotBlockable = Internal.blocklistFailure "admin-not-blockable" InvalidIndependentOfSystemState
+  "Blocklist: the admin cannot be blocked" []
+
+-- | Raised when `fetchBlocklist` receives a blocklist with another admin or
+-- id. `errorId`: `openzeppelin.com/blocklist-wrong-blocklist`. `meta` holds
+-- the expected values under `admin` and `id`.
+eWrongBlocklist : Party -> Text -> FailureStatus
+eWrongBlocklist admin id = Internal.blocklistFailure "wrong-blocklist" InvalidIndependentOfSystemState
+  "Blocklist: the blocklist is not the expected one" [("admin", partyToText admin), ("id", id)]
+
+-- | Raised when `fetchBlocklistFromContext` finds no contract id under
+-- `blocklistContextKey`. `errorId`: `openzeppelin.com/blocklist-missing`.
+-- `meta` holds the key under `contextKey`.
+eBlocklistMissing : FailureStatus
+eBlocklistMissing = Internal.blocklistFailure "missing" InvalidIndependentOfSystemState
+  "Blocklist: the choice context holds no blocklist contract id" [("contextKey", blocklistContextKey)]

@@ -55,6 +55,10 @@ contract id enters through an operation the template owner wrote:
   control. Use `pinAllocationTo @YourAllocation`.
 - `createHolding` must create a contract whose view equals the argument and
   whose signatories include the admin and the account parties.
+- `settleBatchImpl` passes its `ChoiceContext` argument to each allocation's
+  `Allocation_Settle`, and every authorizer sees it. Pass
+  `emptyChoiceContext`, or a context that the factory body builds from
+  checked values only, never the batch's own context.
 - The settlement factory must settle through `settleBatchImpl`, or keep its
   exact-cover check: every leg in the batch needs a sending and a receiving
   allocation with the same amount. Without it, a settlement can create

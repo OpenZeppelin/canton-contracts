@@ -71,8 +71,12 @@ for the behavior and security properties these tests check.
 
 Run `scripts/check-sandbox.sh` for the token sandbox gate. Set
 `OZ_SANDBOX_SUITE` to `authorization`, `licensing`, or `treasury` for the grant
-and integration-example Ledger API checks. CI runs all four suites on separate fresh
-static-time ledgers.
+and integration-example Ledger API checks, to `blocklist` for the blocklist
+checks, to `custom-token` for the blocklist checks of the custom token
+example, or to `external-blocker` for a blocker that is an external party
+with a two-of-three signing-key threshold. The `external-blocker` suite drives
+the sandbox with `dpm canton-console` and runs on the script-managed sandbox
+only. CI runs all seven suites on separate fresh static-time ledgers.
 
 ## Choosing the right repository
 

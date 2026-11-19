@@ -72,6 +72,96 @@ means the template implements both interfaces for life; dropping the `-v1`
 instance needs a new template version outside SCU and an offline contract
 migration that copies the flag.
 
+### Guards that read a shared contract
+
+Blocklist is the model for state that cannot live on the contract being
+exercised. A blocked party has many holdings and pending contracts, and a
+block must stop all of them at once, so the blocked set is one `Blocklist`
+contract that every guarded choice fetches. A caller supplies that contract,
+which is the substitution risk the Pausable section describes. Three rules
+contain it:
+
+- `fetchBlocklist` pins the template, the admin, and an `id` that the guarded
+  template takes from its own state. A caller who presents a blocklist of
+  their own fails the admin check. LF 2.1 has no contract keys, so uniqueness
+  per admin and `id` is the admin's responsibility.
+- A guarded choice that receives no blocklist fails. A token standard
+  interface choice has no blocklist argument, so the blocklist arrives in the
+  choice context, as the standard intends for registry-supplied contracts.
+  `fetchBlocklistFromContext` reads it there, which makes the package depend
+  on the frozen `splice-api-token-metadata-v1` API package for the
+  `ChoiceContext` type.
+- The admin is the only signatory. The informees of a `fetch` are the
+  signatories and the acting parties. If the blocker also signed, its
+  participant would confirm every guarded transaction and learn its timing.
+  As an observer, the blocker sees the blocklist and its changes only, and an
+  unavailable blocker never stops a transfer.
+
+The set stores unsalted SHA-256 digests of parties. Every submitter of a
+guarded transaction receives the whole contract by disclosure. A digest keeps
+party ids out of the payload, which is obfuscation, not confidentiality:
+anyone who can list party ids computes their digests, successive disclosures
+show the changes, and a party has the same digest in every blocklist. A salt
+would not change this, because the guard needs the salt to compute the
+digest, so every reader of the contract would also hold it.
+
+Two other structures trade simplicity for confidentiality or cost. A
+contract that holds a Merkle root of the sorted set lets a guarded
+transaction carry a proof of non-membership for its parties instead of the
+set: a reader learns nothing beyond that proof, and the cost per transfer
+grows with the logarithm of the set size. Shards by digest prefix, one
+contract per prefix, let a transaction carry only the shards of its parties:
+the cost per transfer falls, and a reader still learns every digest in those
+shards. The single contract is the simplest structure whose guard is sound
+without contract keys, and its cost is linear in the size of the set.
+
+The key is a party, not an account record. A CIP-0112 account `id` is free
+text that its owner chooses, so a block on an `id` does not hold. The token
+checks the owner and the provider of each account. A provider authorizes
+every movement of the accounts it provides, so a blocked provider blocks all
+of them; to block one client of a provider, block the client.
+
+One contract keeps the guard sound, and it bounds the size of the set. A
+change carries the set twice and a guarded transaction carries it once, so
+the synchronizer's maximum request size limits both. Past that limit no
+change fits, not even an unblock, so the `ensure` clause bounds the set by an
+admin-chosen `maxEntries`. Each change also invalidates every transaction
+prepared against the predecessor, so one choice changes a list of parties:
+an update of a screening list is one change, and its audit record is one
+exercise. A party already in the target state is skipped, as the
+OpenZeppelin EVM and Stellar blocklists do, so a synchronization job sends
+the whole list without first computing the difference. A call that changes
+nothing keeps the contract, so it invalidates no prepared transaction.
+
+The blocklist stops value from moving between accounts. Withdraw, reject,
+cancel, expiry, and owner unlock return locked funds to the account that
+locked them, so they stay open for a blocked account, and every later
+transfer from that account is refused. This keeps the CIP-0112 section 4.3.3
+withdraw after the settlement deadline, and it keeps every pending workflow
+recoverable by its own parties.
+
+Settlement checks run in each allocation's settle as well as in the
+settlement factory, so a direct `Allocation_Settle` by the admin and the
+executors is checked too. The factory forwards only the blocklist entry of
+its context to each settle, through the context argument of
+`settleBatchImpl`, so no other part of the batch's arguments reaches an
+authorizer.
+
+The admin changes the blocker in one step. A two-step handover protects a
+role that signs the contract; the blocker only observes it, and the admin
+can correct a wrong party at any time. A key rotation of an external blocker
+is a topology change that keeps the party, so it needs no ledger change.
+
+`Blocklist` is a template with no interface, so the component is one package.
+A guard reads the blocklist through the template, which it can pin; a frozen
+interface would admit implementations that it cannot pin.
+
+A token that needs a blocklist owns its templates and adds the checks, as
+`examples/token/token-cip112-custom` does. `openzeppelin-token-cip112-v1`
+stays independent of `openzeppelin-blocklist-v1`, because a dependency
+between implementation packages needs an architecture decision and an SCU
+lineage cannot drop it later.
+
 ### Utilities, types, and templates
 
 A component whose choice bodies consumers want to reuse with templates of

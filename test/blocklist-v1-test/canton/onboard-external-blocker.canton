@@ -1,0 +1,57 @@
+// Onboard an external party whose submissions need two of its three
+// Ed25519 signing keys. The keys are generated here and imported into the
+// participant, so that the participant can sign the onboarding topology
+// transactions with them; the submission signatures come from the same keys
+// in block-as-external-blocker.canton. Writes the party id, the key
+// fingerprints, and the private keys to OZ_EXTERNAL_DIR.
+import com.digitalasset.canton.config.RequireTypes.PositiveInt
+import com.digitalasset.canton.crypto._
+import com.digitalasset.canton.topology._
+import com.digitalasset.canton.topology.transaction._
+import com.daml.nonempty.NonEmpty
+import com.google.protobuf.ByteString
+import java.nio.file.{Files, Paths}
+import java.security.KeyPairGenerator
+
+val dir = sys.env("OZ_EXTERNAL_DIR")
+val p = participants.all.head
+val psid = p.synchronizers.list_connected().head.physicalSynchronizerId
+val syncId = psid.logical
+val usage: NonEmpty[Set[SigningKeyUsage]] = NonEmpty(Set, SigningKeyUsage.Namespace, SigningKeyUsage.Protocol)
+val generator = KeyPairGenerator.getInstance("Ed25519")
+val jdkKeys = (0 to 2).map(_ => generator.generateKeyPair())
+val publicKeys = jdkKeys.zipWithIndex.map { case (k, i) =>
+  val pub = SigningPublicKey.create(CryptoKeyFormat.DerX509Spki, ByteString.copyFrom(k.getPublic.getEncoded),
+    SigningKeySpec.EcCurve25519, usage).fold(e => sys.error(e.toString), x => x)
+  val pubProto = pub.toProtoV30
+  val priv = SigningPrivateKey.fromProtoV30(com.digitalasset.canton.crypto.v30.SigningPrivateKey(
+    id = pub.id.toProtoPrimitive,
+    format = CryptoKeyFormat.DerPkcs8Pki.toProtoEnum,
+    privateKey = ByteString.copyFrom(k.getPrivate.getEncoded),
+    scheme = com.digitalasset.canton.crypto.v30.SigningKeyScheme.SIGNING_KEY_SCHEME_UNSPECIFIED,
+    usage = pubProto.usage,
+    keySpec = pubProto.keySpec)).fold(e => sys.error(e.toString), x => x)
+  p.keys.secret.upload(SigningKeyPair.create(pub, priv).toByteString(psid.protocolVersion), Some(s"external-blocker-$i"), None)
+  Files.write(Paths.get(s"$dir/key$i.pkcs8"), k.getPrivate.getEncoded)
+  Files.write(Paths.get(s"$dir/key$i.fingerprint"), pub.fingerprint.toProtoPrimitive.getBytes)
+  pub
+}
+val namespace = Namespace(publicKeys.head.fingerprint)
+p.topology.namespace_delegations.propose_delegation(namespace, publicKeys.head,
+  DelegationRestriction.CanSignAllMappings, store = syncId)
+val party = PartyId(UniqueIdentifier.tryCreate("external-blocker", namespace))
+p.topology.party_to_participant_mappings.propose(party, Seq(p.id -> ParticipantPermission.Confirmation),
+  PositiveInt.one,
+  partySigningKeys = Some(SigningKeysWithThreshold(NonEmpty.from(publicKeys.toSet).get, PositiveInt.two)),
+  signedBy = publicKeys.map(_.fingerprint) :+ p.id.fingerprint,
+  store = syncId)
+var hosted = false
+var attempts = 0
+while (!hosted && attempts < 60) {
+  hosted = p.ledger_api.parties.list().exists(_.party == party)
+  if (!hosted) { Thread.sleep(500); attempts += 1 }
+}
+if (hosted) {
+  Files.write(Paths.get(s"$dir/party.json"), ("\"" + party.toProtoPrimitive + "\"").getBytes)
+  println(s"EXTERNAL-BLOCKER-ONBOARDED ${party.toProtoPrimitive}")
+} else println("EXTERNAL-BLOCKER-FAIL the party did not appear on the Ledger API")

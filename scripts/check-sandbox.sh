@@ -11,7 +11,12 @@
 # set OZ_USE_EXTERNAL_LEDGER=1 together with OZ_LEDGER_HOST / OZ_LEDGER_PORT.
 # Use a fresh external static-time ledger for each suite. Scripts that advance
 # time run last. OZ_SANDBOX_SUITE selects token (default), authorization,
-# licensing, or treasury.
+# licensing, treasury, blocklist, custom-token, or external-blocker.
+#
+# The external-blocker suite onboards an external party that needs two of its
+# three signing keys, and blocks a party as that party through interactive
+# submission. It drives the sandbox with `dpm canton-console`, which connects
+# to the default sandbox ports, so it runs on the script-managed sandbox only.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,6 +61,18 @@ treasury)
 	TEST_PKG="examples/treasury-rbac-v1-test"
 	SCRIPTS=(Example.TreasuryRbacV1SandboxTest:sandboxTreasury)
 	;;
+blocklist)
+	TEST_PKG="test/blocklist-v1-test"
+	SCRIPTS=(OpenZeppelin.BlocklistV1SandboxTest:sandboxBlocklist)
+	;;
+custom-token)
+	TEST_PKG="examples/token/token-cip112-custom-test"
+	SCRIPTS=(OpenZeppelin.Examples.Token.Cip112.Custom.Test.Sandbox:sandboxCustomTokenBlocklist)
+	;;
+external-blocker)
+	TEST_PKG="test/blocklist-v1-test"
+	SCRIPTS=()
+	;;
 *)
 	printf 'check-sandbox: unknown suite: %s\n' "$SUITE" >&2
 	exit 1
@@ -68,6 +85,11 @@ LEDGER_PORT="${OZ_LEDGER_PORT:-6865}"
 USE_EXTERNAL_LEDGER="${OZ_USE_EXTERNAL_LEDGER:-0}"
 LOG_DIR="${OZ_SANDBOX_LOG_DIR:-$ROOT/.cache/sandbox-$SUITE}"
 mkdir -p "$LOG_DIR"
+
+if [ "$SUITE" = external-blocker ] && { [ "$USE_EXTERNAL_LEDGER" = 1 ] || [ "$LEDGER_PORT" != 6865 ]; }; then
+	printf 'check-sandbox: the external-blocker suite needs the script-managed sandbox on port 6865\n' >&2
+	exit 1
+fi
 
 printf 'check-sandbox: building the %s test package\n' "$SUITE"
 (cd "$ROOT" && DAML_PACKAGE="$TEST_PKG" dpm build)
@@ -150,14 +172,82 @@ else
 	}
 fi
 
+# Run one Canton console script against the sandbox and require its marker.
+run_console() {
+	local script="$1"
+	local marker="$2"
+	local log
+	log="$LOG_DIR/$(basename "$script" .canton).log"
+	(cd "$LOG_DIR" && OZ_EXTERNAL_DIR="$LOG_DIR" dpm canton-console --no-tty \
+		--bootstrap "$ROOT/$TEST_PKG/canton/$script" < /dev/null > "$log" 2>&1) || true
+	grep -q "^$marker" "$log"
+}
+
+# Run one Daml Script with a JSON input and an optional JSON output.
+run_script_io() {
+	local name="$1"
+	local input="$2"
+	local output="${3:-}"
+	local log="$LOG_DIR/${name##*:}.log"
+	(cd "$ROOT" && DAML_PACKAGE="$TEST_PKG" dpm script --dar "$DAR" --script-name "$name" \
+		--ledger-host "$LEDGER_HOST" --ledger-port "$LEDGER_PORT" --static-time \
+		--input-file "$input" ${output:+--output-file "$output"} > "$log" 2>&1)
+}
+
 fail=0
-for name in "${SCRIPTS[@]}"; do
+passed=0
+unit=scripts
+
+pass_step() {
+	printf 'check-sandbox: PASS %s\n' "$1"
+	passed=$((passed + 1))
+}
+
+# Require the reason that the console logged between the start and the result
+# of one step of block-as-external-blocker.canton.
+check_refusal() {
+	local name="$1"
+	local reason="$2"
+	local log="$LOG_DIR/block-as-external-blocker.log"
+	if awk -v start="EXTERNAL-BLOCKER-STEP $name" -v done_pass="EXTERNAL-BLOCKER-PASS $name" \
+		'$0 == start { on = 1; next } $0 == done_pass { on = 0 } on' "$log" | grep -Fq "$reason"; then
+		pass_step "$name is refused: $reason"
+	else
+		printf 'check-sandbox: FAIL %s: expected the reason "%s" in %s\n' "$name" "$reason" "$log" >&2
+		return 1
+	fi
+}
+
+run_external_blocker() {
+	local module=OpenZeppelin.BlocklistV1ExternalBlockerTest
+	run_console onboard-external-blocker.canton EXTERNAL-BLOCKER-ONBOARDED || return 1
+	pass_step "onboard an external blocker that needs two of its three keys"
+	run_script_io "$module:setupExternalBlocker" "$LOG_DIR/party.json" "$LOG_DIR/fixture.json" || return 1
+	pass_step "create a blocklist whose blocker is the external party"
+	run_console block-as-external-blocker.canton EXTERNAL-BLOCKER-OK || return 1
+	check_refusal no-signature NO_SYNCHRONIZER_ON_WHICH_ALL_SUBMITTERS_CAN_SUBMIT || return 1
+	check_refusal one-signature "Received 1 valid signatures from distinct keys" || return 1
+	check_refusal same-key-twice "Received 1 valid signatures from distinct keys" || return 1
+	pass_step "two-distinct-keys blocks the party"
+	run_script_io "$module:checkExternalBlocker" "$LOG_DIR/fixture.json" || return 1
+	pass_step "the guard refuses the blocked party"
+}
+
+if [ "$SUITE" = external-blocker ]; then
+	unit=steps
+	if ! run_external_blocker; then
+		printf 'check-sandbox: FAIL external blocker (see %s)\n' "$LOG_DIR" >&2
+		fail=1
+	fi
+fi
+for name in ${SCRIPTS[@]+"${SCRIPTS[@]}"}; do
 	s="${name##*:}"
 	log="$LOG_DIR/$s.log"
 	if (cd "$ROOT" && DAML_PACKAGE="$TEST_PKG" dpm script --dar "$DAR" --script-name "$name" \
 		--ledger-host "$LEDGER_HOST" --ledger-port "$LEDGER_PORT" \
 		--static-time > "$log" 2>&1); then
 		printf 'check-sandbox: PASS %s\n' "$s"
+		passed=$((passed + 1))
 	else
 		printf 'check-sandbox: FAIL %s (see %s)\n' "$s" "$log" >&2
 		fail=1
@@ -168,4 +258,4 @@ done
 	printf 'check-sandbox: FAILED\n' >&2
 	exit 1
 }
-printf 'check-sandbox: OK - all %d %s scripts passed on the sandbox\n' "${#SCRIPTS[@]}" "$SUITE"
+printf 'check-sandbox: OK - all %d %s %s passed on the sandbox\n' "$passed" "$SUITE" "$unit"

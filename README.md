@@ -22,6 +22,7 @@ The library provides the following packages under [`packages/`](packages/):
 | [Scoped Authorization Grant](packages/access/scoped-authorization-grant-v1/) | `openzeppelin-scoped-authorization-grant-v1` | `OpenZeppelin.ScopedAuthorizationGrantV1` |
 | [Pausable API](packages/security/api-pausable-v1/) | `openzeppelin-api-pausable-v1` | `OpenZeppelin.Api.PausableV1` |
 | [Pausable](packages/security/pausable-v1/) | `openzeppelin-pausable-v1` | `OpenZeppelin.PausableV1` |
+| [Blocklist](packages/security/blocklist-v1/) | `openzeppelin-blocklist-v1` | `OpenZeppelin.BlocklistV1` |
 | [Token CIP-0112 types](packages/token/token-cip112-types-v1/) | `openzeppelin-token-cip112-types-v1` | `OpenZeppelin.Token.Cip112.TypesV1` |
 | [Token CIP-0112 utils](packages/token/token-cip112-utils/) | `openzeppelin-token-cip112-utils` | `OpenZeppelin.Token.Cip112.Utils` |
 | [Token CIP-0112](packages/token/token-cip112-v1/) | `openzeppelin-token-cip112-v1` | `OpenZeppelin.Token.Cip112.V1` |
@@ -88,7 +89,7 @@ Each package `README.md` shows the consumer code for that component, and
 
 packages/                 Library components and release candidates
   access/                 Authorization components
-  security/               Emergency-stop and safety components
+  security/               Emergency-stop, blocklist, and safety components
   token/                  Category for token standard and settlement components
 test/                     Isolated library test packages
 dars/
@@ -156,5 +157,8 @@ or the Splice `splice-token-standard-utils` package
 (https://github.com/canton-network/splice/tree/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/)
 carry Digital Asset's copyright notice and are licensed `MIT AND Apache-2.0`.
 The `README.md` of each token package lists those files and the Splice modules
-they derive from. The Splice DARs under `dars/vendor/` are licensed Apache-2.0. The Apache
-License 2.0 text is in [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt).
+they derive from. The Splice DARs under `dars/vendor/` are licensed
+Apache-2.0. The DARs of the CIP-0112 token packages and of
+`openzeppelin-blocklist-v1` bundle Splice packages from `dars/vendor/`;
+[`RELEASING.md`](RELEASING.md) lists them. The Apache License 2.0 text is in
+[`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt).
