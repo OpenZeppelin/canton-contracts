@@ -78,10 +78,13 @@ isValidRegistryConfig c =
 -- A rule that tracks live registry state reads the current policy contract
 -- from the context, and the operation checks the contract it fetches: its
 -- template, its signatories, and that it covers this holding's admin and
--- account. Neither of the two simpler designs follows the registry. A value
--- copied into the holding when it is created stays fixed after the registry
--- changes it, and a policy contract id stored in the holding fails every
--- spend once the registry replaces that contract.
+-- account. The submitter writes the context, so the operation fails when
+-- the entry is missing, and the contract's presence is what permits the
+-- spend: a context cannot show that a contract is absent. Neither of the
+-- two simpler designs follows the registry. A value copied into the holding
+-- when it is created stays fixed after the registry changes it, and a policy
+-- contract id stored in the holding fails every spend once the registry
+-- replaces that contract.
 data HoldingOps = HoldingOps with
     createHolding : HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
       -- ^ Create a holding from its standard view. Law: the created
