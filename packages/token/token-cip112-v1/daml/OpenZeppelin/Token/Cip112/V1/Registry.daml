@@ -100,7 +100,7 @@ template TokenRules with
           _ <- exercise cid TokenTransferInstruction_Expire
           pure ()
 
-rulesOps : RegistryConfig -> HoldingOps
+rulesOps : RegistryConfig -> HoldingOps TokenHolding
 rulesOps config = defaultHoldingOps config.admin
 
 createInstruction : CreateTransferInstruction
