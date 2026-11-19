@@ -9,7 +9,9 @@
 -- to move, that a refusing payout or return blocks only its own paths, that
 -- every operation receives the context its submitter passed, and the two
 -- limits of that delivery: batch settlement passes an empty context, and one
--- refusal fails a whole expiry batch.
+-- refusal fails a whole expiry batch. A merge funds its inputs through
+-- `fundHolding`, while the holding a merge or split is exercised on runs no
+-- operation at all.
 module OpenZeppelin.Token.Cip112.Utils.Test.Operations where
 
 import DA.Action (replicateA, unless)
@@ -110,6 +112,20 @@ template PolicyHolding with
     choice PolicyHolding_OwnerUnlock : ContractId HoldingV2.Holding
       controller accountParties holding.instrumentId.admin holding.account
       do holdingOwnerUnlockImpl (policyOps policy) (toInterfaceContractId self) holding
+
+    -- | A merge taking the context its operations read, as a consumer whose
+    -- spend rule needs one would.
+    choice PolicyHolding_Merge : ContractId HoldingV2.Holding
+      with
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+        context : ChoiceContext
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingMergeImpl (policyOps policy) context (toInterfaceContractId self) holding inputHoldingCids
+
+    choice PolicyHolding_Split : [ContractId HoldingV2.Holding]
+      with amounts : [Decimal]
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingSplitImpl (policyOps policy) (toInterfaceContractId self) holding amounts
 
     interface instance HoldingV2.Holding for PolicyHolding where
       view = holding
@@ -627,3 +643,30 @@ testOneRefusingReturnFailsTheExpiryBatch = do
   submit (actAs admin) (expireCmdFor [allowed])
   [(_, stillLocked)] <- queryFilter @PolicyHolding alice (\h -> isSome h.holding.lock)
   stillLocked.policy === refusing.policy
+
+-- | A merge consumes each input through `fundHolding`, with the context its
+-- submitter passed, and runs no operation on the exercised holding; a split
+-- runs none at all. So a refusing fund rule refuses a merge of the same
+-- holdings it lets a split through, and a rule meant to cover the exercised
+-- holding, such as a freeze, belongs in the holding's own choice.
+testMergeFundsOnlyItsInputs : Script ()
+testMergeFundsOnlyItsInputs = do
+  w@World{..} <- setupWith allowAll
+  [i1, i2, i3] <- replicateA 3 (mint w alice)
+  let exercised = fromInterfaceContractId @PolicyHolding i1
+  (mergedCid, tree) <- submitResultAndTree (actAs alice) do
+    exerciseCmd exercised PolicyHolding_Merge with inputHoldingCids = [i2, i3]; context = ctx "merge"
+  opCalls tree === [OpCall "fund" (ctx "merge"), OpCall "fund" (ctx "merge")]
+  balanceOf alice >>= (=== [30.0])
+  tree <- submitTree (actAs alice) do
+    exerciseCmd (fromInterfaceContractId @PolicyHolding mergedCid) PolicyHolding_Split with amounts = [10.0, 20.0]
+  opCalls tree === []
+
+  refusing <- withRules w (allowAll with fundRule = Refuse)
+  [j1, j2] <- replicateA 2 (mint refusing alice)
+  mustFailWith "fund rule refuses" (actAs alice) do
+    exerciseCmd (fromInterfaceContractId @PolicyHolding j1) PolicyHolding_Merge with
+      inputHoldingCids = [j2]; context = emptyChoiceContext
+  _ <- submit (actAs alice) do
+    exerciseCmd (fromInterfaceContractId @PolicyHolding j1) PolicyHolding_Split with amounts = [4.0, 6.0]
+  balanceOf alice >>= (=== [4.0, 6.0, 10.0, 10.0, 20.0])

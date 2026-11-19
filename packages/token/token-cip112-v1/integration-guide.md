@@ -73,6 +73,34 @@ Authorization: sender parties initiate; receiver parties accept or reject;
 sender parties withdraw; the admin expires after the instruction's storage
 bound.
 
+### Rebalancing holdings
+
+A wallet merges small holdings or splits one into exact amounts in one of
+two ways:
+
+- **Through the holding's own choices.** A wallet that knows `TokenHolding`
+  exercises `TokenHolding_Merge` on one holding, naming the others as
+  `inputHoldingCids`, or `TokenHolding_Split` with the amounts to create,
+  which must sum to the holding's amount. Neither needs the disclosed
+  `TokenRules` contract. Each emits one `EventLog_HoldingsChange` on the
+  account with no transfer legs, naming every consumed and created holding.
+- **Through a self-transfer.** `TransferFactory_Transfer` from an account to
+  itself completes in one step: it consumes the inputs and creates one
+  holding of the transfer amount plus one of the change. Wallets that use
+  only the `HoldingV2.Holding` interface cannot see template choices, as
+  with `TokenHolding_OwnerUnlock`, so this is their way to rebalance. The
+  event carries a sender and a receiver leg on the same account.
+
+The exercised holding of a merge or split must carry no lock, not even an
+expired one: its lock holders observe it, so they would see the whole
+rebalance. Merge an expired-lock holding as an input of a merge on an
+unlocked holding instead, where its lock holders see only that input
+archived, or release it with `TokenHolding_OwnerUnlock` first. The test
+scripts in `OpenZeppelin.Token.Cip112.V1.Test.Rebalance` cover both choices.
+
+Authorization: the account parties alone, on both choices; the admin's
+authority comes from the holding's signatories.
+
 ### Delivery-versus-payment settlement
 
 Each trader allocates their side of the legs through
@@ -140,6 +168,7 @@ cleanup.
 | Submitting a factory exercise without the disclosed `TokenRules` contract | The submission fails to resolve the contract | Attach the disclosure to every factory submission |
 | Holding a `ContractId TokenHolding` across a balance change | The client holds a stale id and the next exercise fails | Re-query holdings after every transfer, allocation, or settle |
 | Funding one transfer with holdings of different instruments | `executeTransfer` fails: input holdings must all match the transfer's instrument | Split by instrument; only allocations take multi-instrument inputs |
+| Exercising `TokenHolding_Merge` or `TokenHolding_Split` on a holding whose lock has expired | Refused: holding is locked | Pass it as an input of a merge on an unlocked holding, or release it with `TokenHolding_OwnerUnlock` first |
 | Enabling iterated settlement with a zero reserve entry | Allocation is refused: reserve amounts must be positive | Use `Some TextMap.empty` for "iterated, no reserve" |
 | Passing `extraTransferLegSides` or `nextIterationFunding` when settling a non-iterated allocation | The settle fails | Reserve iteration arguments for allocations created with `nextIterationFunding` set |
 | Creating a committed allocation without a settlement deadline | Refused at the factory and by the template | Set `settlementDeadline`; commitment ends at the deadline |
