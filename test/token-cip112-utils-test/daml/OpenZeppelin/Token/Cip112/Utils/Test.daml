@@ -3,9 +3,9 @@
 -- against a minimal local template it accepts and a foreign template it must
 -- refuse. The consumption and expiry bodies are run here too, for the
 -- guards that only a consumer's own `HoldingOps` or allocation template can
--- reach. `OpenZeppelin.Token.Cip112.Utils.Test.Hooks` runs every workflow
--- path through operations with a spend rule. The full workflows run under
--- `test/token-cip112-v1-test` through the default templates and under
+-- reach. `OpenZeppelin.Token.Cip112.Utils.Test.Operations` runs every
+-- workflow path through operations with a spend rule. The full workflows run
+-- under `test/token-cip112-v1-test` through the default templates and under
 -- `examples/token/token-cip112-custom-test` through a consumer's templates.
 module OpenZeppelin.Token.Cip112.Utils.Test where
 
