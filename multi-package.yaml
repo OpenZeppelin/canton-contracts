@@ -8,8 +8,8 @@ packages:
   - test/scoped-authorization-grant-v1-test
   - packages/security/api-pausable-v1
   - test/api-pausable-v1-test
-  - packages/security/pausable-v1
-  - test/pausable-v1-test
+  - packages/security/pausable-utils
+  - test/pausable-utils-test
   - packages/security/api-timelock-v1
   - test/api-timelock-v1-test
   - packages/security/timelock-utils

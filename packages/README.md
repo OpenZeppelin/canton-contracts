@@ -10,7 +10,7 @@ are navigation only and never appear in a package name or module namespace.
 |---------|-------------|
 | [Scoped Authorization Grant V1](access/scoped-authorization-grant-v1/) | Revocable, time-bounded permissions with exact resource scope. |
 | [Pausable API V1](security/api-pausable-v1/) | A frozen interface for reading a contract's pause state. |
-| [Pausable V1](security/pausable-v1/) | Guards and structured failures for templates implementing Pausable. |
+| [Pausable utils](security/pausable-utils/) | Guards and structured failures for templates implementing Pausable. |
 | [Timelock API V1](security/api-timelock-v1/) | Frozen interfaces for a mandatory delay between the proposal and the execution of an operation. |
 | [Timelock utils](security/timelock-utils/) | Lifecycle functions, schedule functions, time guards, and structured failures for templates implementing Timelock. |
 | [Token CIP-0112 types V1](token/token-cip112-types-v1/) | The registry configuration, transfer-instruction, and allocation records CIP-0112 templates store. |

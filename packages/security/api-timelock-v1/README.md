@@ -284,7 +284,7 @@ creates successors preserves it.
 
 - A role credential fits in the schedule choice: the choice takes the caller
   and the credential as arguments and verifies them in its body, as
-  `OpenZeppelin.PausableV1` describes for the pause authority. Executors and
+  `OpenZeppelin.Pausable.Utils` describes for the pause authority. Executors and
   cancellers are party lists on the operation, fixed when it is scheduled.
 - An open executor, the `address(0)` idiom of `TimelockController.sol`, is
   `executors = None`. Any party that holds the operation, the timelock, and

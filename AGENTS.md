@@ -97,7 +97,7 @@ dpm build --all
 scripts/check.sh
 DAML_PACKAGE=packages/access/scoped-authorization-grant-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc lint
-DAML_PACKAGE=packages/security/pausable-v1 dpm damlc lint
+DAML_PACKAGE=packages/security/pausable-utils dpm damlc lint
 DAML_PACKAGE=packages/security/api-timelock-v1 dpm damlc lint
 DAML_PACKAGE=packages/security/timelock-utils dpm damlc lint
 DAML_PACKAGE=packages/token/token-cip112-types-v1 dpm damlc lint
@@ -105,7 +105,7 @@ DAML_PACKAGE=packages/token/token-cip112-utils dpm damlc lint
 DAML_PACKAGE=packages/token/token-cip112-v1 dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm damlc lint
 DAML_PACKAGE=test/api-pausable-v1-test dpm damlc lint
-DAML_PACKAGE=test/pausable-v1-test dpm damlc lint
+DAML_PACKAGE=test/pausable-utils-test dpm damlc lint
 DAML_PACKAGE=test/api-timelock-v1-test dpm damlc lint
 DAML_PACKAGE=test/timelock-utils-test dpm damlc lint
 DAML_PACKAGE=test/token-cip112-types-v1-test dpm damlc lint
@@ -129,7 +129,7 @@ DAML_PACKAGE=examples/token/token-cip112-custom dpm damlc lint
 DAML_PACKAGE=examples/token/token-cip112-custom-test dpm damlc lint
 DAML_PACKAGE=test/scoped-authorization-grant-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/api-pausable-v1-test dpm test --all --show-coverage
-DAML_PACKAGE=test/pausable-v1-test dpm test --all --show-coverage
+DAML_PACKAGE=test/pausable-utils-test dpm test --all --show-coverage
 DAML_PACKAGE=test/api-timelock-v1-test dpm test --all --show-coverage
 DAML_PACKAGE=test/timelock-utils-test dpm test --all --show-coverage
 DAML_PACKAGE=test/token-cip112-types-v1-test dpm test --all --show-coverage

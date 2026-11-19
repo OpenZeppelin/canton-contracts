@@ -68,7 +68,7 @@ supplies. The implementing templates live in consuming packages.
 
 The component is still two packages. `openzeppelin-api-pausable-v1` holds the
 interface and its view and nothing else, because that is the one part Daml
-cannot upgrade. `openzeppelin-pausable-v1` holds the guards and the failure
+cannot upgrade. `openzeppelin-pausable-utils` holds the guards and the failure
 statuses. A bug fix in `whenNotPaused` is a new version of the function
 package, and the frozen interface package does not move. The Splice token
 standard follows the same split, keeping its helper functions in
@@ -80,8 +80,6 @@ choice applies typed contract data rather than forwarding an encoded call.
 Its function package is `openzeppelin-timelock-utils`: it defines nothing
 serializable, which is what lets a consumer rebuild against any version, so
 it takes the utils name and the repository check that enforces the property.
-`openzeppelin-pausable-v1` predates that naming and keeps the Pausable guards
-and failure statuses under a `-v1` name.
 
 The API package follows the `openzeppelin-api-<component>-vN` freeze rule: no
 templates, no SCU, and a breaking change ships as a sibling `-v2` package. The
