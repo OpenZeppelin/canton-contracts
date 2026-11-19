@@ -121,6 +121,13 @@ template Harness with
       controller actors
       do consumeUnlockedHolding unitOps emptyChoiceContext admin expectedAccount cid
 
+    nonconsuming choice Harness_UnlockHoldings : ()
+      with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
+      controller actors
+      do
+        _ <- unlockHoldings unitOps emptyChoiceContext admin expectedAccount [cid]
+        pure ()
+
     nonconsuming choice Harness_ExpireAllocations : ()
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]; actors : [Party]
       controller actors
@@ -452,6 +459,32 @@ testConsumeLockedRefusesUnlockedHolding = do
   cid <- unitHolding admin alice (basicAccount alice) None
   mustFailWith "input holding must be locked" (actAs admin) $
     exerciseCmd harnessCid Harness_ConsumeLocked with
+      cid; expectedAccount = basicAccount alice; actors = [admin]
+
+-- | `unlockHoldings` makes the same three checks on the holdings it returns.
+testUnlockHoldingsRefusesOtherAdmin : Script ()
+testUnlockHoldingsRefusesOtherAdmin = do
+  Fixture{..} <- setup
+  otherAdmin <- allocateParty "otherAdmin"
+  cid <- unitHolding otherAdmin alice (basicAccount alice) (Some (lockUntil otherAdmin (Some t2)))
+  mustFailWith "'inputHolding.instrumentId.admin' is not equal to" (actAs [admin, otherAdmin]) $
+    exerciseCmd harnessCid Harness_UnlockHoldings with
+      cid; expectedAccount = basicAccount alice; actors = [admin, otherAdmin]
+
+testUnlockHoldingsRefusesOtherAccount : Script ()
+testUnlockHoldingsRefusesOtherAccount = do
+  Fixture{..} <- setup
+  cid <- unitHolding admin alice (savingsAccount alice) (Some (lockUntil admin (Some t2)))
+  mustFailWith "'inputHolding.account' is not equal to" (actAs admin) $
+    exerciseCmd harnessCid Harness_UnlockHoldings with
+      cid; expectedAccount = basicAccount alice; actors = [admin]
+
+testUnlockHoldingsRefusesUnlockedHolding : Script ()
+testUnlockHoldingsRefusesUnlockedHolding = do
+  Fixture{..} <- setup
+  cid <- unitHolding admin alice (basicAccount alice) None
+  mustFailWith "input holding must be locked" (actAs admin) $
+    exerciseCmd harnessCid Harness_UnlockHoldings with
       cid; expectedAccount = basicAccount alice; actors = [admin]
 
 testConsumeUnlockedRefusesOtherAdmin : Script ()
