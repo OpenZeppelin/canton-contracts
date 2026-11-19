@@ -134,8 +134,7 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   direct `Allocation_Settle` by the admin plus the executors bypasses it and
   can create or destroy value, so the admin's authority must never co-sign a
   settle outside the factory. Operate the admin party so that it signs settles
-  only through the settlement factory. See `ideas.md` on reintroducing the
-  on-ledger guard that removes this trust assumption.
+  only through the settlement factory.
 - A mint-account or burn-account allocation commits the admin to that supply
   change. The executors decide whether and when it settles, until the
   settlement deadline or until the admin withdraws an uncommitted allocation.
