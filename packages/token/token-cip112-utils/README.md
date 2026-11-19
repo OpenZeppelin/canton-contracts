@@ -97,6 +97,19 @@ preparation.
   repeatedly. This is intended. The executors are already trusted with the
   reserve, and an allocation without a deadline is never committed, so its
   authorizer can withdraw it, and end the chain, at any time.
+- Every time derived from `maxTTL` or `lockGrace` saturates at the bounds of
+  `Time`, which ends at `maxTime` (9999-12-31T23:59:59.999999Z), instead of
+  failing the workflow with an `ArithmeticError`. A bound that saturates no
+  longer limits anything: once `executeBefore` minus `maxTTL` saturates, any
+  execution window passes, and once `requestedAt` plus `maxTTL` does, any
+  request age and any settlement deadline pass, and an allocation without a
+  deadline expires at `maxTime`. A lock expiry that saturates keeps the
+  funding locked until `maxTime`, so the owner can never unlock it, but the
+  admin can still expire the contract after its `expiresAt`. A contract whose
+  `expiresAt` is itself `maxTime` has a lock expiry equal to it and never
+  expires: only its own choices release the funding. A committed allocation
+  must have a settlement deadline before `maxTime`, since one at `maxTime`
+  would never let its authorizer withdraw it.
 
 ## Build
 

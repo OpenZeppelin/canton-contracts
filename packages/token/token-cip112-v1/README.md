@@ -164,7 +164,11 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   owner-recovery path; size it to the automation's reaction time (minutes to
   hours), and size `maxTTL` to the longest workflow the registry accepts,
   counted from ledger time for a transfer and from `requestedAt` for an
-  allocation.
+  allocation. A value large enough to carry a derived time past the end of
+  `Time` saturates at `maxTime` instead of failing the factories, so the
+  window or lock it sets never ends; the time bounds section of the
+  `token-cip112-utils` [`README.md`](../token-cip112-utils/README.md) lists
+  the consequences.
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
   provider blocks recovery until it cooperates; single-party accounts avoid

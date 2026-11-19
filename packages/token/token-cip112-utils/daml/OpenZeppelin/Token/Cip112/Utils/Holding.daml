@@ -26,7 +26,7 @@ import DA.Foldable (forA_)
 import DA.List (dedupSort)
 import DA.Optional (isNone, isSome)
 import DA.TextMap qualified as TextMap
-import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime)
+import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime, isLedgerTimeLE)
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
@@ -220,14 +220,35 @@ eventObserversFor ops admin account =
   dedupSort (accountParties admin account <> ops.eventObservers account)
 
 -- | Storage bound for a pending contract: at most `maxTTL` after `base`,
--- capped by the workflow deadline, saturating at `maxTime` instead of
--- overflowing. `base` comes from the submission rather than `getTime`: the
--- request's `requestedAt` when an allocation is created, and the previous
--- `expiresAt` when a settlement creates a successor.
+-- capped by the workflow deadline. `base` comes from the submission rather
+-- than `getTime`: the request's `requestedAt` when an allocation is created,
+-- and the previous `expiresAt` when a settlement creates a successor.
 computeStorageExpiry : RelTime -> Time -> Optional Time -> Time
 computeStorageExpiry maxTTL base deadline =
-    optional identity min deadline candidate
-  where
-    candidate
-      | maxTime `subTime` base <= maxTTL = maxTime
-      | otherwise = base `addRelTime` maxTTL
+  optional identity min deadline (base `addRelTimeSaturating` maxTTL)
+
+-- | `t` shifted by `delta`, saturating at `maxTime` or `minBound` where
+-- `addRelTime` raises an `ArithmeticError`. Every time the workflows derive
+-- from `maxTTL` or `lockGrace` goes through it, so an oversized value gives a
+-- window or a lock that never ends instead of failing every factory.
+addRelTimeSaturating : Time -> RelTime -> Time
+addRelTimeSaturating t delta
+  | delta >= maxTime `subTime` t = maxTime
+  | delta <= minBound `subTime` t = minBound
+  | otherwise = t `addRelTime` delta
+
+-- | `isLedgerTimeLE`, extended to `maxTime`: every ledger time lies at or
+-- before it, but `isLedgerTimeLE` raises an error rather than compare against
+-- it. `isLedgerTimeGE` needs no such guard at `minBound`.
+isLedgerTimeAtMost : Time -> Update Bool
+isLedgerTimeAtMost t
+  | t == maxTime = pure True
+  | otherwise = isLedgerTimeLE t
+
+-- | A funding lock expires strictly after its workflow contract's
+-- `expiresAt`, so the admin's expiry path runs before the owner can unlock
+-- the funding. A lock expiry saturated at `maxTime` may equal `expiresAt`:
+-- neither time then ever passes, so neither path applies.
+lockOutlivesExpiry : Time -> Time -> Bool
+lockOutlivesExpiry expiresAt lockExpiresAt =
+  expiresAt < lockExpiresAt || lockExpiresAt == maxTime
