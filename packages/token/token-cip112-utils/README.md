@@ -68,13 +68,11 @@ contract id enters through an operation the template owner wrote:
   operation's paths open, and a refusal in both holds the locked funds until
   the lock expires. After that the owner recovers them through the holding's
   owner-unlock choice or by passing the holding to a factory, which runs
-  `fundHolding`. A rule that must hold them longer is also checked in that
-  choice and in `fundHolding`. Put a rule in `deliverHolding` or
-  `returnHolding` only if a known party can lift it without re-creating the
-  locked holding: pending instructions and allocations name their locked
-  holdings by id, so they can neither pay out nor return a replaced holding.
-  A rule that only limits new spending, such as a minimum holding age,
-  belongs in `fundHolding`.
+  `fundHolding`. Put a rule in `deliverHolding` or `returnHolding` only if a
+  known party can lift it without re-creating the locked holding: pending
+  instructions and allocations name their locked holdings by id, so they can
+  neither pay out nor return a replaced holding. A rule that only limits new
+  spending, such as a minimum holding age, belongs in `fundHolding`.
 - A rule that tracks live registry state reads the current policy contract
   from the context and checks the contract it fetches. A value copied into
   the holding does not follow later registry changes, and a policy contract
@@ -86,7 +84,9 @@ contract id enters through an operation the template owner wrote:
   transaction, so one refusing `returnHolding` fails the whole batch.
 - `holdingOwnerUnlockImpl` runs none of the consumption operations. A rule
   that must block an owner unlock, such as a freeze, is checked inside the
-  holding's own owner-unlock choice.
+  holding's own owner-unlock choice. A rule that must hold funds after the
+  lock expires also belongs in `fundHolding`, because `transferFactoryImpl`
+  and `allocationFactoryImpl` accept an input whose lock has expired.
 - The `PinAllocation` passed to `settleBatchImpl` and `expireAllocationsImpl`
   must fail on any allocation whose choice bodies the registry does not
   control. Use `pinAllocationTo @YourAllocation`.
