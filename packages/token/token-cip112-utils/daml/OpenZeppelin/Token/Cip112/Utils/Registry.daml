@@ -34,10 +34,8 @@ settleBatchImpl pin admin self arg = do
     (not (null arg.transferLegs))
   -- Each authorizer witnesses its own `Allocation_Settle`, so nothing from
   -- the batch's arguments should reach it: they may describe other
-  -- authorizers' trades. The cost is that the allocation's `deliverHolding`
-  -- sees an empty context on this path. Information meant for every
-  -- participant belongs in `SettlementInfo.meta`, which each authorizer
-  -- already sees and agreed to.
+  -- authorizers' trades. Information meant for every participant belongs in
+  -- `SettlementInfo.meta`, which each authorizer already sees and agreed to.
   let redactedBatchArgs _allocView _settleArg = pure ExtraArgs with
         context = emptyChoiceContext
         meta = emptyMetadata
