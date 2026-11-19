@@ -10,7 +10,7 @@
 -- every operation receives the context its submitter passed, and the two
 -- limits of that delivery: batch settlement passes an empty context, and one
 -- refusal fails a whole expiry batch.
-module OpenZeppelin.Token.Cip112.Utils.Test.Hooks where
+module OpenZeppelin.Token.Cip112.Utils.Test.Operations where
 
 import DA.Action (replicateA, unless)
 import DA.Assert ((===))
