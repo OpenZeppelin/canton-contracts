@@ -59,7 +59,6 @@ expireLockEntry value = ExtraArgs with
 expireLockArgs : Bool -> ExtraArgs
 expireLockArgs = expireLockEntry . AV_Bool
 
--- | An admin expiry of a transfer instruction, with the given `ExtraArgs`.
 expireInstructionCmd
   : ContractId TransferInstructionV2.TransferInstruction -> ExtraArgs
   -> Commands TransferInstructionV2.TransferInstructionResult
@@ -67,14 +66,12 @@ expireInstructionCmd instrCid extraArgs =
   exerciseCmd (fromInterfaceContractId @TokenTransferInstruction instrCid)
     TokenTransferInstruction_Expire with extraArgs
 
--- | `Allocation_Cancel` by `actors`, with the given `ExtraArgs`.
 cancelCmd
   : ContractId AllocationV2.Allocation -> [Party] -> ExtraArgs
   -> Commands AllocationV2.AllocationResult
 cancelCmd allocCid actors extraArgs =
   exerciseCmd allocCid AllocationV2.Allocation_Cancel with actors; extraArgs
 
--- | The locked holdings of `owner`.
 lockedHoldingsOf : Party -> Script [ContractId TokenHolding]
 lockedHoldingsOf owner = do
   holdings <- query @TokenHolding owner

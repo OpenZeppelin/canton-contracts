@@ -95,15 +95,10 @@ interfaces or exceptions of its own.
   `TokenRules_ExpireTransferInstructions` and `TokenRules_ExpireAllocations`.
   Each expiry reads Splice's `expire-lock` flag from its `extraArgs.context`.
   With the flag missing or set to `AV_Bool True`, the funding returns to its
-  account, and the `EventLog_HoldingsChange` of that release is what wallets
-  track returned funds by. With `AV_Bool False`, the flag is cleared and the
-  funding is skipped, which is allowed only once `lockExpiresAt` has passed.
-  This ends a contract whose funding its owner already unlocked or spent.
-  Either way the contract ends with the standard result,
-  `TransferInstructionResult_Failed` or `AllocationResult_Cancelled`. For an
-  allocation the flag is read whenever the actors are exactly `[admin]`,
-  including when the admin is its only executor, and ignored for every other
-  actor set.
+  account. With `AV_Bool False`, the expiry ends the contract without
+  touching the funding, and only once `lockExpiresAt` has passed. For an
+  allocation the flag is read only when the actors are exactly `[admin]`,
+  including when the admin is its only executor.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors
@@ -170,13 +165,12 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   that choice body must keep an equivalent check.
 - `maxTTL` and `lockGrace` are only required to be positive. Between
   `expiresAt` and `lockExpiresAt` only the pending contract can move its
-  funding, so a default expiry of a contract still on the ledger releases
-  it. A `lockGrace` too short for the admin's
-  expiry automation to act in lets the account parties unlock or spend the
-  funding first, and the contract then ends only through an expiry with the
-  `expire-lock` flag cleared. Size `lockGrace` to the automation's reaction
-  time (minutes to hours), and size `maxTTL` to the longest workflow the
-  registry accepts.
+  funding, so an expiry that does not clear the `expire-lock` flag releases
+  it. A `lockGrace` too short for the admin's expiry automation to act in
+  lets the account parties unlock or spend the funding first, and the
+  contract then ends only through an expiry with the flag cleared. Size
+  `lockGrace` to the automation's reaction time (minutes to hours), and size
+  `maxTTL` to the longest workflow the registry accepts.
 - An expiry with the `expire-lock` flag cleared trusts the admin that the
   funding is gone. The ledger cannot check this, because fetching an archived
   holding aborts. The admin clears the flag only after finding the contract's
@@ -186,9 +180,7 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
   provider blocks that recovery. `TokenHolding_AdminUnlock` is the recovery
-  path that does not need the provider: the admin alone returns the holding,
-  unlocked, to its account, which moves no value, since an expired lock no
-  longer keeps the account parties from spending it.
+  path that does not need the provider.
 - An allocation's view advertises the withdraw action statically. For a
   committed allocation the choice still fails until the settlement deadline
   passes; wallets should treat the advertised action as "who", not "when".

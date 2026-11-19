@@ -65,10 +65,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Added the CIP-0112 token package `openzeppelin-token-cip112-v1` (public
   module namespace `OpenZeppelin.Token.Cip112.V1`): ready-to-use templates over
   the types and utils packages with holdings with expiring locks that the
-  owner or the admin alone recovers, admin expiry of transfer instructions
-  and allocations that releases their funding or, with Splice's `expire-lock`
-  flag cleared, skips funding already reclaimed and returns the standard
-  result, one-step and two-step transfers, allocations with exact-cover
+  account parties or the admin alone unlock, admin expiry of transfer
+  instructions and allocations under Splice's `expire-lock` flag, one-step
+  and two-step transfers, allocations with exact-cover
   batch settlement and iterated settlement, delivery-vs-mint and
   delivery-vs-burn settlement through the CIP-0112 mint and burn accounts,
   registry rules with mint offers from the mint account, and burns as

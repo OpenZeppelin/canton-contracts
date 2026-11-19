@@ -116,8 +116,8 @@ The registry operator's automation ends stale workflow contracts once their
 `TokenTransferInstruction_Expire` argument per instruction. Allocations end
 through `TokenRules_ExpireAllocations`, with one `Allocation_Cancel` argument
 per allocation and `actors = [admin]`. Each argument carries its own
-`extraArgs`, whose choice context may hold Splice's `expire-lock` flag, so
-automation written for Amulet builds the same batches:
+`extraArgs`, whose choice context may hold the `expire-lock` flag (this key
+has the same function as in Splice):
 
 - A missing flag, or `AV_Bool True`, releases the funding to its account
   and emits the `EventLog_HoldingsChange` that wallets track returned funds
@@ -125,24 +125,22 @@ automation written for Amulet builds the same batches:
   funding is already gone.
 - `AV_Bool False` clears the flag: the expiry skips the funding and emits
   nothing, and it fails before `lockExpiresAt`. Use it only for a contract
-  whose locked holdings the automation has found no longer active, after the
-  owner unlocked or spent them once the lock expired.
+  whose funding is already unlocked or spent.
 
 The ledger cannot check that the funding is gone, so the automation must
 look before it clears a flag. The flag covers every locked holding of the
 contract, and an allocation locks one holding per instrument, so the
-automation checks each of them. A flag cleared while a holding is still
-locked ends the contract and leaves that holding locked; the admin returns
-it with `TokenHolding_AdminUnlock`, without the account's provider. For allocations,
-the flag is read whenever the actors are exactly `[admin]`, including when
-the admin is the allocation's only executor, and ignored for executors, so
-an executor cancel always releases the funding. The test scripts
-`testLockGraceAndOwnerUnlock`, `testAllocationExpiryWithFlagCleared`, and
-`testAdminUnlockRepairsEarlyClearedFlag` cover these paths.
+automation checks each of them. If the owner reclaimed only some of them,
+the admin returns the rest with `TokenHolding_AdminUnlock` and then clears
+the flag. A flag cleared while a holding is still locked ends the contract
+and leaves that holding locked; the admin returns it with
+`TokenHolding_AdminUnlock`, without the account's provider. For
+allocations, the flag is read only when the actors are exactly `[admin]`,
+including when the admin is the allocation's only executor. A cancel by any
+other actor set releases the funding.
 
 Authorization: the admin alone expires, clears flags, and runs the admin
-unlock; the executors cancel an allocation at any time, always releasing its
-funding.
+unlock; the executors cancel an allocation at any time.
 
 ## Token Standard
 

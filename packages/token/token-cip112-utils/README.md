@@ -32,15 +32,12 @@ functions, with every template decision left to the caller.
 - `holdingOwnerUnlockImpl` and `holdingAdminUnlockImpl`: the bodies of a
   holding template's two unlock choices for an expired lock, one controlled
   by the account parties and one by the admin alone. A consumer holding
-  template exposes both. The admin unlock is how funding left locked by an
-  expiry with the `expire-lock` flag cleared returns to its account without
-  the account's provider.
-- `expireLockFromContext`: how `transferExpireImpl` and `allocationCancelImpl`
-  read Splice's `expire-lock` flag from the choice context. A missing flag, or
-  `AV_Bool True`, releases the funding; `AV_Bool False` skips it once
-  `lockExpiresAt` has passed. `allocationCancelImpl` reads it only when the
-  actors are exactly the admin, including when the admin is the only
-  executor.
+  template exposes both.
+- `expireLockFromContext`: reads Splice's `expire-lock` flag from the choice
+  context for `transferExpireImpl` and `allocationCancelImpl`. Set it to
+  `AV_Bool False` only for a contract whose locked holdings are archived.
+  A flag cleared earlier leaves them with their expired lock until the
+  account parties spend or unlock them, or the admin unlock returns them.
 
 The functions read and return the `RegistryConfig`,
 `TransferInstructionState`, and `AllocationState` records of

@@ -64,11 +64,7 @@ template TokenRules with
     nonconsuming choice TokenRules_ExpireAllocations : ()
       -- ^ Batched admin expiry of stale allocations through the standard
       -- cancel choice, each pinned to `TokenAllocation`. Each cancel argument
-      -- has `actors = [admin]` and carries its own `expire-lock` flag, which
-      -- is read even when the admin is the allocation's only executor. Clear
-      -- a flag only after finding that allocation's locked holdings no
-      -- longer active: `TokenHolding_AdminUnlock` repairs one cleared too
-      -- early.
+      -- has `actors = [admin]` and carries its own `expire-lock` flag.
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
         observers : [Party]
@@ -93,11 +89,8 @@ template TokenRules with
     nonconsuming choice TokenRules_ExpireTransferInstructions : ()
       -- ^ Batched admin expiry of stale transfer instructions, each with its
       -- own `TokenTransferInstruction_Expire` argument and so its own
-      -- `expire-lock` flag. Clear a flag only after finding that
-      -- instruction's locked holdings no longer active:
-      -- `TokenHolding_AdminUnlock` repairs one cleared too early.
-      -- Template-typed on purpose: the registry only ever expires its own
-      -- instructions.
+      -- `expire-lock` flag. Template-typed on purpose: the registry only
+      -- ever expires its own instructions.
       with
         expireArgs : [(ContractId TokenTransferInstruction, TokenTransferInstruction_Expire)]
         observers : [Party]

@@ -112,13 +112,11 @@ transferWithdrawImpl ops self s arg = do
   archiveAndCheckActors self arg.actors [senderParties s.transfer]
   returnFundsToSender ops s "transfer withdrawn"
 
--- | Body of a consuming admin-expiry choice, once the storage bound has
--- passed. It reads the `expire-lock` flag from `extraArgs.context` (see
--- `expireLockFromContext`). Missing or set, the locked funds return to the
--- sender. Cleared, the funding is skipped: this needs `lockExpiresAt` to
--- have passed too, and it creates nothing and emits no event, since the
--- funding's owner already logged its end. Either way the instruction ends
--- with `TransferInstructionResult_Failed`.
+-- | Body of a consuming admin-expiry choice. It fails before `expiresAt`,
+-- then reads the `expire-lock` flag. On `True` it returns the locked funds
+-- to the sender. On `False` it ends the instruction without touching them,
+-- and only once `lockExpiresAt` has passed. Both end with
+-- `TransferInstructionResult_Failed`.
 transferExpireImpl
   : HoldingOps -> TransferInstructionState -> ExtraArgs
   -> Update TransferInstructionV2.TransferInstructionResult

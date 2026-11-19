@@ -685,10 +685,8 @@ testLockGraceAndOwnerUnlock = do
     submitMustFail (actAs alice <> actAs admin) do
       exerciseCmd cid TokenHolding_OwnerUnlock
 
-  -- After the grace window the owner recovers the funding. On this
-  -- single-party account the owner's parties suffice. An account with a
-  -- distinct provider needs the provider too, or the admin unlock
-  -- (`testAdminUnlockRepairsEarlyClearedFlag`).
+  -- After the grace window the owner recovers the funding. An account with
+  -- a distinct provider needs the provider too, or the admin unlock.
   setTime t4
   forA_ lockedCids $ \cid ->
     submit (actAs alice) do
@@ -1029,9 +1027,10 @@ testAdminOnlyExecutorCancelReadsFlag = do
   aliceAfter <- holdingAmounts alice
   aliceAfter === [10.0]
 
--- | Executors cannot end an allocation without releasing its funding: the
--- flag is ignored for every actor set other than `[admin]`, so a cleared
--- flag on an executor cancel still releases it, even past `lockExpiresAt`.
+-- | Executors other than the admin cannot end an allocation without
+-- releasing its funding: the flag is ignored for every actor set other than
+-- `[admin]`, so a cleared flag on an executor cancel still releases it, even
+-- past `lockExpiresAt`.
 testExecutorCancelIgnoresClearedFlag : Script ()
 testExecutorCancelIgnoresClearedFlag = do
   s@Scenario{..} <- setup

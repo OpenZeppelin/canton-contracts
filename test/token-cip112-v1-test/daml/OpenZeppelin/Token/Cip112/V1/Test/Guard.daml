@@ -277,15 +277,17 @@ testAcceptRefusesUnderfundedLock = do
     exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferInstruction instrCid)
       TransferInstructionV2.TransferInstruction_Accept with actors = [bob]; extraArgs = emptyExtraArgs
 
--- | An expiry with the `expire-lock` flag cleared waits until the funding
--- lock has expired, so the sender can always recover the funds first.
+-- | An expiry with the `expire-lock` flag cleared fails while the funding
+-- lock is live.
 testTransferExpiryWithFlagClearedWaitsForLockExpiry : Script ()
 testTransferExpiryWithFlagClearedWaitsForLockExpiry = do
   s@Scenario{..} <- setup
   instrCid <- pendingTransfer s
   setTime t3
-  mustFailWith "strictly before deadline 'lockExpiresAt'" (actAs admin)
-    (expireInstructionCmd instrCid (expireLockArgs False))
+  mustFailWith "strictly before deadline 'lockExpiresAt'" (actAs admin) do
+    exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
+      expireArgs = [(fromInterfaceContractId @TokenTransferInstruction instrCid, TokenTransferInstruction_Expire with extraArgs = expireLockArgs False)]
+      observers = []
 
 -- | The `expire-lock` flag must be a Bool: any other value fails, on both
 -- the transfer and the allocation expiry.

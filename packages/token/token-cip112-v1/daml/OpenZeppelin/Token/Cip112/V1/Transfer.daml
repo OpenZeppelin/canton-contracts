@@ -39,10 +39,9 @@ template TokenTransferInstruction with
       -- passed, ending it with `TransferInstructionResult_Failed`. By
       -- default any locked funds return to the sender. With the
       -- `expire-lock` entry of `extraArgs.context` set to `AV_Bool False`,
-      -- the funding is skipped instead, which needs `lockExpiresAt` to have
-      -- passed too. Clear the flag only after finding the locked holdings no
-      -- longer active: `TokenHolding_AdminUnlock` repairs a flag cleared too
-      -- early.
+      -- the expiry leaves them untouched and fails before `lockExpiresAt`.
+      -- Funds still locked then keep their expired lock until the account
+      -- parties spend or unlock them, or until `TokenHolding_AdminUnlock`.
       with
         extraArgs : ExtraArgs
       controller state.transfer.instrumentId.admin

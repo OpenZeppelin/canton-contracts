@@ -130,12 +130,9 @@ holdingOwnerUnlockImpl ops self holding =
   releaseExpiredLock ops self holding "its owner" "expired lock released by owner"
 
 -- | Body of a consuming admin-unlock choice on a holding template, controlled
--- by the admin alone: as `holdingOwnerUnlockImpl`, with its own event reason.
--- It returns funding that an expiry with the `expire-lock` flag cleared left
--- locked, without the account parties, so an account with a distinct
--- provider recovers without it. It moves no value: the holding returns
--- unlocked to the same account, and only once its lock has expired, when
--- `consumeUnlockedHolding` already accepts it as funding.
+-- by the admin alone. It does what `holdingOwnerUnlockImpl` does, with its
+-- own event reason. It moves no value: the holding returns unlocked to the
+-- same account, and only once its lock has expired.
 holdingAdminUnlockImpl
   : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
   -> Update (ContractId HoldingV2.Holding)
@@ -163,22 +160,18 @@ releaseExpiredLock ops self holding releaser reason = do
 ---------------
 
 -- | The choice-context key an admin expiry reads to decide whether to release
--- the funding of the contract it ends. It is Splice's key, so admin
--- automation written for Amulet works unchanged.
+-- the funding of the contract it ends. It is Splice's key:
+--
+-- https://github.com/canton-network/splice/blob/8460154135f39019b8bb370c9c1321ff13c9bb10/daml/splice-amulet/daml/Splice/Amulet/TokenApiUtils.daml#L180-L181
 expireLockKey : Text
 expireLockKey = "expire-lock"
 
--- | Read the `expire-lock` flag of an admin expiry. A missing entry or
--- `AV_Bool True` releases the funding. `AV_Bool False` clears the flag: the
--- expiry skips the funding, which it allows only once the funding lock has
--- expired. Any other value fails. A mistyped key reads as missing, so the
--- expiry releases, which fails loudly when the funding is already gone.
---
--- Clear the flag only after finding the locked holdings no longer active.
--- The ledger cannot check this, because fetching an archived holding aborts.
--- A flag cleared while the funding is still locked ends the pending contract
--- and leaves the holding locked; the holding template's admin unlock
--- (`holdingAdminUnlockImpl`) returns it.
+-- | Reads the `expire-lock` flag from the choice context of an admin expiry.
+-- A missing entry reads as `True`, and any value other than a Bool fails. On
+-- `True` the expiry returns the locked holdings to their account, and on
+-- `False` it ends the contract without touching them. This function does not
+-- check the time, so a caller acting on `False` must first check that the
+-- funding lock has expired.
 expireLockFromContext : ChoiceContext -> Update Bool
 expireLockFromContext context = case TextMap.lookup expireLockKey context.values of
   None -> pure True

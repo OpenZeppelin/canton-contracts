@@ -139,20 +139,15 @@ allocationWithdrawImpl ops self s arg = do
     authorizerHoldingCids = holdings
     meta = emptyMetadata
 
--- | `allocation_cancelImpl`. Executors may cancel any time; the admin only
--- once `expiresAt` has passed (checked by the vendored default, which reads
--- the interface value of the contract being exercised).
+-- | `allocation_cancelImpl`. Executors may cancel at any time, and the admin
+-- once `expiresAt` has passed. The vendored default checks both.
 --
--- A cancel whose actors are exactly the admin is an admin expiry, and reads
--- the `expire-lock` flag from `arg.extraArgs.context` (see
--- `expireLockFromContext`). Missing or set, the funding is released.
--- Cleared, it is skipped once `lockExpiresAt` has passed, and the result
--- carries no holdings. The flag is read also when the admin is the
--- allocation's only executor. The vendored default then treats the cancel as
--- an executor cancel and checks no expiry, so the `lockExpiresAt` check is
--- the only time guard. For every other actor set the flag is ignored and the
--- funding is released, so executors cannot end an allocation without
--- releasing its funding.
+-- A cancel by exactly the admin reads the `expire-lock` flag. On `False` it
+-- ends the allocation without touching its locked holdings, and only once
+-- `lockExpiresAt` has passed. Every other actor set releases the holdings,
+-- so executors other than the admin cannot end an allocation without
+-- releasing its funding. When the admin is the only executor, the vendored
+-- default treats its cancel as an executor cancel and checks no expiry.
 allocationCancelImpl
   : HoldingOps -> ContractId AllocationV2.Allocation -> AllocationState
   -> AllocationV2.Allocation_Cancel
