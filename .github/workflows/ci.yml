@@ -2,7 +2,7 @@ name: ci
 
 # Validation gate for the OpenZeppelin Daml contracts library: build every
 # package in dependency order, enforce package boundaries, lint every package,
-# and run the consumer examples.
+# check for typos, and run the consumer examples.
 #
 on:
   push:
@@ -37,6 +37,14 @@ jobs:
 
       - name: Run consumer examples
         run: scripts/check-examples.sh
+
+  typos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check spelling
+        uses: crate-ci/typos@v1
 
   sandbox:
     needs: validate
