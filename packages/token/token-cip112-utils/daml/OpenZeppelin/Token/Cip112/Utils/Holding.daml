@@ -95,8 +95,9 @@ data HoldingOps = HoldingOps with
       -- ^ Consume a caller-supplied input holding that funds a new transfer
       -- or allocation, through `consumeUnlockedHolding`: the inputs of
       -- `transferFactoryImpl` and `executeTransfer`, including a one-step
-      -- transfer and a burn, and of `allocationFactoryImpl`. A refusal fails
-      -- the factory call and leaves every input untouched.
+      -- transfer and a burn, and of `allocationFactoryImpl`. An input may be
+      -- a holding whose lock has expired, such as the funding of an
+      -- instruction or allocation that never completed.
     deliverHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
       -- ^ Consume locked funding to pay it out, through
       -- `consumeLockedHolding`: `transferAcceptImpl`, including the admin's
