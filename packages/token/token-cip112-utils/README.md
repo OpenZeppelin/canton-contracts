@@ -20,8 +20,8 @@ functions, with every template decision left to the caller.
   consumption operations split by where the value goes: `fundHolding` for
   caller-supplied inputs, `deliverHolding` for locked funding paid out, and
   `returnHolding` for locked funding returned to its owner. Each receives the
-  `ChoiceContext` the submitter passed. The record holds functions, so it is
-  never stored.
+  `ChoiceContext` of the choice the workflow runs in. The record holds
+  functions, so it is never stored.
 - `holdingOpsFor @T`: a `HoldingOps` whose three consumption operations are
   `consumeByArchive @T`, ready to override one operation with `with`.
 - `consumeByArchive @T` and `pinAllocationTo @T`: the safe ways to write the
