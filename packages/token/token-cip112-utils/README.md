@@ -78,10 +78,20 @@ contract id enters through an operation the template owner wrote:
   the holding does not follow later registry changes, and a policy contract
   id stored in the holding fails every spend once the registry replaces that
   contract.
-- `settleBatchImpl` passes each `Allocation_Settle` an empty context, so a
-  `deliverHolding` rule that requires a context entry refuses every batch
+- `settleBatchImpl` takes a selector that picks the part of the batch's
+  choice context each `Allocation_Settle` receives, given the allocation's
+  view. The batch metadata never reaches an allocation. A selector that
+  forwards nothing, as `\_ _ -> emptyChoiceContext` does, makes a
+  `deliverHolding` rule that requires a context entry refuse every batch
   settlement. `expireAllocationsImpl` cancels its allocations in one
   transaction, so one refusing `returnHolding` fails the whole batch.
+- Each authorizer sees its own `Allocation_Settle`, but not the batch
+  exercise that contains it. The batch context stays private only if no
+  authorizer is an informee of the batch exercise and the selector keys on
+  `allocView.allocation.authorizer`. The first condition requires
+  `settlementFactory_settleBatchExtraObservers` to be empty, unlike the
+  vendored public-asset default, which makes every leg's account parties
+  observers. An executor that is also an authorizer sees the whole batch.
 - `holdingOwnerUnlockImpl` runs none of the consumption operations. A rule
   that must block an owner unlock, such as a freeze, is checked inside the
   holding's own owner-unlock choice. A rule that must hold funds after the

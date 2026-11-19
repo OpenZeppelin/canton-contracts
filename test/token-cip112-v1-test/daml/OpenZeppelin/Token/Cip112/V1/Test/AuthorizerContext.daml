@@ -1,0 +1,83 @@
+-- | A settlement factory for `TokenAllocation`s whose selector keys on the
+-- authorizer. The default `TokenRules` forwards no part of the batch
+-- context, so the per-authorizer case of `settleBatchImpl` needs a factory
+-- of its own. `OpenZeppelin.Token.Cip112.V1.Test` and the sandbox gate both
+-- settle through it.
+module OpenZeppelin.Token.Cip112.V1.Test.AuthorizerContext where
+
+import DA.Optional (optionalToList)
+import DA.TextMap qualified as TextMap
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.TokenStandard.Utils (publicFetchDefaultImpl)
+
+import OpenZeppelin.Token.Cip112.Utils.Allocation (pinAllocationTo)
+import OpenZeppelin.Token.Cip112.Utils.Registry (settleBatchImpl)
+import OpenZeppelin.Token.Cip112.V1.Allocation (TokenAllocation)
+
+-- | Settles `TokenAllocation`s like `TokenRules`, but forwards each
+-- allocation its authorizer's entry of the batch context.
+template AuthorizerContextRules with
+    admin : Party
+  where
+    signatory admin
+
+    interface instance AllocationV2.SettlementFactory for AuthorizerContextRules where
+      view = AllocationV2.SettlementFactoryView with admin; meta = emptyMetadata
+      settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
+      settlementFactory_settleBatchExtraObservers _ = []
+      settlementFactory_settleBatchImpl self arg =
+        settleBatchImpl (pinAllocationTo @TokenAllocation) authorizerEntry admin self arg
+
+-- | The key under which an allocation receives its authorizer's entry.
+entryKey : Text
+entryKey = "test.openzeppelin.com/entry"
+
+-- | The batch-context key of `account`'s entry. Party ids contain no `/`,
+-- and the account id comes last, so distinct accounts get distinct keys.
+authorizerKey : HoldingV2.Account -> Text
+authorizerKey account =
+  "test.openzeppelin.com/authorizer/" <> optional "" partyToText account.owner
+    <> "/" <> optional "" partyToText account.provider <> "/" <> account.id
+
+-- | Forwards only the entry keyed for the allocation's authorizer, under
+-- `entryKey`.
+authorizerEntry : AllocationV2.AllocationView -> ChoiceContext -> ChoiceContext
+authorizerEntry v batch = ChoiceContext with
+  values = TextMap.fromList
+    [ (entryKey, value)
+    | value <- optionalToList (TextMap.lookup (authorizerKey v.allocation.authorizer) batch.values) ]
+
+-- | A contract whose only use is an id no other party knows, to place in a
+-- choice context and look for in transaction trees.
+template ContextEntry with
+    admin : Party
+    label : Text
+  where
+    signatory admin
+
+newEntry : Party -> Text -> Script (ContractId ContextEntry)
+newEntry admin label = submit admin do createCmd ContextEntry with admin; label
+
+entryValue : ContractId ContextEntry -> AnyValue
+entryValue cid = AV_ContractId (coerceContractId cid)
+
+-- | The factory, and its disclosure for the executors' submissions.
+createAuthorizerContextRules : Party -> Script (ContractId AuthorizerContextRules, Disclosure)
+createAuthorizerContextRules admin = do
+  cid <- submit admin do createCmd AuthorizerContextRules with admin
+  Some disclosure <- queryDisclosure @AuthorizerContextRules admin cid
+  pure (cid, disclosure)
+
+-- | Every `Allocation_Settle` below a tree event, with the allocation it was
+-- exercised on.
+allocationSettlesWithCid : TreeEvent -> [(ContractId TokenAllocation, AllocationV2.Allocation_Settle)]
+allocationSettlesWithCid (CreatedEvent _) = []
+allocationSettlesWithCid (ExercisedEvent ex) =
+  [ (cid, settle)
+  | settle <- optionalToList (fromAnyChoice @AllocationV2.Allocation ex.argument)
+  , cid <- optionalToList (fromAnyContractId @TokenAllocation ex.contractId) ]
+    <> concatMap allocationSettlesWithCid ex.childEvents
