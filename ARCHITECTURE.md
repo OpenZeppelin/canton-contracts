@@ -1,5 +1,12 @@
 # Architecture
 
+The design decisions behind this repository and the reasoning that holds them together. This
+document answers **why** the library is shaped the way it is. For **how** to write code that fits
+— naming, ordering, idioms — see [`GUIDELINES.md`](GUIDELINES.md).
+
+It is read by humans and by AI agents alike, to ground design choices in this project's
+constraints rather than generic patterns.
+
 ## Product boundary
 
 `canton-contracts` contains reusable, on-ledger Daml components and focused
