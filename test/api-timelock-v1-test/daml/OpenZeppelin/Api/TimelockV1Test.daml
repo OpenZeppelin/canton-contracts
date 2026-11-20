@@ -365,7 +365,7 @@ test_operationSignatoryOutsideTheTimelockRejected = script do
   expectFailure eInvalidAuthority r3
 
 -- | An `apply` or `unschedule` that keeps the operation in the pending list is
--- refused. The check detects a mis-wired method; the archive before `apply`
+-- refused. The check detects a miswired method; the archive before `apply`
 -- already prevents a second execution.
 test_applyRetainingTheOperationFails : Script ()
 test_applyRetainingTheOperationFails = script do
@@ -386,7 +386,7 @@ test_applyRetainingTheOperationFails = script do
   expectFailure ePendingMismatch r2
 
 -- | An `apply` or `unschedule` that removes another operation's entry is
--- refused, so a mis-wired method cannot strand a pending operation.
+-- refused, so a miswired method cannot strand a pending operation.
 test_methodDroppingAnotherEntryFails : Script ()
 test_methodDroppingAnotherEntryFails = script do
   admin <- allocateParty "admin"
