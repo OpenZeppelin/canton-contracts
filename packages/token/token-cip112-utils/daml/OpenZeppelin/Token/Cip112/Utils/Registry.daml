@@ -4,7 +4,6 @@ module OpenZeppelin.Token.Cip112.Utils.Registry where
 
 import DA.Assert (assertDeadlineExceeded)
 import DA.Foldable (forA_)
-import DA.Time (addRelTime)
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
@@ -13,6 +12,7 @@ import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils
 
 import OpenZeppelin.Token.Cip112.TypesV1
+import OpenZeppelin.Token.Cip112.Utils.Holding (addRelTimeSaturating)
 import OpenZeppelin.Token.Cip112.Utils.Transfer
 import OpenZeppelin.Token.Cip112.Utils.Allocation
 
@@ -82,4 +82,4 @@ offerMintImpl config createInstruction receiver instrumentId amount requestedAt 
     transfer
     lockedHoldingCids = []
     expiresAt = executeBefore
-    lockExpiresAt = executeBefore `addRelTime` config.lockGrace
+    lockExpiresAt = executeBefore `addRelTimeSaturating` config.lockGrace

@@ -23,7 +23,7 @@ import DA.List (dedupSort)
 import DA.Map qualified as Map
 import DA.Optional (fromOptional, isNone, isSome)
 import DA.TextMap qualified as TextMap
-import DA.Time (addRelTime, convertMicrosecondsToRelTime, isLedgerTimeLE)
+import DA.Time (convertMicrosecondsToRelTime)
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
@@ -65,12 +65,20 @@ isValidAllocationState s =
   -- accounts hold nothing to reserve.
   && (isNone s.allocation.nextIterationFunding || isRegularAccount s.allocation.authorizer)
   && s.numIterations >= 0
-  && s.expiresAt < s.lockExpiresAt
+  && lockOutlivesExpiry s.expiresAt s.lockExpiresAt
   && s.maxTTL > convertMicrosecondsToRelTime 0
   && s.lockGrace > convertMicrosecondsToRelTime 0
-  -- A committed allocation with no settlement deadline can never be
-  -- withdrawn, so refuse to create that shape at all.
-  && (not s.allocation.committed || isSome s.allocation.settlementDeadline)
+  -- Refuse to create an allocation its authorizer can never withdraw.
+  && isEventuallyWithdrawable s.allocation
+
+-- | Whether the authorizer can withdraw the allocation at some point. A
+-- committed allocation refuses withdrawal until its settlement deadline has
+-- passed, so it needs a deadline that can pass: not `None`, and not
+-- `maxTime`, which no ledger time exceeds and which the vendored withdraw
+-- check's `isLedgerTimeGT` refuses to compare against.
+isEventuallyWithdrawable : AllocationV2.AllocationSpecification -> Bool
+isEventuallyWithdrawable allocation =
+  not allocation.committed || optional False (< maxTime) allocation.settlementDeadline
 
 -- | The standard view of an allocation.
 allocationView : AllocationState -> AllocationV2.AllocationView
@@ -210,28 +218,29 @@ allocationFactoryImpl config ops createAllocation arg = do
     forA_ (TextMap.toList reserve) $ \(instrumentId, amount) ->
       require' ("allocation.nextIterationFunding for " <> instrumentId, amount)
         isGreaterR ("zero", 0.0)
-  require "a committed allocation requires a settlement deadline"
-    (not allocation.committed || isSome allocation.settlementDeadline)
+  require "a committed allocation requires a settlement deadline before maxTime"
+    (isEventuallyWithdrawable allocation)
   assertDeadlineExceeded "requestedAt" arg.requestedAt
   forA_ allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
 
   -- Every time below comes from `requestedAt` and ledger-time bounds, never
   -- `getTime`, for the reason `validateTransfer` gives.
+  let ttlBound = arg.requestedAt `addRelTimeSaturating` config.maxTTL
   -- ledger time <= requestedAt + maxTTL
-  requestWithinTTL <- isLedgerTimeLE (arg.requestedAt `addRelTime` config.maxTTL)
+  requestWithinTTL <- isLedgerTimeAtMost ttlBound
   require "requestedAt is older than the registry's maximum TTL" requestWithinTTL
   -- The storage bound counts from `requestedAt`, which may lie up to `maxTTL`
   -- in the past. A deadline within the bound becomes `expiresAt`, so the lock
   -- cannot expire before the deadline.
   forA_ allocation.settlementDeadline $ \deadline ->
     require "settlement deadline exceeds the registry's maximum TTL after requestedAt"
-      (deadline <= arg.requestedAt `addRelTime` config.maxTTL)
+      (deadline <= ttlBound)
   let expiresAt = computeStorageExpiry config.maxTTL arg.requestedAt allocation.settlementDeadline
   assertWithinDeadline "allocation.expiresAt" expiresAt
 
   -- Net funding: only the negative part of the authorizer's net credit needs
   -- to be locked, plus any next-iteration reserve.
-  let lockExpiresAt = expiresAt `addRelTime` config.lockGrace
+  let lockExpiresAt = expiresAt `addRelTimeSaturating` config.lockGrace
       netAmounts = netAllocationCreditAmounts authorizer allocation.transferLegSides
       reserveAmounts = fromOptional TextMap.empty allocation.nextIterationFunding
       requiredAmounts = textMapUnionWith (+)
@@ -320,7 +329,7 @@ settleAllocation ops createSuccessor self s extraTransferLegSides nextIterationF
   -- repeated settlements can push it more than `maxTTL` past ledger time; the
   -- package `README.md` explains why that is accepted.
   let newExpiresAt = computeStorageExpiry s.maxTTL s.expiresAt s.allocation.settlementDeadline
-      newLockExpiresAt = newExpiresAt `addRelTime` s.lockGrace
+      newLockExpiresAt = newExpiresAt `addRelTimeSaturating` s.lockGrace
       lock = HoldingV2.Lock with
         holders = dedupSort (admin :: s.settlement.executors)
         expiresAt = Some newLockExpiresAt
