@@ -22,6 +22,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Daml
         uses: ./.github/actions/setup-daml
@@ -43,6 +45,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Check spelling
         uses: crate-ci/typos@276087d9a4f06398b3e04825487805e2d7375888 # v1.52.2
 
@@ -56,6 +60,8 @@ jobs:
         suite: [token, authorization, licensing, treasury]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Daml
         uses: ./.github/actions/setup-daml
       - name: Validate against a Canton ledger
