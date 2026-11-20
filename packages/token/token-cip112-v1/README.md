@@ -28,8 +28,9 @@ their own templates reuses directly.
 ## What it provides
 
 - `TokenHolding` (`Holding`): an asset holding maintained jointly by the
-  instrument admin and the account parties, with optional locks and an
-  owner-unlock choice.
+  instrument admin and the account parties, with optional locks and unlock
+  choices for an expired lock: one for the account parties, one for the admin
+  alone.
 - `TokenTransferInstruction` (`Transfer`): the TSv2 transfer-instruction
   lifecycle over a `TransferInstructionState` payload, including accept,
   reject, withdraw, and expiry paths.
@@ -87,6 +88,17 @@ interfaces or exceptions of its own.
   clear the leg set, and bump the storage expiry using the registry
   configuration snapshotted at allocation time. The authorizer withdraws a
   successor like any other allocation.
+- The admin ends a stale transfer instruction or allocation once its
+  `expiresAt` has passed: an instruction through
+  `TokenTransferInstruction_Expire`, an allocation through `Allocation_Cancel`
+  with `actors = [admin]`, or many at once through
+  `TokenRules_ExpireTransferInstructions` and `TokenRules_ExpireAllocations`.
+  Each expiry reads Splice's `expire-lock` flag from its `extraArgs.context`.
+  With the flag missing or set to `AV_Bool True`, the funding returns to its
+  account. With `AV_Bool False`, the expiry ends the contract without
+  touching the funding, and only once `lockExpiresAt` has passed. For an
+  allocation the flag is read only when the actors are exactly `[admin]`,
+  including when the admin is its only executor.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors
@@ -151,14 +163,24 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   `FinalizedAllocation.nextIterationFunding`; the check in
   `allocation_settleImpl` is the effective guard. Registry forks that replace
   that choice body must keep an equivalent check.
-- `maxTTL` and `lockGrace` are only required to be positive. A `lockGrace` too
-  short for the admin's cleanup automation to act in leaves expiry to the
-  owner-recovery path; size it to the automation's reaction time (minutes to
-  hours), and size `maxTTL` to the longest workflow the registry accepts.
+- `maxTTL` and `lockGrace` are only required to be positive. Between
+  `expiresAt` and `lockExpiresAt` only the pending contract can move its
+  funding, so an expiry that does not clear the `expire-lock` flag releases
+  it. A `lockGrace` too short for the admin's expiry automation to act in
+  lets the account parties unlock or spend the funding first, and the
+  contract then ends only through an expiry with the flag cleared. Size
+  `lockGrace` to the automation's reaction time (minutes to hours), and size
+  `maxTTL` to the longest workflow the registry accepts.
+- An expiry with the `expire-lock` flag cleared trusts the admin that the
+  funding is gone. The ledger cannot check this, because fetching an archived
+  holding aborts. The admin clears the flag only after finding the contract's
+  locked holdings no longer active, and never on `lockExpiresAt` alone. A
+  flag cleared while the funding is still locked ends the contract and leaves
+  the holding locked; `TokenHolding_AdminUnlock` repairs this.
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
-  provider blocks recovery until it cooperates; single-party accounts avoid
-  this.
+  provider blocks that recovery. `TokenHolding_AdminUnlock` is the recovery
+  path that does not need the provider.
 - An allocation's view advertises the withdraw action statically. For a
   committed allocation the choice still fails until the settlement deadline
   passes; wallets should treat the advertised action as "who", not "when".

@@ -78,8 +78,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   module namespace `OpenZeppelin.Token.Cip112.Utils`): the transfer,
   allocation, settlement, mint-offer, and expiry choice bodies as functions
   parameterised over the caller's templates through a `HoldingOps` record and
-  constructor and pinning operations. It defines no serializable types and
-  depends on `openzeppelin-token-cip112-types-v1`.
+  constructor and pinning operations. The expiry bodies read Splice's
+  `expire-lock` choice-context flag to release or skip the funding, and the
+  holding bodies unlock an expired lock for the account parties or for the
+  admin alone. It defines no serializable types and depends on
+  `openzeppelin-token-cip112-types-v1`.
 
 ### `openzeppelin-token-cip112-v1`
 
@@ -87,8 +90,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 - Added the CIP-0112 token package `openzeppelin-token-cip112-v1` (public
   module namespace `OpenZeppelin.Token.Cip112.V1`): ready-to-use templates over
-  the types and utils packages with holdings with expiring locks and owner
-  recovery, one-step and two-step transfers, allocations with exact-cover
+  the types and utils packages with holdings with expiring locks that the
+  account parties or the admin alone unlock, admin expiry of transfer
+  instructions and allocations under Splice's `expire-lock` flag, one-step
+  and two-step transfers, allocations with exact-cover
   batch settlement and iterated settlement, delivery-vs-mint and
   delivery-vs-burn settlement through the CIP-0112 mint and burn accounts,
   registry rules with mint offers from the mint account, and burns as
