@@ -369,7 +369,7 @@ parties that need the answer.
   every signatory's participant must vet the upgrade.
 - `applyOperation` verifies the actor, shared authority, pending list, and schedule.
   It also checks that the successor holds exactly the reduced pending list.
-  That check detects a mis-wired method. It reads the id that the method
+  That check detects a miswired method. It reads the id that the method
   returns, so it cannot tell whether that id is the successor the method
   created. The archive before `apply` already prevents a second execution.
   The consumer implements `apply` and must dispatch each operation correctly.
