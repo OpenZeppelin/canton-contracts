@@ -18,11 +18,32 @@ Three roles interact with the package:
   consumers by explicit disclosure.
 - **Wallet users** hold accounts. Their participants upload the same DARs.
   A user's wallet needs the disclosed `TokenRules` contract in every
-  submission that exercises a factory choice; holdings, instructions, and
-  allocations are visible to the user directly as a stakeholder.
+  submission that exercises a factory choice, and the disclosed locked
+  funding to accept or reject an incoming transfer. The user's own holdings,
+  and the instructions and allocations the user takes part in, are visible
+  to the user directly as a stakeholder.
 - **Settlement apps** host executor parties. They receive allocations as
   contract observers and drive `SettlementFactory_SettleBatch` with the
   executors as actors.
+
+The admin is the only lock holder of locked funding, so only the admin and
+the holding's account parties see a locked holding. The registry operator
+serves locked holdings to receivers and executors by explicit disclosure, as
+it serves `TokenRules`. A receiver's wallet attaches the holdings listed in
+the instruction view's `transfer.inputHoldingCids` when it accepts or
+rejects. A settlement app attaches the holdings listed in each allocation
+view's `holdingCids` when it settles or cancels. A party that receives a
+disclosed holding learns the sender's account, the amount, and the lock
+context, and keeps that data. Serve each pending contract's funding only to
+that contract's receiver account parties or settlement executors.
+
+The receiver and the executors observe the pending contract itself. Until it
+is archived, these parties must stay hosted, and every participant hosting
+them must keep the packages below vetted. Otherwise every choice on the
+pending contract fails, and the locked funds stay frozen until the lock
+expires and the owner recovers them through `TokenHolding_OwnerUnlock`. The
+[`README.md` security caveats](README.md#security-caveats) describe who can
+cause this and how long the funds stay frozen.
 
 Every participant needs these exact packages.
 [`dars/manifest.yaml`](../../../dars/manifest.yaml) records their package IDs,
@@ -125,9 +146,12 @@ Conformance notes:
   see this token (see the README's "Standards conformance").
 - Lock shape is restricted: locks always carry a finite `expiresAt` and never
   `expiresAfter`; holdings with `expiresAfter` locks are rejected at creation.
-- The standard's off-ledger halves — factory discovery, instrument metadata,
-  pause reporting — are deployment infrastructure outside this package. The
-  trading example substitutes explicit disclosure for discovery.
+- The standard's off-ledger halves are deployment infrastructure outside
+  this package: factory discovery, instrument metadata, pause reporting, and
+  serving the funding disclosures that receivers and executors attach to
+  accept, reject, settle, and cancel. The trading example stands in for
+  discovery and for the funding service: it queries the rules contract and
+  the funding as the admin and attaches them as explicit disclosures.
 
 The registry party model is a single `admin` party per instrument namespace:
 it signs the rules contract, co-signs every holding, and controls supply and
@@ -138,6 +162,7 @@ cleanup.
 | Mistake | What happens | Fix |
 |---|---|---|
 | Submitting a factory exercise without the disclosed `TokenRules` contract | The submission fails to resolve the contract | Attach the disclosure to every factory submission |
+| Accepting or rejecting a transfer, or settling or cancelling an allocation, without its locked funding disclosed | The submission fails to resolve the locked holding | Attach the holdings the registry serves for the instruction view's `transfer.inputHoldingCids` or the allocation view's `holdingCids` |
 | Holding a `ContractId TokenHolding` across a balance change | The client holds a stale id and the next exercise fails | Re-query holdings after every transfer, allocation, or settle |
 | Funding one transfer with holdings of different instruments | `executeTransfer` fails: input holdings must all match the transfer's instrument | Split by instrument; only allocations take multi-instrument inputs |
 | Enabling iterated settlement with a zero reserve entry | Allocation is refused: reserve amounts must be positive | Use `Some TextMap.empty` for "iterated, no reserve" |

@@ -232,7 +232,7 @@ allocationFactoryImpl config ops createAllocation arg = do
         (fmap (\net -> max 0.0 (negate net)) netAmounts)
         reserveAmounts
       lock = HoldingV2.Lock with
-        holders = dedupSort (admin :: arg.settlement.executors)
+        holders = [admin]
         expiresAt = Some lockExpiresAt
         expiresAfter = None
         context = Some ("allocation for settlement " <> arg.settlement.id)
@@ -271,9 +271,9 @@ allocationFactoryImpl config ops createAllocation arg = do
     maxTTL = config.maxTTL
     lockGrace = config.lockGrace
 
-  -- The executors are not told how the authorizer funded the lock: they see
-  -- the allocation and the locked holdings as stakeholders, and the inputs
-  -- and change belong to the rest of the account.
+  -- The executors are not told how the authorizer funded the lock: they
+  -- observe the allocation and receive the locked holdings by explicit
+  -- disclosure, and the inputs and change belong to the rest of the account.
   emitHoldingsChange ops admin authorizer []
     arg.inputHoldingCids
     (lockedHoldingCids <> concat (textMapValues authorizerChangeCids))
@@ -311,7 +311,7 @@ settleAllocation ops createSuccessor self s extraTransferLegSides nextIterationF
   let newExpiresAt = computeStorageExpiry s.maxTTL now s.allocation.settlementDeadline
       newLockExpiresAt = newExpiresAt `addRelTime` s.lockGrace
       lock = HoldingV2.Lock with
-        holders = dedupSort (admin :: s.settlement.executors)
+        holders = [admin]
         expiresAt = Some newLockExpiresAt
         expiresAfter = None
         context = Some ("allocation for settlement " <> s.settlement.id)
