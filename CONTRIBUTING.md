@@ -74,6 +74,16 @@ Run `scripts/check-sandbox.sh` for the token sandbox gate. Set
 and integration-example Ledger API checks. CI runs all four suites on separate fresh
 static-time ledgers.
 
+Daml Script reads a transaction only as its submitter, so it cannot show what
+another party witnessed. A sandbox script that checks privacy returns a list
+of records with the fields `party`, `witnessed`, and `hidden` instead, like
+`Witnessing` in `OpenZeppelin.Token.Cip112.V1.Test.Sandbox`: each names a
+party, the contracts it must witness, and the contracts it must not. List the
+script under
+`WITNESS_SCRIPTS` for its suite in `scripts/check-sandbox.sh`. After the
+script passes, the gate reads each named party's transactions from the JSON
+Ledger API and checks both lists. These checks need `curl` and `jq`.
+
 ## Choosing the right repository
 
 This repository accepts reusable Daml library components and focused integration

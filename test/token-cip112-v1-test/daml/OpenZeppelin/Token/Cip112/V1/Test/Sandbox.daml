@@ -7,14 +7,21 @@
 --
 -- Every script allocates fresh parties and pins the clock to `t1`, so the
 -- scripts compose in any order on one forward-only static-time ledger.
+-- `sandboxBatchExpiryWitnesses` moves the clock past `t1` and runs last.
 module OpenZeppelin.Token.Cip112.V1.Test.Sandbox where
 
 import DA.Assert ((===))
+import DA.Optional (optionalToList)
 import Daml.Script
 
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (senderSide)
 
+import OpenZeppelin.Token.Cip112.V1.Allocation (TokenAllocation)
 import OpenZeppelin.Token.Cip112.V1.Holding (TokenHolding)
+import OpenZeppelin.Token.Cip112.V1.Registry
+import OpenZeppelin.Token.Cip112.V1.Transfer (TokenTransferInstruction)
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
 
 -- | Token creation and querying: holdings appear in owner queries, and the
@@ -71,3 +78,92 @@ sandboxMintAndBurn = do
   _ <- submit (actAs admin) (acceptCmd admin requestCid)
   aliceAfter <- holdingAmounts alice
   aliceAfter === []
+
+-- | The contracts a party must and must not witness in a batch expiry.
+-- Contract ids are coerced to one type so the list serializes as JSON.
+data Witnessing = Witnessing with
+    party : Party
+    witnessed : [ContractId ()]
+    hidden : [ContractId ()]
+  deriving (Eq, Show)
+
+-- | Batched admin expiry shows each party only its own items. Two
+-- allocations with different executors expire in one batch, and so do two
+-- transfer instructions with different receivers. The admin's tree holds
+-- every cancel and expiry, and every holding they release.
+--
+-- Daml Script reads a transaction only as its submitter, the admin, so the
+-- script returns what each executor and receiver must and must not witness.
+-- `scripts/check-sandbox.sh` reads each party's own transactions from the
+-- JSON Ledger API and checks them against that list.
+sandboxBatchExpiryWitnesses : Script [Witnessing]
+sandboxBatchExpiryWitnesses = do
+  s@Scenario{..} <- setupPrefixed "batchexpiry-"
+  app2 <- allocateParty "batchexpiry-app2"
+  carol <- allocateParty "batchexpiry-carol"
+  dave <- allocateParty "batchexpiry-dave"
+  -- Alice's allocation is executed by `app`, Bob's by `app2`.
+  aliceAllocInput <- mint admin alice 10.0
+  aliceAlloc <- completedCid =<< allocate s alice [senderSide legAliceToBob] [aliceAllocInput]
+  bobAllocInput <- mint admin bob 4.0
+  let s2 = s with settlement = settlement with executors = [app2]; id = "settlement-2"
+  bobAlloc <- completedCid =<< allocate s2 bob [senderSide legBobToAlice] [bobAllocInput]
+  -- Alice offers Carol 3.0, Bob offers Dave 2.0.
+  aliceInstrInput <- mint admin alice 3.0
+  aliceInstr <- pendingCid =<< instructTransfer s [alice] (mkTransfer s alice carol 3.0 [aliceInstrInput])
+  bobInstrInput <- mint admin bob 2.0
+  bobInstr <- pendingCid =<< instructTransfer s [bob] (mkTransfer s bob dave 2.0 [bobInstrInput])
+  setTime t3
+
+  let cancel = AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs
+  allocTree <- submitTree (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireAllocations with
+      cancelArgs = [(aliceAlloc, cancel), (bobAlloc, cancel)]
+  aliceReleased <- releasedBy (fromInterfaceContractId @TokenAllocation aliceAlloc) allocTree
+  bobReleased <- releasedBy (fromInterfaceContractId @TokenAllocation bobAlloc) allocTree
+
+  let aliceInstrCid = fromInterfaceContractId @TokenTransferInstruction aliceInstr
+      bobInstrCid = fromInterfaceContractId @TokenTransferInstruction bobInstr
+  instrTree <- submitTree (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
+      instructionCids = [aliceInstrCid, bobInstrCid]
+  aliceReturned <- releasedBy aliceInstrCid instrTree
+  bobReturned <- releasedBy bobInstrCid instrTree
+
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [3.0, 10.0]
+  bobAfter <- holdingAmounts bob
+  bobAfter === [2.0, 4.0]
+  assertNoLocks alice
+  assertNoLocks bob
+
+  let anyCid : ContractId t -> ContractId ()
+      anyCid = coerceContractId
+      aliceAllocItem = [anyCid aliceAlloc, anyCid aliceReleased]
+      bobAllocItem = [anyCid bobAlloc, anyCid bobReleased]
+      aliceInstrItem = [anyCid aliceInstr, anyCid aliceReturned]
+      bobInstrItem = [anyCid bobInstr, anyCid bobReturned]
+  pure
+    [ Witnessing with party = app; witnessed = aliceAllocItem; hidden = bobAllocItem
+    , Witnessing with party = app2; witnessed = bobAllocItem; hidden = aliceAllocItem
+    , Witnessing with party = carol; witnessed = aliceInstrItem; hidden = bobInstrItem
+    , Witnessing with party = dave; witnessed = bobInstrItem; hidden = aliceInstrItem
+    ]
+
+-- | The one holding created under the exercise on `cid` in `tree`: what an
+-- allocation's cancel or an instruction's expiry releases. Fails if the
+-- tree holds no exercise on `cid`.
+releasedBy : Template t => ContractId t -> TransactionTree -> Script (ContractId TokenHolding)
+releasedBy cid tree = case concatMap (createdUnder cid False) tree.rootEvents of
+  [holdingCid] -> pure holdingCid
+  cids -> abort ("expected one released holding, got " <> show (length cids))
+
+-- | The holdings created below an exercise on `cid`, once `inside` it.
+-- Recursion lives at the top level because Daml rejects recursive local
+-- bindings.
+createdUnder : Template t => ContractId t -> Bool -> TreeEvent -> [ContractId TokenHolding]
+createdUnder _ inside (CreatedEvent c)
+  | inside = optionalToList (fromAnyContractId @TokenHolding c.contractId)
+  | otherwise = []
+createdUnder cid inside (ExercisedEvent ex) =
+  concatMap (createdUnder cid (inside || fromAnyContractId ex.contractId == Some cid)) ex.childEvents
