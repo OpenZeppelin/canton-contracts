@@ -10,7 +10,8 @@ updates:
       interval: monthly
     groups:
       actions-deps:
-        patterns:
-          - '*'
+        update-types:
+          - minor
+          - patch
     commit-message:
       prefix: 'chore(deps): '
