@@ -47,7 +47,10 @@ isValidRegistryConfig c =
 -- Operations supplied by the template owner
 --------------------------------------------
 
--- | What a workflow needs from the template owner. Not serializable.
+-- | What a workflow needs from the template owner. Not serializable. A
+-- holding named in the `lockedHoldingCids` of a pending transfer
+-- instruction or allocation must keep its contract id until its lock
+-- expires.
 data HoldingOps = HoldingOps with
     createHolding : HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
       -- ^ Create a holding from its standard view. Law: the created

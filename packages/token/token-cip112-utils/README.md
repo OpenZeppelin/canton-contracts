@@ -55,6 +55,12 @@ contract id enters through an operation the template owner wrote:
   control. Use `pinAllocationTo @YourAllocation`.
 - `createHolding` must create a contract whose view equals the argument and
   whose signatories include the admin and the account parties.
+- A holding with a live lock belongs to the pending transfer instruction or
+  allocation that names it in `lockedHoldingCids`. Every path that ends the
+  pending contract consumes that exact contract id. No choice on the holding
+  template may archive or re-create the holding before the lock's
+  `expiresAt`, for example to freeze, merge, split, or edit metadata.
+  Otherwise the pending contract can no longer complete, release, or expire.
 - The settlement factory must settle through `settleBatchImpl`, or keep its
   exact-cover check: every leg in the batch needs a sending and a receiving
   allocation with the same amount. Without it, a settlement can create
