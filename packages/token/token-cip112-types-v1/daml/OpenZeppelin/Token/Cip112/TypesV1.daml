@@ -22,8 +22,13 @@ data RegistryConfig = RegistryConfig with
       -- ^ The instrument admin: signs every holding and every pending
       -- workflow contract, and controls supply and cleanup.
     maxTTL : RelTime
-      -- ^ Upper bound on how long an allocation or transfer instruction may
-      -- occupy storage. Workflow deadlines beyond it are rejected outright.
+      -- ^ The storage window of a pending workflow: a transfer's
+      -- `executeBefore` may lie at most this far past ledger time, and an
+      -- allocation's settlement deadline at most this far past its
+      -- `requestedAt`. Workflow deadlines beyond it are rejected outright. An
+      -- allocation snapshots it, and each settlement of an iterated
+      -- allocation without a deadline extends that allocation's expiry by
+      -- the snapshot again, so such a chain can outlive this window.
     lockGrace : RelTime
       -- ^ How long a funding lock outlives its workflow contract's
       -- `expiresAt`: the window in which the admin's expiry path is
@@ -57,7 +62,9 @@ data AllocationState = AllocationState with
     requestedAt : Time
       -- ^ The wallet-supplied request time.
     createdAt : Time
-      -- ^ When the original allocation was created; carried onto successors.
+      -- ^ The original allocation's `requestedAt`, which stands in for its
+      -- creation time because the factory does not read the time; carried
+      -- onto successors.
     numIterations : Int
       -- ^ Settlement iterations executed so far; zero for the original.
     expiresAt : Time
