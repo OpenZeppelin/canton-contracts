@@ -83,6 +83,14 @@ isValidRegistryConfig c =
 -- spend: a context cannot show that a contract is absent. The submitter
 -- also chooses which contract to pass, so the registry keeps one live
 -- policy contract for each admin and account.
+--
+-- The operations cannot tell which rules contract a holding came from. Any
+-- check they make compares fields, and the admin can copy those fields into
+-- a contract it signs alone, such as a second rules contract without the
+-- first one's roles. Roles and policy on a rules contract therefore restrict
+-- wallets only. A control that must bind the admin has to be held by a party
+-- that signs the holdings and the pending contracts, and the operations must
+-- refuse a holding that names a different such party.
 data HoldingOps = HoldingOps with
     createHolding : HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
       -- ^ Create a holding from its standard view. Law: the created
