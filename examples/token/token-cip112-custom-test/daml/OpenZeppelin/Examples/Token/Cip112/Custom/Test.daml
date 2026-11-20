@@ -17,7 +17,7 @@ import DA.Map qualified as Map
 import DA.Optional (isNone, isSome, optionalToList)
 import DA.Text (isInfixOf)
 import DA.TextMap qualified as TextMap
-import DA.Time (days, hours, time)
+import DA.Time (addRelTime, days, hours, time)
 import Daml.Script
 
 import Splice.Api.Token.MetadataV1
@@ -336,6 +336,34 @@ testDvpSettles = do
   _ <- settleBatch app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc])
   balanceSeenBy alice alice >>= (=== [5.0])
   balanceSeenBy bob bob >>= (=== [10.0])
+
+-- | `MyAllocation` settles through `allocationSettleImpl`, so it inherits the
+-- settlement window: without a settlement deadline, the batch fails from the
+-- allocation's `expiresAt`, `maxTTL` after its creation, on, and the admin's
+-- expiry returns the funding.
+testSettlementRefusedAfterExpiresAt : Script ()
+testSettlementRefusedAfterExpiresAt = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 15.0
+  Some rules <- queryContractId admin rulesCid
+  let leg = mkLeg "leg-1" alice bob 10.0
+      openSpec trader sides = (mkSpec app trader sides None) with settlementDeadline = None
+      expiresAt = t1 `addRelTime` rules.config.maxTTL
+  aliceAlloc <- allocate app alice (openSpec alice [senderSide leg]) [aliceTok]
+  bobAlloc <- allocate app bob (openSpec bob [receiverSide leg]) []
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation alice aliceAlloc
+  v.expiresAt === Some expiresAt
+  setTime expiresAt
+  mustFailWith "Ledger time is at or past deadline 'allocation.expiresAt'"
+    (actAs exchange <> discloseMany [rulesDisclosure])
+    (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]))
+  submit (actAs admin) do
+    exerciseCmd rulesCid MyRules_ExpireAllocations with
+      cancelArgs =
+        [ (cid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)
+        | cid <- [aliceAlloc, bobAlloc] ]
+  balanceSeenBy alice alice >>= (=== [5.0, 10.0])
+  balanceSeenBy bob bob >>= (=== [])
 
 -- | The auditor is an informee of every event the workflows emit for the
 -- token: mint, the lock on instruction, both sides of the accepted

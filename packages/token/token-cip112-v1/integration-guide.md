@@ -81,6 +81,15 @@ one transaction through `SettlementFactory_SettleBatch`, which checks that the
 batch's legs are covered exactly. `examples/token/token-cip112-trading-test` runs a full
 DvP.
 
+Every allocation in the batch must be settled before its `expiresAt`. With a
+settlement deadline, `expiresAt` is the deadline. An allocation without one can
+be settled only until `maxTTL` after it was created, and after that the
+executors must ask the authorizer for a new allocation. The batch is atomic, so
+one expired allocation fails the settlement of every authorizer in it. Before
+submitting, drop each trade with an expired allocation, legs included, or get
+its authorizer's new allocation first. A direct `Allocation_Settle` has the
+same bound.
+
 Authorization: each authorizer's account parties allocate; the executors alone
 settle the batch.
 
@@ -103,7 +112,9 @@ An allocation created with `nextIterationFunding` set lets the executors bring
 new legs each settlement round against a locked reserve, rolling the remainder
 into a successor allocation. `testIteratedSettlementLifecycle` runs a
 two-iteration chain; the trading example's deposit flow shows the consumer
-shape.
+shape. Each successor can be settled until its own `expiresAt`. Without a
+settlement deadline, that is `maxTTL` after the settle that created it, so
+every iteration renews the window; with one, it stays the deadline.
 
 Authorization: as DvP, per iteration; the authorizer withdraws the current
 successor to exit.
@@ -145,4 +156,5 @@ cleanup.
 | Creating a committed allocation without a settlement deadline | Refused at the factory and by the template | Set `settlementDeadline`; commitment ends at the deadline |
 | Requesting a deadline or execution window beyond the registry's `maxTTL` | Refused outright, not truncated | Keep workflow deadlines within `maxTTL` of submission time |
 | Expecting the admin to expire a live workflow | Expiry choices fail before the workflow deadline | Wait for `expiresAt`; only executors cancel early |
-| Reading `availableActions` as "exercisable now" | A committed allocation advertises withdraw that still fails before the deadline | Treat the map as the actor sets; check the deadline separately |
+| Reading `availableActions` as "exercisable now" | A committed allocation advertises withdraw that still fails before the deadline, and every allocation advertises settle that fails from `expiresAt` on | Treat the map as the actor sets; check the deadline and `expiresAt` separately |
+| Including an expired allocation in a settlement batch | The whole batch fails, for every authorizer in it | Compare each allocation's `expiresAt` with the current time before submitting, and ask the authorizers of expired ones for new allocations |

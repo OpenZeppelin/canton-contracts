@@ -15,7 +15,22 @@
 -- every per-instrument total must be non-negative and must cover any
 -- requested next-iteration reserve, so a settle can never create or strand
 -- value within the allocation.
-module OpenZeppelin.Token.Cip112.Utils.Allocation where
+module OpenZeppelin.Token.Cip112.Utils.Allocation
+  ( CreateAllocation
+  , PinAllocation
+  , pinAllocationTo
+  , isValidAllocationState
+  , allocationView
+  , allocationAvailableActions
+  , allocationSettleImpl
+  , allocationWithdrawImpl
+  , allocationCancelImpl
+  , allocationGcImpl
+  , privateAssetAllocateExtraObservers
+  , allocationFactoryImpl
+  , unlockAndLog
+  , toEventLegSide
+  ) where
 
 import DA.Assert (assertDeadlineExceeded, assertWithinDeadline)
 import DA.Foldable (forA_)
@@ -85,10 +100,11 @@ allocationView s = AllocationV2.AllocationView with
   availableActions = allocationAvailableActions s
   meta = emptyMetadata
 
--- | Actions wallets may take, reported to exactly match what the choice
--- bodies accept. Withdraw is advertised statically: for a committed
--- allocation the choice body still refuses it until the settlement deadline
--- has passed.
+-- | Actions wallets may take, each with the actor sets its choice body
+-- accepts. The map is static, so it does not say when an action succeeds:
+-- the withdraw body still refuses a committed allocation until the
+-- settlement deadline has passed, and the settle body refuses every
+-- allocation from `expiresAt` on.
 allocationAvailableActions : AllocationState -> Map.Map AllocationV2.AllocationAction [[Party]]
 allocationAvailableActions s = Map.fromList $
   [ (AllocationV2.AA_Cancel, [dedupSort s.settlement.executors])
@@ -101,17 +117,26 @@ allocationAvailableActions s = Map.fromList $
 -- Allocation choice bodies
 ---------------------------
 
--- | `allocation_settleImpl`. Re-checks the deadline and iteration arguments
--- even when driven by the settlement factory: this choice is also directly
--- callable by admin plus executors, and a direct settle bypasses the
--- factory's exact-cover check.
+-- | `allocation_settleImpl`. Re-checks the deadline, the expiry and the
+-- iteration arguments even when driven by the settlement factory: this
+-- choice is also directly callable by admin plus executors, and a direct
+-- settle bypasses the factory's exact-cover check.
+--
+-- Settlement fails from `expiresAt` on, so a settle never meets an
+-- allocation the admin may already cancel, and the funding stays locked
+-- until `lockGrace` after the last moment a settle can commit. With a
+-- settlement deadline `expiresAt` is the deadline; without one it is
+-- `maxTTL` after the allocation was created or last iterated.
 allocationSettleImpl
   : HoldingOps -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
   -> AllocationV2.Allocation_Settle
   -> Update AllocationV2.AllocationResult
 allocationSettleImpl ops createSuccessor self s arg = do
   archiveAndCheckActors self arg.actors [s.allocation.admin :: s.settlement.executors]
+  -- The factory and successors never set `expiresAt` past the deadline, but
+  -- `ensure` does not require it, so a state built elsewhere needs both.
   forA_ s.allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
+  assertWithinDeadline "allocation.expiresAt" s.expiresAt
   validateNextIterationArgs "Allocation_Settle" (isSome s.allocation.nextIterationFunding)
     arg.extraTransferLegSides arg.nextIterationFunding
   -- Executor-supplied legs pass the checks the allocation's own legs passed at
@@ -294,6 +319,9 @@ allocationFactoryImpl config ops createAllocation arg = do
 -- funding as freshly locked holdings, and pay out the remainder unlocked.
 -- When a reservation is requested a successor allocation is created through
 -- the owner's constructor.
+--
+-- It checks no actors, deadline, expiry or iteration arguments, so the
+-- module does not export it: templates settle through `allocationSettleImpl`.
 settleAllocation
   : HoldingOps -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
   -> [AllocationV2.TransferLegSide] -> Optional (TextMap.TextMap Decimal)

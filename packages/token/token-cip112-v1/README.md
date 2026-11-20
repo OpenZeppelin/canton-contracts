@@ -87,6 +87,11 @@ interfaces or exceptions of its own.
   clear the leg set, and bump the storage expiry using the registry
   configuration snapshotted at allocation time. The authorizer withdraws a
   successor like any other allocation.
+- An allocation can be settled only before its `expiresAt`, directly or
+  through the settlement factory. With a settlement deadline, `expiresAt` is
+  the deadline. Without one, it is `maxTTL` after the allocation was created,
+  and a successor's is `maxTTL` after the settle that created it. After
+  that, the executors must ask the authorizer for a new allocation.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors
@@ -155,6 +160,10 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   short for the admin's cleanup automation to act in leaves expiry to the
   owner-recovery path; size it to the automation's reaction time (minutes to
   hours), and size `maxTTL` to the longest workflow the registry accepts.
+  Deadlines are checked against ledger time, which may differ from the
+  synchronizer's record time by up to its ledger-time tolerance. Keep
+  `lockGrace` above twice that tolerance, so that the owner cannot unlock the
+  funding while a settle can still commit.
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
   provider blocks recovery until it cooperates; single-party accounts avoid
