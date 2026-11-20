@@ -88,6 +88,7 @@ Each package `README.md` shows the consumer code for that component, and
 
 ## Repository layout
 
+```
 packages/                 Library components and release candidates
   access/                 Authorization components
   security/               Emergency-stop, delay, and safety components
