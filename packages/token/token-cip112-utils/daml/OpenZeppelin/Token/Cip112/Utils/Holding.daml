@@ -226,10 +226,7 @@ eventObserversFor ops admin account =
   dedupSort (accountParties admin account <> ops.eventObservers account)
 
 -- | Storage bound for a pending contract: at most `maxTTL` after `base`,
--- capped by the workflow deadline, saturating at `maxTime` instead of
--- overflowing. `base` comes from the submission rather than `getTime`: the
--- request's `requestedAt` when an allocation is created, and the previous
--- `expiresAt` when a settlement creates a successor.
+-- capped by the workflow deadline, saturating at `maxTime`.
 computeStorageExpiry : RelTime -> Time -> Optional Time -> Time
 computeStorageExpiry maxTTL base deadline =
     optional identity min deadline candidate

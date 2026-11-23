@@ -91,12 +91,9 @@ interfaces or exceptions of its own.
   clear the leg set, and extend the previous storage expiry by the `maxTTL`
   snapshotted at allocation time, capped by the settlement deadline. The
   authorizer withdraws a successor like any other allocation.
-- No choice reads the time with `getTime`; every time check is a ledger-time
-  bound. An externally signed transfer or allocation therefore executes
-  whenever its bounds still hold, not only within the ledger-time tolerance
-  of its preparation. An allocation's storage expiry counts from its
-  `requestedAt`. The time bounds section of the `token-cip112-utils`
-  [`README.md`](../token-cip112-utils/README.md) lists each check.
+- Every time check is a ledger-time bound, so an externally signed transfer
+  or allocation executes whenever its bounds still hold. See "Time bounds"
+  in the `token-cip112-utils` [`README.md`](../token-cip112-utils/README.md).
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors

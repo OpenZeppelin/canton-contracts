@@ -216,11 +216,7 @@ executeTransfer config ops createInstruction oneStep transfer = do
 -- a well-formed transfer, and an execution window within `maxTTL` of ledger
 -- time.
 --
--- Every time check is a ledger-time bound, never `getTime`. Reading the time
--- fixes the ledger time when the transaction is prepared, so an externally
--- signed submission would have to execute within the ledger-time tolerance
--- (one minute by default). A bound only constrains the ledger time chosen
--- at execution.
+-- No check calls `getTime`. See "Time bounds" in the package `README.md`.
 validateTransfer : RegistryConfig -> TransferInstructionV2.Transfer -> Update ()
 validateTransfer config transfer = do
   requireMatchExpected ("transfer.instrumentId.admin", transfer.instrumentId.admin) config.admin

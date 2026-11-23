@@ -789,10 +789,10 @@ testAllocationExpiryFromSubmission = do
   locks2 === [Some (t0 `addRelTime` (days 180 + hours 1))]
 
 -- | Without a settlement deadline, every settlement adds a full `maxTTL` to
--- the previous `expiresAt`, as Amulet does. Three settlements at one ledger
--- time push it to four times `maxTTL` past the request, well beyond `maxTTL`
--- from ledger time, and the lock stays `lockGrace` behind. Such an
--- allocation is never committed, so the authorizer can still withdraw it.
+-- the previous `expiresAt`. Three settlements at one ledger time push
+-- `expiresAt` to four times `maxTTL` past the request, and the lock expires
+-- `lockGrace` later. Such an allocation is never committed, so the
+-- authorizer can still withdraw it.
 testRepeatedSettlementsWithoutDeadline : Script ()
 testRepeatedSettlementsWithoutDeadline = do
   s@Scenario{..} <- setup

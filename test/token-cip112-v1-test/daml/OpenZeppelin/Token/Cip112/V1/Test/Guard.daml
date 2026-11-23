@@ -300,7 +300,7 @@ testAllocateRefusesStaleRequestedAt = do
 -- | The storage bound counts from `requestedAt`, so the deadline must fall
 -- within `maxTTL` of it. Here it is within `maxTTL` of ledger time (`t1`)
 -- but one microsecond past `requestedAt` plus `maxTTL`; accepting it would
--- set `expiresAt`, and the lock, before the deadline.
+-- set `expiresAt` before the deadline.
 testAllocateRefusesDeadlineBeyondMaxTTLFromRequestedAt : Script ()
 testAllocateRefusesDeadlineBeyondMaxTTLFromRequestedAt = do
   s@Scenario{..} <- setup

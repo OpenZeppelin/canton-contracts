@@ -84,15 +84,14 @@ preparation.
 - A transfer, including a mint offer, needs `requestedAt` at or before
   ledger time and `executeBefore` after it. `executeBefore` may be at most
   `maxTTL` after ledger time and `requestedAt` at most `maxTTL` before it.
-- An allocation counts its storage bound from the request's `requestedAt`.
-  `expiresAt` is the settlement deadline, or `requestedAt` plus `maxTTL`
-  without one, and must lie after ledger time. A settlement deadline more
-  than `maxTTL` after `requestedAt` is refused, so a deadline is always the
-  allocation's `expiresAt`, and the lock never expires before it.
-- The authorizer's wallet chooses `requestedAt`, up to `maxTTL` in the past.
-  An older value shortens the allocation's life, and `createdAt`, which is
-  `requestedAt`, reports it. Executors must not treat `createdAt` as the
-  time the ledger created the allocation.
+- An allocation's `expiresAt` is its settlement deadline, or `requestedAt`
+  plus `maxTTL` without one, and must lie after ledger time. A deadline more
+  than `maxTTL` after `requestedAt` is refused, so the lock never expires
+  before the deadline.
+- The authorizer's wallet chooses an allocation's `requestedAt`, at or
+  before ledger time and less than `maxTTL` before it. `createdAt` equals
+  `requestedAt`, so executors must not treat `createdAt` as the time the
+  ledger created the allocation.
 - A settlement that creates a successor moves `expiresAt` to the previous
   `expiresAt` plus the allocation's `maxTTL`, capped by the settlement
   deadline, and refuses a result that has already passed. A settlement
