@@ -337,10 +337,9 @@ testDvpSettles = do
   balanceSeenBy alice alice >>= (=== [5.0])
   balanceSeenBy bob bob >>= (=== [10.0])
 
--- | `MyAllocation` settles through `allocationSettleImpl`, so it inherits the
--- settlement window: without a settlement deadline, the batch fails from the
--- allocation's `expiresAt`, `maxTTL` after its creation, on, and the admin's
--- expiry returns the funding.
+-- | `MyAllocation` settles through `allocationSettleImpl`. Without a
+-- settlement deadline, `expiresAt` is `createdAt + maxTTL`. From `expiresAt`
+-- on, the batch fails and the admin's expiry returns the funding.
 testSettlementRefusedAfterExpiresAt : Script ()
 testSettlementRefusedAfterExpiresAt = do
   app@App{..} <- setup

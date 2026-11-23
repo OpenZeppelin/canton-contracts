@@ -117,16 +117,11 @@ allocationAvailableActions s = Map.fromList $
 -- Allocation choice bodies
 ---------------------------
 
--- | `allocation_settleImpl`. Re-checks the deadline, the expiry and the
--- iteration arguments even when driven by the settlement factory: this
--- choice is also directly callable by admin plus executors, and a direct
--- settle bypasses the factory's exact-cover check.
---
--- Settlement fails from `expiresAt` on, so a settle never meets an
--- allocation the admin may already cancel, and the funding stays locked
--- until `lockGrace` after the last moment a settle can commit. With a
--- settlement deadline `expiresAt` is the deadline; without one it is
--- `maxTTL` after the allocation was created or last iterated.
+-- | `allocation_settleImpl`. Fails when the ledger time is at or past
+-- the settlement deadline or `expiresAt`. Validates the iteration
+-- arguments. The admin plus the executors can also exercise
+-- `Allocation_Settle` directly, and a direct settle bypasses the
+-- factory's exact-cover check.
 allocationSettleImpl
   : HoldingOps -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
   -> AllocationV2.Allocation_Settle

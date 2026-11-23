@@ -61,10 +61,9 @@ contract id enters through an operation the template owner wrote:
   tokens. No other choice may exercise `Allocation_Settle` with the admin's
   authority, because that skips the check.
 - An allocation template's `allocation_settleImpl` must settle through
-  `allocationSettleImpl`. It checks the actors, the settlement deadline, the
-  allocation's `expiresAt`, and the iteration arguments before it consumes
-  the funding. The settlement body it wraps is not exported, and a fork that
-  copies it must keep every one of those checks.
+  `allocationSettleImpl`, or keep its checks of the actors, the settlement
+  deadline, the allocation's `expiresAt`, and the iteration arguments.
+  Without them, a settle can run after the allocation's `expiresAt`.
 - A transfer instruction whose sender is the CIP-0112 mint account is a mint
   offer: `transferAcceptImpl` creates the receiver's holding without any
   locked funding. Only `offerMintImpl`, from a choice the admin alone

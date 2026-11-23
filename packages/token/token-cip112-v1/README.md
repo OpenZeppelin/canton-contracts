@@ -89,9 +89,9 @@ interfaces or exceptions of its own.
   successor like any other allocation.
 - An allocation can be settled only before its `expiresAt`, directly or
   through the settlement factory. With a settlement deadline, `expiresAt` is
-  the deadline. Without one, it is `maxTTL` after the allocation was created,
-  and a successor's is `maxTTL` after the settle that created it. After
-  that, the executors must ask the authorizer for a new allocation.
+  the deadline. Without one, `expiresAt` is `createdAt + maxTTL`, and a
+  successor's is the time of the settle that created it plus `maxTTL`. From
+  `expiresAt` on, the executors must ask the authorizer for a new allocation.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors
@@ -141,8 +141,8 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   settle outside the factory. Operate the admin party so that it signs settles
   only through the settlement factory.
 - A mint-account or burn-account allocation commits the admin to that supply
-  change. The executors decide whether and when it settles, until the
-  settlement deadline or until the admin withdraws an uncommitted allocation.
+  change. The executors decide whether and when it settles, until its
+  `expiresAt` or until the admin withdraws an uncommitted allocation.
   The netting ignores the amount on the special side, so the exact-cover check
   is what bounds the amount minted or burned to the legs the admin allocated.
 - Enabling iterated settlement hands the executors control of the reserve.
