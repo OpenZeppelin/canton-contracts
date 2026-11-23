@@ -72,11 +72,14 @@ contract id enters through an operation the template owner wrote:
 the admin as the only lock holder of the funding they lock. When the holding
 template's observers are its lock holders, as in `TokenHolding`, only the
 admin and the account parties see that funding. The registry serves it to
-receivers and executors by explicit disclosure, and the owner's unlock after
-the lock expires involves only the holding's signatories. A workflow that
-names another lock holder makes that party an observer. The unlock then also
-fails while that party has no hosting participant or a participant hosting
-it has not vetted the template packages.
+receivers and executors by explicit disclosure. The owner's unlock after the
+lock expires then involves only the holding's signatories, unless another
+party observes the holding or the holdings-change event the unlock emits. A
+workflow adds such a party when it names another lock holder, the holding
+template when it adds an observer, and `eventObservers` when it returns a
+party for the account. The unlock fails while any such party has no hosting
+participant or a participant hosting it has not vetted the template
+packages.
 
 A template for transfer instructions or allocations can make the receiver or
 the executors observers, as `TokenTransferInstruction` and `TokenAllocation`
