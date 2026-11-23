@@ -60,7 +60,7 @@ them beside templates prevents those templates from benefiting from SCU.
 When a component defines an interface, use two production packages:
 
 ```text
-openzeppelin-api-<component>-v1    Frozen interfaces, exceptions, API types
+openzeppelin-api-<component>-v1    Frozen interfaces and their view types
 openzeppelin-<component>-v1        Templates implementing the API
 openzeppelin-<component>-utils     Functions implementing the API; nothing
                                    serializable
@@ -194,7 +194,7 @@ either.
 An API package places its modules under `OpenZeppelin.Api`, the same way the
 Splice token standard places its interface modules under `Splice.Api`. The
 namespace tells a consumer that the module holds only frozen interface and
-exception definitions.
+view type definitions.
 
 `exposed-modules` is not used as an API boundary: export information is not
 preserved when a consumer imports a compiled DAR through `data-dependencies`.

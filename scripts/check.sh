@@ -132,7 +132,7 @@ while IFS= read -r manifest; do
 		# allowed; only new interface or exception definitions are not.
 		if grep -R -n -E --include='*.daml' '^[[:space:]]*(interface|exception)[[:space:]]+' "$package_dir/daml" |
 			grep -v -E 'interface[[:space:]]+instance[[:space:]]'; then
-			fail "implementation package ${manifest#"$ROOT/"} defines interfaces or exceptions; create a frozen openzeppelin-api-<component>-vN package"
+			fail "implementation package ${manifest#"$ROOT/"} defines interfaces or exceptions; move interfaces to a frozen openzeppelin-api-<component>-vN package and raise failures with FailureStatus"
 		fi
 	fi
 

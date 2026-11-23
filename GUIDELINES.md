@@ -73,6 +73,12 @@ that needs a reason gives it in the next sentence.
   `<Root>.Test`, where `<Root>` is the tested package's module root, with one module per suite
   under `<Root>.Test.<Suite>`. Fixture templates live in `<Root>.Test.Fixtures`.
 
+## Package manifests
+
+- `sdk-version` in every `daml.yaml` equals the one in `multi-package.yaml`. `scripts/check.sh`
+  enforces this.
+- `build-options` includes `--target=2.1`.
+
 ## Layout and section ordering
 
 A source file, top to bottom:
@@ -407,13 +413,16 @@ where it adds nothing.
   instructions belong in `CONTRIBUTING.md`.
 - A package `README.md` has these sections, in this order, and omits one only when the package
   has nothing to say under it: "What it provides", "Usage", "Authority and lifecycle",
-  "Compatibility", "Build", "Security caveats", "Consume a local build".
+  "Compatibility", "Build", "Consume a local build". A package with several public modules,
+  none of which leads, adds "Security caveats" before "Consume a local build".
 - A reader adopts the package from its `README.md` alone. For an interface package that means
   the field, the interface instance, the guard, and the choice they write. For a template
   package it means the create and the sequence of choices.
 - A package that implements a named standard names the standard in its `README.md`.
 - Every code block in a `README.md`, a guide, or a comment mirrors code that `dpm build`
   compiles in an example or test package.
+- A `README.md` or a guide shows native `dpm` commands. The CI-only `scripts/check-lint.sh`,
+  `scripts/check-coverage.sh`, and `scripts/check-examples.sh` appear only in `CONTRIBUTING.md`.
 - `CHANGELOG.md` holds only user-visible changes to released production packages and their
   public APIs. It excludes repository organization, CI, tests, tooling, and
   documentation-only changes.

@@ -20,9 +20,7 @@ are navigation only and never appear in a package name or module namespace.
 These components are unreleased, unaudited library candidates. Tagged DARs and
 their manifest entries define releases; placement here does not imply stability.
 
-Each package `README.md` documents the public module, the authority and
-lifecycle model, the build command, a consumption example, and the security
-caveats. Read it before depending on the package.
+Read a package's `README.md` before depending on the package.
 
 Early-stage candidates live under [`experiments/`](../experiments/); see
 [`experiments/README.md`](../experiments/README.md) for their status and

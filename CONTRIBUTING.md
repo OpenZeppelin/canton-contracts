@@ -41,8 +41,8 @@ dpm build --all
 scripts/check.sh
 ```
 
-`scripts/check.sh` enforces the package rules of `ARCHITECTURE.md`. It reads compiled DARs, so
-run it after `dpm build --all`.
+`scripts/check.sh` enforces the package rules of `ARCHITECTURE.md` and the test-package and
+manifest rules of `GUIDELINES.md`. It reads compiled DARs, so run it after `dpm build --all`.
 
 ## A typical workflow
 
@@ -160,8 +160,7 @@ dependency.
 
 ## API documentation
 
-Every public module carries doc comments that `damlc docs` renders. Generate the
-reference for a package from the repository root, for example:
+Generate the API reference for a package from the repository root, for example:
 
 ```sh
 DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc docs \
@@ -170,21 +169,17 @@ DAML_PACKAGE=packages/security/api-pausable-v1 dpm damlc docs \
 ```
 
 Pass every source file of the package, because a file renders only its own
-module. Run it after changing a doc comment and read the output. A parse error in a doc
-comment produces no output for the whole module. The "Documentation" section of
-`GUIDELINES.md` says where each kind of comment goes.
+module. The "Documentation" section of `GUIDELINES.md` says when to run it and where each
+kind of comment goes.
 
 ## Adding or changing a component
 
 - Select one permanent component/SCU lineage per production package.
 - Place it under the most useful navigation category.
 - Name its packages as the "Naming" section of `GUIDELINES.md` describes, and structure them
-  as `ARCHITECTURE.md` describes. Add a frozen API package only when the component defines
-  interfaces.
-- Add an isolated test package under `test/<component>-vN-test`.
-- Add or update the package `README.md` and the tests.
-- Add a `CHANGELOG.md` entry only for a user-visible change to a production package or its
-  public API.
+  as `ARCHITECTURE.md` describes.
+- Add or update the tests, the package `README.md`, and `CHANGELOG.md`, as `GUIDELINES.md`
+  describes.
 - Treat any new production dependency as an architecture decision. Raise it in the pull
   request description.
 
