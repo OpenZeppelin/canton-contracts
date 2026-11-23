@@ -13,7 +13,7 @@ Thumbs.db
 *~
 
 # Claude Code: ignore local config, but track shared commands and skills.
-.claude/
+.claude/*
 !.claude/commands/
 !.claude/skills/
 CLAUDE.local.md

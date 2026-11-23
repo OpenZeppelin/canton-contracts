@@ -88,46 +88,14 @@ Each package `README.md` shows the consumer code for that component, and
 
 ## Repository layout
 
-```
-packages/                 Library components and release candidates
-  access/                 Authorization components
-  security/               Emergency-stop, delay, and safety components
-  token/                  Category for token standard and settlement components
-test/                     Isolated library test packages
-dars/
-  released/               Immutable OpenZeppelin release baselines
-  vendor/                 Verified third-party DAR inputs
-examples/                 Integration examples and sibling -test packages
-audits/                   Reports keyed to exact package releases
-scripts/                  Repository validation tooling
-```
-
-Category directories organize related components for navigation. Package names,
-module names, dependency declarations, and DAR identity define each component's
-release lineage.
+See [ARCHITECTURE.md](ARCHITECTURE.md#repository-layout) for what each top-level
+directory holds.
 
 ## Package and compatibility model
 
-- One independently released unit is one Daml package and one DAR.
-- Components defining Daml interfaces use a frozen
-  `openzeppelin-api-<component>-vN` package and a separate upgradeable package
-  for templates or helper functions. Template-only components use one
-  implementation package.
-- A component whose choice bodies consumers reuse with their own templates
-  ships them in an `openzeppelin-<component>-utils` package that defines no
-  templates, interfaces, exceptions, or serializable types, and ships the
-  records its templates store in an `openzeppelin-<component>-types-vN`
-  package. SCU ignores a utils package, so it versions by semver alone, and a
-  consumer can move to any later version or drop it.
-- Breaking changes create a sibling `-v2` package and `V2` module suffix;
-  compatible SCU releases retain the existing package name.
-- Composition between implementations happens through interfaces or in the
-  consuming application.
-- Documented modules form the public API; implementation details use an
-  `.Internal` suffix.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full rationale and dependency
-rules, and [RELEASING.md](RELEASING.md) for release process guidance.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how components are split into
+packages and how they stay compatible across releases, and
+[RELEASING.md](RELEASING.md) for release process guidance.
 
 ## Security
 

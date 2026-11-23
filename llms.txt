@@ -1,0 +1,36 @@
+# OpenZeppelin Contracts for Canton
+
+> Reusable, security-focused Daml packages for applications on the Canton Network.
+
+These links describe the development branch (`main`). The packages have no tagged release yet.
+Build a package from a pinned source commit, as the `README.md` "Consume a local build" section
+shows, and read the documentation at that commit: replace `main` in a URL with the commit. For
+audits, always use the current index below. Reports are published after the code they cover, and
+each one names the commit and scope it covers.
+
+## Start here
+
+- [README.md](https://raw.githubusercontent.com/OpenZeppelin/canton-contracts/main/README.md):
+  overview, requirements, building and consuming a package
+- [ARCHITECTURE.md](https://raw.githubusercontent.com/OpenZeppelin/canton-contracts/main/ARCHITECTURE.md):
+  design decisions and constraints
+- [GUIDELINES.md](https://raw.githubusercontent.com/OpenZeppelin/canton-contracts/main/GUIDELINES.md):
+  coding conventions for contributors
+
+## Packages
+
+- [Packages](https://raw.githubusercontent.com/OpenZeppelin/canton-contracts/main/packages/README.md):
+  every library package, grouped by category
+
+## Examples and API reference
+
+- [Integration examples](https://github.com/OpenZeppelin/canton-contracts/tree/main/examples):
+  consumer projects that build against the library DARs, each with a sibling `-test` package
+- [API reference](https://raw.githubusercontent.com/OpenZeppelin/canton-contracts/main/CONTRIBUTING.md):
+  the reference is not published. The "API documentation" section gives the `dpm damlc docs`
+  command that renders it from the doc comments of a package.
+
+## Audits
+
+- [audits/README.md](https://raw.githubusercontent.com/OpenZeppelin/canton-contracts/main/audits/README.md):
+  audit status and, when available, reports with the code and scope each report covers

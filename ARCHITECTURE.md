@@ -19,6 +19,24 @@ dependency choices are settled. Promotion gives the component a final package
 name, module namespace, compatibility policy, test package, documentation, and
 release path.
 
+## Repository layout
+
+Each top-level directory owns one kind of content. Some hold content that a change must not
+edit.
+
+| Directory | What it owns | Rule for a change |
+|---|---|---|
+| `packages/` | Library packages, one per directory under a navigation category | |
+| `test/` | One isolated test package per library package | |
+| `examples/` | Consumer projects that build against the library DARs, each with a sibling `-test` package | |
+| `experiments/` | Packages that compile but are not ready for application use | |
+| `dars/vendor/` | Pinned third-party DARs | Add or update a DAR only together with its `dars/manifest.yaml` entry |
+| `dars/released/` | Released OpenZeppelin DARs, kept as compatibility baselines | Never change or delete one |
+| `audits/` | Published audit reports and their index | Add a report. Never change or delete one. |
+| `scripts/` | Repository checks and CI helpers | |
+| `LICENSES/` | License texts that release assets attach | Do not edit |
+| `**/.daml/` | Build output | Never edit or commit |
+
 ## Package boundaries
 
 The DAR is the unit consumers build against and operators upload. The Daml
@@ -140,7 +158,9 @@ fix needed by a `-v1`-only consumer is backported on a `1.x` branch.
   Compose through stable interfaces or in a consuming application instead.
 - Shared pure helpers belong in an `openzeppelin-<component>-utils` package
   that defines no templates, interfaces, exceptions, or serializable types.
-  A component's templates package may depend on its own utils package.
+  A component's templates package may depend on its own utils package, and
+  the utils package on the component's types package.
+- Production packages do not depend on `daml-script`.
 - Adding a production dependency requires explicit architecture review because
   an SCU lineage cannot later drop or downgrade a dependency other than a
   utility package.
@@ -149,49 +169,32 @@ fix needed by a `-v1`-only consumer is backported on a `1.x` branch.
   vendoring is needed.
 - Upstream interfaces retain their upstream package identity and namespace.
 
-## Naming and public modules
+## Package and module names
 
-Production package names use an organization prefix and, except for utils
-packages, an explicit contract-model generation:
+The names themselves are rules, listed under "Naming" in
+[`GUIDELINES.md`](GUIDELINES.md#packages-and-modules). This section gives the
+reasons.
 
-```text
-openzeppelin-scoped-authorization-grant-v1
-openzeppelin-api-rbac-v1
-openzeppelin-rbac-v1
-openzeppelin-token-cip112-utils
-```
+Every package except a utils package carries an explicit contract-model
+generation, `-vN`, and its modules carry the matching `VN`. Daml interfaces and
+templates cannot drop a field or an interface instance through SCU, so a
+breaking change needs a new package. A sibling `-v2` package and a `V2` module
+namespace let both generations coexist while consumers migrate. A utils package
+defines nothing serializable, so no contract refers to it and a consumer can
+move to any later version. It keeps its name and signals a breaking change with
+semver alone.
 
-Public modules use matching major-version namespaces, and a utils package
-places its modules under `.Utils`:
-
-```daml
-OpenZeppelin.ScopedAuthorizationGrantV1
-OpenZeppelin.RbacV1
-OpenZeppelin.RbacV1.Internal
-OpenZeppelin.Api.RbacV1
-OpenZeppelin.Token.Cip112.Utils
-```
-
-A component that implements a named standard carries the standard as a second
-segment of its component name and module namespace: the CIP-0112 token is
-`openzeppelin-token-cip112-v1` under `OpenZeppelin.Token.Cip112.V1`. The
-`-vN` suffix counts this package's own breaking changes, not the standard's
-generation; naming the standard keeps the two numbers apart.
-A sibling implementation of another token standard shares the
-`token` category and the `OpenZeppelin.Token` namespace without renaming
+A component that implements a named standard carries the standard in its name,
+as `token-cip112` does. The `-vN` suffix counts this package's own breaking
+changes, not the standard's generation, and naming the standard keeps the two
+numbers apart. A sibling implementation of another token standard then shares
+the `token` category and the `OpenZeppelin.Token` namespace without renaming
 either.
 
 An API package places its modules under `OpenZeppelin.Api`, the same way the
 Splice token standard places its interface modules under `Splice.Api`. The
 namespace tells a consumer that the module holds only frozen interface and
 exception definitions.
-
-Compatible SCU releases keep the same package name and increment the package
-version. A breaking change creates a sibling `-v2` package and a `V2` module
-suffix so both generations can coexist while consumers migrate. A utils
-package keeps its name across breaking changes and signals them with a new
-semver major version. Template names remain stable component terms such as
-`AuthorizationGrant` and `RoleGrant`.
 
 `exposed-modules` is not used as an API boundary: export information is not
 preserved when a consumer imports a compiled DAR through `data-dependencies`.
