@@ -18,12 +18,12 @@
 --     whenNotPaused this
 --     create this with paused = True
 -- ```
-module OpenZeppelin.PausableV1 where
+module OpenZeppelin.Pausable.Utils where
 
 import DA.Action (unless, when)
 import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
 import OpenZeppelin.Api.PausableV1 (Pausable)
-import qualified OpenZeppelin.PausableV1.Internal as Internal
+import qualified OpenZeppelin.Pausable.Utils.Internal as Internal
 
 -- | Fail with `eEnforcedPause` unless the contract is unpaused. Call it
 -- before the state change in every gated choice, and in the choice that
