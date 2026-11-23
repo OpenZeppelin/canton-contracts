@@ -1,12 +1,12 @@
-# Pausable V1
+# Pausable Utils
 
 The guards and failure statuses for the `Pausable` interface in
 [`openzeppelin-api-pausable-v1`](../api-pausable-v1/).
 
 | Field | Value |
 |---|---|
-| Package | `openzeppelin-pausable-v1` |
-| Public module | `OpenZeppelin.PausableV1` |
+| Package | `openzeppelin-pausable-utils` |
+| Public module | `OpenZeppelin.Pausable.Utils` |
 | Version | `0.1.0` |
 | Depends on | `openzeppelin-api-pausable-v1` `0.1.0` |
 | Status | Pre-release; unaudited |
@@ -23,7 +23,7 @@ Functions over any template that implements `Pausable`:
   client matches the id in the `DAML_FAILURE` error, and your tests compare
   the whole value.
 
-`OpenZeppelin.PausableV1.Internal` is not public API. Its contents can change
+`OpenZeppelin.Pausable.Utils.Internal` is not public API. Its contents can change
 in any version, so do not import it.
 
 ## Usage
@@ -38,7 +38,7 @@ contract value the choice runs on, so the caller supplies nothing.
 
 ```daml
 import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
-import qualified OpenZeppelin.PausableV1 as Pausable
+import qualified OpenZeppelin.Pausable.Utils as Pausable
 
     choice Vault_Withdraw : ContractId Vault
       with amount : Decimal
@@ -161,7 +161,7 @@ From the repository root, after building `openzeppelin-api-pausable-v1`:
 
 ```sh
 DAML_PACKAGE=packages/security/api-pausable-v1 dpm build
-DAML_PACKAGE=packages/security/pausable-v1 dpm build
+DAML_PACKAGE=packages/security/pausable-utils dpm build
 ```
 
 ## Consume a local build
@@ -169,12 +169,12 @@ DAML_PACKAGE=packages/security/pausable-v1 dpm build
 ```yaml
 data-dependencies:
   - ../canton-contracts/packages/security/api-pausable-v1/.daml/dist/openzeppelin-api-pausable-v1-0.1.0.dar
-  - ../canton-contracts/packages/security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
+  - ../canton-contracts/packages/security/pausable-utils/.daml/dist/openzeppelin-pausable-utils-0.1.0.dar
 ```
 
 ```daml
 import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
-import qualified OpenZeppelin.PausableV1 as Pausable
+import qualified OpenZeppelin.Pausable.Utils as Pausable
 ```
 
 Runnable consumer projects live under [`examples/pausable/`](../../../examples/pausable/).

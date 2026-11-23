@@ -3,8 +3,8 @@
 --
 -- The implementing template holds a `paused` flag and declares an
 -- `interface instance Pausable` whose view reports it. The guards and the
--- failure statuses live in the `openzeppelin-pausable-v1` package, module
--- `OpenZeppelin.PausableV1`.
+-- failure statuses live in the `openzeppelin-pausable-utils` package, module
+-- `OpenZeppelin.Pausable.Utils`.
 --
 -- The flag is a field of the contract being exercised, so a guard reads it
 -- from the contract it runs on. The consumer decides who may pause:
@@ -37,7 +37,7 @@ data PausableView = PausableView with
 -- ```
 --
 -- The interface defines no choice: the implementing template's own choices
--- flip the flag. The guards in `OpenZeppelin.PausableV1` raise the failure
+-- flip the flag. The guards in `OpenZeppelin.Pausable.Utils` raise the failure
 -- statuses.
 interface Pausable where
   viewtype PausableView

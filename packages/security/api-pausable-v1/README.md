@@ -16,7 +16,7 @@ A frozen Daml interface that gives a template an emergency-stop switch.
   that sees the contract.
 
 The guards and the failure statuses live in
-[`openzeppelin-pausable-v1`](../pausable-v1/). The flag lives on your
+[`openzeppelin-pausable-utils`](../pausable-utils/). The flag lives on your
 template, which binds the switch to the resource it protects.
 
 ## Usage
@@ -40,9 +40,9 @@ template Vault
       view = PausableView with paused
 ```
 
-Your own choices flip the flag: each guards with `openzeppelin-pausable-v1`,
+Your own choices flip the flag: each guards with `openzeppelin-pausable-utils`,
 then creates the successor with `paused` changed. The
-[`openzeppelin-pausable-v1` README](../pausable-v1/README.md) covers the
+[`openzeppelin-pausable-utils` README](../pausable-utils/README.md) covers the
 guards, the flip choices, and the failure statuses to assert on in tests.
 
 A template that already has active contracts adopts the interface in its
@@ -133,7 +133,7 @@ Daml-LF `2.1`, built with the SDK that
 [`multi-package.yaml`](../../../multi-package.yaml) declares.
 
 A change to a guard or a failure status ships as a new version of
-`openzeppelin-pausable-v1`, and this package stays at its frozen version.
+`openzeppelin-pausable-utils`, and this package stays at its frozen version.
 
 For a consumer this means:
 

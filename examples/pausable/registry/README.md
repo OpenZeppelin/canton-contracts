@@ -9,7 +9,7 @@ flip.
 | Package | `pausable-registry-example` |
 | Module | `OpenZeppelin.Examples.Pausable.Registry` |
 | Tests | `OpenZeppelin.Examples.Pausable.RegistryTest` in [`registry-test`](../registry-test) |
-| Consumes | `openzeppelin-api-pausable-v1` `0.1.0`, `openzeppelin-pausable-v1` `0.1.0` |
+| Consumes | `openzeppelin-api-pausable-v1` `0.1.0`, `openzeppelin-pausable-utils` `0.1.0` |
 
 ## What it shows
 

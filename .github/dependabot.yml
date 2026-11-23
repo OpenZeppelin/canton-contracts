@@ -1,0 +1,19 @@
+---
+version: 2
+updates:
+  # Maintain dependencies for GitHub Actions
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/setup-daml
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      actions-deps:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: 'chore(deps): '
