@@ -69,14 +69,12 @@ setupWith transferFeeBps = do
   alice <- allocateParty "alice"
   bob <- allocateParty "bob"
   setTime t1
-  -- The pauser co-signs the rules contract, so creating it needs both.
-  rulesCid <- submit (actAs [admin, pauser]) do
-    createCmd MyRules with
-      config = RegistryConfig with admin; maxTTL = days 90; lockGrace = hours 1
-      roles = AppRoles with auditor; complianceOfficer; pauser
-      paused = False
-      transferFeeBps
-      allowedExecutors = [exchange]
+  rulesCid <- proposeRules None MyRules with
+    config = RegistryConfig with admin; maxTTL = days 90; lockGrace = hours 1
+    roles = AppRoles with auditor; complianceOfficer; pauser
+    paused = False
+    transferFeeBps
+    allowedExecutors = [exchange]
   Some rulesDisclosure <- queryDisclosure @MyRules admin rulesCid
   pure App with
     admin; auditor; complianceOfficer; pauser; exchange; alice; bob; rulesCid; rulesDisclosure
@@ -88,6 +86,12 @@ setupWith transferFeeBps = do
 
 setup : Script App
 setup = setupWith 0
+
+-- | The admin proposes `rules` and the pauser accepts, archiving `replaces`.
+proposeRules : Optional (ContractId MyRules) -> MyRules -> Script (ContractId MyRules)
+proposeRules replaces rules = do
+  proposalCid <- submit rules.config.admin do createCmd MyRulesProposal with rules; replaces
+  submit rules.roles.pauser do exerciseCmd proposalCid MyRulesProposal_Accept
 
 -- | Pausing replaces the rules contract; refresh the id and disclosure.
 pauseRegistry : App -> Script App
@@ -741,8 +745,8 @@ testSettlementChecksExecutorAllowlist = do
   aliceAlloc <- allocate app0 alice (mkSpec app0 alice [senderSide leg] None) [aliceTok]
   bobAlloc <- allocate app0 bob (mkSpec app0 bob [receiverSide leg] None) []
   Some rules <- queryContractId admin rulesCid
-  submit (actAs [admin, pauser]) do archiveCmd rulesCid
-  newRulesCid <- submit (actAs [admin, pauser]) do createCmd rules with allowedExecutors = []
+  newRulesCid <- proposeRules (Some rulesCid) rules with allowedExecutors = []
+  (isNone <$> queryContractId admin rulesCid) >>= (=== True)
   Some disclosure <- queryDisclosure @MyRules admin newRulesCid
   let app = app0 with rulesCid = newRulesCid; rulesDisclosure = disclosure
   mustFailWith "a settlement executor is not approved" (actAs exchange <> discloseMany [disclosure])
@@ -967,6 +971,28 @@ testAdminAndOwnerCannotSpendAlone = do
   mustLackPauser pauser (actAs admin) do archiveCmd rulesCid
   balanceSeenBy alice alice >>= (=== [10.0])
 
+-- | A rules proposal takes effect only when the pauser accepts it, and only
+-- as proposed: the admin cannot accept its own, a proposal that breaks the
+-- template's checks fails on accept, and a replacement fails once the pause
+-- switch has replaced the contract it names. The admin withdraws a proposal
+-- by archiving it.
+testRulesProposalNeedsPauser : Script ()
+testRulesProposalNeedsPauser = do
+  app@App{..} <- setup
+  Some rules <- queryContractId admin rulesCid
+  proposalCid <- submit admin do
+    createCmd MyRulesProposal with rules = (rules with transferFeeBps = 100); replaces = Some rulesCid
+  mustLackPauser pauser (actAs admin) do exerciseCmd proposalCid MyRulesProposal_Accept
+  badCid <- submit admin do
+    createCmd MyRulesProposal with rules = (rules with transferFeeBps = 10001); replaces = None
+  mustFailWith "Template precondition violated" (actAs pauser) do exerciseCmd badCid MyRulesProposal_Accept
+  submit admin do archiveCmd badCid
+  _ <- pauseRegistry app
+  mustFailWith "Could not find contract" (actAs pauser) do exerciseCmd proposalCid MyRulesProposal_Accept
+  [(_, live)] <- query @MyRules admin
+  live.paused === True
+  live.transferFeeBps === 0
+
 -- | A registry the admin signed alone, naming itself as the pauser, and a
 -- holding minted through it.
 selfPausedRegistry : App -> Script (App, ContractId HoldingV2.Holding)
@@ -996,7 +1022,8 @@ testHoldingNamingAnotherPauserRefused = do
 
 -- | An allocation made through a registry naming another pauser cannot
 -- cover a leg in this registry's settlement, where it would pay bob in this
--- token from funding outside it.
+-- token from funding outside it, and that registry cannot settle this
+-- registry's allocations.
 testAllocationNamingAnotherPauserRefused : Script ()
 testAllocationNamingAnotherPauserRefused = do
   app@App{..} <- setup
@@ -1006,6 +1033,10 @@ testAllocationNamingAnotherPauserRefused = do
   bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
   mustFailWith "allocation names a different pauser" (actAs exchange <> discloseMany [rulesDisclosure])
     (settleBatchCmd app [leg] (map nonIteratedAllocation [ownAlloc, bobAlloc]))
+  aliceTok <- mint app alice 10.0
+  aliceAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) [aliceTok]
+  mustFailWith "allocation names a different pauser" (actAs exchange <> discloseMany [own.rulesDisclosure])
+    (settleBatchCmd own [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]))
   setTime t3
   mustFailWith "allocation names a different pauser" (actAs admin) do
     exerciseCmd rulesCid MyRules_ExpireAllocations with

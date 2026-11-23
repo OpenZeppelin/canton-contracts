@@ -76,9 +76,9 @@ contract id enters through an operation the template owner wrote:
   compares fields, and the admin can copy those fields into a contract it
   signs alone, such as a second rules contract without the first one's
   roles. A control that must bind the admin has to be held by a party that
-  signs the holdings and the pending contracts, and the operations must
-  refuse a holding that names a different such party.
-  `examples/token/token-cip112-custom` does this with its pauser.
+  signs the holdings and the pending contracts. The operations must refuse a
+  holding, and the `PinAllocation` an allocation, that names a different such
+  party. `examples/token/token-cip112-custom` does this with its pauser.
 - `settleBatchImpl` passes each `Allocation_Settle` an empty context, so a
   `deliverHolding` rule that requires a context entry refuses every batch
   settlement. `expireAllocationsImpl` cancels its allocations in one

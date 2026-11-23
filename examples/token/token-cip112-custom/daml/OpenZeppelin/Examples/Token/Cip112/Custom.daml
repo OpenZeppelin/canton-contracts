@@ -8,8 +8,8 @@
 -- - Roles. A pauser and a compliance officer hold delegated powers as the
 --   controllers of consumer choices. The pauser also co-signs every holding,
 --   instruction, allocation, and rules contract, so the admin holds neither
---   power: it cannot create any of those contracts, or spend a holding,
---   without the pauser.
+--   power. Creating a contract that names the pauser, or spending a holding,
+--   needs the pauser's authority.
 -- - An auditor who observes every holding, instruction, and allocation, and
 --   is an informee of every holdings-change event. A consumer field on each
 --   template, reached through the closure that builds the operations
@@ -34,16 +34,6 @@
 -- consumer forks: the pending contracts decide which holding is created when
 -- they complete, and a function cannot be stored in a payload, so a custom
 -- holding needs custom instruction and allocation templates too.
---
--- Binding the admin. A role on the rules contract alone restricts wallets,
--- not the admin: the admin could sign a second `MyRules`, unpaused, fee-free,
--- or with other executors or roles, and the workflows would accept this
--- token's holdings through it. So the pauser co-signs all four templates,
--- and every workflow runs with its authority because it runs inside a
--- choice on a contract the pauser signed. The admin can still sign contracts that name
--- a pauser it controls, so the operations, the allocation pin, and the
--- instruction expiry also refuse a contract that names a different pauser.
--- Together the admin and the pauser can create anything.
 module OpenZeppelin.Examples.Token.Cip112.Custom where
 
 import DA.Assert (assertDeadlineExceeded)
@@ -74,8 +64,8 @@ data AppRoles = AppRoles with
     complianceOfficer : Party
       -- ^ Freezes and unfreezes holdings.
     pauser : Party
-      -- ^ Flips the pause switch, and co-signs every contract so the admin
-      -- cannot create one without it.
+      -- ^ Flips the pause switch, and co-signs every holding, pending, and
+      -- rules contract.
   deriving (Eq, Show)
 
 -- Event-log host
@@ -265,12 +255,6 @@ template MyAllocation with
 -- switch, a fee on transfers, an executor allowlist, and supply operations.
 -- Pausing replaces the contract, so wallets need the new disclosure after
 -- a pause or unpause, as with any change to the rules contract.
---
--- The admin and the pauser both sign it. Creating it, archiving it, or
--- replacing it with a new fee, allowlist, or roles needs both their
--- authority in one transaction; the pause switch needs the pauser alone.
--- A rules contract with a new pauser refuses every existing holding,
--- instruction, and allocation, since each names the old pauser.
 template MyRules with
     config : RegistryConfig
     roles : AppRoles
@@ -358,6 +342,22 @@ template MyRules with
           _ <- exercise cid MyTransferInstruction_Expire
           pure ()
 
+-- | A `MyRules` that the admin proposes and the pauser accepts, so the two
+-- can create or replace it from separate participants. Accepting archives
+-- `replaces`, if given, and creates `rules`.
+template MyRulesProposal with
+    rules : MyRules
+    replaces : Optional (ContractId MyRules)
+  where
+    signatory rules.config.admin
+    observer rules.roles.pauser
+
+    choice MyRulesProposal_Accept : ContractId MyRules
+      controller rules.roles.pauser
+      do
+        forA_ replaces archive
+        create rules
+
 -- Registry policy
 ------------------
 
@@ -369,9 +369,9 @@ requireAllowedExecutors rules executors =
   require "a settlement executor is not approved by this registry"
     (all (`elem` rules.allowedExecutors) executors)
 
--- | The allocation policy: a `MyAllocation` that names this registry's
--- pauser. An allocation naming another pauser settles with operations this
--- pauser never signed, so it could cover a leg of this token with funding
+-- | Accept a `MyAllocation` that names `roles.pauser` and fail on any other
+-- allocation. An allocation that names another pauser spends holdings this
+-- pauser never signed, so it would cover a leg of this token with funding
 -- from outside it.
 pinMyAllocation : AppRoles -> PinAllocation
 pinMyAllocation roles cid = do
