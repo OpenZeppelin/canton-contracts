@@ -34,16 +34,16 @@ The compliance officer opens one status per regular account through
 the holdings untouched, so a pending transfer instruction or allocation keeps
 naming live holdings and completes once the account is unfrozen. Nothing on
 the ledger stops a second live status for the same account, and a submitter
-could pass the one that is not frozen, so the officer, who signs every
-status, opens each account once and retries an open with the same command
-id, so that command deduplication refuses a second one.
+could pass the one that is not frozen. The officer, who signs every status,
+opens each account once and retries an open with the same command id, so
+that command deduplication refuses a second one.
 
 Every choice that consumes a holding passes the current status of the
 holding's account in its choice context, under `accountStatusKey`. A missing
-entry, an archived status, a status of another account, and a status
-signed by a compliance officer other than the one recorded on the holding
-are all refused. The account parties observe their own status. Everyone else gets it as a
-disclosed contract from the registry:
+entry, an archived status, a status of another account, and a status signed
+by a compliance officer other than the one recorded on the holding are all
+refused. The account parties observe their own status. Everyone else gets it
+as a disclosed contract from the registry:
 
 | Path | Submitter | Status passed |
 |---|---|---|
@@ -70,8 +70,32 @@ What each status shows, and to whom:
   when it accepts or rejects.
 - The executors see the status of every authorizer in a batch they settle
   or an allocation they cancel.
-- A frozen account fails the admin's whole expiry batch, so cleanup leaves
-  frozen accounts out and expires them after they are unfrozen.
+
+A frozen account fails the admin's whole expiry batch, so cleanup leaves
+frozen accounts out and expires them after they are unfrozen.
+
+A holding keeps the compliance officer of the contract whose choice created
+it, and only a status signed by that officer covers it. A pending
+instruction or allocation keeps its officer too, and creates its holdings
+under it. Rules with another officer create every new holding under the new
+officer, a fee leg's change included, and one choice context carries one
+status. Through such rules, a transfer that pays a fee from an earlier
+holding is refused whichever status the sender passes.
+
+To change who acts as the compliance officer, keep the officer party and
+change who controls it. To replace the party:
+
+1. The admin archives the earlier rules when it creates the new ones, so
+   nothing new is created under the earlier officer.
+2. The new officer opens a status for every account and freezes each account
+   the earlier officer has frozen. `MyRules_OpenAccount` opens every status
+   unfrozen.
+3. Each account moves its earlier holdings through the new rules on a path
+   with no fee leg. An allocation funded with the earlier status and then
+   withdrawn with the new one returns the funds under the new officer.
+
+The earlier officer keeps its statuses live, and freezes through them, until
+no earlier holding or pending instruction or allocation is left.
 
 No workflow body changes. `token-cip112-custom-test` drives the token through the
 standard interfaces and checks each addition.

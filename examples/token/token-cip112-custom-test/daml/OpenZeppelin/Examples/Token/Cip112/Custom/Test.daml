@@ -692,9 +692,10 @@ testFrozenAccountCannotFund = do
   balanceSeenBy alice alice >>= (=== [3.0])
 
 -- | Freezing an account with a live locked transfer and allocation holds
--- both: new funding, accept, reject, both withdraws, batch and direct
--- settle, and cancel all fail. The freeze replaces only the status, so after unfreezing
--- the same instruction is accepted and the same allocation settles.
+-- both. New funding, accept, reject, both withdraws, batch and direct
+-- settle, and cancel all fail. The freeze replaces only the status, so
+-- after unfreezing the same instruction is accepted and the same allocation
+-- settles.
 testFreezeHoldsPendingFundsUntilUnfrozen : Script ()
 testFreezeHoldsPendingFundsUntilUnfrozen = do
   app@App{..} <- setup
@@ -829,6 +830,98 @@ testStatusMustCarryTheHoldingsOfficer = do
   newAuditorStatus <- openUnder (AppRoles with auditor = newAuditor; complianceOfficer)
   _ <- submit options (send newAuditorStatus)
   balanceSeenBy bob bob >>= (=== [7.0])
+
+-- | A holding keeps the compliance officer it was created with. After the
+-- admin creates rules with another officer, a transfer that pays a fee from
+-- an earlier holding is refused for the earlier officer's status and for
+-- the new officer's. The fee leg's change carries the new officer, and one
+-- choice context carries one status. A burn pays no fee, so the earlier
+-- status still burns the holding.
+testEarlierHoldingCannotPayFeeAfterOfficerChange : Script ()
+testEarlierHoldingCannotPayFeeAfterOfficerChange = do
+  app@App{..} <- setupWith 100
+  aliceTok <- mint app alice 250.0
+  earlierStatus <- statusOf app alice
+  newOfficer <- allocateParty "newOfficer"
+  Some rules <- queryContractId admin rulesCid
+  newRulesCid <- submit admin do
+    createCmd rules with roles = AppRoles with auditor; complianceOfficer = newOfficer
+  Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
+  newStatus <- submit (actAs newOfficer) do
+    exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
+  let newApp = app with rulesCid = newRulesCid; rulesDisclosure = newDisclosure
+      send statusCid = transferCmd newApp [alice, bob] (statusArgs statusCid) (mkTransfer newApp alice bob 100.0 [aliceTok])
+      options = actAs [alice, bob] <> discloseMany [newDisclosure]
+  mustFailWith "account status does not cover this holding" options (send earlierStatus)
+  mustFailWith "account status does not cover this holding" options (send newStatus)
+  _ <- submit (actAs [admin, alice] <> discloseMany [newDisclosure])
+    (burnCmd newApp alice 250.0 (statusArgs earlierStatus) aliceTok)
+  balanceSeenBy alice alice >>= (=== [])
+
+-- | The move the README describes for a new officer. Under the new rules, an
+-- allocation funded by an earlier holding with the earlier status creates
+-- its locked funding and change under the new officer, and a withdraw with
+-- the new status returns the funding. Once every holding answers to the new
+-- officer, a transfer that pays a fee goes through with the new status.
+testHoldingMovesToNewOfficerThroughAllocation : Script ()
+testHoldingMovesToNewOfficerThroughAllocation = do
+  app@App{..} <- setupWith 100
+  aliceTok <- mint app alice 250.0
+  earlierStatus <- statusOf app alice
+  newOfficer <- allocateParty "newOfficer"
+  Some rules <- queryContractId admin rulesCid
+  let newRoles = AppRoles with auditor; complianceOfficer = newOfficer
+  newRulesCid <- submit admin do createCmd rules with roles = newRoles
+  Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
+  newStatus <- submit (actAs newOfficer) do
+    exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
+  let newApp = app with rulesCid = newRulesCid; rulesDisclosure = newDisclosure
+      spec = mkSpec newApp alice [senderSide (mkLeg "leg-move" alice bob 100.0)] None
+
+  allocated <- submit (actAs alice <> discloseMany [newDisclosure])
+    (allocateCmd newApp settlement alice spec [aliceTok] (statusArgs earlierStatus))
+  allocCid <- case allocated.output of
+    AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
+    other -> abort ("expected completed allocation, got: " <> show other)
+  funded <- query @MyHolding alice
+  sort [(isSome h.holding.lock, h.holding.amount) | (_, h) <- funded] === [(False, 150.0), (True, 100.0)]
+  all (\(_, h) -> h.roles == newRoles) funded === True
+  _ <- submit (actAs alice) (allocationWithdrawCmd alice (statusArgs newStatus) allocCid)
+  holdings <- query @MyHolding alice
+  sort [h.holding.amount | (_, h) <- holdings] === [100.0, 150.0]
+  all (\(_, h) -> h.roles == newRoles) holdings === True
+
+  _ <- submit (actAs [alice, bob] <> discloseMany [newDisclosure])
+    (transferCmd newApp [alice, bob] (statusArgs newStatus)
+      (mkTransfer newApp alice bob 100.0 [toInterfaceContractId cid | (cid, _) <- holdings]))
+  balanceSeenBy bob bob >>= (=== [100.0])
+  balanceSeenBy alice alice >>= (=== [149.0])
+
+-- | A pending instruction keeps the officer it was created with, so after
+-- the admin replaces the rules, its accept still needs the earlier status
+-- and gives the receiver a holding under the earlier officer.
+testPendingInstructionKeepsItsOfficer : Script ()
+testPendingInstructionKeepsItsOfficer = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  (aliceArgs, aliceStatus) <- statusFor app alice
+  instrCid <- pendingCid =<< submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
+  newOfficer <- allocateParty "newOfficer"
+  Some rules <- queryContractId admin rulesCid
+  submit admin do archiveCmd rulesCid
+  newRulesCid <- submit admin do
+    createCmd rules with roles = AppRoles with auditor; complianceOfficer = newOfficer
+  newStatus <- submit (actAs newOfficer) do
+    exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
+  newDisclosure <- statusDisclosure app newStatus
+  funding <- instructionDisclosures app instrCid
+  mustFailWith "account status does not cover this holding" (actAs bob <> discloseMany (newDisclosure :: funding))
+    (acceptCmd bob (statusArgs newStatus) instrCid)
+  _ <- submit (actAs bob <> discloseMany (aliceStatus :: funding)) (acceptCmd bob aliceArgs instrCid)
+  [(_, received)] <- query @MyHolding bob
+  received.roles.complianceOfficer === complianceOfficer
+  received.holding.amount === 7.0
 
 -- | In a batch, each allocation receives only its own authorizer's status,
 -- under the key a direct settle uses. Alice sends 10 TOK for bob's 4 USD, so

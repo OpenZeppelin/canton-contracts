@@ -26,20 +26,19 @@ import OpenZeppelin.Token.Cip112.Utils.Allocation
 -- forwards nothing, so a `deliverHolding` rule that requires a context entry
 -- then refuses every batch settlement.
 --
--- Each authorizer is an informee of its own `Allocation_Settle`, so it sees
--- that choice's arguments, but not the batch exercise that contains it. The
--- batch context may describe other authorizers' trades, and it stays
--- private under two conditions:
+-- Each authorizer sees its own `Allocation_Settle` with that choice's
+-- arguments. The batch exercise, whose context may describe other
+-- authorizers' trades, stays with the factory's signatories and the
+-- executors under two rules:
 --
--- 1. No authorizer is an informee of the batch exercise. Its informees are
---    the admin, the executors, and the factory's
---    `settlementFactory_settleBatchExtraObservers`, which must stay empty.
---    The vendored public-asset default makes every leg's account parties
---    observers. An executor that is also an authorizer sees the whole
---    batch.
--- 2. `select` keys on `allocView.allocation.authorizer`, so it forwards only
---    the entries meant for that authorizer. A selector that forwards an
---    entry for every allocation shows each authorizer the others' entries.
+-- 1. Keep the factory's `settlementFactory_settleBatchExtraObservers`
+--    empty. Otherwise each party it returns sees the whole batch, as every
+--    leg's account parties do under the vendored
+--    `settlementFactoryV2_publicAsset_settleBatchExtraObserversDefaultImpl`.
+--    An executor that is also an authorizer sees the whole batch.
+-- 2. Have `select` forward only the entries for the view's
+--    `allocation.authorizer`. A `select` that forwards every entry shows
+--    each authorizer the others' entries.
 --
 -- Information meant for every participant belongs in `SettlementInfo.meta`,
 -- which each authorizer already sees and agreed to. The executors write the

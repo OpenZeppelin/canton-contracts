@@ -91,14 +91,11 @@ data Witnessing = Witnessing with
 -- context and nothing else. Alice sends Bob 10 TOK for 4 USD through a
 -- factory whose selector keys on the authorizer. The batch context holds an
 -- entry for Alice, one for Bob, and one for neither, each the id of a
--- contract only the admin knows. The executor's tree shows each
--- `Allocation_Settle` carrying its own authorizer's entry.
+-- contract only the admin knows.
 --
--- Daml Script reads a transaction only as its submitter, the executor, so
--- the script returns what each authorizer must witness, its settled
--- allocation and its payout, and the entries it must not see anywhere.
--- `scripts/check-sandbox.sh` reads each authorizer's own transactions from
--- the JSON Ledger API and checks them against that list.
+-- Returns what each authorizer must and must not witness.
+-- `scripts/check-sandbox.sh` checks the returned list, as `CONTRIBUTING.md`
+-- explains.
 sandboxSettleBatchContextWitnesses : Script [Witnessing]
 sandboxSettleBatchContextWitnesses = do
   s@Scenario{..} <- setupPrefixed "settlecontext-"

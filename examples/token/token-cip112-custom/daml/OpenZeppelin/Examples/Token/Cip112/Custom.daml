@@ -117,11 +117,10 @@ myOps admin roles = HoldingOps with
 -- Account status
 -----------------
 
--- | One account's compliance status, signed by the admin and the compliance
--- officer. The officer freezes and unfreezes the account by replacing the
--- contract, so the only live status says what the account currently is:
--- an id from before the change fails to fetch. The account parties observe
--- their own status, so the owner's wallet finds it without the registry.
+-- | One regular account's compliance status. The compliance officer
+-- freezes and unfreezes the account by replacing the contract, so an id
+-- from before the change fails to fetch. The account parties observe their
+-- own status, so the owner's wallet finds it without the registry.
 --
 -- Nothing on the ledger stops two live statuses for one account, and a
 -- submitter could pass the one that is not frozen. Open exactly one per

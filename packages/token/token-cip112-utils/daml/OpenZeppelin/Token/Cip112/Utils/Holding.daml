@@ -92,11 +92,9 @@ data HoldingOps = HoldingOps with
       -- its owner: an accept's surplus, a settlement's payout to the
       -- authorizer, and a reserve rolled into the next iteration. Fails
       -- unless the contract is an accepted implementation, then removes the
-      -- holding from the ledger and returns the view it had. In a batch,
-      -- each `Allocation_Settle` receives only the part of the batch context
-      -- that the selector given to `settleBatchImpl` forwards to its
-      -- authorizer. A selector that forwards nothing makes a rule that
-      -- requires a context entry refuse every batch settlement.
+      -- holding from the ledger and returns the view it had. In a batch
+      -- settlement, the context is what the `select` argument of
+      -- `settleBatchImpl` returns for the allocation.
     returnHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
       -- ^ Consume locked funding to return it to its owner, through
       -- `unlockHoldings`: `transferRejectImpl`, `transferWithdrawImpl`,

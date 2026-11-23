@@ -78,13 +78,14 @@ contract id enters through an operation the template owner wrote:
   `deliverHolding` rule that requires a context entry refuse every batch
   settlement. `expireAllocationsImpl` cancels its allocations in one
   transaction, so one refusing `returnHolding` fails the whole batch.
-- Each authorizer sees its own `Allocation_Settle`, but not the batch
-  exercise that contains it. The batch context stays private only if no
-  authorizer is an informee of the batch exercise and the selector keys on
-  `allocView.allocation.authorizer`. The first condition requires
-  `settlementFactory_settleBatchExtraObservers` to be empty, unlike the
-  vendored public-asset default, which makes every leg's account parties
-  observers. An executor that is also an authorizer sees the whole batch.
+- Each authorizer sees its own `Allocation_Settle` with that choice's
+  arguments. The batch exercise, whose context may describe other
+  authorizers' trades, stays with the factory's signatories and the
+  executors only if `settlementFactory_settleBatchExtraObservers` is empty
+  and the selector forwards only the entries for the view's
+  `allocation.authorizer`. The vendored public-asset default makes every
+  leg's account parties observers. An executor that is also an authorizer
+  sees the whole batch.
 - `holdingOwnerUnlockImpl` runs none of the consumption operations. A rule
   that must block an owner unlock, such as a freeze, is checked inside the
   holding's own owner-unlock choice. A rule that must hold funds after the
