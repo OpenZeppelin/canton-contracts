@@ -1,13 +1,13 @@
 -- | Consumer fixtures: single-party and credential-based pause authority, and
 -- the sibling-field case.
-module OpenZeppelin.PausableV1TestFixtures where
+module OpenZeppelin.Pausable.Utils.Test.Fixtures where
 
 import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import qualified DA.TextMap as TextMap
 
 import OpenZeppelin.Api.PausableV1
-import OpenZeppelin.PausableV1
+import OpenZeppelin.Pausable.Utils
 
 -- Consumer-side failures, raised with `failWithStatus` so tests match on a
 -- stable `errorId`.

@@ -10,7 +10,7 @@ instance.
 | Package | `pausable-retrofit-example` `1.0.0` and `1.1.0` |
 | Module | `OpenZeppelin.Examples.Pausable.Retrofit` |
 | Tests | `OpenZeppelin.Examples.Pausable.RetrofitTest` in [`retrofit-test`](../retrofit-test) |
-| Consumes | `openzeppelin-api-pausable-v1` `0.1.0`, `openzeppelin-pausable-v1` `0.1.0` |
+| Consumes | `openzeppelin-api-pausable-v1` `0.1.0`, `openzeppelin-pausable-utils` `0.1.0` |
 
 ## What it shows
 
