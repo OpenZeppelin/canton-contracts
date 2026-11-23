@@ -5,9 +5,9 @@
 -- sandbox; the same scripts also run under `dpm test` on the in-memory
 -- ledger.
 --
--- Every script allocates fresh parties and pins the clock to `t1`, so the
--- scripts compose in any order on one forward-only static-time ledger.
--- `sandboxBatchExpiryWitnesses` moves the clock past `t1` and runs last.
+-- Every script allocates fresh parties and pins the clock to `t1`.
+-- `sandboxBatchExpiryWitnesses` then sets the clock to `t3` and must run
+-- last. The other scripts run in any order on one static-time ledger.
 module OpenZeppelin.Token.Cip112.V1.Test.Sandbox where
 
 import DA.Assert ((===))
@@ -89,13 +89,11 @@ data Witnessing = Witnessing with
 
 -- | Batched admin expiry shows each party only its own items. Two
 -- allocations with different executors expire in one batch, and so do two
--- transfer instructions with different receivers. The admin's tree holds
--- every cancel and expiry, and every holding they release.
+-- transfer instructions with different receivers.
 --
--- Daml Script reads a transaction only as its submitter, the admin, so the
--- script returns what each executor and receiver must and must not witness.
--- `scripts/check-sandbox.sh` reads each party's own transactions from the
--- JSON Ledger API and checks them against that list.
+-- Returns what each executor and receiver must and must not witness.
+-- `scripts/check-sandbox.sh` checks the returned list, as `CONTRIBUTING.md`
+-- explains.
 sandboxBatchExpiryWitnesses : Script [Witnessing]
 sandboxBatchExpiryWitnesses = do
   s@Scenario{..} <- setupPrefixed "batchexpiry-"
@@ -108,7 +106,6 @@ sandboxBatchExpiryWitnesses = do
   bobAllocInput <- mint admin bob 4.0
   let s2 = s with settlement = settlement with executors = [app2]; id = "settlement-2"
   bobAlloc <- completedCid =<< allocate s2 bob [senderSide legBobToAlice] [bobAllocInput]
-  -- Alice offers Carol 3.0, Bob offers Dave 2.0.
   aliceInstrInput <- mint admin alice 3.0
   aliceInstr <- pendingCid =<< instructTransfer s [alice] (mkTransfer s alice carol 3.0 [aliceInstrInput])
   bobInstrInput <- mint admin bob 2.0

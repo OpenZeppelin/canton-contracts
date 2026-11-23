@@ -53,11 +53,12 @@ contract id enters through an operation the template owner wrote:
 - The `PinAllocation` passed to `settleBatchImpl` and `expireAllocationsImpl`
   must fail on any allocation whose choice bodies the registry does not
   control. Use `pinAllocationTo @YourAllocation`.
-- A batched expiry choice, over `expireAllocationsImpl` or over a registry's
-  own instructions, has no observers in a registry for a private asset. An
-  observer of the batch witnesses every item in it and every holding the
-  items release. Add a party that must follow one account through
-  `eventObservers` instead.
+- A choice that runs `expireAllocationsImpl`, or expires a batch of transfer
+  instructions, must have no choice observers unless every party may see
+  every account's holdings. A choice observer witnesses every expiry in the
+  batch and every holding the expiries release. To show a party one account's
+  holdings-change events, return the party from `eventObservers` for that
+  account.
 - `createHolding` must create a contract whose view equals the argument and
   whose signatories include the admin and the account parties.
 - The settlement factory must settle through `settleBatchImpl`, or keep its

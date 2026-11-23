@@ -7,11 +7,8 @@
 # Static time supports the suites' explicit validity-boundary checks. Each
 # suite allocates fresh parties and advances the shared clock monotonically.
 #
-# Daml Script reads a transaction only as its submitter. A witness script
-# returns a list of `Witnessing` records instead: a party, the contracts it
-# must witness, and the contracts it must not. After the script passes, this
-# gate reads that party's own transactions from the JSON Ledger API and
-# checks both lists against them.
+# check_witnesses checks the records a script in WITNESS_SCRIPTS returns
+# against the JSON Ledger API. CONTRIBUTING.md explains the convention.
 #
 # To target an already-running ledger instead of the script-managed sandbox,
 # set OZ_USE_EXTERNAL_LEDGER=1 together with OZ_LEDGER_HOST / OZ_LEDGER_PORT,
@@ -74,6 +71,15 @@ treasury)
 	exit 1
 	;;
 esac
+for w in $WITNESS_SCRIPTS; do
+	case " ${SCRIPTS[*]##*:} " in
+	*" $w "*) ;;
+	*)
+		printf 'check-sandbox: witness script %s is not in SCRIPTS\n' "$w" >&2
+		exit 1
+		;;
+	esac
+done
 PACKAGE_NAME="$(sed -n 's/^name:[[:space:]]*//p' "$ROOT/$TEST_PKG/daml.yaml")"
 DAR="$ROOT/$TEST_PKG/.daml/dist/$PACKAGE_NAME-0.0.0.dar"
 LEDGER_HOST="${OZ_LEDGER_HOST:-localhost}"
@@ -82,7 +88,8 @@ JSON_API_PORT="${OZ_JSON_API_PORT:-7575}"
 JSON_API="http://$LEDGER_HOST:$JSON_API_PORT"
 USE_EXTERNAL_LEDGER="${OZ_USE_EXTERNAL_LEDGER:-0}"
 # Only a suite with witness scripts reads the JSON Ledger API, so only its
-# sandbox serves one.
+# sandbox gets `--json-api-port` and has that port checked and released.
+# Without the flag, `dpm sandbox` serves the JSON Ledger API on 6864.
 SANDBOX_PORTS="$LEDGER_PORT"
 if [ -n "$WITNESS_SCRIPTS" ]; then
 	for tool in curl jq; do

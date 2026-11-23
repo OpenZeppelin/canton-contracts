@@ -166,9 +166,9 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   `TokenRules_ExpireTransferInstructions` have no observers, so each item is
   witnessed only by its own stakeholders. A party that must follow expiries
   without being a stakeholder, such as an auditor, needs read-as rights on
-  the admin, which show it everything the admin sees. A registry that must
-  show such a party only some accounts owns its templates and sets
-  `HoldingOps.eventObservers`, as `examples/token/token-cip112-custom` does.
+  the admin, which show it everything the admin sees. To show such a party
+  only some accounts' holdings-change events, a registry owns its templates
+  and returns the party from `HoldingOps.eventObservers` for those accounts.
 
 ## Sandbox validation
 

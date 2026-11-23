@@ -45,14 +45,8 @@ settleBatchImpl pin admin self arg = do
 -- actors, admin, and expiry are re-verified per allocation independently of
 -- the cancel implementation.
 --
--- An observer of the choice that runs this body witnesses every cancel in the
--- batch and every holding those cancels release, whoever owns them. Each
--- cancel is already witnessed by its own allocation's stakeholders, the
--- executors included, so a registry for a private asset gives its batch
--- expiry choice no observers. Observers are safe only where every party may
--- see every account's holdings, as for a public asset. A party that must
--- follow one account's expiries, such as an auditor, belongs in
--- `HoldingOps.eventObservers`, which reaches only that account's events.
+-- The "Trust boundary" section of the package `README.md` says when the
+-- choice that runs this body may have observers.
 expireAllocationsImpl
   : PinAllocation -> Party
   -> [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
