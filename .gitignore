@@ -12,13 +12,16 @@ Thumbs.db
 *.swo
 *~
 
+# Claude Code: ignore local config, but track shared commands and skills.
+.claude/
+!.claude/commands/
+!.claude/skills/
+CLAUDE.local.md
+
 # Local agent and editor state
 .codex/
-.claude/
 .coverage
 .vscode/
-CLAUDE.local.md
-.claude/settings.local.json
 .cursor/
 .aider*
 .windsurf/
