@@ -27,6 +27,12 @@ The pause does not cover pending transfer instructions. Their accept choice
 does not read the rules contract, so a transfer, mint offer, or burn request
 created before the pause can still be accepted while the registry is paused.
 
+The auditor observes every holding and every holdings-change event, and the
+compliance officer observes every holding. Every transaction that archives a
+`MyHolding`, including `MyHolding_OwnerUnlock`, fails while either party has
+no hosting participant or a participant hosting it has not vetted the
+packages.
+
 No workflow body changes. `token-cip112-custom-test` drives the token through the
 standard interfaces and checks each addition.
 

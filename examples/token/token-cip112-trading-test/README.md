@@ -40,7 +40,10 @@ through their account parties; the `exchange` is the settlement executor named
 in the `SettlementInfo`. Settlement runs on executor authority through the
 settlement factory, whose exact-cover check validates the batch and whose
 per-allocation settles reveal nothing about sibling allocations to the other
-traders in a batch.
+traders in a batch. The admin is the only lock holder of each allocation's
+funding, so the registry discloses that funding to the `exchange`, which
+attaches it when it settles. `settlementDisclosures` builds these
+disclosures by querying as the admin.
 
 ## Build and run
 

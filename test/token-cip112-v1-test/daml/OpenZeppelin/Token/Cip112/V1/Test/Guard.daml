@@ -229,16 +229,17 @@ testWithdrawRefusesExtraActor = do
 testAcceptRefusesUnderfundedLock : Script ()
 testAcceptRefusesUnderfundedLock = do
   s@Scenario{..} <- setup
-  locked <- holdingIn admin (basicAccount alice) "TOK" 5.0 (lockedBy [admin, bob] (Some t4))
-  instrCid <- submit (actAs [admin, alice]) do
+  locked <- holdingIn admin (basicAccount alice) "TOK" 5.0 (lockedBy [admin] (Some t4))
+  instrCid <- toInterfaceContractId @TransferInstructionV2.TransferInstruction <$> submit (actAs [admin, alice]) do
     createCmd TokenTransferInstruction with
       state = TransferInstructionState with
         transfer = mkTransfer s alice bob 7.0 [locked]
         lockedHoldingCids = [toInterfaceContractId locked]
         expiresAt = t2
         lockExpiresAt = t4
-  mustFailWith "'locked funding for TOK' is less than 'transfer.amount'" (actAs bob) do
-    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferInstruction instrCid)
+  funding <- instructionDisclosures admin instrCid
+  mustFailWith "'locked funding for TOK' is less than 'transfer.amount'" (actAs bob <> discloseMany funding) do
+    exerciseCmd instrCid
       TransferInstructionV2.TransferInstruction_Accept with actors = [bob]; extraArgs = emptyExtraArgs
 
 -- | Admin cleanup waits until the funding lock has expired, so the sender
