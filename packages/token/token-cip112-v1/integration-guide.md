@@ -102,26 +102,17 @@ two ways:
 - **Through the holding's own choices.** A wallet that knows `TokenHolding`
   exercises `TokenHolding_Merge` on one holding, naming the others as
   `inputHoldingCids`, or `TokenHolding_Split` with the amounts to create,
-  which must sum to the holding's amount. Neither needs the disclosed
-  `TokenRules` contract. Each emits one `EventLog_HoldingsChange` on the
+  which must sum to the holding's amount. Each submission needs only the
+  account's own holdings. Each emits one `EventLog_HoldingsChange` on the
   account with no transfer legs, naming every consumed and created holding.
 - **Through a self-transfer.** `TransferFactory_Transfer` from an account to
   itself completes in one step: it consumes the inputs and creates one
-  holding of the transfer amount plus one of the change. Wallets that use
-  only the `HoldingV2.Holding` interface cannot see template choices, as
-  with `TokenHolding_OwnerUnlock`, so this is their way to rebalance. The
-  event carries a sender and a receiver leg on the same account.
+  holding of the transfer amount, plus one of the change when the inputs
+  exceed it. A wallet that uses only the `HoldingV2.Holding` interface
+  rebalances this way. The event carries a sender and a receiver leg on the
+  same account.
 
-The exercised holding of a merge or split must carry no lock, not even an
-expired one. A live lock keeps the funds for the pending instruction or
-allocation that names the holding by id, and the new holdings copy the
-exercised holding's view, so an expired lock would carry over to them.
-Merge an expired-lock holding as an input of a merge on an unlocked holding
-instead, or release it with `TokenHolding_OwnerUnlock` first. The test
-scripts in `OpenZeppelin.Token.Cip112.V1.Test.Rebalance` cover both choices.
-
-Authorization: the account parties alone, on both choices; the admin's
-authority comes from the holding's signatories.
+Authorization: the account parties alone, on both choices.
 
 ### Delivery-versus-payment settlement
 

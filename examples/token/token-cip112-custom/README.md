@@ -27,11 +27,10 @@ The pause does not cover pending transfer instructions. Their accept choice
 does not read the rules contract, so a transfer, mint offer, or burn request
 created before the pause can still be accepted while the registry is paused.
 
-Nor does the registry cover merges and splits. `MyHolding_Merge` and
-`MyHolding_Split` do not read the rules contract, so they run while the
-registry is paused and pay no fee. A self-transfer through the transfer
-factory rebalances the same way, but is paused and charged like any other
-transfer.
+`MyHolding_Merge` and `MyHolding_Split` bypass the rules contract, so they
+run while the registry is paused and pay no fee. A self-transfer through
+the transfer factory rebalances the same way, but is paused and charged
+like any other transfer.
 
 The auditor observes every holding and every holdings-change event, and the
 compliance officer observes every holding. Every transaction that archives a

@@ -1,5 +1,5 @@
 -- | Rebalancing outside the registry: `TokenHolding_Merge` and
--- `TokenHolding_Split`. Each script checks one rule of the bodies in
+-- `TokenHolding_Split`, checked against the rules of the bodies in
 -- `OpenZeppelin.Token.Cip112.Utils.Holding`: value is conserved, the event
 -- carries no transfer legs, only the account parties act, inputs must match
 -- the exercised holding's admin, account, and instrument, live locks are
@@ -7,7 +7,11 @@
 module OpenZeppelin.Token.Cip112.V1.Test.Rebalance where
 
 import DA.Assert ((===))
-import DA.Optional (isSome)
+import DA.Foldable (forA_)
+import DA.List (dedup)
+import DA.Optional (isSome, optionalToList)
+import DA.TextMap qualified as TextMap
+import DA.Time (addRelTime, microseconds)
 import Daml.Script
 
 import Splice.Api.Token.MetadataV1
@@ -19,6 +23,7 @@ import OpenZeppelin.Token.Cip112.V1.Holding
 import OpenZeppelin.Token.Cip112.V1.Transfer
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
 import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (mustFailWith)
+import OpenZeppelin.Token.Cip112.V1.Test.Guard (holdingIn, lockedBy)
 
 asHolding : ContractId TokenHolding -> ContractId HoldingV2.Holding
 asHolding = toInterfaceContractId
@@ -46,17 +51,27 @@ alicePendingTransfer s@Scenario{..} = do
     [(cid, _)] -> pure (fromInterfaceContractId @TokenTransferInstruction instrCid, cid)
     other -> abort ("expected one locked holding, got " <> show (length other))
 
--- | A holding in alice's second account: the same parties, another id.
-aliceSavings : Scenario -> Decimal -> Script (ContractId TokenHolding)
-aliceSavings Scenario{..} amount =
-  submit (actAs [admin, alice]) do
+-- | An unlocked "TOK" holding created directly by its signatories, in any
+-- account and with any metadata.
+holdingWith : Scenario -> HoldingV2.Account -> Decimal -> Metadata -> Script (ContractId TokenHolding)
+holdingWith Scenario{..} account amount meta =
+  submit (actAs (dedup (admin :: optionalToList account.owner <> optionalToList account.provider))) do
     createCmd TokenHolding with
       holding = HoldingV2.HoldingView with
-        account = HoldingV2.Account with owner = Some alice; provider = None; id = "savings"
+        account
         instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
         amount
         lock = None
-        meta = emptyMetadata
+        meta
+
+-- | A holding in alice's second account: the same parties, another id.
+aliceSavings : Scenario -> Decimal -> Script (ContractId TokenHolding)
+aliceSavings s amount =
+  holdingWith s (HoldingV2.Account with owner = Some s.alice; provider = None; id = "savings") amount emptyMetadata
+
+-- | An account with a provider as well as an owner.
+custody : Party -> Party -> HoldingV2.Account
+custody owner provider = HoldingV2.Account with owner = Some owner; provider = Some provider; id = "custody"
 
 -- | A merge consumes the exercised holding and every input, creates one
 -- holding with the summed amount, and emits one account-local event with
@@ -111,18 +126,37 @@ testRebalanceNeedsTheAccountParties = do
   Scenario{..} <- setup
   h1 <- mint admin alice 3.0
   h2 <- mint admin alice 4.0
-  submitMustFail (actAs admin) (mergeCmd h1 [h2])
-  submitMustFail (actAs admin) (splitCmd h1 [1.0, 2.0])
-  submitMustFail (actAs bob) (mergeCmd h1 [h2])
-  submitMustFail (actAs bob) (splitCmd h1 [1.0, 2.0])
+  mustFailWith "requires authorizers" (actAs admin) (mergeCmd h1 [h2])
+  mustFailWith "requires authorizers" (actAs admin) (splitCmd h1 [1.0, 2.0])
+  mustFailWith "Could not find contract" (actAs bob) (mergeCmd h1 [h2])
+  mustFailWith "Could not find contract" (actAs bob) (splitCmd h1 [1.0, 2.0])
   holdingAmounts alice >>= (=== [3.0, 4.0])
+
+-- | On an account with a provider, the owner alone and the provider alone
+-- are refused, although the body holds both parties' authority as
+-- signatories of the holding. Together they merge and split.
+testRebalanceNeedsBothAccountParties : Script ()
+testRebalanceNeedsBothAccountParties = do
+  s@Scenario{..} <- setup
+  provider <- allocateParty "provider"
+  h1 <- holdingWith s (custody alice provider) 3.0 emptyMetadata
+  h2 <- holdingWith s (custody alice provider) 4.0 emptyMetadata
+  forA_ [alice, provider] $ \p -> do
+    mustFailWith "requires authorizers" (actAs p) (mergeCmd h1 [h2])
+    mustFailWith "requires authorizers" (actAs p) (splitCmd h1 [1.0, 2.0])
+  merged <- submit (actAs [alice, provider]) (mergeCmd h1 [h2])
+  parts <- submit (actAs [alice, provider]) (splitCmd (fromInterfaceContractId merged) [2.0, 5.0])
+  views <- forA parts $ \cid -> do
+    Some v <- queryInterfaceContractId @HoldingV2.Holding provider cid
+    pure (v.account, v.amount)
+  views === [(custody alice provider, 2.0), (custody alice provider, 5.0)]
 
 -- | The exercised holding carries no lock: a live lock is refused, and so is
 -- an expired one, which would otherwise carry over to the merged holding.
 -- As an input of a merge on an unlocked holding, the same expired-lock
--- holding is accepted and the merged holding is unlocked. As
--- after an owner unlock, the pending transfer that named it can no longer
--- return its funding, and the admin's garbage collection removes it.
+-- holding is accepted and the merged holding is unlocked. As with an owner
+-- unlock, the pending transfer that named it then fails to return its
+-- funding, and the admin's garbage collection removes it.
 testRebalanceRefusesALockedHolding : Script ()
 testRebalanceRefusesALockedHolding = do
   s@Scenario{..} <- setup
@@ -137,10 +171,10 @@ testRebalanceRefusesALockedHolding = do
   assertNoLocks alice
   -- 3 of change from the transfer's funding, then 1 + 7 merged.
   holdingAmounts alice >>= (=== [3.0, 8.0])
-  submitMustFail (actAs alice) do
+  mustFailWith "Could not find contract" (actAs alice) do
     exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferInstruction instrCid)
       TransferInstructionV2.TransferInstruction_Withdraw with actors = [alice]; extraArgs = emptyExtraArgs
-  submitMustFail (actAs admin) do exerciseCmd instrCid TokenTransferInstruction_Expire
+  mustFailWith "Could not find contract" (actAs admin) do exerciseCmd instrCid TokenTransferInstruction_Expire
   _ <- submit (actAs admin) do exerciseCmd instrCid TokenTransferInstruction_AdminGC
   queryContractId admin instrCid >>= (=== None)
   holdingAmounts alice >>= (=== [3.0, 8.0])
@@ -155,6 +189,37 @@ testMergeRefusesALiveLockedInput = do
   mustFailWith "input holding lock expiresAt" (actAs alice) (mergeCmd unlocked [locked])
   Some _ <- queryContractId alice locked
   pure ()
+
+-- | An input is refused one microsecond before its lock's `expiresAt` and
+-- accepted from `expiresAt` on.
+testMergeInputLockBoundary : Script ()
+testMergeInputLockBoundary = do
+  Scenario{..} <- setup
+  h <- mint admin alice 1.0
+  input <- holdingIn admin (basicAccount alice) "TOK" 5.0 (lockedBy [admin] (Some t2))
+  setTime (t2 `addRelTime` microseconds (-1))
+  mustFailWith "input holding lock expiresAt" (actAs alice) (mergeCmd h [input])
+  setTime t2
+  _ <- submit (actAs alice) (mergeCmd h [input])
+  holdingAmounts alice >>= (=== [6.0])
+
+-- | The merge body holds the admin's authority, so archiving a holding
+-- whose account parties are all within it raises no authorization error:
+-- the admin's own holding, or one alice owns with the admin as provider.
+-- The account check refuses both, and both stay active.
+testMergeRefusesInputsTheAdminSigns : Script ()
+testMergeRefusesInputsTheAdminSigns = do
+  s@Scenario{..} <- setup
+  h <- mint admin alice 1.0
+  treasury <- mint admin admin 50.0
+  Some treasuryDisclosure <- queryDisclosure admin treasury
+  mustFailWith "'inputHolding.account' is not equal to" (actAs alice <> discloseMany [treasuryDisclosure])
+    (mergeCmd h [treasury])
+  custodied <- holdingWith s (custody alice admin) 9.0 emptyMetadata
+  mustFailWith "'inputHolding.account' is not equal to" (actAs alice) (mergeCmd h [custodied])
+  Some _ <- queryContractId admin treasury
+  Some _ <- queryContractId alice custodied
+  holdingAmounts alice >>= (=== [1.0, 9.0])
 
 -- | Every input must share the exercised holding's instrument, account, and
 -- admin. The instrument and account refusals name the field, so they cannot
@@ -203,3 +268,19 @@ testSplitRefusesBadAmounts = do
   mustFailWith "'sum of split amounts' is not equal to" (actAs alice) (splitCmd h [4.0, 6.0000000001])
   _ <- submit (actAs alice) (splitCmd h [9.9999999999, 0.0000000001])
   holdingAmounts alice >>= (=== [0.0000000001, 9.9999999999])
+
+-- | A merge keeps the exercised holding's `meta` and drops the input's, and
+-- a split copies the `meta` onto every part.
+testRebalanceKeepsTheExercisedView : Script ()
+testRebalanceKeepsTheExercisedView = do
+  s@Scenario{..} <- setup
+  let tagged t = Metadata with values = TextMap.fromList [("tag", t)]
+  exercised <- holdingWith s (basicAccount alice) 3.0 (tagged "exercised")
+  input <- holdingWith s (basicAccount alice) 4.0 (tagged "input")
+  merged <- submit (actAs alice) (mergeCmd exercised [input])
+  Some mergedView <- queryInterfaceContractId @HoldingV2.Holding alice merged
+  mergedView.meta === tagged "exercised"
+  parts <- submit (actAs alice) (splitCmd (fromInterfaceContractId merged) [3.5, 3.5])
+  forA_ parts $ \cid -> do
+    Some v <- queryInterfaceContractId @HoldingV2.Holding alice cid
+    (v.amount, v.meta) === (3.5, tagged "exercised")

@@ -19,13 +19,11 @@
 --   the same check, without the workflows knowing what a freeze is.
 --   `returnHolding` stays the pinned archive, so no return path refuses a
 --   holding for being frozen. `MyHolding_OwnerUnlock`, `MyHolding_Merge`,
---   and `MyHolding_Split` check the freeze themselves on the holding they
---   are exercised on; a merge's other inputs go through `fundHolding` and
---   must carry the exercised holding's roles. The freeze refuses a holding
---   with a live lock, because that holding backs a pending contract.
+--   and `MyHolding_Split` check the freeze themselves. The freeze refuses a
+--   holding with a live lock, because that holding backs a pending contract.
 -- - A pause switch on the registry. A template field plus two choices,
 --   checked before each factory and the mint offer delegate to the workflow.
---   Merges and splits do not read the rules contract, so they run while the
+--   Merges and splits bypass the rules contract, so they run while the
 --   registry is paused and pay no fee.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
 --   account. The factory composes two workflow calls: a one-step fee
@@ -166,14 +164,14 @@ template MyHolding with
         require "holding is frozen" (not frozen)
         holdingOwnerUnlockImpl (ops this) (toInterfaceContractId self) holding
 
-    -- | Refused while frozen, for the same reason as the owner unlock: the
-    -- merged holding comes from `createHolding`, so merging a frozen holding
-    -- would unfreeze it. The other inputs go through `fundHolding`, whose
-    -- spend refuses a frozen one. Every input must carry this holding's
-    -- roles: the merged holding carries them, so merging a holding of other
-    -- roles would move its value away from its auditor and compliance
-    -- officer. No operation reads the context.
     choice MyHolding_Merge : ContractId HoldingV2.Holding
+      -- ^ Merge other holdings of this account and instrument into this one.
+      -- Fails while this holding is frozen, because the merged holding comes
+      -- from `createHolding`, which drops the freeze. The other inputs pass
+      -- through `fundHolding`, whose `MyHolding_Spend` refuses a frozen one.
+      -- Fails unless every input carries this holding's roles, which the
+      -- merged holding keeps, so the value stays under the same auditor and
+      -- compliance officer.
       with
         inputHoldingCids : [ContractId HoldingV2.Holding]
       controller accountParties holding.instrumentId.admin holding.account
@@ -188,9 +186,10 @@ template MyHolding with
             require "input holding carries other roles" (input.roles == roles)
         holdingMergeImpl (ops this) emptyChoiceContext (toInterfaceContractId self) holding inputHoldingCids
 
-    -- | Refused while frozen: every part comes from `createHolding`, so
-    -- splitting a frozen holding would unfreeze it.
     choice MyHolding_Split : [ContractId HoldingV2.Holding]
+      -- ^ Split this holding into one holding per amount. Fails while this
+      -- holding is frozen, because every part comes from `createHolding`,
+      -- which drops the freeze.
       with
         amounts : [Decimal]
       controller accountParties holding.instrumentId.admin holding.account

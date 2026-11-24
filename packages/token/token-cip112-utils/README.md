@@ -37,12 +37,7 @@ functions, with every template decision left to the caller.
   rest.
 - `holdingMergeImpl` and `holdingSplitImpl`: the bodies of consuming merge
   and split choices on a holding template, for account parties who
-  rebalance without the registry. Both conserve value and emit a
-  holdings-change event with no transfer legs. A merge takes inputs of the
-  exercised holding's admin, account, and instrument, accepting expired
-  locks and refusing live ones. Both refuse an exercised holding with any
-  lock: a live lock keeps the funds for the pending contract that names the
-  holding, and an expired one would carry over to the new holdings.
+  rebalance without the registry.
 
 The functions read and return the `RegistryConfig`,
 `TransferInstructionState`, and `AllocationState` records of
@@ -68,9 +63,9 @@ contract id enters through an operation the template owner wrote:
 - A refusal in `deliverHolding` or `returnHolding` leaves the other
   operation's paths open, and a refusal in both holds the locked funds until
   the lock expires. After that the owner recovers them through the holding's
-  owner-unlock choice or by passing the holding to a factory or to
-  `holdingMergeImpl` as an input, both of which run `fundHolding`. Put a rule
-  in `deliverHolding` or `returnHolding` only if a known party can lift it
+  owner-unlock choice or by passing the holding to a factory or to a merge
+  choice as an input, both of which run `fundHolding`. Put a rule in
+  `deliverHolding` or `returnHolding` only if a known party can lift it
   without re-creating the locked holding: pending instructions and
   allocations name their locked holdings by id, so they can neither pay out
   nor return a replaced holding. A rule that only limits new spending, such
@@ -91,17 +86,18 @@ contract id enters through an operation the template owner wrote:
   `allocationFactoryImpl`, and `holdingMergeImpl` accept an input whose lock
   has expired.
 - `holdingSplitImpl` runs none of the consumption operations either, and
-  `holdingMergeImpl` runs `fundHolding` only on its inputs, never on the
-  holding the choice is exercised on. A custom template must apply its own
-  spend rules, such as a freeze, to that holding inside its merge and split
-  choices before calling the body. Every holding these bodies create comes
-  from `createHolding`, so a template field the closure does not set, such
-  as a freeze flag, resets on the merged and split holdings. Each created
-  view is the exercised holding's view with a new amount: a merge keeps the
-  exercised holding's `meta` and drops the inputs', and a split copies it
-  onto every part.
-- Neither merge nor split reads a registry contract, so no factory policy,
-  such as a pause, a fee, or an allowlist, applies to them.
+  `holdingMergeImpl` runs `fundHolding` only on its inputs. Apply the
+  template's own spend rules, such as a freeze, to the exercised holding
+  inside its merge and split choices before calling the body. Otherwise the
+  account parties can turn a frozen holding into unfrozen ones, because
+  every holding these bodies create comes from `createHolding`.
+- `holdingMergeImpl` checks each input's standard view only, and the merged
+  holding takes its template fields from the `createHolding` closure. Refuse
+  an input whose own fields differ from the exercised holding's, such as
+  other roles, in the merge choice or in `fundHolding`. Otherwise the merge
+  moves the input's value out from under those fields.
+- Merge and split choices bypass the registry contract. Check a factory
+  policy that must cover them, such as a pause, inside the holding's choice.
 - The `PinAllocation` passed to `settleBatchImpl` and `expireAllocationsImpl`
   must fail on any allocation whose choice bodies the registry does not
   control. Use `pinAllocationTo @YourAllocation`.

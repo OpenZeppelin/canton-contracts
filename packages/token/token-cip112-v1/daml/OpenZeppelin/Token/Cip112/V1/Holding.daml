@@ -33,12 +33,8 @@ import OpenZeppelin.Token.Cip112.V1.Base
 -- registry choices and the choices below.
 --
 -- The account parties rebalance their holdings with `TokenHolding_Merge`
--- and `TokenHolding_Split`. Neither reads the rules contract, so no
--- registry policy applies to them. The admin signs every holding, so it
--- sees each merge and split. Both refuse to run on a holding with any lock,
--- expired or not: a live lock keeps the funds for the pending instruction
--- or allocation that names the holding by id, and the new holdings copy
--- this holding's view, so an expired lock would carry over to them.
+-- and `TokenHolding_Split`, which bypass the rules contract and its
+-- transfer policy.
 template TokenHolding with
     holding : HoldingV2.HoldingView
   where
@@ -56,9 +52,12 @@ template TokenHolding with
 
     choice TokenHolding_Merge : ContractId HoldingV2.Holding
       -- ^ Merge other holdings of the same account and instrument into this
-      -- one and return the merged holding. An input whose lock has expired
-      -- is accepted; this holding must carry no lock. The admin's authority
-      -- comes from the signatories, so the account parties exercise alone.
+      -- one. Fails unless `inputHoldingCids` holds at least one holding, each
+      -- distinct from the others and from this one. Fails on an input whose
+      -- lock is live or indefinite, and accepts one whose lock has expired.
+      -- Fails while this holding carries a lock, even an expired one. The
+      -- admin's authority comes from the signatories, so the account parties
+      -- exercise alone.
       with
         inputHoldingCids : [ContractId HoldingV2.Holding]
       controller accountParties holding.instrumentId.admin holding.account
@@ -66,9 +65,10 @@ template TokenHolding with
            (toInterfaceContractId self) holding inputHoldingCids
 
     choice TokenHolding_Split : [ContractId HoldingV2.Holding]
-      -- ^ Split this holding into one holding per amount, returned in the
-      -- same order. The amounts must be positive, at least two, and sum to
-      -- this holding's amount; this holding must carry no lock.
+      -- ^ Split this holding into one holding per entry of `amounts`,
+      -- returned in the same order. Fails unless `amounts` holds at least two
+      -- entries, each positive, that sum to this holding's amount. Fails
+      -- while this holding carries a lock, even an expired one.
       with
         amounts : [Decimal]
       controller accountParties holding.instrumentId.admin holding.account

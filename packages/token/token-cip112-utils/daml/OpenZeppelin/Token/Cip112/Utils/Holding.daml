@@ -211,24 +211,26 @@ holdingOwnerUnlockImpl ops self holding = do
 -- the account parties. It consumes `inputHoldingCids` through
 -- `fundHolding`, recreates the exercised holding with their amounts added,
 -- and emits an account-local `EventLog_HoldingsChange` with no transfer
--- legs, naming the exercised holding and the inputs as inputs. `self` is
--- the holding being exercised; the choice itself archives it. `context`
--- reaches `fundHolding` for every input; a template whose operations read
--- no context passes `emptyChoiceContext`. The merged holding keeps the
--- exercised holding's view, with the summed amount.
+-- legs, naming the exercised holding and the inputs as inputs. The merged
+-- holding keeps the exercised holding's `meta` and drops the inputs'.
+-- `self` is the holding being exercised; the choice itself archives it.
+-- `context` reaches `fundHolding` for every input; a template whose
+-- operations read no context passes `emptyChoiceContext`.
 --
--- Each input must be a different holding of the same admin, account, and
--- instrument. An input whose lock has expired is accepted, as when it
--- funds a transfer, and a live or indefinite lock is refused. The exercised
--- holding must carry no lock, even an expired one. A live lock keeps the
--- funds for the pending instruction or allocation that names the holding by
--- id, and the merged holding keeps the exercised holding's view, so an
--- expired lock would carry over to it. An expired-lock holding is merged as
--- an input of a merge on an unlocked holding, or released with the
--- owner-unlock choice first.
--- As with an owner unlock, a pending instruction or allocation that still
--- names a merged expired-lock input can no longer return its funding, and
--- only the admin's garbage collection removes it.
+-- `inputHoldingCids` must hold at least one holding, and each input must be
+-- a different holding of the same admin, account, and instrument. An input
+-- whose lock has expired is accepted, as when it funds a transfer, and a
+-- live or indefinite lock is refused. The exercised holding must carry no
+-- lock, even an expired one. A live lock keeps the funds for the pending
+-- instruction or allocation that names the holding by id, and an expired
+-- lock would carry over to the merged holding. On a template whose
+-- observers include its lock holders, a lock holder other than the admin
+-- would also be an informee of the whole merge. An expired-lock holding is
+-- merged as an input of a merge on an unlocked holding, or released with
+-- the owner-unlock choice first. As with an owner unlock, a pending
+-- instruction or allocation that names a merged expired-lock input then
+-- fails to return its funding, and only the admin's garbage collection
+-- removes it.
 --
 -- No consumption operation runs on the exercised holding, so a rule that
 -- must block a merge, such as a freeze, is checked inside the holding's own
@@ -257,14 +259,16 @@ holdingMergeImpl ops context self holding inputHoldingCids = do
 
 -- | Body of a consuming split choice on a holding template, controlled by
 -- the account parties. It recreates the exercised holding as one holding
--- per entry of `amounts`, returned in the same order, and emits an
--- account-local `EventLog_HoldingsChange` with no transfer legs. `self` is
--- the holding being exercised; the choice itself archives it. Each new
--- holding keeps the exercised holding's view, with its own amount.
+-- per entry of `amounts`, returned in the same order, each with the
+-- exercised holding's `meta`, and emits an account-local
+-- `EventLog_HoldingsChange` with no transfer legs. `self` is the holding
+-- being exercised; the choice itself archives it.
 --
 -- `amounts` must hold at least two positive amounts that sum to the
 -- holding's amount exactly. The holding must carry no lock, even an expired
--- one, for the reason `holdingMergeImpl` gives.
+-- one. A live lock keeps the funds for the pending instruction or
+-- allocation that names the holding by id, and an expired lock would carry
+-- over to every part.
 --
 -- None of the consumption operations runs here, so a rule that must block a
 -- split, such as a freeze, is checked inside the holding's own choice
@@ -283,8 +287,7 @@ holdingSplitImpl ops self holding amounts = do
     "holding split"
   pure newCids
 
--- | The exercised holding of a merge or split carries no lock, live or
--- expired.
+-- | Fail when the holding carries a lock, even an expired one.
 requireNoLock : HoldingV2.HoldingView -> Update ()
 requireNoLock holding = require "holding is locked" (isNone holding.lock)
 

@@ -2,12 +2,11 @@
 -- each consumer addition: the auditor sees every contract, funding and
 -- payouts run `MyHolding_Spend` while returns do not, a late acceptance
 -- creates a `MyHolding`, iteration successors are `MyAllocation`s, a frozen
--- holding cannot fund any workflow or be merged or split,
--- the pause switch blocks the factories, mint offers, and burns, the fee
--- leg pays the treasury and exempts burns, merges and splits bypass both
--- the pause and the fee, the
--- executor allowlist is enforced, roles are separate, expired funding is
--- reclaimed, and a foreign holding or allocation is refused.
+-- holding cannot fund any workflow or be merged or split, the pause switch
+-- blocks the factories, mint offers, and burns, the fee leg pays the
+-- treasury and exempts burns, merges and splits bypass both the pause and
+-- the fee, the executor allowlist is enforced, roles are separate, expired
+-- funding is reclaimed, and a foreign holding or allocation is refused.
 module OpenZeppelin.Examples.Token.Cip112.Custom.Test where
 
 import DA.Action (unless)
@@ -952,7 +951,6 @@ testRebalanceBypassesRegistryPolicy = do
   length parts === 2
   balanceSeenBy alice alice >>= (=== [30.0, 70.0])
   balanceSeenBy admin admin >>= (=== [])
-  -- The same consolidation as a self-transfer pays the fee once unpaused.
   live <- unpauseRegistry paused
   _ <- submit (actAs alice <> discloseMany [live.rulesDisclosure])
     (transferCmd live [alice] (mkTransfer live alice alice 99.0 parts))
@@ -982,3 +980,23 @@ testMergeRefusesInputsOfOtherRoles = do
   merged.holding.amount === 6.0
   -- Naming the exercised holding as an input still gets the body's refusal.
   mustFailWith "merge inputs must be distinct" (actAs alice) (mergeCmd oldTok [oldTok])
+
+-- | A forged holding passes the roles check, which skips anything that is
+-- not a `MyHolding`, and the spend refuses it.
+testMergeRefusesForeignInput : Script ()
+testMergeRefusesForeignInput = do
+  app@App{..} <- setup
+  attacker <- allocateParty "attacker"
+  genuine <- mint app attacker 1.0
+  forgedCid <- submit attacker do
+    createCmd ForeignHolding with
+      attacker
+      claimedView = HoldingV2.HoldingView with
+        account = basicAccount attacker
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        amount = 1000000.0
+        lock = None
+        meta = emptyMetadata
+  mustFailWith "holding is not a MyHolding" (actAs attacker)
+    (mergeCmd genuine [toInterfaceContractId @HoldingV2.Holding forgedCid])
+  balanceSeenBy attacker attacker >>= (=== [1.0])
