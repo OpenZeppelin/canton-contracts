@@ -138,11 +138,9 @@ consumeByArchive cid = do
       archive tcid
       pure (view (toInterface @HoldingV2.Holding t))
 
--- | An operations record whose three consumption operations are all
--- `consumeByArchive @t`: every path accepts exactly template `t`, ignores
--- the context, and applies no spend rule. The other operations are the
--- arguments. Override a consumption operation with `with` to add a rule to
--- its paths only.
+-- | Build an operations record from `createHolding`, `withEventLog`, and
+-- `eventObservers`, with `consumeByArchive @t` as all three consumption
+-- operations. Override one of them with `with` to add a rule to its paths.
 holdingOpsFor
   : forall t. (HasFromInterface t HoldingV2.Holding, HasToInterface t HoldingV2.Holding, HasArchive t)
   => (HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding))
@@ -199,9 +197,9 @@ newHolding ops admin account instrumentId amount lock =
 -- `EventLog_HoldingsChange` naming the consumed holding and its replacement.
 -- `self` is the holding being exercised; the choice itself archives it.
 --
--- None of the consumption operations runs here, so a rule that must block
--- an owner unlock, such as a freeze, is checked inside the holding's own
--- choice before it calls this body.
+-- Check a rule that must block an owner unlock, such as a freeze, in the
+-- holding's choice before it calls this body. Otherwise the owner can
+-- unlock a frozen holding once its lock expires.
 holdingOwnerUnlockImpl
   : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
   -> Update (ContractId HoldingV2.Holding)
@@ -220,9 +218,9 @@ holdingOwnerUnlockImpl ops self holding = do
 -- Consumption
 --------------
 
--- | Consume locked funding to pay it out, through `deliverHolding`, after
--- validating its identity. `context` is the context of the choice the
--- workflow runs in.
+-- | Consume locked funding through `deliverHolding` to pay it out, then
+-- check its admin, its account, and that it is locked. `context` is the
+-- context of the choice the workflow runs in.
 consumeLockedHolding
   : HoldingOps -> ChoiceContext -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
   -> Update HoldingV2.HoldingView
@@ -239,10 +237,10 @@ checkLockedHolding admin expectedAccount h = do
   require "input holding must be locked" (isSome h.lock)
   pure h
 
--- | Consume a caller-supplied input holding through `fundHolding` after
--- validating its identity. A holding whose lock has expired is accepted,
--- giving a combined unlock-and-use; unexpired or indefinite locks are
--- rejected. `context` is the context of the choice the workflow runs in.
+-- | Consume a caller-supplied input holding through `fundHolding`, then
+-- check its admin and account. A holding whose lock has expired is
+-- accepted, giving a combined unlock-and-use; unexpired or indefinite locks
+-- are rejected. `context` is the context of the choice the workflow runs in.
 consumeUnlockedHolding
   : HoldingOps -> ChoiceContext -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
   -> Update HoldingV2.HoldingView

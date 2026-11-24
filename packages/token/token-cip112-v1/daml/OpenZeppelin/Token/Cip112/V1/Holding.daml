@@ -48,10 +48,10 @@ template TokenHolding with
     interface instance HoldingV2.Holding for TokenHolding where
       view = holding
 
--- | The operations the default templates run the workflows with: create
--- `TokenHolding`, consume by archiving a pinned `TokenHolding` on every
--- path with no spend rule and no use of the choice context, and emit
--- through a transient `TokenEventLog`.
+-- | Build the operations the default templates run the workflows with:
+-- create `TokenHolding`, consume by archiving a pinned `TokenHolding` in
+-- all three consumption operations, and emit through a transient
+-- `TokenEventLog`.
 defaultHoldingOps : Party -> HoldingOps
 defaultHoldingOps admin = holdingOpsFor @TokenHolding
   (\v -> toInterfaceContractId <$> create TokenHolding with holding = v)

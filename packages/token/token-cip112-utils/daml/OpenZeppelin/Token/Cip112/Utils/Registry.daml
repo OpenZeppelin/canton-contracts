@@ -44,10 +44,8 @@ settleBatchImpl pin admin self arg = do
 
 -- | Body of a batched admin-expiry choice: each allocation is pinned, and
 -- actors, admin, and expiry are re-verified per allocation independently of
--- the cancel implementation. Each cancel's own `extraArgs` reaches the
--- allocation's `returnHolding`. The cancels run in turn in one transaction,
--- so a single refusal fails the whole batch: leave out an allocation whose
--- `returnHolding` refuses, and expire it once the rule passes.
+-- the cancel implementation. Each cancel's `extraArgs.context` reaches the
+-- allocation's `returnHolding`, and one refusal fails the whole batch.
 expireAllocationsImpl
   : PinAllocation -> Party
   -> [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]

@@ -113,9 +113,8 @@ transferWithdrawImpl ops self s arg = do
   returnFundsToSender ops arg.extraArgs.context s "transfer withdrawn"
 
 -- | Body of a consuming admin-expiry choice: the storage bound has passed and
--- the locked funds return to the sender. The choice has no standard
--- argument, so the template passes `returnHolding` its context, or
--- `emptyChoiceContext` when its operations read none.
+-- the locked funds return to the sender. `context` reaches `returnHolding`
+-- for every locked holding.
 transferExpireImpl
   : HoldingOps -> ChoiceContext -> TransferInstructionState
   -> Update TransferInstructionV2.TransferInstructionResult

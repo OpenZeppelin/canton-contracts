@@ -36,8 +36,7 @@ template TokenTransferInstruction with
 
     choice TokenTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
       -- ^ Admin expiry of a stale instruction: the storage bound has passed
-      -- and any locked funds return to the sender. The default operations
-      -- read no context, so the choice takes none.
+      -- and any locked funds return to the sender.
       controller state.transfer.instrumentId.admin
       do transferExpireImpl (instructionOps state) emptyChoiceContext state
 
