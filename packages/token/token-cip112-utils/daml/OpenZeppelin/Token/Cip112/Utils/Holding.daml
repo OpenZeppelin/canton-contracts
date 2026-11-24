@@ -47,7 +47,10 @@ isValidRegistryConfig c =
 -- Operations supplied by the template owner
 --------------------------------------------
 
--- | What a workflow needs from the template owner. Not serializable.
+-- | What a workflow needs from the template owner. Not serializable. A
+-- holding named in the `lockedHoldingCids` of a pending transfer
+-- instruction or allocation must keep its contract id until its lock
+-- expires.
 data HoldingOps = HoldingOps with
     createHolding : HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
       -- ^ Create a holding from its standard view. Law: the created
@@ -67,6 +70,9 @@ data HoldingOps = HoldingOps with
       -- emit for the account, added to the account parties and any
       -- executors. An auditor or regulator who must see the standard event
       -- stream, not only the holdings, goes here. `const []` adds nobody.
+      -- Every party listed must stay hosted with the packages vetted, or
+      -- each workflow that emits for the account fails, owner unlock
+      -- included.
 
 -- | Consume by archiving, pinned to template `t`: `fetchFromInterface @t`
 -- fails on every other implementation, so a foreign `Holding` whose view
