@@ -787,7 +787,8 @@ testSettleBatchBoundedByExpiresAt = do
   bob2 <- allocateNow s bob (mkOpenSpec admin bob [receiverSide legAliceToBob]) []
 
   setTime expiresAt
-  mustFailWith settleExpired (actAs app <> discloseMany [rulesDisclosure])
+  funding <- allocationDisclosures admin [alice2, bob2]
+  mustFailWith settleExpired (actAs app <> discloseMany (rulesDisclosure :: funding))
     (settleBatchFinalizedCmd s [legAliceToBob] (map nonIteratedAllocation [alice2, bob2]))
 
   _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) (expireCmd s [alice2])

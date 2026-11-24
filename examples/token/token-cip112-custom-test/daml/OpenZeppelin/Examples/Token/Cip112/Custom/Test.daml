@@ -378,9 +378,11 @@ testSettlementRefusedAfterExpiresAt = do
   Some v <- queryInterfaceContractId @AllocationV2.Allocation alice aliceAlloc
   v.expiresAt === Some expiresAt
   setTime expiresAt
+  let finalized = map nonIteratedAllocation [aliceAlloc, bobAlloc]
+  disclosures <- settlementDisclosures app finalized
   mustFailWith "Ledger time is at or past deadline 'allocation.expiresAt'"
-    (actAs exchange <> discloseMany [rulesDisclosure])
-    (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]))
+    (actAs exchange <> discloseMany disclosures)
+    (settleBatchCmd app [leg] finalized)
   submit (actAs admin) do
     exerciseCmd rulesCid MyRules_ExpireAllocations with
       cancelArgs =
