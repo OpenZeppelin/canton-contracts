@@ -28,8 +28,8 @@ their own templates reuses directly.
 ## What it provides
 
 - `TokenHolding` (`Holding`): an asset holding maintained jointly by the
-  instrument admin and the account parties, with optional locks and an
-  owner-unlock choice.
+  instrument admin and the account parties, with optional locks, an
+  owner-unlock choice, and merge and split choices.
 - `TokenTransferInstruction` (`Transfer`): the TSv2 transfer-instruction
   lifecycle over a `TransferInstructionState` payload, including accept,
   reject, withdraw, and expiry paths.
@@ -91,6 +91,18 @@ interfaces or exceptions of its own.
   clear the leg set, and bump the storage expiry using the registry
   configuration snapshotted at allocation time. The authorizer withdraws a
   successor like any other allocation.
+- The account parties rebalance their holdings in two ways. Their own
+  `TokenHolding_Merge` merges other holdings of the same account and
+  instrument into the exercised one, and `TokenHolding_Split` splits a
+  holding into the amounts given, which must sum to its amount. Both run
+  without the registry and emit a holdings-change event with no transfer
+  legs. Both refuse a locked exercised holding, even one whose lock has
+  expired; a merge accepts an expired-lock input and refuses a live one. A
+  one-step self-transfer through `TransferFactory_Transfer` also merges its
+  inputs and splits off the transfer amount from the change, and it is the
+  only way through the standard interface: wallets that use only
+  `HoldingV2.Holding` cannot see template choices, as with
+  `TokenHolding_OwnerUnlock`.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors
@@ -182,6 +194,13 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   reuses it names another lock holder, `TokenHolding_OwnerUnlock` also fails
   while that party has no hosting participant or a participant hosting it
   has not vetted the packages.
+- Merges and splits bypass the registry's transfer policy. `TokenHolding_Merge`
+  and `TokenHolding_Split` never read the rules contract, so a registry
+  cannot gate, charge, or pause them, and a fork whose factories add such a
+  policy does not reach them. They move no value between accounts, but a
+  holder can split one holding into as many parts as a transaction holds,
+  each a contract the admin signs and stores. A deployment that must bound
+  that storage caps the parts or their size in a fork's split choice.
 - Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
   every account party. On accounts with a distinct provider, an unresponsive
   provider blocks recovery until it cooperates; single-party accounts avoid
@@ -193,8 +212,9 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
 ## Sandbox validation
 
 `dpm test` runs the test suite on an in-memory ledger. The sandbox gate runs
-mint offers, transfers, querying, and burn requests against a real
-static-time Canton sandbox over the Ledger API. From the repository root:
+mint offers, transfers, querying, burn requests, and merges and splits
+against a real static-time Canton sandbox over the Ledger API. From the
+repository root:
 
 ```sh
 scripts/check-sandbox.sh

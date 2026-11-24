@@ -8,6 +8,7 @@
 -- default templates pass to the workflows.
 module OpenZeppelin.Token.Cip112.V1.Holding where
 
+import Splice.Api.Token.MetadataV1 (emptyChoiceContext)
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.TokenStandard.Utils
 
@@ -29,7 +30,15 @@ import OpenZeppelin.Token.Cip112.V1.Base
 -- holder. Receivers and settlement executors get locked funding from the
 -- registry by explicit disclosure. Creating a holding requires the admin's
 -- and every account party's authority, so holdings only ever appear through
--- registry choices.
+-- registry choices and the choices below.
+--
+-- The account parties rebalance their holdings with `TokenHolding_Merge`
+-- and `TokenHolding_Split`. Neither reads the rules contract, so no
+-- registry policy applies to them. The admin signs every holding, so it
+-- sees each merge and split. Both refuse to run on a holding with any lock,
+-- expired or not: a live lock keeps the funds for the pending instruction
+-- or allocation that names the holding by id, and the new holdings copy
+-- this holding's view, so an expired lock would carry over to them.
 template TokenHolding with
     holding : HoldingV2.HoldingView
   where
@@ -44,6 +53,27 @@ template TokenHolding with
       controller accountParties holding.instrumentId.admin holding.account
       do holdingOwnerUnlockImpl (defaultHoldingOps holding.instrumentId.admin)
            (toInterfaceContractId self) holding
+
+    choice TokenHolding_Merge : ContractId HoldingV2.Holding
+      -- ^ Merge other holdings of the same account and instrument into this
+      -- one and return the merged holding. An input whose lock has expired
+      -- is accepted; this holding must carry no lock. The admin's authority
+      -- comes from the signatories, so the account parties exercise alone.
+      with
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingMergeImpl (defaultHoldingOps holding.instrumentId.admin) emptyChoiceContext
+           (toInterfaceContractId self) holding inputHoldingCids
+
+    choice TokenHolding_Split : [ContractId HoldingV2.Holding]
+      -- ^ Split this holding into one holding per amount, returned in the
+      -- same order. The amounts must be positive, at least two, and sum to
+      -- this holding's amount; this holding must carry no lock.
+      with
+        amounts : [Decimal]
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingSplitImpl (defaultHoldingOps holding.instrumentId.admin)
+           (toInterfaceContractId self) holding amounts
 
     interface instance HoldingV2.Holding for TokenHolding where
       view = holding

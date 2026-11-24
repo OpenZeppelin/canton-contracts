@@ -1,0 +1,205 @@
+-- | Rebalancing outside the registry: `TokenHolding_Merge` and
+-- `TokenHolding_Split`. Each script checks one rule of the bodies in
+-- `OpenZeppelin.Token.Cip112.Utils.Holding`: value is conserved, the event
+-- carries no transfer legs, only the account parties act, inputs must match
+-- the exercised holding's admin, account, and instrument, live locks are
+-- refused on every input, and the exercised holding carries no lock at all.
+module OpenZeppelin.Token.Cip112.V1.Test.Rebalance where
+
+import DA.Assert ((===))
+import DA.Optional (isSome)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount, reasonFromMeta)
+
+import OpenZeppelin.Token.Cip112.V1.Holding
+import OpenZeppelin.Token.Cip112.V1.Transfer
+import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
+import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (mustFailWith)
+
+asHolding : ContractId TokenHolding -> ContractId HoldingV2.Holding
+asHolding = toInterfaceContractId
+
+mergeCmd : ContractId TokenHolding -> [ContractId TokenHolding] -> Commands (ContractId HoldingV2.Holding)
+mergeCmd cid inputs = exerciseCmd cid TokenHolding_Merge with inputHoldingCids = map asHolding inputs
+
+splitCmd : ContractId TokenHolding -> [Decimal] -> Commands [ContractId HoldingV2.Holding]
+splitCmd cid amounts = exerciseCmd cid TokenHolding_Split with amounts
+
+-- | Alice's locked holding from a pending transfer of 7 to bob, funded by a
+-- fresh 10. The admin is the only lock holder; the lock expires at `t2`
+-- plus the one-hour grace, before `t4`.
+aliceLockedHolding : Scenario -> Script (ContractId TokenHolding)
+aliceLockedHolding s = snd <$> alicePendingTransfer s
+
+-- | The pending transfer behind `aliceLockedHolding`, and its locked
+-- holding.
+alicePendingTransfer : Scenario -> Script (ContractId TokenTransferInstruction, ContractId TokenHolding)
+alicePendingTransfer s@Scenario{..} = do
+  input <- mint admin alice 10.0
+  instrCid <- pendingCid =<< instructTransfer s [alice] (mkTransfer s alice bob 7.0 [input])
+  locked <- queryFilter @TokenHolding alice (\h -> isSome h.holding.lock)
+  case locked of
+    [(cid, _)] -> pure (fromInterfaceContractId @TokenTransferInstruction instrCid, cid)
+    other -> abort ("expected one locked holding, got " <> show (length other))
+
+-- | A holding in alice's second account: the same parties, another id.
+aliceSavings : Scenario -> Decimal -> Script (ContractId TokenHolding)
+aliceSavings Scenario{..} amount =
+  submit (actAs [admin, alice]) do
+    createCmd TokenHolding with
+      holding = HoldingV2.HoldingView with
+        account = HoldingV2.Account with owner = Some alice; provider = None; id = "savings"
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        amount
+        lock = None
+        meta = emptyMetadata
+
+-- | A merge consumes the exercised holding and every input, creates one
+-- holding with the summed amount, and emits one account-local event with
+-- no transfer legs that names every consumed holding.
+testMergeConsolidates : Script ()
+testMergeConsolidates = do
+  Scenario{..} <- setup
+  h1 <- mint admin alice 3.0
+  h2 <- mint admin alice 4.0
+  h3 <- mint admin alice 5.0
+  (mergedCid, tree) <- submitResultAndTree (actAs alice) (mergeCmd h1 [h2, h3])
+  holdingAmounts alice >>= (=== [12.0])
+  Some merged <- queryInterfaceContractId @HoldingV2.Holding alice mergedCid
+  merged.amount === 12.0
+  merged.lock === None
+  ev <- expectOneHoldingsChange tree
+  ev.admin === admin
+  ev.account === basicAccount alice
+  ev.inputHoldingCids === map asHolding [h1, h2, h3]
+  ev.outputHoldingCids === [mergedCid]
+  ev.transferLegSides === []
+  reasonFromMeta ev.extraArgs.meta === "holdings merged"
+  assertMsg "the account parties must observe the event" (alice `elem` ev.observers)
+
+-- | A split creates one holding per amount, in order, and emits one
+-- account-local event with no transfer legs. Splitting is the inverse of
+-- merging: the parts merge back into the original amount.
+testSplitPartitions : Script ()
+testSplitPartitions = do
+  Scenario{..} <- setup
+  h <- mint admin alice 10.0
+  (parts, tree) <- submitResultAndTree (actAs alice) (splitCmd h [2.0, 3.0, 5.0])
+  length parts === 3
+  partAmounts <- forA parts $ \cid -> do
+    Some v <- queryInterfaceContractId @HoldingV2.Holding alice cid
+    pure v.amount
+  partAmounts === [2.0, 3.0, 5.0]
+  ev <- expectOneHoldingsChange tree
+  ev.inputHoldingCids === [asHolding h]
+  ev.outputHoldingCids === parts
+  ev.transferLegSides === []
+  reasonFromMeta ev.extraArgs.meta === "holding split"
+  [p1, p2, p3] <- pure (map (fromInterfaceContractId @TokenHolding) parts)
+  _ <- submit (actAs alice) (mergeCmd p3 [p1, p2])
+  holdingAmounts alice >>= (=== [10.0])
+
+-- | Only the account parties control the choices: the admin signs every
+-- holding but cannot rebalance one alone, and another holder cannot see the
+-- holding to try.
+testRebalanceNeedsTheAccountParties : Script ()
+testRebalanceNeedsTheAccountParties = do
+  Scenario{..} <- setup
+  h1 <- mint admin alice 3.0
+  h2 <- mint admin alice 4.0
+  submitMustFail (actAs admin) (mergeCmd h1 [h2])
+  submitMustFail (actAs admin) (splitCmd h1 [1.0, 2.0])
+  submitMustFail (actAs bob) (mergeCmd h1 [h2])
+  submitMustFail (actAs bob) (splitCmd h1 [1.0, 2.0])
+  holdingAmounts alice >>= (=== [3.0, 4.0])
+
+-- | The exercised holding carries no lock: a live lock is refused, and so is
+-- an expired one, which would otherwise carry over to the merged holding.
+-- As an input of a merge on an unlocked holding, the same expired-lock
+-- holding is accepted and the merged holding is unlocked. As
+-- after an owner unlock, the pending transfer that named it can no longer
+-- return its funding, and the admin's garbage collection removes it.
+testRebalanceRefusesALockedHolding : Script ()
+testRebalanceRefusesALockedHolding = do
+  s@Scenario{..} <- setup
+  (instrCid, locked) <- alicePendingTransfer s
+  unlocked <- mint admin alice 1.0
+  mustFailWith "holding is locked" (actAs alice) (mergeCmd locked [unlocked])
+  mustFailWith "holding is locked" (actAs alice) (splitCmd locked [3.0, 4.0])
+  setTime t4
+  mustFailWith "holding is locked" (actAs alice) (mergeCmd locked [unlocked])
+  mustFailWith "holding is locked" (actAs alice) (splitCmd locked [3.0, 4.0])
+  _ <- submit (actAs alice) (mergeCmd unlocked [locked])
+  assertNoLocks alice
+  -- 3 of change from the transfer's funding, then 1 + 7 merged.
+  holdingAmounts alice >>= (=== [3.0, 8.0])
+  submitMustFail (actAs alice) do
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferInstruction instrCid)
+      TransferInstructionV2.TransferInstruction_Withdraw with actors = [alice]; extraArgs = emptyExtraArgs
+  submitMustFail (actAs admin) do exerciseCmd instrCid TokenTransferInstruction_Expire
+  _ <- submit (actAs admin) do exerciseCmd instrCid TokenTransferInstruction_AdminGC
+  queryContractId admin instrCid >>= (=== None)
+  holdingAmounts alice >>= (=== [3.0, 8.0])
+
+-- | An input with a live lock is refused, so a merge never consumes funding
+-- a pending transfer or allocation still names.
+testMergeRefusesALiveLockedInput : Script ()
+testMergeRefusesALiveLockedInput = do
+  s@Scenario{..} <- setup
+  locked <- aliceLockedHolding s
+  unlocked <- mint admin alice 1.0
+  mustFailWith "input holding lock expiresAt" (actAs alice) (mergeCmd unlocked [locked])
+  Some _ <- queryContractId alice locked
+  pure ()
+
+-- | Every input must share the exercised holding's instrument, account, and
+-- admin. The instrument and account refusals name the field, so they cannot
+-- pass for an authorization failure: the other account belongs to the same
+-- parties. Another admin's holding never reaches the admin check: the
+-- merge body holds only this holding's signatories' authority, so archiving
+-- it fails for want of the other admin, even when that admin submits too.
+testMergeRefusesMismatchedInputs : Script ()
+testMergeRefusesMismatchedInputs = do
+  s@Scenario{..} <- setup
+  h <- mint admin alice 3.0
+  other <- mintOf admin alice "OTHER" 4.0
+  mustFailWith "'inputHolding.instrumentId.id' is not equal to" (actAs alice) (mergeCmd h [other])
+  savings <- aliceSavings s 4.0
+  mustFailWith "'inputHolding.account' is not equal to" (actAs alice) (mergeCmd h [savings])
+  otherAdmin <- allocateParty "otherAdmin"
+  foreignTok <- mint otherAdmin alice 4.0
+  mustFailWith "requires authorizers" (actAs [alice, otherAdmin]) (mergeCmd h [foreignTok])
+  holdingAmounts alice >>= (=== [3.0, 4.0, 4.0, 4.0])
+
+-- | A merge needs at least one input, and the inputs must be distinct and
+-- exclude the exercised holding, so no holding is counted twice.
+testMergeRefusesBadInputLists : Script ()
+testMergeRefusesBadInputLists = do
+  Scenario{..} <- setup
+  h1 <- mint admin alice 3.0
+  h2 <- mint admin alice 4.0
+  mustFailWith "merge requires at least one input holding" (actAs alice) (mergeCmd h1 [])
+  mustFailWith "merge inputs must be distinct" (actAs alice) (mergeCmd h1 [h1])
+  mustFailWith "merge inputs must be distinct" (actAs alice) (mergeCmd h1 [h2, h2])
+  holdingAmounts alice >>= (=== [3.0, 4.0])
+
+-- | A split's amounts are at least two, each positive, and sum to the
+-- holding's amount exactly, so a split neither creates nor destroys value.
+testSplitRefusesBadAmounts : Script ()
+testSplitRefusesBadAmounts = do
+  Scenario{..} <- setup
+  h <- mint admin alice 10.0
+  mustFailWith "split requires at least two amounts" (actAs alice) (splitCmd h [])
+  mustFailWith "split requires at least two amounts" (actAs alice) (splitCmd h [10.0])
+  mustFailWith "split amounts must be positive" (actAs alice) (splitCmd h [10.0, 0.0])
+  mustFailWith "split amounts must be positive" (actAs alice) (splitCmd h [12.0, -2.0])
+  mustFailWith "'sum of split amounts' is not equal to" (actAs alice) (splitCmd h [4.0, 5.0])
+  mustFailWith "'sum of split amounts' is not equal to" (actAs alice) (splitCmd h [4.0, 7.0])
+  -- The smallest Decimal step still counts.
+  mustFailWith "'sum of split amounts' is not equal to" (actAs alice) (splitCmd h [4.0, 6.0000000001])
+  _ <- submit (actAs alice) (splitCmd h [9.9999999999, 0.0000000001])
+  holdingAmounts alice >>= (=== [0.0000000001, 9.9999999999])
