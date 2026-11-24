@@ -15,7 +15,7 @@ import DA.List (dedupSort)
 import DA.Map qualified as Map
 import DA.Optional (fromOptional)
 import DA.TextMap qualified as TextMap
-import DA.Time (addRelTime, isLedgerTimeGE, isLedgerTimeLE)
+import DA.Time (isLedgerTimeGE)
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
@@ -41,7 +41,7 @@ isValidTransferInstructionState s =
         then isRegularAccount s.transfer.receiver && null s.lockedHoldingCids
         else isRegularAccount s.transfer.sender && not (null s.lockedHoldingCids)
           && (isRegularAccount s.transfer.receiver || s.transfer.receiver == burnAccount))
-  && s.expiresAt < s.lockExpiresAt
+  && lockOutlivesExpiry s.expiresAt s.lockExpiresAt
 
 -- | The standard view of a pending instruction. Joint actor sets: paying out
 -- needs all receiver account parties; returning funds needs all sender
@@ -187,7 +187,7 @@ executeTransfer config ops createInstruction oneStep transfer = do
       -- outlives the instruction's own expiry, so the admin's expiry path
       -- always runs before the funding is re-spendable.
       let instructionExpiresAt = transfer.executeBefore
-          lockExpiresAt = instructionExpiresAt `addRelTime` config.lockGrace
+          lockExpiresAt = instructionExpiresAt `addRelTimeSaturating` config.lockGrace
           lock = HoldingV2.Lock with
             holders = [admin]
             expiresAt = Some lockExpiresAt
@@ -224,10 +224,10 @@ validateTransfer config transfer = do
   assertDeadlineExceeded "transfer.requestedAt" transfer.requestedAt
   assertWithinDeadline "transfer.executeBefore" transfer.executeBefore
   -- executeBefore - maxTTL <= ledger time
-  windowWithinTTL <- isLedgerTimeGE (transfer.executeBefore `addRelTime` negate config.maxTTL)
+  windowWithinTTL <- isLedgerTimeGE (transfer.executeBefore `addRelTimeSaturating` negate config.maxTTL)
   require "transfer execution window exceeds the registry's maximum TTL" windowWithinTTL
   -- ledger time <= requestedAt + maxTTL
-  requestWithinTTL <- isLedgerTimeLE (transfer.requestedAt `addRelTime` config.maxTTL)
+  requestWithinTTL <- isLedgerTimeAtMost (transfer.requestedAt `addRelTimeSaturating` config.maxTTL)
   require "transfer requestedAt is older than the registry's maximum TTL" requestWithinTTL
 
 -- | Pay out any locked funding beyond the transferred amount, per

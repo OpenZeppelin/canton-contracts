@@ -20,7 +20,7 @@ import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, reasonFromMeta, reasonToMeta, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, maxTime, mintAccount, reasonFromMeta, reasonToMeta, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Token.Cip112.V1.Allocation
@@ -822,6 +822,168 @@ testLateFinalSettle = do
   (cid, _) <- allocateOpenIterated s
   setTime (t0 `addRelTime` days 180)
   None <- settleAlone s cid None
+  assertNoLocks alice
+  amounts <- holdingAmounts alice
+  amounts === [10.0]
+
+-- Saturated time arithmetic
+----------------------------
+
+-- | The owner's one locked holding.
+lockedHoldingOf : Party -> Script (ContractId TokenHolding)
+lockedHoldingOf owner = do
+  holdings <- query @TokenHolding owner
+  case [cid | (cid, h) <- holdings, isSome h.holding.lock] of
+    [cid] -> pure cid
+    cids -> abort ("expected one locked holding, got " <> show (length cids))
+
+-- | Under a `maxTTL` of `maxRelTime`, `executeBefore - maxTTL` saturates at
+-- `minBound` and `requestedAt + maxTTL` at `maxTime`, so a transfer with
+-- `requestedAt = minBound` and `executeBefore = maxTime` passes both checks.
+-- Its `expiresAt` is `maxTime`, so the admin can never expire it. The
+-- receiver can accept it. A mint offer passes the same checks.
+testTransferUnderSaturatedMaxTTL : Script ()
+testTransferUnderSaturatedMaxTTL = do
+  s@Scenario{..} <- setupWithConfig "" maxRelTime (hours 1)
+  input <- mint admin alice 10.0
+  instrCid <- pendingCid =<< instructTransfer s [alice]
+    ((mkTransfer s alice bob 7.0 [input]) with requestedAt = minBound; executeBefore = maxTime)
+  Some v <- queryInterfaceContractId @TransferInstructionV2.TransferInstruction alice instrCid
+  v.expiresAt === Some maxTime
+  locks <- lockExpiries alice
+  locks === [Some maxTime]
+  setTime t4
+  mustFailWith "strictly before deadline 'expiresAt'" (actAs admin) $
+    exerciseCmd (fromInterfaceContractId @TokenTransferInstruction instrCid) TokenTransferInstruction_Expire
+  _ <- submit bob (acceptCmd bob instrCid)
+  assertNoLocks alice
+  bobAfter <- holdingAmounts bob
+  bobAfter === [7.0]
+
+  offerCid <- submit admin do
+    exerciseCmd rulesCid TokenRules_OfferMint with
+      receiver = basicAccount bob
+      instrumentId = "TOK"
+      amount = 1.0
+      requestedAt = minBound
+      executeBefore = maxTime
+      reason = "mint"
+  Some offer <- queryContractId admin (fromInterfaceContractId @TokenTransferInstruction offerCid)
+  offer.state.lockExpiresAt === maxTime
+  _ <- submit bob (acceptCmd bob offerCid)
+  bobMinted <- holdingAmounts bob
+  bobMinted === [1.0, 7.0]
+
+-- | A `lockGrace` large enough that `executeBefore + lockGrace` leaves the
+-- range of `Time` locks a transfer's funding until `maxTime`, and sets a
+-- mint offer's lock expiry there too. At `t4`, when an hour's grace would
+-- have run out, neither the owner's unlock nor the admin's garbage
+-- collection applies. The instruction itself still expires at
+-- `executeBefore`, and the admin's expiry returns the funding.
+testTransferUnderSaturatedLockGrace : Script ()
+testTransferUnderSaturatedLockGrace = do
+  s@Scenario{..} <- setupWithConfig "" (days 90) maxRelTime
+  input <- mint admin alice 10.0
+  instrCid <- pendingCid =<< instructTransfer s [alice] (mkTransfer s alice bob 7.0 [input])
+  Some v <- queryInterfaceContractId @TransferInstructionV2.TransferInstruction alice instrCid
+  v.expiresAt === Some t2
+  locks <- lockExpiries alice
+  locks === [Some maxTime]
+
+  offerCid <- submit admin (offerMintCmd s bob 1.0)
+  Some offer <- queryContractId admin (fromInterfaceContractId @TokenTransferInstruction offerCid)
+  offer.state.lockExpiresAt === maxTime
+  _ <- submit bob (acceptCmd bob offerCid)
+  bobMinted <- holdingAmounts bob
+  bobMinted === [1.0]
+
+  setTime t4
+  locked <- lockedHoldingOf alice
+  mustFailWith "strictly before deadline 'lock expiresAt'" (actAs alice) $
+    exerciseCmd locked TokenHolding_OwnerUnlock
+  mustFailWith "strictly before deadline 'lockExpiresAt'" (actAs admin) $
+    exerciseCmd (fromInterfaceContractId @TokenTransferInstruction instrCid) TokenTransferInstruction_AdminGC
+  _ <- submit admin do
+    exerciseCmd (fromInterfaceContractId @TokenTransferInstruction instrCid) TokenTransferInstruction_Expire
+  assertNoLocks alice
+  aliceAfter <- holdingAmounts alice
+  sum aliceAfter === 10.0
+
+-- | Under a `maxTTL` of `maxRelTime`, `requestedAt + maxTTL` saturates. An
+-- allocation without a settlement deadline, and its successor, have
+-- `expiresAt` and `lockExpiresAt` equal to `maxTime`. An uncommitted
+-- allocation with a settlement deadline of `maxTime` is created. The admin
+-- can never cancel it, and its authorizer can withdraw it. A committed
+-- allocation with a settlement deadline of `maxTime` is refused.
+testAllocationUnderSaturatedMaxTTL : Script ()
+testAllocationUnderSaturatedMaxTTL = do
+  s@Scenario{..} <- setupWithConfig "" maxRelTime (hours 1)
+  (cid, reserve) <- allocateOpenIterated s
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation alice cid
+  v.expiresAt === Some maxTime
+  locks <- lockExpiries alice
+  locks === [Some maxTime]
+
+  Some next <- settleAlone s cid reserve
+  Some v2 <- queryInterfaceContractId @AllocationV2.Allocation alice next
+  v2.numIterations === 1
+  v2.expiresAt === Some maxTime
+  locks2 <- lockExpiries alice
+  locks2 === [Some maxTime]
+  None <- settleAlone s next None
+  assertNoLocks alice
+
+  let atMaxTime = (mkAllocationSpec admin alice [senderSide legAliceToBob]) with settlementDeadline = Some maxTime
+      asAlice = actAs alice <> discloseMany [rulesDisclosure]
+  input1 <- mint admin alice 10.0
+  bounded <- completedCid =<< submit asAlice (allocateCmd s [alice] atMaxTime t0 [input1])
+  Some v3 <- queryInterfaceContractId @AllocationV2.Allocation alice bounded
+  v3.expiresAt === Some maxTime
+  setTime t4
+  mustFailWith "strictly before deadline 'allocation.expiresAt'" (actAs admin <> discloseMany [rulesDisclosure]) $
+    exerciseCmd rulesCid TokenRules_ExpireAllocations with
+      cancelArgs = [(bounded, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)]
+      observers = []
+  _ <- submit alice do
+    exerciseCmd bounded AllocationV2.Allocation_Withdraw with actors = [alice]; extraArgs = emptyExtraArgs
+  assertNoLocks alice
+  input2 <- mint admin alice 10.0
+  mustFailWith "a committed allocation requires a settlement deadline before maxTime" asAlice
+    (allocateCmd s [alice] (atMaxTime with committed = True) t0 [input2])
+
+-- | Under a saturating `lockGrace`, an allocation's funding is locked until
+-- `maxTime`, at creation and again on its successor, while the allocation
+-- keeps its finite `expiresAt`. At `t4`, when an hour's grace would have run
+-- out, neither the owner's unlock nor the admin's garbage collection
+-- applies, but the admin expires the allocation and the funding returns to
+-- the authorizer.
+testAllocationUnderSaturatedLockGrace : Script ()
+testAllocationUnderSaturatedLockGrace = do
+  s@Scenario{..} <- setupWithConfig "" (days 90) maxRelTime
+  input <- mint admin alice 10.0
+  let reserve = Some (TextMap.fromList [("TOK", 10.0)])
+  cid <- completedCid =<< allocateSpec s alice (mkIteratedSpec admin alice reserve) [input]
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation alice cid
+  v.expiresAt === Some t2
+  locks <- lockExpiries alice
+  locks === [Some maxTime]
+
+  Some next <- settleAlone s cid reserve
+  Some v2 <- queryInterfaceContractId @AllocationV2.Allocation alice next
+  v2.expiresAt === Some t2
+  locks2 <- lockExpiries alice
+  locks2 === [Some maxTime]
+
+  setTime t4
+  locked <- lockedHoldingOf alice
+  mustFailWith "strictly before deadline 'lock expiresAt'" (actAs alice) $
+    exerciseCmd locked TokenHolding_OwnerUnlock
+  mustFailWith "strictly before deadline 'allocation lockExpiresAt'" (actAs admin) $
+    exerciseCmd (fromInterfaceContractId @TokenAllocation next) TokenAllocation_AdminGC
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) do
+    exerciseCmd rulesCid TokenRules_ExpireAllocations with
+      cancelArgs = [(next, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)]
+      observers = []
   assertNoLocks alice
   amounts <- holdingAmounts alice
   amounts === [10.0]
