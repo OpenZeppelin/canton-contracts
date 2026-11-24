@@ -12,12 +12,15 @@
 --   is an informee of every holdings-change event. A consumer field on each
 --   template, reached through the closure that builds the operations
 --   record, plus the `eventObservers` operation.
--- - A compliance freeze on holdings. A template field plus two choices.
---   `fundHolding` exercises `MyHolding_Spend`, which refuses a frozen
---   holding, so a frozen holding cannot fund a transfer, an allocation, or
---   a burn. `MyHolding_OwnerUnlock` checks the freeze itself. The freeze
---   refuses a holding with a live lock, because that holding backs a
---   pending contract.
+-- - A compliance freeze on holdings. A template field plus two choices. The
+--   `fundHolding` and `deliverHolding` operations exercise `MyHolding_Spend`,
+--   which refuses a frozen holding, so a frozen holding cannot fund a
+--   transfer, an allocation, or a burn, and a payout of locked funding runs
+--   the same check, without the workflows knowing what a freeze is.
+--   `returnHolding` stays the pinned archive, so no return path refuses a
+--   holding for being frozen. `MyHolding_OwnerUnlock` checks the freeze
+--   itself. The freeze refuses a holding with a live lock, because that
+--   holding backs a pending contract.
 -- - A pause switch on the registry. A template field plus two choices,
 --   checked before each factory and the mint offer delegate to the workflow.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
