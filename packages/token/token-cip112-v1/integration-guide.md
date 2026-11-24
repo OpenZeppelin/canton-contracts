@@ -118,6 +118,25 @@ both directions.
 Authorization: the admin alone allocates for a special account, with
 `actors = [admin]`; the executors settle the batch.
 
+### Retrying an allocation
+
+Each `AllocationFactory_Allocate` creates an allocation and locks its funding,
+even when the authorizer already has a live allocation for the same
+`settlement`. The authorizer can withdraw an uncommitted duplicate at any
+time, and a committed one only after the settlement deadline. The executors
+can cancel either at any time.
+
+A retry that names any of the same `inputHoldingCids` fails once the first
+allocate has archived them. A retry that selects other holdings locks the
+funds again unless
+[command deduplication](https://docs.canton.network/appdev/deep-dives/command-deduplication)
+rejects it, so a wallet must retry an allocate like any other Canton command:
+with the same command ID, user ID, and `actAs` parties, through the same
+participant. Deduplication holds only within the deduplication period. Before
+it retries after that period, the wallet must search the authorizer's
+transactions since the first submission for an allocation with the same
+`settlement` and `transferLegSides`, including one that has already settled.
+
 ### Iterated settlement
 
 An allocation created with `nextIterationFunding` set lets the executors bring
