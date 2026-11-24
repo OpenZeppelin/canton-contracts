@@ -129,6 +129,12 @@ shape.
 Authorization: as DvP, per iteration; the authorizer withdraws the current
 successor to exit.
 
+### Reading holdings-change events
+
+Follow the rule for readers of `EventLog_HoldingsChange` events in the
+[trust boundary](../token-cip112-utils/README.md#trust-boundary) of the utils
+`README.md`.
+
 ## Token Standard
 
 The package implements CIP-0112 / Token Standard V2: `HoldingV2.Holding`,
