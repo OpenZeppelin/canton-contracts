@@ -831,6 +831,32 @@ testStatusMustCarryTheHoldingsOfficer = do
   _ <- submit options (send newAuditorStatus)
   balanceSeenBy bob bob >>= (=== [7.0])
 
+-- | The compliance officer signs every status, so the admin alone cannot
+-- create one that names the officer. A status opened under rules with
+-- another admin and the same officer does not cover alice's holding.
+-- `testStatusMustCarryTheHoldingsOfficer` covers a status of another officer.
+testStatusNeedsOfficerSignatureAndHoldingsAdmin : Script ()
+testStatusNeedsOfficerSignatureAndHoldingsAdmin = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  forged <- trySubmit (actAs admin) do
+    createCmd MyAccountStatus with
+      admin
+      account = basicAccount alice
+      roles = AppRoles with auditor; complianceOfficer
+      frozen = False
+  case forged of
+    Left (AuthorizationError _) -> pure ()
+    other -> abort ("expected an authorization error, got: " <> show other)
+  otherAdmin <- allocateParty "otherAdmin"
+  Some rules <- queryContractId admin rulesCid
+  otherRulesCid <- submit otherAdmin do
+    createCmd rules with config = rules.config with admin = otherAdmin
+  otherStatus <- submit (actAs complianceOfficer) do
+    exerciseCmd otherRulesCid MyRules_OpenAccount with account = basicAccount alice
+  mustFailWith "account status does not cover this holding" (actAs [alice, bob] <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice, bob] (statusArgs otherStatus) (mkTransfer app alice bob 7.0 [aliceTok]))
+
 -- | A holding keeps the compliance officer it was created with. After the
 -- admin creates rules with another officer, a transfer that pays a fee from
 -- an earlier holding is refused for the earlier officer's status and for
@@ -923,6 +949,49 @@ testPendingInstructionKeepsItsOfficer = do
   received.roles.complianceOfficer === complianceOfficer
   received.holding.amount === 7.0
 
+-- | The README's steps for a new officer. The paused earlier rules refuse a
+-- new transfer, and the earlier officer still opens a status through them
+-- for carol, who receives a transfer made under the earlier officer. Only
+-- that status covers carol's holding, not the one the new officer opens.
+-- Carol spends it through the new rules, and bob's holding answers to the
+-- new officer.
+testPausedEarlierRulesStillOpenStatuses : Script ()
+testPausedEarlierRulesStillOpenStatuses = do
+  app@App{..} <- setup
+  carol <- allocateParty "carol"
+  aliceTok <- mint app alice 10.0
+  (aliceArgs, _) <- statusFor app alice
+  instrCid <- pendingCid =<< submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice carol 7.0 [aliceTok]))
+  earlier <- pauseRegistry app
+  newOfficer <- allocateParty "newOfficer"
+  Some rules <- queryContractId admin earlier.rulesCid
+  newRulesCid <- submit admin do
+    createCmd rules with
+      roles = AppRoles with auditor; complianceOfficer = newOfficer
+      paused = False
+  Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
+  let newApp = app with rulesCid = newRulesCid; rulesDisclosure = newDisclosure
+
+  aliceChange <- unlockedOf alice
+  mustFailWith "registry is paused" (actAs alice <> discloseMany [earlier.rulesDisclosure])
+    (transferCmd earlier [alice] aliceArgs (mkTransfer earlier alice bob 1.0 aliceChange))
+
+  carolStatus <- openAccount earlier carol
+  carolNewStatus <- submit (actAs newOfficer) do
+    exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount carol
+  accept app alice carol instrCid
+  [(carolCid, received)] <- query @MyHolding carol
+  received.roles.complianceOfficer === complianceOfficer
+  let spendCarol statusCid = transferCmd newApp [carol, bob] (statusArgs statusCid)
+        (mkTransfer newApp carol bob 7.0 [toInterfaceContractId carolCid])
+      asCarolAndBob = actAs [carol, bob] <> discloseMany [newDisclosure]
+  mustFailWith "account status does not cover this holding" asCarolAndBob (spendCarol carolNewStatus)
+  _ <- submit asCarolAndBob (spendCarol carolStatus)
+  [(_, paid)] <- query @MyHolding bob
+  paid.roles.complianceOfficer === newOfficer
+  balanceSeenBy bob bob >>= (=== [7.0])
+
 -- | In a batch, each allocation receives only its own authorizer's status,
 -- under the key a direct settle uses. Alice sends 10 TOK for bob's 4 USD, so
 -- both lock funding. The executors also put alice's status under the plain
@@ -976,6 +1045,70 @@ testBatchForwardsEachAuthorizerItsStatus = do
   countSpends tree === 2
   balanceSeenBy alice alice >>= (=== [4.0])
   balanceSeenBy bob bob >>= (=== [10.0])
+
+-- | `MyRules` declares no extra observers of a batch settlement.
+testSettlementAddsNoBatchObservers : Script ()
+testSettlementAddsNoBatchObservers = do
+  App{..} <- setup
+  Some rules <- queryContractId admin rulesCid
+  let batch = AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs =
+          [ mkLeg "leg-tok" alice bob 10.0
+          , (mkLeg "leg-usd" bob alice 4.0) with instrumentId = "USD" ]
+        allocations = []
+        actors = [exchange]
+        extraArgs = emptyExtraArgs
+  AllocationV2.settlementFactory_settleBatchExtraObservers
+    (toInterface @AllocationV2.SettlementFactory rules) batch === []
+
+-- | An allocation that locked nothing consumes no holding, so the batch
+-- context needs no status for its authorizer. With only alice's status in
+-- the batch context, bob's receiving settle gets an empty context. With only
+-- bob's, alice's locked funding finds no status and the batch fails.
+testReceiveOnlyAuthorizerNeedsNoStatus : Script ()
+testReceiveOnlyAuthorizerNeedsNoStatus = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  let leg = mkLeg "leg-1" alice bob 10.0
+  aliceAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) [aliceTok]
+  bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
+  let finalized = map nonIteratedAllocation [aliceAlloc, bobAlloc]
+  disclosures <- settlementDisclosures app finalized
+  (bobOnlyArgs, bobStatuses) <- batchStatusArgs app [bob]
+  mustFailWith ("choice context has no '" <> accountStatusKey <> "' entry")
+    (actAs exchange <> discloseMany (disclosures <> bobStatuses))
+    (settleBatchCmd app [leg] finalized bobOnlyArgs)
+  (aliceOnlyArgs, aliceStatuses) <- batchStatusArgs app [alice]
+  tree <- submitTree (actAs exchange <> discloseMany (disclosures <> aliceStatuses))
+    (settleBatchCmd app [leg] finalized aliceOnlyArgs)
+  aliceStatus <- statusOf app alice
+  settleContexts tree ===
+    [ (fromInterfaceContractId @MyAllocation aliceAlloc, statusContext aliceStatus)
+    , (fromInterfaceContractId @MyAllocation bobAlloc, emptyChoiceContext) ]
+  balanceSeenBy bob bob >>= (=== [10.0])
+
+-- | One frozen sender fails the admin's whole instruction expiry batch, and
+-- the other sender's instruction stays pending. Without the frozen sender,
+-- the batch goes through.
+testOneFrozenSenderFailsTheInstructionExpiryBatch : Script ()
+testOneFrozenSenderFailsTheInstructionExpiryBatch = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  bobTok <- mint app bob 5.0
+  (aliceArgs, _) <- statusFor app alice
+  (bobArgs, _) <- statusFor app bob
+  aliceInstr <- pendingCid =<< submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
+  bobInstr <- pendingCid =<< submit (actAs bob <> discloseMany [rulesDisclosure])
+    (transferCmd app [bob] bobArgs (mkTransfer app bob alice 5.0 [bobTok]))
+  frozenArgs <- statusArgs <$> freeze app alice
+  setTime t3
+  mustFailWith "account is frozen" (actAs admin)
+    (expireInstructionsCmd app [(bobInstr, bobArgs), (aliceInstr, frozenArgs)])
+  Some _ <- queryContractId admin (fromInterfaceContractId @MyTransferInstruction bobInstr)
+  submit (actAs admin) (expireInstructionsCmd app [(bobInstr, bobArgs)])
+  balanceSeenBy bob bob >>= (=== [5.0])
 
 -- | An owner unlock of expired funding is refused while the account is
 -- frozen, so it cannot orphan the pending instruction that names the

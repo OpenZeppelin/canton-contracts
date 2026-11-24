@@ -25,7 +25,9 @@ The auditor observes every holding and every holdings-change event, and the
 compliance officer observes every holding. Every transaction that archives a
 `MyHolding`, including `MyHolding_OwnerUnlock`, fails while either party has
 no hosting participant or a participant hosting it has not vetted the
-packages.
+packages. The compliance officer also signs every account status, so its
+participant confirms every `MyHolding_Spend` and `MyHolding_OwnerUnlock`, and
+each one fails while that participant is unavailable.
 
 ## Account statuses
 
@@ -38,8 +40,9 @@ could pass the one that is not frozen. The officer, who signs every status,
 opens each account once and retries an open with the same command id, so
 that command deduplication refuses a second one.
 
-Every choice that consumes a holding passes the current status of the
-holding's account in its choice context, under `accountStatusKey`. A missing
+Every workflow choice that consumes a holding passes the current status of
+the holding's account in its choice context, under `accountStatusKey`.
+`MyHolding_OwnerUnlock` takes it as its `statusCid` argument. A missing
 entry, an archived status, a status of another account, and a status signed
 by a compliance officer other than the one recorded on the holding are all
 refused. The account parties observe their own status. Everyone else gets it
@@ -54,6 +57,7 @@ as a disclosed contract from the registry:
 | Cancel, or admin expiry of an allocation | The executors or the admin | The authorizer's, in each `Allocation_Cancel` |
 | Direct `Allocation_Settle` | The admin and the executors | The authorizer's |
 | Batch settlement | The executors | Each authorizer's, under `batchStatusKey` of its account |
+| Owner unlock | The account parties | Its own, as the `statusCid` argument of `MyHolding_OwnerUnlock` |
 
 In a batch, `MyRules` passes `settleBatchImpl` a selector that forwards each
 allocation only its authorizer's status, under `accountStatusKey`. The batch
@@ -66,10 +70,11 @@ account whose funding it pays out.
 
 What each status shows, and to whom:
 
-- The receiver sees the sender's status, including whether it is frozen,
-  when it accepts or rejects.
-- The executors see the status of every authorizer in a batch they settle
-  or an allocation they cancel.
+- The receiver sees the sender's status, including whether it is frozen, on
+  every path that pays out or returns the instruction's locked funding.
+- The executors see the authorizer's status on every path that pays out or
+  returns an allocation's locked funding, and each status they put in a
+  batch context.
 
 A frozen account fails the admin's whole expiry batch, so cleanup leaves
 frozen accounts out and expires them after they are unfrozen.
@@ -85,17 +90,24 @@ holding is refused whichever status the sender passes.
 To change who acts as the compliance officer, keep the officer party and
 change who controls it. To replace the party:
 
-1. The admin archives the earlier rules when it creates the new ones, so
-   nothing new is created under the earlier officer.
-2. The new officer opens a status for every account and freezes each account
+1. The pauser pauses the earlier rules, and the admin creates the new ones.
+   The paused rules refuse new transfers, allocations, settlements, and
+   mints. `MyRules_OpenAccount` and the admin's expiry choices still run on
+   them. The earlier rules stay paused until the admin archives them.
+2. The earlier officer opens a status, through the paused rules, for each
+   receiver of a pending instruction and each authorizer of a pending
+   allocation that has none. These parties receive holdings under the
+   earlier officer.
+3. The new officer opens a status for every account and freezes each account
    the earlier officer has frozen. `MyRules_OpenAccount` opens every status
    unfrozen.
-3. Each account moves its earlier holdings through the new rules on a path
+4. Each account moves its earlier holdings through the new rules on a path
    with no fee leg. An allocation funded with the earlier status and then
    withdrawn with the new one returns the funds under the new officer.
 
 The earlier officer keeps its statuses live, and freezes through them, until
-no earlier holding or pending instruction or allocation is left.
+no earlier holding or pending instruction or allocation is left. The admin
+then archives the earlier rules.
 
 No workflow body changes. `token-cip112-custom-test` drives the token through the
 standard interfaces and checks each addition.

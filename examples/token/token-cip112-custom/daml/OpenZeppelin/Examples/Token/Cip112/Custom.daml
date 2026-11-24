@@ -191,11 +191,11 @@ template MyHolding with
     observer lockHolders holding.lock, roles.auditor, roles.complianceOfficer
     ensure isValidHoldingView holding
 
-    -- | How every workflow consumes this holding. Controlled by the parties
-    -- whose authority a plain archive would need, so the authorization
-    -- model is unchanged; what changes is that the spend is a named choice
-    -- the auditor sees, with the freeze check inside it.
     choice MyHolding_Spend : HoldingV2.HoldingView
+      -- ^ How every workflow consumes this holding. Controlled by the parties
+      -- whose authority a plain archive would need, so the authorization
+      -- model is unchanged; what changes is that the spend is a named choice
+      -- the auditor sees, with the freeze check inside it.
       with
         statusCid : ContractId MyAccountStatus
       controller holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
@@ -203,10 +203,10 @@ template MyHolding with
         requireNotFrozen roles holding statusCid
         pure holding
 
-    -- | Refused while the account is frozen, like every workflow path that
-    -- releases locked funding, so a freeze keeps the funding locked until
-    -- the compliance officer lifts it.
     choice MyHolding_OwnerUnlock : ContractId HoldingV2.Holding
+      -- ^ Refused while the account is frozen, like every workflow path that
+      -- releases locked funding, so a freeze keeps the funding locked until
+      -- the compliance officer lifts it.
       with
         statusCid : ContractId MyAccountStatus
       controller accountParties holding.instrumentId.admin holding.account
@@ -237,8 +237,8 @@ template MyTransferInstruction with
       transferInstruction_rejectImpl self arg = transferRejectImpl (ops this) self state arg
       transferInstruction_withdrawImpl self arg = transferWithdrawImpl (ops this) self state arg
 
-    -- | `extraArgs.context` carries the sender's account status.
     choice MyTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
+      -- ^ `extraArgs.context` carries the sender's account status.
       with
         extraArgs : ExtraArgs
       controller state.transfer.instrumentId.admin
@@ -353,19 +353,19 @@ template MyRules with
         whenNotPaused this
         offerMintImpl config (createInstruction this) receiver instrumentId amount requestedAt executeBefore reason
 
-    -- | The admin's expiry of stale allocations. Each cancel's `extraArgs`
-    -- carries its authorizer's account status. One frozen account fails the
-    -- whole batch, so cleanup leaves frozen accounts out.
     nonconsuming choice MyRules_ExpireAllocations : ()
+      -- ^ The admin's expiry of stale allocations. Each cancel's `extraArgs`
+      -- carries its authorizer's account status. One frozen account fails the
+      -- whole batch, so cleanup leaves frozen accounts out.
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
       controller config.admin
       do expireAllocationsImpl (pinAllocationTo @MyAllocation) config.admin cancelArgs
 
-    -- | The admin's expiry of stale transfer instructions. Each expiry's
-    -- `extraArgs` carries its sender's account status. One frozen account
-    -- fails the whole batch, so cleanup leaves frozen accounts out.
     nonconsuming choice MyRules_ExpireTransferInstructions : ()
+      -- ^ The admin's expiry of stale transfer instructions. Each expiry's
+      -- `extraArgs` carries its sender's account status. One frozen account
+      -- fails the whole batch, so cleanup leaves frozen accounts out.
       with
         expireArgs : [(ContractId MyTransferInstruction, MyTransferInstruction_Expire)]
       controller config.admin
@@ -376,9 +376,9 @@ template MyRules with
           _ <- exercise cid expireArg
           pure ()
 
-    -- | Open a regular account's status, not frozen. The compliance officer
-    -- controls it, so both signatories authorize the status.
     nonconsuming choice MyRules_OpenAccount : ContractId MyAccountStatus
+      -- ^ Open a regular account's status, not frozen. The compliance officer
+      -- controls it, so both signatories authorize the status.
       with
         account : HoldingV2.Account
       controller roles.complianceOfficer
@@ -390,9 +390,10 @@ template MyRules with
 whenNotPaused : MyRules -> Update ()
 whenNotPaused rules = require "registry is paused" (not rules.paused)
 
--- | The batch-context key of an authorizer's status. Party ids contain no
--- `/`, and the account id comes last, so distinct accounts get distinct
--- keys.
+-- | The batch-context key of an authorizer's status: `accountStatusKey`, the
+-- owner, the provider, and the account id, joined by `/`, with an absent
+-- party as empty text. Party ids contain no `/`, and the account id comes
+-- last, so distinct accounts get distinct keys.
 batchStatusKey : HoldingV2.Account -> Text
 batchStatusKey account =
   accountStatusKey <> "/" <> optional "" partyToText account.owner
