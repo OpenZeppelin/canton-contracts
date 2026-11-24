@@ -144,9 +144,9 @@ has the same function as in Splice):
   and emits the `EventLog_HoldingsChange` that wallets track returned funds
   by. Use it by default: it fails, rolling back the whole batch, if the
   funding is already gone.
-- `AV_Bool False` clears the flag: the expiry skips the funding and emits
-  nothing, and it fails before `lockExpiresAt`. Use it only for a contract
-  whose funding is already unlocked or spent.
+- `AV_Bool False` clears the flag. The expiry then leaves the locked holdings
+  untouched, emits nothing, and fails before `lockExpiresAt`. Use it only
+  for a contract whose funding is already unlocked or spent.
 
 The ledger cannot check that the funding is gone, so the automation must
 look before it clears a flag. The flag covers every locked holding of the

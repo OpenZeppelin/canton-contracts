@@ -79,10 +79,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   allocation, settlement, mint-offer, and expiry choice bodies as functions
   parameterised over the caller's templates through a `HoldingOps` record and
   constructor and pinning operations. The expiry bodies read Splice's
-  `expire-lock` choice-context flag to release or skip the funding, and the
-  holding bodies unlock an expired lock for the account parties or for the
-  admin alone. It defines no serializable types and depends on
-  `openzeppelin-token-cip112-types-v1`.
+  `expire-lock` choice-context flag to release the funding or leave it
+  untouched, and the holding bodies unlock an expired lock for the account
+  parties or for the admin alone. It defines no serializable types and
+  depends on `openzeppelin-token-cip112-types-v1`.
 
 ### `openzeppelin-token-cip112-v1`
 

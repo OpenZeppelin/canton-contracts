@@ -55,7 +55,7 @@ expireLockEntry value = ExtraArgs with
   meta = emptyMetadata
 
 -- | The `expire-lock` flag of an admin expiry: `False` clears it, so the
--- expiry skips the funding.
+-- expiry leaves the funding untouched.
 expireLockArgs : Bool -> ExtraArgs
 expireLockArgs = expireLockEntry . AV_Bool
 

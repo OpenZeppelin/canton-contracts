@@ -175,9 +175,9 @@ expireLockKey = "expire-lock"
 -- | Reads the `expire-lock` flag from the choice context of an admin expiry.
 -- A missing entry reads as `True`, and any value other than a Bool fails. On
 -- `True` the expiry returns the locked holdings to their account, and on
--- `False` it ends the contract without touching them. This function does not
--- check the time, so a caller acting on `False` must first check that the
--- funding lock has expired.
+-- `False` it ends the contract without touching them. Check that the funding
+-- lock has expired before acting on `False`. Otherwise the contract ends
+-- while its holdings stay locked.
 expireLockFromContext : ChoiceContext -> Update Bool
 expireLockFromContext context = case TextMap.lookup expireLockKey context.values of
   None -> pure True

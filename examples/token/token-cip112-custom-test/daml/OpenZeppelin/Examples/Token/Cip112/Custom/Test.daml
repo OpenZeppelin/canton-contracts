@@ -700,8 +700,8 @@ testAdminExpiryReturnsFunds = do
   balanceSeenBy alice alice >>= (=== [3.0, 5.0, 7.0])
   assertNoLocks alice
 
--- | `ExtraArgs` that clear the `expire-lock` flag, so an admin expiry skips
--- the funding. Splice's key, spelled out.
+-- | `ExtraArgs` that clear the `expire-lock` flag, so an admin expiry leaves
+-- the funding untouched. Splice's key, spelled out.
 skipFunding : ExtraArgs
 skipFunding = ExtraArgs with
   context = ChoiceContext with values = TextMap.fromList [("expire-lock", AV_Bool False)]

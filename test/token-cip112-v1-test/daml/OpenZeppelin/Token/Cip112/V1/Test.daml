@@ -684,9 +684,9 @@ testCommittedRequiresDeadline = do
         actors = [alice]
 
 -- | The funding lock outlives the instruction's own expiry, so the
--- admin's expiry path always has a window in which it is guaranteed to work,
--- and once the lock does expire the sender can self-recover. The admin then
--- ends the instruction with the `expire-lock` flag cleared.
+-- admin's expiry path always has a window in which it is guaranteed to work.
+-- Once the lock expires the sender's account parties unlock the funding, and
+-- the admin ends the instruction with the `expire-lock` flag cleared.
 testLockGraceAndOwnerUnlock : Script ()
 testLockGraceAndOwnerUnlock = do
   s@Scenario{..} <- setup
@@ -724,7 +724,8 @@ testLockGraceAndOwnerUnlock = do
 
   -- The instruction now references an archived holding, so the default
   -- expiry, which releases the funding, fails. With the `expire-lock` flag
-  -- cleared it skips the funding and ends with the standard failed result.
+  -- cleared it leaves the funding untouched and ends with the standard
+  -- failed result.
   submitMustFail (actAs admin) (expireInstructionCmd instrCid emptyExtraArgs)
   (expired, tree) <- submitResultAndTree (actAs admin) (expireInstructionCmd instrCid (expireLockArgs False))
   expired.output === TransferInstructionV2.TransferInstructionResult_Failed

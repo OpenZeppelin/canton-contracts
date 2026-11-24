@@ -99,10 +99,10 @@ interfaces or exceptions of its own.
   `TokenRules_ExpireTransferInstructions` and `TokenRules_ExpireAllocations`.
   Each expiry reads Splice's `expire-lock` flag from its `extraArgs.context`.
   With the flag missing or set to `AV_Bool True`, the funding returns to its
-  account. With `AV_Bool False`, the expiry ends the contract without
-  touching the funding, and only once `lockExpiresAt` has passed. For an
-  allocation the flag is read only when the actors are exactly `[admin]`,
-  including when the admin is its only executor.
+  account. With the flag cleared, which is `AV_Bool False`, the expiry ends
+  the contract without touching the funding, and only once `lockExpiresAt`
+  has passed. For an allocation the flag is read only when the actors are
+  exactly `[admin]`, including when the admin is its only executor.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors
@@ -192,10 +192,10 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   `executeBefore` for a transfer, and `lockGrace` after the view's
   `expiresAt` for an allocation. Both deadlines fall within `maxTTL` of the
   pending contract's creation, so `maxTTL` plus `lockGrace` caps how long
-  the funds stay frozen. Size both settings with that cap in mind. The owner
-  then recovers the funds through `TokenHolding_OwnerUnlock`, which involves
-  only the owner's and the admin's participants, because the admin is the
-  only lock holder. The pending contract stays on the ledger until the
+  the funds stay frozen. Size both settings with that cap in mind. The
+  account parties then recover the funds through `TokenHolding_OwnerUnlock`,
+  which involves only their participants and the admin's, because the admin
+  is the only lock holder. The pending contract stays on the ledger until the
   counterparty is hosted again with the packages vetted, or until
   [participant repair](https://docs.canton.network/global-synchronizer/production-operations/repair-canton-nodes)
   removes it if the party has lost its last hosting participant.

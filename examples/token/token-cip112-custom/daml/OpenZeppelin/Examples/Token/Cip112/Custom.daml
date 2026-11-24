@@ -148,8 +148,8 @@ template MyHolding with
         require "holding is frozen" (not frozen)
         holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
 
-    -- | The admin's unlock of an expired lock, for funding an expiry left
-    -- locked; refused while frozen for the same reason as owner unlock.
+    -- | Unlock an expired lock with the admin's authority alone. Refused
+    -- while frozen, for the same reason as `MyHolding_OwnerUnlock`.
     choice MyHolding_AdminUnlock : ContractId HoldingV2.Holding
       controller holding.instrumentId.admin
       do

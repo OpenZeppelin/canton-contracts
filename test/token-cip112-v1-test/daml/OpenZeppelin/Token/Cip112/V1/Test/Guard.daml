@@ -135,7 +135,8 @@ testAdminUnlockRequiresAdmin = do
   Scenario{..} <- setup
   cid <- holdingIn admin (basicAccount alice) "TOK" 10.0 (lockedBy [admin] (Some t3))
   setTime t4
-  submitMustFail (actAs alice) do
+  let missingAdmin = "requires authorizers " <> partyToText admin <> ", but only " <> partyToText alice <> " were given"
+  mustFailWith missingAdmin (actAs alice) do
     exerciseCmd cid TokenHolding_AdminUnlock
 
 -- Transfer factory
