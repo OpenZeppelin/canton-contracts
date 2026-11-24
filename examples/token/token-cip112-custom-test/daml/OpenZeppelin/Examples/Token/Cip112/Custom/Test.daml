@@ -1058,7 +1058,8 @@ testPendingContractRefusesHoldingNamingAnotherPauser = do
   copyCid <- submit (actAs [admin, alice, pauser]) do
     createCmd ownInstr with roles = ownInstr.roles with pauser
   let copy = toInterfaceContractId @TransferInstructionV2.TransferInstruction copyCid
-  mustFailWith "holding names a different pauser" (actAs bob) do
+  funding <- instructionDisclosures app copy
+  mustFailWith "holding names a different pauser" (actAs bob <> discloseMany funding) do
     exerciseCmd copy TransferInstructionV2.TransferInstruction_Accept with
       actors = [bob]; extraArgs = emptyExtraArgs
   mustFailWith "holding names a different pauser" (actAs alice) do
