@@ -855,7 +855,8 @@ testTransferUnderSaturatedMaxTTL = do
   setTime t4
   mustFailWith "strictly before deadline 'expiresAt'" (actAs admin) $
     exerciseCmd (fromInterfaceContractId @TokenTransferInstruction instrCid) TokenTransferInstruction_Expire
-  _ <- submit bob (acceptCmd bob instrCid)
+  funding <- instructionDisclosures admin instrCid
+  _ <- submit (actAs bob <> discloseMany funding) (acceptCmd bob instrCid)
   assertNoLocks alice
   bobAfter <- holdingAmounts bob
   bobAfter === [7.0]

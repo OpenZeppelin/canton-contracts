@@ -180,7 +180,9 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   `expiresAt` for an allocation. For a transfer and for an allocation the
   factory creates, these deadlines fall within `maxTTL` of the pending
   contract's creation, so `maxTTL` plus `lockGrace` caps how long the funds
-  stay frozen. A successor without a settlement deadline can carry an
+  stay frozen. When either value is so large that the computed time
+  saturates at `maxTime`, there is no finite cap. A successor without a
+  settlement deadline can carry an
   `expiresAt` later than its creation plus `maxTTL`, as the iterated-settlement
   caveat above describes. Size both settings with that cap in mind. The owner
   then recovers the funds through `TokenHolding_OwnerUnlock`, which involves
