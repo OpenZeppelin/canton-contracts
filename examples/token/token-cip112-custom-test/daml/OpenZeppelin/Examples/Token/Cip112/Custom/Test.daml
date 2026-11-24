@@ -494,7 +494,7 @@ testLockedHoldingCannotBeFrozen = do
   [(lockedCid, _)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock)
   mustFailWith "holding lock expiresAt" (actAs complianceOfficer) do
     exerciseCmd lockedCid MyHolding_Freeze
-  accept bob instrCid
+  accept app bob instrCid
   balanceSeenBy bob bob >>= (=== [7.0])
   balanceSeenBy alice alice >>= (=== [3.0])
 
