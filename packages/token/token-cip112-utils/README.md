@@ -77,9 +77,11 @@ contract id enters through an operation the template owner wrote:
 No workflow reads the time with `getTime`. Every time check is a
 ledger-time bound, which constrains the ledger time the participant picks
 when the transaction executes instead of fixing it when the transaction is
-prepared. An externally signed submission therefore executes whenever its
-bounds still hold, not only within the ledger-time tolerance of its
-preparation.
+prepared. An externally signed submission can therefore execute after the
+ledger-time tolerance of its preparation while its bounds hold. Keep
+`getTime` out of the choice bodies that call these functions and out of
+their `HoldingOps`. Otherwise the submission must execute within the
+ledger-time tolerance.
 
 - A transfer, including a mint offer, needs `requestedAt` at or before
   ledger time and `executeBefore` after it. `executeBefore` may be at most
@@ -99,9 +101,9 @@ preparation.
 - Without a settlement deadline, each settlement adds a full `maxTTL`, so
   the executors can push an iterated allocation's `expiresAt`, and its
   reserve's lock, well past `maxTTL` from ledger time by settling it
-  repeatedly. This is intended. The executors are already trusted with the
-  reserve, and an allocation without a deadline is never committed, so its
-  authorizer can withdraw it and end the chain.
+  repeatedly. The executors are trusted with the reserve, and an allocation
+  without a deadline is never committed, so its authorizer can withdraw it
+  and end the chain.
 
 ## Operational assumptions
 
