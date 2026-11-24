@@ -171,10 +171,10 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   `executeBefore` for a transfer, and `lockGrace` after the view's
   `expiresAt` for an allocation. Both deadlines fall within `maxTTL` of the
   pending contract's creation, so `maxTTL` plus `lockGrace` caps how long
-  the funds stay frozen. Size both settings with that cap in mind. The owner
-  then recovers the funds through `TokenHolding_OwnerUnlock`, which involves
-  only the owner's and the admin's participants, because the admin is the
-  only lock holder. The pending contract stays on the ledger until the
+  the funds stay frozen. Size both settings with that cap in mind. The
+  account parties then recover the funds through `TokenHolding_OwnerUnlock`,
+  which involves only their participants and the admin's, because the admin
+  is the only lock holder. The pending contract stays on the ledger until the
   counterparty is hosted again with the packages vetted, or until
   [participant repair](https://docs.canton.network/global-synchronizer/production-operations/repair-canton-nodes)
   removes it if the party has lost its last hosting participant.
@@ -182,10 +182,21 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   reuses it names another lock holder, `TokenHolding_OwnerUnlock` also fails
   while that party has no hosting participant or a participant hosting it
   has not vetted the packages.
-- Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
-  every account party. On accounts with a distinct provider, an unresponsive
-  provider blocks recovery until it cooperates; single-party accounts avoid
-  this.
+- On an account whose provider differs from its owner, every choice the
+  owner takes for the account needs the provider too:
+  `TransferFactory_Transfer` and `AllocationFactory_Allocate`, accepting,
+  rejecting, or withdrawing a transfer instruction, withdrawing an
+  allocation, and `TokenHolding_OwnerUnlock`. Other parties still end a
+  pending workflow without the sender's or authorizer's provider signing:
+  the receiver's account parties accept or reject a transfer instruction,
+  the executors settle an allocation or cancel it at any time, and after
+  the pending contract's `expiresAt` the admin expires a transfer
+  instruction or cancels an allocation. Reject, cancel, and expiry return
+  the locked funds to the same account as unlocked holdings, and a settle
+  pays the authorizer's proceeds there. Spending them still needs the
+  provider, so no path returns control to the owner alone. Open provider
+  accounts only with a provider committed to staying available; accounts
+  without a separate provider avoid this.
 - An allocation's view advertises the withdraw action statically. For a
   committed allocation the choice still fails until the settlement deadline
   passes; wallets should treat the advertised action as "who", not "when".
