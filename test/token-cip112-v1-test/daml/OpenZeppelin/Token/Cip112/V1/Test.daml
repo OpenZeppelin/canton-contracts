@@ -875,6 +875,19 @@ testTransferUnderSaturatedMaxTTL = do
   bobMinted <- holdingAmounts bob
   bobMinted === [1.0, 7.0]
 
+-- | Below saturation, a pending transfer's lock and a mint offer's
+-- `lockExpiresAt` are `executeBefore + lockGrace`.
+testLockExpiryIsExecuteBeforePlusLockGrace : Script ()
+testLockExpiryIsExecuteBeforePlusLockGrace = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  _ <- pendingCid =<< instructTransfer s [alice] (mkTransfer s alice bob 7.0 [input])
+  locks <- lockExpiries alice
+  locks === [Some (t2 `addRelTime` hours 1)]
+  offerCid <- submit admin (offerMintCmd s bob 1.0)
+  Some offer <- queryContractId admin (fromInterfaceContractId @TokenTransferInstruction offerCid)
+  offer.state.lockExpiresAt === t2 `addRelTime` hours 1
+
 -- | A `lockGrace` large enough that `executeBefore + lockGrace` leaves the
 -- range of `Time` locks a transfer's funding until `maxTime`, and sets a
 -- mint offer's lock expiry there too. At `t4`, when an hour's grace would

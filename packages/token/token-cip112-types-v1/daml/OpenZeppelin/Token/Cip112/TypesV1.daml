@@ -46,9 +46,8 @@ data TransferInstructionState = TransferInstructionState with
     expiresAt : Time
       -- ^ Storage bound; the admin may expire the instruction after it.
     lockExpiresAt : Time
-      -- ^ When the funding lock expires: `expiresAt` plus `lockGrace`,
-      -- saturating at `maxTime`. Strictly after `expiresAt` unless both are
-      -- `maxTime`.
+      -- ^ When the funding lock expires: `expiresAt + lockGrace`, saturating
+      -- at `maxTime`. Strictly after `expiresAt` unless both are `maxTime`.
   deriving (Eq, Show)
 
 -- | Payload of an allocation. A template stores this record plus its own
@@ -71,9 +70,8 @@ data AllocationState = AllocationState with
     expiresAt : Time
       -- ^ Storage bound; the admin may cancel the allocation after it.
     lockExpiresAt : Time
-      -- ^ When the funding lock expires: `expiresAt` plus `lockGrace`,
-      -- saturating at `maxTime`. Strictly after `expiresAt` unless both are
-      -- `maxTime`.
+      -- ^ When the funding lock expires: `expiresAt + lockGrace`, saturating
+      -- at `maxTime`. Strictly after `expiresAt` unless both are `maxTime`.
     maxTTL : RelTime
       -- ^ The registry's storage bound, snapshotted at allocation time.
     lockGrace : RelTime

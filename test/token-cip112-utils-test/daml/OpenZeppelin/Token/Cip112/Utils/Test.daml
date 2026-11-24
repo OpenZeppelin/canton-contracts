@@ -97,9 +97,9 @@ template ForeignAllocation with
 
 -- | Runs a builder inside a choice, since builders are `Update` functions.
 -- Signed by the admin and the owner so the consumption authority matches.
--- The choices take `actors` like the standard ones, so a caller's own
--- authority is in scope for the fetch, as an attacker's is when they act on
--- a factory.
+-- The fetching choices take `actors` like the standard ones, so a caller's
+-- own authority is in scope for the fetch, as an attacker's is when they act
+-- on a factory.
 template Harness with
     admin : Party
     owner : Party

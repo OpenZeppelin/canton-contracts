@@ -239,16 +239,15 @@ addRelTimeSaturating t delta
   | delta <= minBound `subTime` t = minBound
   | otherwise = t `addRelTime` delta
 
--- | `isLedgerTimeLE`, extended to `maxTime`: every ledger time lies at or
--- before it, but `isLedgerTimeLE` raises an error rather than compare against
--- it. `isLedgerTimeGE` needs no such guard at `minBound`.
+-- | Whether ledger time is at or before `t`. Holds at `maxTime`, where
+-- `isLedgerTimeLE` raises an error.
 isLedgerTimeAtMost : Time -> Update Bool
 isLedgerTimeAtMost t
   | t == maxTime = pure True
   | otherwise = isLedgerTimeLE t
 
--- | Whether `lockExpiresAt` is strictly after `expiresAt`, or both are
--- `maxTime`, where `expiresAt + lockGrace` saturates.
+-- | Whether `lockExpiresAt`, the second argument, is strictly after
+-- `expiresAt`, the first, or both are `maxTime`.
 lockOutlivesExpiry : Time -> Time -> Bool
 lockOutlivesExpiry expiresAt lockExpiresAt =
   expiresAt < lockExpiresAt || lockExpiresAt == maxTime
