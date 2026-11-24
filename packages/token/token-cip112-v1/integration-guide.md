@@ -53,20 +53,20 @@ Every participant needs these exact packages.
 which are those of the Splice release artifacts, so a participant that has
 vetted Splice's Token Standard V2 packages can vet this package alongside them.
 
-Any party can create a contract that the admin or a wallet observes, from any
-package their participants vet. An interface choice runs the body of whichever
+Any party can create a contract the admin or a wallet observes, from a package
+the observer's participant vets. An interface choice runs the body of whichever
 template implements it, and that body acts with the authority of the actors
 and the contract's signatories. A view reports whatever its template's author
 chose, including the instrument, the receiver, and the account, so a view
 filter cannot identify the registry's contracts. The admin and the wallets
 select pending contracts by the registry's templates,
 `TokenTransferInstruction` and `TokenAllocation` for this package, before
-they exercise an interface choice on them. For the admin, this covers accepting
-or rejecting a burn request, withdrawing a mint offer, withdrawing a
-mint-account or burn-account allocation, and cancelling an allocation as an
+they exercise an interface choice on them. For the admin, the rule covers
+accepting or rejecting a burn request, withdrawing a mint offer, withdrawing
+a mint-account or burn-account allocation, and cancelling an allocation as an
 executor. A contract from another package that the admin acts on can create
-holdings of any amount, and one that a wallet accepts can transfer the
-receiver's holdings through the disclosed `TokenRules`.
+holdings of any amount. A contract from another package that a wallet accepts
+can transfer the receiver's holdings through the disclosed `TokenRules`.
 `TokenRules_ExpireTransferInstructions` and `TokenRules_ExpireAllocations`
 fetch by template, so the admin's expiry through them needs no selection.
 
@@ -96,9 +96,9 @@ that locks the amount, and the admin accepts it from their own participant,
 after selecting it by template (see [Topology](#topology)). Accepting
 archives the locked amount and emits an event, on the holder's account,
 naming `cip-112/burn` as the other side. When the holder and the admin act
-together, the burn completes in one step. The admin co-signs only a
-submission that exercises its own `TokenRules` contract, because a factory
-from another package runs its own body with the admin's authority. The test
+together, the burn completes in one step. The admin co-signs a one-step burn
+only on its own `TokenRules` contract, because a factory from another package
+runs its body with the admin's authority. The test
 scripts `testBurnRequestAccepted` and `testBurnOneStep` cover both paths.
 
 Authorization: the holder's account parties request and withdraw; the admin

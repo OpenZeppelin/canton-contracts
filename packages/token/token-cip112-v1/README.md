@@ -135,17 +135,21 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
 ## Security caveats
 
 - The admin's participant must vet only packages whose authors the operator
-  trusts with the admin's authority, such as the Token Standard V2 DARs from
-  [`dars/vendor/`](../../../dars/vendor/), Splice's own packages, and the
-  packages of the admin's own registry. Uploading a DAR vets it, so any
-  package installed there can implement `TransferInstruction` or
-  `Allocation` with a body that creates holdings under the admin's
-  authority. Selecting pending contracts by template, as the
-  [integration guide](integration-guide.md#topology) describes, relies on
-  this rule: a query or exercise that names a template resolves it by
-  package name, so a vetted package that reuses the
-  `openzeppelin-token-cip112-v1` name at a higher version replaces the
-  choice bodies.
+  trusts with the admin's authority, such as the registry's own packages and
+  Splice's packages, which include the Token Standard V2 DARs in
+  [`dars/vendor/`](../../../dars/vendor/). Uploading a DAR vets it. A vetted
+  package can implement `TransferInstruction`, `Allocation`, or
+  `TransferFactory`. When the admin exercises a choice on a contract of that
+  package, its body runs with the admin's authority and can create holdings
+  of any amount.
+- The admin and the wallets select pending contracts by the registry's
+  templates before they exercise an interface choice on them, as
+  [`integration-guide.md`](integration-guide.md#topology) describes. The
+  admin co-signs a one-step burn only on its own `TokenRules` contract. A
+  query or exercise that names a template resolves it by package name, so a
+  vetted package that reuses the `openzeppelin-token-cip112-v1` name at a
+  higher version replaces this package's choice bodies. Selection by template
+  holds only on a participant that vets no such package.
 - The exact-cover check runs only inside `SettlementFactory_SettleBatch`. A
   direct `Allocation_Settle` by the admin plus the executors bypasses it and
   can create or destroy value, so the admin's authority must never co-sign a
