@@ -13,9 +13,12 @@ Three roles interact with the package:
 - The **registry operator** hosts the `admin` party. Its participant uploads
   the Token Standard V2 DARs from [`dars/vendor/`](../../../dars/vendor/)
   first (a participant that already runs Splice has these exact packages),
-  then the types, utils, and package DARs. The operator creates one
-  `TokenRules` contract per registry configuration and serves it to
-  consumers by explicit disclosure.
+  then the types, utils, and package DARs. It uploads only DARs whose
+  authors the operator trusts with the admin's authority, because uploading
+  a DAR vets it (see the
+  [`README.md` security caveats](README.md#security-caveats)). The operator
+  creates one `TokenRules` contract per registry configuration and serves it
+  to consumers by explicit disclosure.
 - **Wallet users** hold accounts. Their participants upload the same DARs.
   A user's wallet needs the disclosed `TokenRules` contract in every
   submission that exercises a factory choice, and the disclosed locked
@@ -50,6 +53,23 @@ Every participant needs these exact packages.
 which are those of the Splice release artifacts, so a participant that has
 vetted Splice's Token Standard V2 packages can vet this package alongside them.
 
+Any party can create a contract that the admin or a wallet observes, from any
+package their participants vet. An interface choice runs the body of whichever
+template implements it, and that body acts with the authority of the actors
+and the contract's signatories. A view reports whatever its template's author
+chose, including the instrument, the receiver, and the account, so a view
+filter cannot identify the registry's contracts. The admin and the wallets
+select pending contracts by the registry's templates,
+`TokenTransferInstruction` and `TokenAllocation` for this package, before
+they exercise an interface choice on them. For the admin, this covers accepting
+or rejecting a burn request, withdrawing a mint offer, withdrawing a
+mint-account or burn-account allocation, and cancelling an allocation as an
+executor. A contract from another package that the admin acts on can create
+holdings of any amount, and one that a wallet accepts can transfer the
+receiver's holdings through the disclosed `TokenRules`.
+`TokenRules_ExpireTransferInstructions` and `TokenRules_ExpireAllocations`
+fetch by template, so the admin's expiry through them needs no selection.
+
 ## Patterns
 
 ### Launching a registry and minting
@@ -64,18 +84,22 @@ submit separately, each from their own participant. The example package
 
 Authorization: the admin signs the rules contract and alone offers a mint;
 the receiver's account parties accept or reject the offer; the admin
-withdraws it, or expires it after `executeBefore`.
+withdraws it, or expires it after `executeBefore`. The admin selects an offer
+to withdraw by template (see [Topology](#topology)).
 
 ### Burning
 
 A holder burns by exercising `TransferFactory_Transfer` with the CIP-0112 burn
 account (`cip-112/burn`) as the receiver. The burn account's only account
 party is the admin, so the holder's submission creates a pending burn request
-that locks the amount, and the admin accepts it from their own participant.
-Accepting archives the locked amount and emits an event, on the holder's
-account, naming `cip-112/burn` as the other side. When the holder and the
-admin act together, the burn completes in one step. The test scripts
-`testBurnRequestAccepted` and `testBurnOneStep` cover both paths.
+that locks the amount, and the admin accepts it from their own participant,
+after selecting it by template (see [Topology](#topology)). Accepting
+archives the locked amount and emits an event, on the holder's account,
+naming `cip-112/burn` as the other side. When the holder and the admin act
+together, the burn completes in one step. The admin co-signs only a
+submission that exercises its own `TokenRules` contract, because a factory
+from another package runs its own body with the admin's authority. The test
+scripts `testBurnRequestAccepted` and `testBurnOneStep` cover both paths.
 
 Authorization: the holder's account parties request and withdraw; the admin
 accepts or rejects, or expires the request after `executeBefore`.
@@ -162,6 +186,8 @@ cleanup.
 | Mistake | What happens | Fix |
 |---|---|---|
 | Submitting a factory exercise without the disclosed `TokenRules` contract | The submission fails to resolve the contract | Attach the disclosure to every factory submission |
+| Selecting pending instructions or allocations by interface view | A contract from another package passes the filter, and its choice body runs with the actor's authority | Select by the registry's templates, such as `TokenTransferInstruction` and `TokenAllocation` |
+| Co-signing a one-step burn on a factory the holder chose | A factory from another package runs its body with the admin's authority | Co-sign only a `TransferFactory_Transfer` on the admin's own `TokenRules` contract |
 | Accepting or rejecting a transfer, or settling or cancelling an allocation, without its locked funding disclosed | The submission fails to resolve the locked holding | Attach the holdings the registry serves for the instruction view's `transfer.inputHoldingCids` or the allocation view's `holdingCids` |
 | Holding a `ContractId TokenHolding` across a balance change | The client holds a stale id and the next exercise fails | Re-query holdings after every transfer, allocation, or settle |
 | Funding one transfer with holdings of different instruments | `executeTransfer` fails: input holdings must all match the transfer's instrument | Split by instrument; only allocations take multi-instrument inputs |
