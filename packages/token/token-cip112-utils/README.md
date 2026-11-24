@@ -57,13 +57,6 @@ contract id enters through an operation the template owner wrote:
   and return its view. Use `holdingOpsFor @YourHolding`, or a custom spend
   choice reached through `fetchFromInterface @YourHolding`. Never archive a
   caller-supplied id by interface.
-- Each consumption operation runs on its own paths. `fundHolding` consumes
-  the inputs of the transfer and allocation factories, including one-step
-  transfers and burns. `deliverHolding` consumes all locked funding on accept
-  and settle, including an accept's surplus and the part of a settlement that
-  stays with the authorizer. `returnHolding` consumes locked funding on a
-  transfer's reject, withdraw, and expiry, and on an allocation's withdraw
-  and cancel.
 - A refusal in `deliverHolding` or `returnHolding` leaves the other
   operation's paths open, and a refusal in both holds the locked funds until
   the lock expires. After that the owner recovers them through the holding's

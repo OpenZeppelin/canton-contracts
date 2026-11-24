@@ -51,30 +51,13 @@ isValidRegistryConfig c =
 
 -- | What a workflow needs from the template owner. Not serializable.
 --
--- Three operations consume holdings, one per direction the value moves:
--- `fundHolding` for inputs a caller supplies, `deliverHolding` for locked
--- funding paid out, and `returnHolding` for locked funding given back to its
--- owner. Each is both the accepted-implementation policy and the spend rule
--- for its paths, and each takes the `ChoiceContext` of the choice the
--- workflow runs in, followed by the holding id. All three share one law:
--- fail unless the contract is an accepted implementation, then remove the
--- holding from the ledger and return the view it had.
---
--- A rule in `deliverHolding` or `returnHolding` runs on funding the workflow
--- locked itself. A refusal in one leaves the other's paths open, and a
--- refusal in both holds the funds until the lock expires. After that the
--- owner recovers them through the holding's owner-unlock choice, or by
--- passing the holding to a factory, which runs `fundHolding`. A rule that
--- must hold them longer is also checked in that choice and in `fundHolding`.
--- Put a rule in `deliverHolding` or `returnHolding` only if a known party
--- can lift it without re-creating the locked holding, such as a compliance
--- officer lifting a freeze kept on a separate per-account contract. A
--- pending instruction or allocation names its locked holdings by id, so
--- keep a holding's contract id until its lock expires: the workflow pays
--- out or returns only the contract it names. A rule that should only stop
--- new spending, such as a minimum holding age, belongs in `fundHolding`
--- alone: the workflow creates locked funding, change, and returned holdings
--- when it runs, so each of them is new.
+-- A refusal in `deliverHolding` or `returnHolding` leaves the other's paths
+-- open, and a refusal in both holds the locked funds until the lock
+-- expires. Put a rule in either only if a known party can lift it without
+-- re-creating the locked holding, such as a compliance officer lifting a
+-- freeze kept on a separate per-account contract. A pending instruction or
+-- allocation names its locked holdings by id, so keep a holding's contract
+-- id until its lock expires.
 --
 -- A rule that tracks live registry state reads the current policy contract
 -- from the context, and the operation checks the contract it fetches: its
@@ -94,24 +77,30 @@ data HoldingOps = HoldingOps with
       -- ^ Consume a caller-supplied input holding that funds a new transfer
       -- or allocation, through `consumeUnlockedHolding`: the inputs of
       -- `transferFactoryImpl` and `executeTransfer`, including a one-step
-      -- transfer and a burn, and of `allocationFactoryImpl`. An input may be
-      -- a holding whose lock has expired, such as the funding of an
-      -- instruction or allocation that never completed.
+      -- transfer and a burn, and of `allocationFactoryImpl`. Law: fails
+      -- unless the contract is an accepted implementation, then removes the
+      -- holding from the ledger and returns the view it had. The context is
+      -- the `ChoiceContext` of the choice the workflow runs in. An input may
+      -- be a holding whose lock has expired, such as the funding of an
+      -- instruction or allocation that never completed, so a rule that must
+      -- hold locked funds after the lock expires is also checked here. Put a
+      -- rule that only stops new spending, such as a minimum holding age,
+      -- here.
     deliverHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
       -- ^ Consume locked funding to pay it out, through
       -- `consumeLockedHolding`: `transferAcceptImpl`, including the admin's
       -- accept of a burn request, and `allocationSettleImpl`. Both consume
       -- all of the locked funding here, including any part that stays with
       -- its owner: an accept's surplus, a settlement's payout to the
-      -- authorizer, and a reserve rolled into the next iteration.
-      -- `settleBatchImpl` passes each `Allocation_Settle` an empty context,
-      -- so a rule that requires a context entry refuses every batch
-      -- settlement.
+      -- authorizer, and a reserve rolled into the next iteration. Law and
+      -- context: the same as `fundHolding`. `settleBatchImpl` passes each
+      -- `Allocation_Settle` an empty context, so a rule that requires a
+      -- context entry refuses every batch settlement.
     returnHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
       -- ^ Consume locked funding to return it to its owner, through
       -- `unlockHoldings`: `transferRejectImpl`, `transferWithdrawImpl`,
       -- `transferExpireImpl`, `allocationWithdrawImpl`, and
-      -- `allocationCancelImpl`.
+      -- `allocationCancelImpl`. Law and context: the same as `fundHolding`.
     withEventLog : (ContractId TransferEventsV2.EventLog -> Update ()) -> Update ()
       -- ^ Run one emission against an `EventLog` host. The default templates
       -- supply a transient host created and archived within the transaction.
