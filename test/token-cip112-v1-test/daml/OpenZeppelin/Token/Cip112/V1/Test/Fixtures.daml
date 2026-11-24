@@ -103,12 +103,37 @@ completedCid result = case result.output of
   AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
   other -> abort ("expected completed allocation, got: " <> show other)
 
+-- | Disclosures of holdings, as the registry serves them: the admin signs
+-- every holding, so it can read and disclose each one. The admin is the only
+-- lock holder of locked funding, so receivers and executors submit with
+-- these disclosures to spend it.
+holdingDisclosures : Party -> [ContractId HoldingV2.Holding] -> Script [Disclosure]
+holdingDisclosures admin cids = forA cids $ \cid -> do
+  Some d <- queryDisclosure admin (fromInterfaceContractId @TokenHolding cid)
+  pure d
+
+-- | Disclosures of the locked funding of each allocation.
+allocationDisclosures : Party -> [ContractId AllocationV2.Allocation] -> Script [Disclosure]
+allocationDisclosures admin cids = do
+  views <- forA cids $ \cid -> do
+    Some v <- queryInterfaceContractId admin cid
+    pure v
+  holdingDisclosures admin (concatMap (.holdingCids) views)
+
+-- | Disclosures of the locked funding of a pending transfer instruction.
+instructionDisclosures
+  : Party -> ContractId TransferInstructionV2.TransferInstruction -> Script [Disclosure]
+instructionDisclosures admin cid = do
+  Some v <- queryInterfaceContractId admin cid
+  holdingDisclosures admin v.transfer.inputHoldingCids
+
 -- | Settle a batch through the factory.
 settleBatch
   : Scenario -> [AllocationV2.TransferLeg] -> [ContractId AllocationV2.Allocation] -> ExtraArgs
   -> Script AllocationV2.SettlementFactory_SettleBatchResult
-settleBatch Scenario{..} legs allocs extraArgs =
-  submit (actAs app <> discloseMany [rulesDisclosure]) do
+settleBatch Scenario{..} legs allocs extraArgs = do
+  funding <- allocationDisclosures admin allocs
+  submit (actAs app <> discloseMany (rulesDisclosure :: funding)) do
     exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
       AllocationV2.SettlementFactory_SettleBatch with
         settlement

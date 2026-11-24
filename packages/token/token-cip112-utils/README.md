@@ -92,6 +92,12 @@ contract id enters through an operation the template owner wrote:
   control. Use `pinAllocationTo @YourAllocation`.
 - `createHolding` must create a contract whose view equals the argument and
   whose signatories include the admin and the account parties.
+- A holding with a live lock belongs to the pending transfer instruction or
+  allocation that names it in `lockedHoldingCids`. Every path that ends the
+  pending contract consumes that exact contract id. No choice on the holding
+  template may archive or re-create the holding before the lock's
+  `expiresAt`, for example to freeze, merge, split, or edit metadata.
+  Otherwise the pending contract can no longer complete, release, or expire.
 - The settlement factory must settle through `settleBatchImpl`, or keep its
   exact-cover check: every leg in the batch needs a sending and a receiving
   allocation with the same amount. Without it, a settlement can create
@@ -102,6 +108,28 @@ contract id enters through an operation the template owner wrote:
   locked funding. Only `offerMintImpl`, from a choice the admin alone
   controls, may create one. A factory body must refuse the mint account as a
   sender, as `transferFactoryImpl` does.
+
+## Operational assumptions
+
+`executeTransfer`, `allocationFactoryImpl`, and `allocationSettleImpl` name
+the admin as the only lock holder of the funding they lock. When the holding
+template's observers are its lock holders, as in `TokenHolding`, only the
+admin and the account parties see that funding. The registry serves it to
+receivers and executors by explicit disclosure. The owner's unlock after the
+lock expires then involves only the holding's signatories, unless another
+party observes the holding or the holdings-change event the unlock emits. A
+workflow adds such a party when it names another lock holder, the holding
+template when it adds an observer, and `eventObservers` when it returns a
+party for the account. The unlock fails while any such party has no hosting
+participant or a participant hosting it has not vetted the template
+packages.
+
+A template for transfer instructions or allocations can make the receiver or
+the executors observers, as `TokenTransferInstruction` and `TokenAllocation`
+do. Every choice on such a contract then needs those parties to stay hosted
+and every participant hosting them to keep the template packages vetted. A
+template owner that reuses these functions inherits these requirements and
+must document them for its users.
 
 ## Build
 

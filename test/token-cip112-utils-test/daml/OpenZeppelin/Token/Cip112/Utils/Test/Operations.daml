@@ -275,6 +275,31 @@ withContext context = ExtraArgs with context; meta = emptyMetadata
 disclosed : World -> Party -> SubmitOptions
 disclosed w party = actAs party <> discloseMany [w.rulesDisclosure]
 
+-- | Disclosures of locked funding, as the registry serves them: the admin is
+-- the only lock holder, and it reads every holding as a signatory.
+fundingDisclosures : World -> [ContractId HoldingV2.Holding] -> Script [Disclosure]
+fundingDisclosures w cids = forA cids $ \cid -> do
+  Some d <- queryDisclosure w.admin (fromInterfaceContractId @PolicyHolding cid)
+  pure d
+
+-- | Bob with the locked funding of a pending transfer instruction disclosed.
+asReceiver
+  : World -> ContractId TransferInstructionV2.TransferInstruction -> Script SubmitOptions
+asReceiver w cid = do
+  Some v <- queryInterfaceContractId w.admin cid
+  funding <- fundingDisclosures w v.transfer.inputHoldingCids
+  pure (actAs w.bob <> discloseMany funding)
+
+-- | The exchange with the rules contract and the locked funding of `allocs`
+-- disclosed.
+asExecutor : World -> [ContractId AllocationV2.Allocation] -> Script SubmitOptions
+asExecutor w allocs = do
+  views <- forA allocs $ \cid -> do
+    Some v <- queryInterfaceContractId w.admin cid
+    pure v
+  funding <- fundingDisclosures w (concatMap (.holdingCids) views)
+  pure (disclosed w w.exchange <> discloseMany funding)
+
 -- | Alice instructs a transfer of 4 to bob, funded by `inputs`.
 transferCmd
   : World -> ChoiceContext -> [ContractId HoldingV2.Holding]
@@ -465,16 +490,20 @@ testMinimumAgeFundRuleGatesOnlyFunding = do
   rejected <- pendingTransfer w [i2]
   withdrawn <- pendingTransfer w [i3]
   expiring <- pendingTransfer w [i4]
-  _ <- submit (actAs bob) (acceptCmd w emptyChoiceContext accepted)
-  _ <- submit (actAs bob) (rejectCmd w emptyChoiceContext rejected)
+  acceptAs <- asReceiver w accepted
+  _ <- submit acceptAs (acceptCmd w emptyChoiceContext accepted)
+  rejectAs <- asReceiver w rejected
+  _ <- submit rejectAs (rejectCmd w emptyChoiceContext rejected)
   _ <- submit (actAs alice) (withdrawCmd w emptyChoiceContext withdrawn)
 
-  trade <- allocateTrade w [i5]
-  _ <- submit (disclosed w exchange) (settleBatchCmd w emptyChoiceContext trade)
+  trade@(aliceAlloc, bobAlloc) <- allocateTrade w [i5]
+  settleAs <- asExecutor w [aliceAlloc, bobAlloc]
+  _ <- submit settleAs (settleBatchCmd w emptyChoiceContext trade)
   (withdrawnAlloc, _) <- allocateTrade w [i6]
   _ <- submit (actAs alice) (allocationWithdrawCmd w emptyChoiceContext withdrawnAlloc)
   (cancelledAlloc, _) <- allocateTrade w [i7]
-  _ <- submit (actAs exchange) (cancelCmd w emptyChoiceContext cancelledAlloc)
+  cancelAs <- asExecutor w [cancelledAlloc]
+  _ <- submit cancelAs (cancelCmd w emptyChoiceContext cancelledAlloc)
 
   setTime expiredAt
   _ <- submit (actAs admin) (expireCmd emptyChoiceContext expiring)
@@ -494,16 +523,18 @@ testRefusingDeliverRuleBlocksOnlyPayouts = do
   setTime fundedAt
 
   instr <- pendingTransfer w [i1]
-  mustFailWith "deliver rule refuses" (actAs bob) (acceptCmd w emptyChoiceContext instr)
-  _ <- submit (actAs bob) (rejectCmd w emptyChoiceContext instr)
+  receiverAs <- asReceiver w instr
+  mustFailWith "deliver rule refuses" receiverAs (acceptCmd w emptyChoiceContext instr)
+  _ <- submit receiverAs (rejectCmd w emptyChoiceContext instr)
   withdrawn <- pendingTransfer w [i2]
   _ <- submit (actAs alice) (withdrawCmd w emptyChoiceContext withdrawn)
   expiring <- pendingTransfer w [i3]
 
-  trade@(aliceAlloc, _) <- allocateTrade w [i4]
-  mustFailWith "deliver rule refuses" (disclosed w exchange) (settleBatchCmd w emptyChoiceContext trade)
+  trade@(aliceAlloc, bobAlloc) <- allocateTrade w [i4]
+  executorAs <- asExecutor w [aliceAlloc, bobAlloc]
+  mustFailWith "deliver rule refuses" executorAs (settleBatchCmd w emptyChoiceContext trade)
   mustFailWith "deliver rule refuses" (actAs [admin, exchange]) (settleCmd w emptyChoiceContext aliceAlloc)
-  _ <- submit (actAs exchange) (cancelCmd w emptyChoiceContext aliceAlloc)
+  _ <- submit executorAs (cancelCmd w emptyChoiceContext aliceAlloc)
   (withdrawnAlloc, _) <- allocateTrade w [i5]
   _ <- submit (actAs alice) (allocationWithdrawCmd w emptyChoiceContext withdrawnAlloc)
 
@@ -524,14 +555,16 @@ testRefusingReturnRuleBlocksOnlyReturns = do
   setTime fundedAt
 
   instr <- pendingTransfer w [i1]
-  mustFailWith "return rule refuses" (actAs bob) (rejectCmd w emptyChoiceContext instr)
+  receiverAs <- asReceiver w instr
+  mustFailWith "return rule refuses" receiverAs (rejectCmd w emptyChoiceContext instr)
   mustFailWith "return rule refuses" (actAs alice) (withdrawCmd w emptyChoiceContext instr)
-  _ <- submit (actAs bob) (acceptCmd w emptyChoiceContext instr)
+  _ <- submit receiverAs (acceptCmd w emptyChoiceContext instr)
 
-  trade@(aliceAlloc, _) <- allocateTrade w [i2]
-  mustFailWith "return rule refuses" (actAs exchange) (cancelCmd w emptyChoiceContext aliceAlloc)
+  trade@(aliceAlloc, bobAlloc) <- allocateTrade w [i2]
+  executorAs <- asExecutor w [aliceAlloc, bobAlloc]
+  mustFailWith "return rule refuses" executorAs (cancelCmd w emptyChoiceContext aliceAlloc)
   mustFailWith "return rule refuses" (actAs alice) (allocationWithdrawCmd w emptyChoiceContext aliceAlloc)
-  _ <- submit (disclosed w exchange) (settleBatchCmd w emptyChoiceContext trade)
+  _ <- submit executorAs (settleBatchCmd w emptyChoiceContext trade)
 
   expiring <- pendingTransfer w [i3]
   setTime expiredAt
@@ -560,11 +593,13 @@ testOperationsReceiveTheSubmittersContext = do
   accepted <- case instructed.output of
     TransferInstructionV2.TransferInstructionResult_Pending cid -> pure cid
     other -> abort ("expected a pending transfer, got: " <> show other)
-  tree <- submitTree (actAs bob) (acceptCmd w (ctx "accept") accepted)
+  acceptAs <- asReceiver w accepted
+  tree <- submitTree acceptAs (acceptCmd w (ctx "accept") accepted)
   opCalls tree === [OpCall "deliver" (ctx "accept")]
 
   rejected <- pendingTransfer w [i3]
-  tree <- submitTree (actAs bob) (rejectCmd w (ctx "reject") rejected)
+  rejectAs <- asReceiver w rejected
+  tree <- submitTree rejectAs (rejectCmd w (ctx "reject") rejected)
   opCalls tree === [OpCall "return" (ctx "reject")]
 
   withdrawn <- pendingTransfer w [i4]
@@ -584,15 +619,17 @@ testOperationsReceiveTheSubmittersContext = do
   opCalls tree === [OpCall "deliver" (ctx "settle")]
 
   (cancelled, _) <- allocateTrade w [i7]
-  tree <- submitTree (actAs exchange) (cancelCmd w (ctx "cancel") cancelled)
+  cancelAs <- asExecutor w [cancelled]
+  tree <- submitTree cancelAs (cancelCmd w (ctx "cancel") cancelled)
   opCalls tree === [OpCall "return" (ctx "cancel")]
 
   (withdrawnAlloc, _) <- allocateTrade w [i8]
   tree <- submitTree (actAs alice) (allocationWithdrawCmd w (ctx "allocation withdraw") withdrawnAlloc)
   opCalls tree === [OpCall "return" (ctx "allocation withdraw")]
 
-  trade <- allocateTrade w [i9]
-  tree <- submitTree (disclosed w exchange) (settleBatchCmd w (ctx "batch") trade)
+  trade@(tradeAlloc, tradeBobAlloc) <- allocateTrade w [i9]
+  settleAs <- asExecutor w [tradeAlloc, tradeBobAlloc]
+  tree <- submitTree settleAs (settleBatchCmd w (ctx "batch") trade)
   opCalls tree === [OpCall "deliver" emptyChoiceContext]
 
   (expiringAlloc, _) <- allocateTrade w [i10]

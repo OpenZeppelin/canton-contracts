@@ -69,11 +69,12 @@ isValidRegistryConfig c =
 -- Put a rule in `deliverHolding` or `returnHolding` only if a known party
 -- can lift it without re-creating the locked holding, such as a compliance
 -- officer lifting a freeze kept on a separate per-account contract. A
--- pending instruction or allocation names its locked holdings by id, so it
--- can neither pay out nor return a holding that was replaced. A rule that
--- should only stop new spending, such as a minimum holding age, belongs in
--- `fundHolding` alone: the workflow creates locked funding, change, and
--- returned holdings when it runs, so each of them is new.
+-- pending instruction or allocation names its locked holdings by id, so
+-- keep a holding's contract id until its lock expires: the workflow pays
+-- out or returns only the contract it names. A rule that should only stop
+-- new spending, such as a minimum holding age, belongs in `fundHolding`
+-- alone: the workflow creates locked funding, change, and returned holdings
+-- when it runs, so each of them is new.
 --
 -- A rule that tracks live registry state reads the current policy contract
 -- from the context, and the operation checks the contract it fetches: its
@@ -119,6 +120,9 @@ data HoldingOps = HoldingOps with
       -- emit for the account, added to the account parties and any
       -- executors. An auditor or regulator who must see the standard event
       -- stream, not only the holdings, goes here. `const []` adds nobody.
+      -- Every party listed must stay hosted with the packages vetted, or
+      -- each workflow that emits for the account fails, owner unlock
+      -- included.
 
 -- | Consume by archiving, pinned to template `t`: `fetchFromInterface @t`
 -- fails on every other implementation, so a foreign `Holding` whose view
