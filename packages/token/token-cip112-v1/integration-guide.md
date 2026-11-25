@@ -112,7 +112,7 @@ two ways:
   rebalances this way. The event carries a sender and a receiver leg on the
   same account.
 
-Authorization: the account parties alone, on both choices.
+Authorization: the account parties alone, on both paths.
 
 ### Delivery-versus-payment settlement
 
