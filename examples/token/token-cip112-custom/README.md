@@ -70,7 +70,7 @@ The co-signature has costs:
 - Coordination. Creating `MyRules`, archiving it, or replacing it with a new
   fee, allowlist, or roles needs the admin's and the pauser's authority in one
   transaction. A participant submits for the parties it hosts, and an
-  externally signed submission needs a signature from every acting party.
+  externally signed submission has one acting party.
   With the two on separate participants, the admin creates or replaces it
   through a `MyRulesProposal` that the pauser accepts. Pausing and
   unpausing need the pauser alone. The pauser itself cannot be replaced
