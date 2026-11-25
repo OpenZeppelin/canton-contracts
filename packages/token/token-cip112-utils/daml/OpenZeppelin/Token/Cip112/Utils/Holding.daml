@@ -186,7 +186,7 @@ newHolding ops admin account instrumentId amount lock =
 -- Choice bodies
 ----------------
 
--- | Body of a consuming owner-unlock choice on a holding template: the lock
+-- | Body of an owner-unlock choice on a holding template: the lock
 -- has expired, so recreate the holding unlocked and emit an account-local
 -- `EventLog_HoldingsChange` naming the consumed holding and its replacement.
 -- `self` is the holding being exercised. Call this body only from a
