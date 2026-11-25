@@ -213,30 +213,23 @@ holdingOwnerUnlockImpl ops self holding = do
 -- and emits an account-local `EventLog_HoldingsChange` with no transfer
 -- legs, naming the exercised holding and the inputs as inputs. The merged
 -- holding keeps the exercised holding's `meta` and drops the inputs'.
--- `self` is the holding being exercised; the choice itself archives it.
--- `context` reaches `fundHolding` for every input; a template whose
--- operations read no context passes `emptyChoiceContext`.
+-- `self` is the holding being exercised. `context` reaches `fundHolding`
+-- for every input.
 --
--- `inputHoldingCids` must hold at least one holding, and each input must be
--- a different holding of the same admin, account, and instrument. An input
--- whose lock has expired is accepted, as when it funds a transfer, and a
--- live or indefinite lock is refused. The exercised holding must carry no
--- lock, even an expired one. A live lock keeps the funds for the pending
--- instruction or allocation that names the holding by id, and an expired
--- lock would carry over to the merged holding. On a template whose
--- observers include its lock holders, a lock holder other than the admin
--- would also be an informee of the whole merge. An expired-lock holding is
--- merged as an input of a merge on an unlocked holding, or released with
--- the owner-unlock choice first. As with an owner unlock, a pending
--- instruction or allocation that names a merged expired-lock input then
--- fails to return its funding, and only the admin's garbage collection
+-- Fails unless `inputHoldingCids` holds at least one holding. Fails unless
+-- each input is a different holding of the same admin, account, and
+-- instrument. Fails on an input whose lock is live or indefinite, and
+-- accepts one whose lock has expired. Fails while the exercised holding
+-- carries a lock, even an expired one. A pending instruction or allocation
+-- that names a merged expired-lock input fails to return its funding, and
+-- only the admin's cleanup through `transferGcImpl` or `allocationGcImpl`
 -- removes it.
 --
--- No consumption operation runs on the exercised holding, so a rule that
--- must block a merge, such as a freeze, is checked inside the holding's own
--- choice before it calls this body; `fundHolding` applies the rule to the
--- inputs. No registry contract takes part, so no factory policy, such as a
--- pause or a fee, applies to a merge.
+-- Check a rule that must block a merge, such as a freeze, in the holding's
+-- choice before it calls this body. Otherwise the account parties can merge
+-- a frozen holding into an unfrozen one. `fundHolding` applies the rule to
+-- the inputs. No registry contract takes part, so no factory policy, such
+-- as a pause or a fee, applies to a merge.
 holdingMergeImpl
   : HoldingOps -> ChoiceContext -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
   -> [ContractId HoldingV2.Holding]
