@@ -250,7 +250,8 @@ consumeUnlockedHolding ops context admin expectedAccount cid = do
   pure h
 
 -- | Consume input holdings and tally the value they carried per instrument.
--- `consume` must archive each holding it receives; see `HoldingOps`.
+-- Pass a `consume` that archives each holding it receives. Otherwise a
+-- tallied holding stays live and can be spent again.
 debitHoldings
   : (ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView)
   -> [ContractId HoldingV2.Holding]
