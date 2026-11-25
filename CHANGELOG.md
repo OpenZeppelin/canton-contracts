@@ -81,13 +81,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   constructor and pinning operations. It defines no serializable types and
   depends on `openzeppelin-token-cip112-types-v1`.
 
-#### Changed
-
-- **Breaking:** `logTransferEvents` sets the reason in each event's
-  `extraArgs.meta` from the workflow alone: `tokens minted`, `tokens burned`,
-  or `transfer completed`. In the events, a sender's reason and the `reason`
-  passed to `offerMintImpl` appear only in each leg side's `meta`.
-
 ### `openzeppelin-token-cip112-v1`
 
 #### Added
