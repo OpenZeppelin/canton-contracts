@@ -203,6 +203,16 @@ testMergeInputLockBoundary = do
   _ <- submit (actAs alice) (mergeCmd h [input])
   holdingAmounts alice >>= (=== [6.0])
 
+-- | An input locked with no `expiresAt` is refused at any time.
+testMergeRefusesAnIndefinitelyLockedInput : Script ()
+testMergeRefusesAnIndefinitelyLockedInput = do
+  Scenario{..} <- setup
+  h <- mint admin alice 1.0
+  input <- holdingIn admin (basicAccount alice) "TOK" 5.0 (lockedBy [admin] None)
+  setTime t4
+  mustFailWith "input holding is locked indefinitely" (actAs alice) (mergeCmd h [input])
+  holdingAmounts alice >>= (=== [1.0, 5.0])
+
 -- | The merge body holds the admin's authority, so archiving a holding
 -- whose account parties are all within it raises no authorization error:
 -- the admin's own holding, or one alice owns with the admin as provider.
@@ -222,11 +232,12 @@ testMergeRefusesInputsTheAdminSigns = do
   holdingAmounts alice >>= (=== [1.0, 9.0])
 
 -- | Every input must share the exercised holding's instrument, account, and
--- admin. The instrument and account refusals name the field, so they cannot
--- pass for an authorization failure: the other account belongs to the same
--- parties. Another admin's holding never reaches the admin check: the
--- merge body holds only this holding's signatories' authority, so archiving
--- it fails for want of the other admin, even when that admin submits too.
+-- admin. The refusals name the field, so they cannot pass for an
+-- authorization failure: the other account belongs to the same parties, and
+-- alice is the only signatory of a holding she issues to herself. Another
+-- admin's holding fails sooner: the merge body holds only this holding's
+-- signatories' authority, so archiving it fails for want of the other
+-- admin, even when that admin submits too.
 testMergeRefusesMismatchedInputs : Script ()
 testMergeRefusesMismatchedInputs = do
   s@Scenario{..} <- setup
@@ -238,7 +249,9 @@ testMergeRefusesMismatchedInputs = do
   otherAdmin <- allocateParty "otherAdmin"
   foreignTok <- mint otherAdmin alice 4.0
   mustFailWith "requires authorizers" (actAs [alice, otherAdmin]) (mergeCmd h [foreignTok])
-  holdingAmounts alice >>= (=== [3.0, 4.0, 4.0, 4.0])
+  selfIssued <- holdingIn alice (basicAccount alice) "TOK" 1000000.0 None
+  mustFailWith "'inputHolding.instrumentId.admin' is not equal to" (actAs alice) (mergeCmd h [selfIssued])
+  holdingAmounts alice >>= (=== [3.0, 4.0, 4.0, 4.0, 1000000.0])
 
 -- | A merge needs at least one input, and the inputs must be distinct and
 -- exclude the exercised holding, so no holding is counted twice.
