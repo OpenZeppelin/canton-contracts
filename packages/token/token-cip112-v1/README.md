@@ -134,14 +134,15 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
 
 ## Security caveats
 
-- The admin's participant must vet only packages whose authors the operator
-  trusts with the admin's authority, such as the registry's own packages and
-  Splice's packages, which include the Token Standard V2 DARs in
-  [`dars/vendor/`](../../../dars/vendor/). Uploading a DAR vets it. A vetted
-  package can implement `TransferInstruction`, `Allocation`, or
-  `TransferFactory`. When the admin exercises a choice on a contract of that
-  package, its body runs with the admin's authority and can create holdings
-  of any amount.
+- Every participant must vet only packages whose authors its operator
+  trusts with the authority of the parties it hosts, such as the registry's
+  own packages and Splice's packages, which include the Token Standard V2
+  DARs in [`dars/vendor/`](../../../dars/vendor/). Uploading a DAR vets it. A
+  vetted package can implement `TransferInstruction`, `Allocation`, or
+  `TransferFactory`. When a party exercises a choice on a contract of that
+  package, its body runs with that party's authority. Run by the admin, it
+  can create holdings of any amount. Run by a wallet, it can transfer the
+  wallet's holdings.
 - The admin and the wallets select pending contracts by the registry's
   templates before they exercise an interface choice on them, as
   [`integration-guide.md`](integration-guide.md#topology) describes. The

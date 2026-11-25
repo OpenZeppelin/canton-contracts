@@ -13,12 +13,9 @@ Three roles interact with the package:
 - The **registry operator** hosts the `admin` party. Its participant uploads
   the Token Standard V2 DARs from [`dars/vendor/`](../../../dars/vendor/)
   first (a participant that already runs Splice has these exact packages),
-  then the types, utils, and package DARs. It uploads only DARs whose
-  authors the operator trusts with the admin's authority, because uploading
-  a DAR vets it (see the
-  [`README.md` security caveats](README.md#security-caveats)). The operator
-  creates one `TokenRules` contract per registry configuration and serves it
-  to consumers by explicit disclosure.
+  then the types, utils, and package DARs. The operator creates one
+  `TokenRules` contract per registry configuration and serves it to
+  consumers by explicit disclosure.
 - **Wallet users** hold accounts. Their participants upload the same DARs.
   A user's wallet needs the disclosed `TokenRules` contract in every
   submission that exercises a factory choice, and the disclosed locked
@@ -52,6 +49,9 @@ Every participant needs these exact packages.
 [`dars/manifest.yaml`](../../../dars/manifest.yaml) records their package IDs,
 which are those of the Splice release artifacts, so a participant that has
 vetted Splice's Token Standard V2 packages can vet this package alongside them.
+Every participant uploads only DARs whose authors its operator trusts with the
+authority of the parties it hosts, because uploading a DAR vets it (see the
+[`README.md` security caveats](README.md#security-caveats)).
 
 Any party can create a contract the admin or a wallet observes, from a package
 the observer's participant vets. An interface choice runs the body of whichever
