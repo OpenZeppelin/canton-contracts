@@ -130,12 +130,12 @@ A retry that names any of the same `inputHoldingCids` fails once the first
 allocate has archived them. A retry that selects other holdings locks the
 funds again unless
 [command deduplication](https://docs.canton.network/appdev/deep-dives/command-deduplication)
-rejects it, so a wallet must retry an allocate like any other Canton command:
+rejects it. A wallet must retry an allocate like any other Canton command:
 with the same command ID, user ID, and `actAs` parties, through the same
-participant. Deduplication holds only within the deduplication period. Before
-it retries after that period, the wallet must search the authorizer's
-transactions since the first submission for an allocation with the same
-`settlement` and `transferLegSides`, including one that has already settled.
+participant. Deduplication holds only within the deduplication period. After
+that period, the wallet must search the authorizer's transactions since the
+first submission for an allocation with the same `settlement` and
+`transferLegSides`, settled or not, and retry only when it finds none.
 
 ### Iterated settlement
 
