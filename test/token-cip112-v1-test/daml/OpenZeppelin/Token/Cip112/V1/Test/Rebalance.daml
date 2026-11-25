@@ -203,6 +203,16 @@ testMergeInputLockBoundary = do
   _ <- submit (actAs alice) (mergeCmd h [input])
   holdingAmounts alice >>= (=== [6.0])
 
+-- | An input locked with no `expiresAt` is refused at any time.
+testMergeRefusesAnIndefinitelyLockedInput : Script ()
+testMergeRefusesAnIndefinitelyLockedInput = do
+  Scenario{..} <- setup
+  h <- mint admin alice 1.0
+  input <- holdingIn admin (basicAccount alice) "TOK" 5.0 (lockedBy [admin] None)
+  setTime t4
+  mustFailWith "input holding is locked indefinitely" (actAs alice) (mergeCmd h [input])
+  holdingAmounts alice >>= (=== [1.0, 5.0])
+
 -- | The merge body holds the admin's authority, so archiving a holding
 -- whose account parties are all within it raises no authorization error:
 -- the admin's own holding, or one alice owns with the admin as provider.
