@@ -255,18 +255,16 @@ holdingMergeImpl ops context self holding inputHoldingCids = do
 -- per entry of `amounts`, returned in the same order, each with the
 -- exercised holding's `meta`, and emits an account-local
 -- `EventLog_HoldingsChange` with no transfer legs. `self` is the holding
--- being exercised; the choice itself archives it.
+-- being exercised.
 --
--- `amounts` must hold at least two positive amounts that sum to the
--- holding's amount exactly. The holding must carry no lock, even an expired
--- one. A live lock keeps the funds for the pending instruction or
--- allocation that names the holding by id, and an expired lock would carry
--- over to every part.
+-- Fails unless `amounts` holds at least two entries. Fails unless each
+-- entry is positive. Fails unless the entries sum to the holding's amount.
+-- Fails while the holding carries a lock, even an expired one.
 --
--- None of the consumption operations runs here, so a rule that must block a
--- split, such as a freeze, is checked inside the holding's own choice
--- before it calls this body. No registry contract takes part, so no factory
--- policy applies to a split.
+-- Check a rule that must block a split, such as a freeze, in the holding's
+-- choice before it calls this body. Otherwise the account parties can split
+-- a frozen holding into unfrozen parts. No registry contract takes part, so
+-- no factory policy applies to a split.
 holdingSplitImpl
   : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> [Decimal]
   -> Update [ContractId HoldingV2.Holding]
