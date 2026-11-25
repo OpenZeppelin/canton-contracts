@@ -206,7 +206,7 @@ mkHoldingView admin account instrumentId amount lock = HoldingV2.HoldingView wit
   lock
   meta = emptyMetadata
 
--- | Create a holding through the owner's constructor, funded by `sources`.
+-- | Create a holding through the owner's constructor.
 newHolding
   : HoldingOps h -> [h] -> Party -> HoldingV2.Account -> Text -> Decimal -> Optional HoldingV2.Lock
   -> Update (ContractId HoldingV2.Holding)
