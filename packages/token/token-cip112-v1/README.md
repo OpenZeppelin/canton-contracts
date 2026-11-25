@@ -77,9 +77,9 @@ interfaces or exceptions of its own.
   reject it. The admin can withdraw it until then and expire it after
   `executeBefore`. A mint is always two-step.
 - A holder burns with `TransferFactory_Transfer` to the CIP-0112 burn account
-  (`cip-112/burn`), whose only account party is the admin. The holder alone
-  creates a burn request that locks the amount, and the admin accepts or
-  rejects it; the holder and the admin acting together burn in one step.
+  (`cip-112/burn`), whose only account party is the admin. The holder's
+  account parties create a burn request that locks the amount, and the admin
+  accepts or rejects it; together with the admin they burn in one step.
   Accepting archives the locked amount and creates no holding for the burn
   account.
 - An allocation created with `nextIterationFunding` set enables iterated
@@ -189,7 +189,7 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   allocation, and `TokenHolding_OwnerUnlock`. Other parties still end a
   pending workflow without the sender's or authorizer's provider signing:
   the receiver's account parties accept or reject a transfer instruction,
-  the executors settle an allocation or cancel it at any time, and after
+  the executors cancel an allocation at any time or settle it, and after
   the pending contract's `expiresAt` the admin expires a transfer
   instruction or cancels an allocation. Reject, cancel, and expiry return
   the locked funds to the same account as unlocked holdings, and a settle
