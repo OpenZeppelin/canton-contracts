@@ -63,8 +63,8 @@ select pending contracts by the registry's templates,
 `TokenTransferInstruction` and `TokenAllocation` for this package, before
 they exercise an interface choice on them. For the admin, the rule covers
 accepting or rejecting a burn request, withdrawing a mint offer, withdrawing
-a mint-account or burn-account allocation, and cancelling an allocation as an
-executor. A contract from another package that the admin acts on can create
+a mint-account or burn-account allocation, and cancelling an allocation. A
+contract from another package that the admin acts on can create
 holdings of any amount. A contract from another package that a wallet accepts
 can transfer the receiver's holdings through the disclosed `TokenRules`.
 `TokenRules_ExpireTransferInstructions` and `TokenRules_ExpireAllocations`
