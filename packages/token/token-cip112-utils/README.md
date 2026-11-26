@@ -75,10 +75,8 @@ locked holdings, so state follows value through a transfer but not through
 a settlement.
 
 Keep a restriction that must hold while funds are in flight, such as a
-compliance freeze, on a separate per-account contract. A field set on the
-account's unlocked holdings is missing from the funds already locked and
-from the funds the account receives, because neither has those holdings as
-a source.
+compliance freeze, on a separate per-account contract. The `HoldingOps`
+doc comment names the funds that a field on the holding misses.
 
 ## Compatibility
 
