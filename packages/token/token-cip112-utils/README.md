@@ -100,6 +100,39 @@ Otherwise it records movements that never happened: an allocation whose legs
 net to zero settles without consuming or creating a holding, and its event
 names any instrument and amount the authorizer chose.
 
+## Time bounds
+
+No workflow reads the time with `getTime`. Every time check is a
+ledger-time bound, which constrains the ledger time the participant picks
+when the transaction executes instead of fixing it when the transaction is
+prepared. An externally signed submission can therefore execute after the
+ledger-time tolerance of its preparation while its bounds hold. Keep
+`getTime` out of the choice bodies that call these functions and out of
+their `HoldingOps`. Otherwise the submission must execute within the
+ledger-time tolerance.
+
+- A transfer, including a mint offer, needs `requestedAt` at or before
+  ledger time and `executeBefore` after it. `executeBefore` may be at most
+  `maxTTL` after ledger time and `requestedAt` at most `maxTTL` before it.
+- An allocation's `expiresAt` is its settlement deadline, or `requestedAt`
+  plus `maxTTL` without one, and must lie after ledger time. A deadline more
+  than `maxTTL` after `requestedAt` is refused, so the lock never expires
+  before the deadline.
+- The authorizer's wallet chooses an allocation's `requestedAt`, at or
+  before ledger time and less than `maxTTL` before it. `createdAt` equals
+  `requestedAt`, so executors must not treat `createdAt` as the time the
+  ledger created the allocation.
+- A settlement that creates a successor moves `expiresAt` to the previous
+  `expiresAt` plus the allocation's `maxTTL`, capped by the settlement
+  deadline, and refuses a result that has already passed. A settlement
+  without a successor sets no new bound.
+- Without a settlement deadline, each settlement adds a full `maxTTL`, so
+  the executors can push an iterated allocation's `expiresAt`, and its
+  reserve's lock, well past `maxTTL` from ledger time by settling it
+  repeatedly. The executors are trusted with the reserve, and an allocation
+  without a deadline is never committed, so its authorizer can withdraw it
+  and end the chain.
+
 ## Operational assumptions
 
 `executeTransfer`, `allocationFactoryImpl`, and `allocationSettleImpl` name

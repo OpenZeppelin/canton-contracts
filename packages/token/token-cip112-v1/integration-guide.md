@@ -232,7 +232,8 @@ cleanup.
 | Enabling iterated settlement with a zero reserve entry | Allocation is refused: reserve amounts must be positive | Use `Some TextMap.empty` for "iterated, no reserve" |
 | Passing `extraTransferLegSides` or `nextIterationFunding` when settling a non-iterated allocation | The settle fails | Reserve iteration arguments for allocations created with `nextIterationFunding` set |
 | Creating a committed allocation without a settlement deadline | Refused at the factory and by the template | Set `settlementDeadline`; commitment ends at the deadline |
-| Requesting a deadline or execution window beyond the registry's `maxTTL` | Refused outright, not truncated | Keep workflow deadlines within `maxTTL` of submission time |
+| Requesting a deadline or execution window beyond the registry's `maxTTL` | Refused outright, not truncated | Keep `executeBefore` within `maxTTL` of ledger time, and a settlement deadline within `maxTTL` of the allocation's `requestedAt` |
+| Backdating an allocation's `requestedAt` | Without a deadline, `expiresAt` is `requestedAt + maxTTL`, so the allocation expires early. A deadline later than `requestedAt + maxTTL` is refused | Set `requestedAt` to the time the wallet prepares the request |
 | Expecting the admin to expire a live workflow | Expiry choices fail before the workflow deadline | Wait for `expiresAt`; only executors cancel early |
 | Clearing the `expire-lock` flag on every contract past `lockExpiresAt` | A contract whose funding is still locked ends, and its holding stays locked | Clear the flag only after finding the locked holdings archived; return a holding left locked with `TokenHolding_AdminUnlock` |
 | Running the default expiry after the owner unlocked or spent the funding | The expiry fails on the archived holding, and so does its whole batch | Expire that contract with `expire-lock` set to `AV_Bool False` |

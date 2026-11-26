@@ -15,7 +15,7 @@ import DA.List (dedupSort)
 import DA.Map qualified as Map
 import DA.Optional (fromOptional)
 import DA.TextMap qualified as TextMap
-import DA.Time (addRelTime, subTime)
+import DA.Time (addRelTime, isLedgerTimeGE, isLedgerTimeLE)
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
@@ -219,18 +219,22 @@ executeTransfer config ops createInstruction oneStep transfer = do
         meta = transfer.meta
 
 -- | The checks every new transfer instruction passes: the registry's admin,
--- a well-formed transfer, and an execution window within `maxTTL`.
+-- a well-formed transfer, and an execution window within `maxTTL` of ledger
+-- time.
+--
+-- No check calls `getTime`. See "Time bounds" in the package `README.md`.
 validateTransfer : RegistryConfig -> TransferInstructionV2.Transfer -> Update ()
 validateTransfer config transfer = do
   requireMatchExpected ("transfer.instrumentId.admin", transfer.instrumentId.admin) config.admin
   require "transfer must be well formed" (isValidTransferV2 transfer)
   assertDeadlineExceeded "transfer.requestedAt" transfer.requestedAt
   assertWithinDeadline "transfer.executeBefore" transfer.executeBefore
-  now <- getTime
-  require "transfer execution window exceeds the registry's maximum TTL"
-    (transfer.executeBefore <= now `addRelTime` config.maxTTL)
-  require "transfer requestedAt is older than the registry's maximum TTL"
-    (now `subTime` transfer.requestedAt <= config.maxTTL)
+  -- executeBefore - maxTTL <= ledger time
+  windowWithinTTL <- isLedgerTimeGE (transfer.executeBefore `addRelTime` negate config.maxTTL)
+  require "transfer execution window exceeds the registry's maximum TTL" windowWithinTTL
+  -- ledger time <= requestedAt + maxTTL
+  requestWithinTTL <- isLedgerTimeLE (transfer.requestedAt `addRelTime` config.maxTTL)
+  require "transfer requestedAt is older than the registry's maximum TTL" requestWithinTTL
 
 -- | Pay out any locked funding beyond the transferred amount, per
 -- instrument, so accepting can never destroy value.

@@ -373,7 +373,7 @@ testSettlementRefusedAfterExpiresAt = do
   Some rules <- queryContractId admin rulesCid
   let leg = mkLeg "leg-1" alice bob 10.0
       openSpec trader sides = (mkSpec app trader sides None) with settlementDeadline = None
-      expiresAt = t1 `addRelTime` rules.config.maxTTL
+      expiresAt = t0 `addRelTime` rules.config.maxTTL
   aliceAlloc <- allocate app alice (openSpec alice [senderSide leg]) [aliceTok]
   bobAlloc <- allocate app bob (openSpec bob [receiverSide leg]) []
   Some v <- queryInterfaceContractId @AllocationV2.Allocation alice aliceAlloc

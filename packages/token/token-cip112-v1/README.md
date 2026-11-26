@@ -89,14 +89,14 @@ interfaces or exceptions of its own.
   reserve funding for a successor allocation created in the same transaction.
   A settle with no reservation ends the chain and releases all proceeds
   unlocked. Successors carry the original settlement deadline and commitment,
-  clear the leg set, and bump the storage expiry using the registry
-  configuration snapshotted at allocation time. The authorizer withdraws a
-  successor like any other allocation.
+  clear the leg set, and extend the previous storage expiry by the `maxTTL`
+  snapshotted at allocation time, capped by the settlement deadline. The
+  authorizer withdraws a successor like any other allocation.
 - An allocation can be settled only before its `expiresAt`, directly or
   through the settlement factory. With a settlement deadline, `expiresAt` is
   the deadline. Without one, `expiresAt` is `createdAt + maxTTL`, and a
-  successor's is the time of the settle that created it plus `maxTTL`. From
-  `expiresAt` on, the executors must ask the authorizer for a new allocation.
+  successor's is the previous `expiresAt` plus `maxTTL`. From `expiresAt`
+  on, the executors must ask the authorizer for a new allocation.
 - The admin ends a stale transfer instruction or allocation once its
   `expiresAt` has passed: an instruction through
   `TokenTransferInstruction_Expire`, an allocation through `Allocation_Cancel`
@@ -108,6 +108,8 @@ interfaces or exceptions of its own.
   the contract without touching the funding, and only once `lockExpiresAt`
   has passed. For an allocation the flag is read only when the actors are
   exactly `[admin]`, including when the admin is its only executor.
+- Every time check is a ledger-time bound. See "Time bounds" in the
+  `token-cip112-utils` [`README.md`](../token-cip112-utils/README.md).
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors
@@ -165,9 +167,11 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   In each iteration they choose the authorizer's extra legs, which may send
   the reserve to any account that allocates to receive it, and whether to keep
   a reserve for the next iteration, which renews the allocation's expiry and
-  lock. The authorizer bounds this with a settlement deadline, or by
-  withdrawing an uncommitted allocation. Enable iterated settlement only with
-  executors trusted with the amount reserved.
+  lock. Without a settlement deadline each renewal adds a full `maxTTL` to
+  the previous expiry, so repeated settlements can keep the reserve locked
+  well past `maxTTL` from ledger time. The authorizer bounds this with a
+  settlement deadline, or by withdrawing an uncommitted allocation. Enable
+  iterated settlement only with executors trusted with the amount reserved.
 - The vendored settlement-factory default does not validate a
   `FinalizedAllocation.nextIterationFunding`; the check in
   `allocation_settleImpl` is the effective guard. Registry forks that replace
@@ -179,11 +183,12 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   lets the account parties unlock or spend the funding first, and the
   contract then ends only through an expiry with the flag cleared. Size
   `lockGrace` to the automation's reaction time (minutes to hours), and size
-  `maxTTL` to the longest workflow the registry accepts. Deadlines are
-  checked against ledger time, which may differ from the synchronizer's
-  record time by up to its ledger-time tolerance. Keep `lockGrace` above
-  twice that tolerance, so that the owner cannot unlock the funding while a
-  settle can still commit.
+  `maxTTL` to the longest workflow the registry accepts, counted from ledger
+  time for a transfer and from `requestedAt` for an allocation. Deadlines
+  are checked against ledger time, which may differ from the
+  synchronizer's record time by up to its ledger-time tolerance. Keep
+  `lockGrace` above twice that tolerance, so that the owner cannot unlock
+  the funding while a settle can still commit.
 - An expiry with the `expire-lock` flag cleared trusts the admin that the
   funding is gone. The ledger cannot check this, because fetching an archived
   holding aborts. The admin clears the flag only after finding the contract's
@@ -199,9 +204,12 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   counterparty's operator can cause this at will by unvetting the packages.
   The funds then stay locked until the lock expires: `lockGrace` after
   `executeBefore` for a transfer, and `lockGrace` after the view's
-  `expiresAt` for an allocation. Both deadlines fall within `maxTTL` of the
-  pending contract's creation, so `maxTTL` plus `lockGrace` caps how long
-  the funds stay frozen. Size both settings with that cap in mind. The
+  `expiresAt` for an allocation. For a transfer and for an allocation the
+  factory creates, these deadlines fall within `maxTTL` of the pending
+  contract's creation, so `maxTTL` plus `lockGrace` caps how long the funds
+  stay frozen. A successor without a settlement deadline can carry an
+  `expiresAt` later than its creation plus `maxTTL`, as the iterated-settlement
+  caveat above describes. Size both settings with that cap in mind. The
   account parties then recover the funds through `TokenHolding_OwnerUnlock`,
   which involves only their participants and the admin's, because the admin
   is the only lock holder. The pending contract stays on the ledger until the
