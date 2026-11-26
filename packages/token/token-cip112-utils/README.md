@@ -62,6 +62,12 @@ contract id enters through an operation the template owner wrote:
 - The `PinAllocation` passed to `settleBatchImpl` and `expireAllocationsImpl`
   must fail on any allocation whose choice bodies the registry does not
   control. Use `pinAllocationTo @YourAllocation`.
+- A choice that runs `expireAllocationsImpl`, or expires a batch of transfer
+  instructions, must have no choice observers unless every party may see
+  every account's holdings. A choice observer witnesses every expiry in the
+  batch and every holding the expiries release. To show a party one account's
+  holdings-change events, return the party from `eventObservers` for that
+  account.
 - `createHolding` must create a contract whose view equals the argument and
   whose signatories include the admin and the account parties.
 - A holding with a live lock belongs to the pending transfer instruction or
@@ -80,6 +86,15 @@ contract id enters through an operation the template owner wrote:
   locked funding. Only `offerMintImpl`, from a choice the admin alone
   controls, may create one. A factory body must refuse the mint account as a
   sender, as `transferFactoryImpl` does.
+
+Each `EventLog_HoldingsChange` the workflows emit names the workflow in the
+reason of its `extraArgs.meta`. A reader of the events, such as a wallet, an
+indexer, or an auditor, must derive value movement from
+`inputHoldingCids` and `outputHoldingCids` only, and must treat
+`transferLegSides` and their `meta` as labels the submitters supplied.
+Otherwise it records movements that never happened: an allocation whose legs
+net to zero settles without consuming or creating a holding, and its event
+names any instrument and amount the authorizer chose.
 
 ## Operational assumptions
 
@@ -102,6 +117,19 @@ do. Every choice on such a contract then needs those parties to stay hosted
 and every participant hosting them to keep the template packages vetted. A
 template owner that reuses these functions inherits these requirements and
 must document them for its users.
+
+`transferFactoryImpl`, `allocationFactoryImpl`, `transferAcceptImpl`,
+`transferRejectImpl`, `transferWithdrawImpl`, and `allocationWithdrawImpl`
+require every account party of the account they act for as an actor. A
+template owner that reuses them inherits the provider dependency that the
+[security caveats](../token-cip112-v1/README.md#security-caveats) of the
+default templates describe.
+
+`allocationFactoryImpl` creates an allocation and locks its funding on every
+call, even when the authorizer already has a live allocation for the same
+`settlement`. Wallets must retry an allocate as the
+[integration guide](../token-cip112-v1/integration-guide.md#retrying-an-allocation)
+describes.
 
 ## Build
 

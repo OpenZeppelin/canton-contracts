@@ -289,7 +289,6 @@ testTransferExpiryWithFlagClearedWaitsForLockExpiry = do
   mustFailWith "strictly before deadline 'lockExpiresAt'" (actAs admin) do
     exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
       expireArgs = [(fromInterfaceContractId @TokenTransferInstruction instrCid, TokenTransferInstruction_Expire with extraArgs = expireLockArgs False)]
-      observers = []
 
 -- | The `expire-lock` flag must be a Bool: any other value fails, on both
 -- the transfer and the allocation expiry.
@@ -491,4 +490,4 @@ testExpireTransferInstructionsRefusesOtherRegistry = do
   setTime t3
   mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs admin) do
     exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
-      expireArgs = [(fromInterfaceContractId @TokenTransferInstruction instrCid, TokenTransferInstruction_Expire with extraArgs = emptyExtraArgs)]; observers = []
+      expireArgs = [(fromInterfaceContractId @TokenTransferInstruction instrCid, TokenTransferInstruction_Expire with extraArgs = emptyExtraArgs)]
