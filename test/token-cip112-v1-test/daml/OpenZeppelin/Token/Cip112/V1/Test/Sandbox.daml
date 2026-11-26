@@ -21,7 +21,7 @@ import Splice.TokenStandard.Utils (senderSide)
 import OpenZeppelin.Token.Cip112.V1.Allocation (TokenAllocation)
 import OpenZeppelin.Token.Cip112.V1.Holding (TokenHolding)
 import OpenZeppelin.Token.Cip112.V1.Registry
-import OpenZeppelin.Token.Cip112.V1.Transfer (TokenTransferInstruction)
+import OpenZeppelin.Token.Cip112.V1.Transfer (TokenTransferInstruction, TokenTransferInstruction_Expire(..))
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
 
 -- | Token creation and querying: holdings appear in owner queries, and the
@@ -124,7 +124,9 @@ sandboxBatchExpiryWitnesses = do
       bobInstrCid = fromInterfaceContractId @TokenTransferInstruction bobInstr
   instrTree <- submitTree (actAs admin <> discloseMany [rulesDisclosure]) do
     exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
-      instructionCids = [aliceInstrCid, bobInstrCid]
+      expireArgs =
+        [ (aliceInstrCid, TokenTransferInstruction_Expire with extraArgs = emptyExtraArgs)
+        , (bobInstrCid, TokenTransferInstruction_Expire with extraArgs = emptyExtraArgs) ]
   aliceReturned <- releasedBy aliceInstrCid instrTree
   bobReturned <- releasedBy bobInstrCid instrTree
 
