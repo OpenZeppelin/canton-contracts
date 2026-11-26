@@ -54,7 +54,7 @@ template TokenRules with
       -- The default operations read no context, so no allocation receives
       -- any part of the batch's.
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @TokenAllocation) (\_ _ -> emptyChoiceContext) config.admin self arg
+        settleBatchImpl @TokenAllocation (\_ -> pure ()) (\_ _ -> emptyChoiceContext) config.admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for TokenRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
@@ -79,7 +79,7 @@ template TokenRules with
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
       controller config.admin
-      do expireAllocationsImpl (pinAllocationTo @TokenAllocation) config.admin cancelArgs
+      do expireAllocationsImpl @TokenAllocation (\_ -> pure ()) config.admin cancelArgs
 
     nonconsuming choice TokenRules_OfferMint : ContractId TransferInstructionV2.TransferInstruction
       -- ^ Offer new holdings to a regular account: a pending transfer

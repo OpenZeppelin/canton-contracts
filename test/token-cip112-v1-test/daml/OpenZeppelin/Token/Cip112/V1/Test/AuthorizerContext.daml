@@ -14,7 +14,6 @@ import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.TokenStandard.Utils (publicFetchDefaultImpl)
 
-import OpenZeppelin.Token.Cip112.Utils.Allocation (pinAllocationTo)
 import OpenZeppelin.Token.Cip112.Utils.Registry (settleBatchImpl)
 import OpenZeppelin.Token.Cip112.V1.Allocation (TokenAllocation)
 
@@ -30,7 +29,7 @@ template AuthorizerContextRules with
       settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
       settlementFactory_settleBatchExtraObservers _ = []
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @TokenAllocation) authorizerEntry admin self arg
+        settleBatchImpl @TokenAllocation (\_ -> pure ()) authorizerEntry admin self arg
 
 -- | The key under which an allocation receives its authorizer's entry.
 entryKey : Text

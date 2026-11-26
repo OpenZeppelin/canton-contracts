@@ -17,7 +17,6 @@
 -- value within the allocation.
 module OpenZeppelin.Token.Cip112.Utils.Allocation
   ( CreateAllocation
-  , PinAllocation
   , pinAllocationTo
   , isValidAllocationState
   , allocationView
@@ -53,22 +52,23 @@ import OpenZeppelin.Token.Cip112.Utils.Holding
 -- successors, so an allocation template passes its own constructor.
 type CreateAllocation = AllocationState -> Update (ContractId AllocationV2.Allocation)
 
--- | Accepted-implementation policy for allocations that a registry choice
--- exercises with the admin's authority. An interface-typed id may point at
--- any template implementing `Allocation`, whose choice bodies the registry
--- does not control; the policy fails on every implementation the owner did
--- not accept and returns the view otherwise.
-type PinAllocation = ContractId AllocationV2.Allocation -> Update AllocationV2.AllocationView
-
--- | The policy that accepts exactly template `t`.
+-- | Fetch an allocation that a registry choice exercises with the admin's
+-- authority, and return its view. An interface-typed id may point at any
+-- template implementing `Allocation`, whose choice bodies the registry
+-- does not control, so this fails unless the contract is a `t`.
+-- `HasEnsure t` rejects an interface as `t`, which would accept every
+-- implementation. `check` then runs on the pinned contract, for a rule of
+-- the registry's own, such as a field the allocation must match.
 pinAllocationTo
-  : forall t. (HasFromInterface t AllocationV2.Allocation, HasToInterface t AllocationV2.Allocation)
-  => ContractId AllocationV2.Allocation -> Update AllocationV2.AllocationView
-pinAllocationTo cid = do
+  : forall t. (HasEnsure t, HasFromInterface t AllocationV2.Allocation, HasToInterface t AllocationV2.Allocation)
+  => (t -> Update ()) -> ContractId AllocationV2.Allocation -> Update AllocationV2.AllocationView
+pinAllocationTo check cid = do
   fetched <- fetchFromInterface @t cid
   case fetched of
     None -> fail "allocation is not an accepted implementation"
-    Some (_, t) -> pure (view (toInterface @AllocationV2.Allocation t))
+    Some (_, alloc) -> do
+      check alloc
+      pure (view (toInterface @AllocationV2.Allocation alloc))
 
 -- | The `ensure` predicate of an allocation template.
 isValidAllocationState : AllocationState -> Bool

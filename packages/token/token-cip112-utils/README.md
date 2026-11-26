@@ -27,9 +27,9 @@ functions, with every template decision left to the caller.
   The record holds functions, so it is never stored.
 - `holdingOpsFor @T`: a `HoldingOps T` whose three consumption operations
   are `consumeByArchive @T`, ready to override one operation with `with`.
-- `consumeByArchive @T` and `pinAllocationTo @T`: the safe ways to write the
-  consumption and allocation policies, pinned to one template.
-  `consumeByArchive @T` returns the archived `T` as the state.
+- `consumeByArchive @T` and `pinAllocationTo @T`: archive a holding and
+  fetch an allocation, each pinned to template `T`. `consumeByArchive @T`
+  returns the archived `T` as the state.
 - `privateAssetAllocateExtraObservers`: the allocation factory's extra
   observers, which admit the settlement executors only to a call that needs
   no funding and names no input holdings.
@@ -107,10 +107,14 @@ contract id enters through an operation the template owner wrote:
 - `fundHolding`, `deliverHolding`, and `returnHolding` must each fail on any
   holding that is not an accepted implementation, and otherwise archive it
   and return its view and state. The workflows credit that view, so an
-  operation that leaves the holding live lets it be spent again. Use
-  `holdingOpsFor @YourHolding`, or a consuming spend choice reached through
-  `fetchFromInterface @YourHolding`. Never archive a caller-supplied id by
-  interface.
+  operation that leaves the holding live lets it be spent again. Build each
+  from `consumeByArchive @YourHolding`, as `holdingOpsFor @YourHolding`
+  does, or from a consuming spend choice reached through
+  `fetchFromInterface @YourHolding`. The compiler checks only the first,
+  where an interface in place of `YourHolding` fails to compile.
+  `consumeByArchive` exercises only `Archive`, so a template whose spend
+  rule lives in another choice needs the second. Never archive a
+  caller-supplied id by interface.
 - A refusal in `deliverHolding` or `returnHolding` leaves the other
   operation's paths open, and a refusal in both holds the locked funds until
   the lock expires. After that the owner recovers them through the holding's
@@ -132,8 +136,9 @@ contract id enters through an operation the template owner wrote:
   signs alone, such as a second rules contract without the first one's
   roles. A control that must bind the admin has to be held by a party that
   signs the holdings and the pending contracts. The operations must refuse a
-  holding, and the `PinAllocation` an allocation, that names a different such
-  party. `examples/token/token-cip112-custom` does this with its pauser.
+  holding, and the `check` passed to `settleBatchImpl` and
+  `expireAllocationsImpl` an allocation, that names a different such party.
+  `examples/token/token-cip112-custom` does this with its pauser.
 - `settleBatchImpl` takes a selector that picks the part of the batch's
   choice context each `Allocation_Settle` receives, given the allocation's
   view. The batch metadata never reaches an allocation. A selector that
@@ -172,9 +177,12 @@ contract id enters through an operation the template owner wrote:
   moves the input's value out from under those fields.
 - Merge and split choices bypass the registry contract. Check a factory
   policy that must cover them, such as a pause, inside the holding's choice.
-- The `PinAllocation` passed to `settleBatchImpl` and `expireAllocationsImpl`
-  must fail on any allocation whose choice bodies the registry does not
-  control. Use `pinAllocationTo @YourAllocation`.
+- `settleBatchImpl` and `expireAllocationsImpl` take the accepted allocation
+  template as a type argument, `@YourAllocation`, and pin every allocation
+  to it before exercising it with the admin's authority. An interface there
+  fails to compile. A batch accepts exactly one allocation template. Their
+  first argument checks each pinned allocation against a rule of the
+  registry's own.
 - A choice that runs `expireAllocationsImpl`, or expires a batch of transfer
   instructions, must have no choice observers unless every party may see
   every account's holdings. A choice observer witnesses every expiry in the

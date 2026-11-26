@@ -18,9 +18,7 @@
 -- caller-supplied holding id only ever enters through `fundHolding`, and the
 -- workflows consume the funding they locked through `deliverHolding` or
 -- `returnHolding`. Each must establish that the contract is an accepted
--- implementation before the workflow credits its amount. `consumeByArchive`
--- is the safe default; an interface `fetch` followed by an interface
--- `archive` is not.
+-- implementation before the workflow credits its amount.
 module OpenZeppelin.Token.Cip112.Utils.Holding where
 
 import DA.Assert (assertDeadlineExceeded)
@@ -81,8 +79,8 @@ isValidRegistryConfig c =
 -- first one's roles. Roles and policy on a rules contract therefore restrict
 -- wallets only. A control that must bind the admin has to be held by a party
 -- that signs the holdings and the pending contracts. The operations must
--- refuse a holding, and the `PinAllocation` an allocation, that names a
--- different such party.
+-- refuse a holding, and the `check` passed to `settleBatchImpl` and
+-- `expireAllocationsImpl` an allocation, that names a different such party.
 data HoldingOps h = HoldingOps with
     createHolding : [h] -> HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
       -- ^ Create a holding from its sources and its standard view. The
@@ -123,11 +121,14 @@ data HoldingOps h = HoldingOps with
       -- contract is an accepted implementation, then archives the holding and
       -- returns the view and state it had. The workflow credits that view, so
       -- a holding left live can be spent again, twice in one call when its id
-      -- repeats in the inputs. An input may be a holding whose lock has
-      -- expired, such as the funding of an instruction or allocation that
-      -- never completed, so a rule that must hold locked funds after the lock
-      -- expires is also checked here. Put a rule that only stops new
-      -- spending, such as a minimum holding age, here.
+      -- repeats in the inputs. Build it from `consumeByArchive @T`, or from a
+      -- spend choice reached through `fetchFromInterface` at a template type.
+      -- Only the first rejects an interface type at compile time. An input
+      -- may be a holding whose lock has expired, such as the funding of an
+      -- instruction or allocation that never completed, so a rule that must
+      -- hold locked funds after the lock expires is also checked here. Put a
+      -- rule that only stops new spending, such as a minimum holding age,
+      -- here.
     deliverHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h)
       -- ^ Consume locked funding to pay it out, through
       -- `consumeLockedHolding`: `transferAcceptImpl`, including the admin's
@@ -137,9 +138,12 @@ data HoldingOps h = HoldingOps with
       -- authorizer, and a reserve rolled into the next iteration. Fails
       -- unless the contract is an accepted implementation, then archives the
       -- holding and returns the view and state it had. The workflow credits
-      -- that view, so a holding left live can be spent again. In a batch
-      -- settlement, the context is what the `select` argument of
-      -- `settleBatchImpl` returns for the allocation.
+      -- that view, so a holding left live can be spent again. Build it from
+      -- `consumeByArchive @T`, or from a spend choice reached through
+      -- `fetchFromInterface` at a template type. Only the first rejects an
+      -- interface type at compile time. In a batch settlement, the context is
+      -- what the `select` argument of `settleBatchImpl` returns for the
+      -- allocation.
     returnHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h)
       -- ^ Consume locked funding to return it to its owner, through
       -- `unlockHoldings`: `transferRejectImpl`, `transferWithdrawImpl`,
@@ -147,7 +151,9 @@ data HoldingOps h = HoldingOps with
       -- `allocationCancelImpl`. Fails unless the contract is an accepted
       -- implementation, then archives the holding and returns the view and
       -- state it had. The workflow credits that view, so a holding left live
-      -- can be spent again.
+      -- can be spent again. Build it from `consumeByArchive @T`, or from a
+      -- spend choice reached through `fetchFromInterface` at a template type.
+      -- Only the first rejects an interface type at compile time.
     withEventLog : (ContractId TransferEventsV2.EventLog -> Update ()) -> Update ()
       -- ^ Run one emission against an `EventLog` host. The default templates
       -- supply a transient host created and archived within the transaction.
@@ -163,9 +169,11 @@ data HoldingOps h = HoldingOps with
 -- | Consume by archiving, pinned to template `t`: `fetchFromInterface @t`
 -- fails on every other implementation, so a foreign `Holding` whose view
 -- claims this admin never reaches the workflow's accounting. The state is
--- the archived template value.
+-- the archived template value. `HasEnsure t` rejects an interface as `t`,
+-- which would accept every implementation. It exercises only `Archive`, so
+-- a spend rule kept in another choice of `t` never runs.
 consumeByArchive
-  : forall t. (HasFromInterface t HoldingV2.Holding, HasToInterface t HoldingV2.Holding, HasArchive t)
+  : forall t. (HasEnsure t, HasFromInterface t HoldingV2.Holding, HasToInterface t HoldingV2.Holding, HasArchive t)
   => ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, t)
 consumeByArchive cid = do
   fetched <- fetchFromInterface @t cid
@@ -179,7 +187,7 @@ consumeByArchive cid = do
 -- `eventObservers`, with `consumeByArchive @t` as all three consumption
 -- operations. Override one of them with `with` to add a rule to its paths.
 holdingOpsFor
-  : forall t. (HasFromInterface t HoldingV2.Holding, HasToInterface t HoldingV2.Holding, HasArchive t)
+  : forall t. (HasEnsure t, HasFromInterface t HoldingV2.Holding, HasToInterface t HoldingV2.Holding, HasArchive t)
   => ([t] -> HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding))
   -> ((ContractId TransferEventsV2.EventLog -> Update ()) -> Update ())
   -> (HoldingV2.Account -> [Party])
