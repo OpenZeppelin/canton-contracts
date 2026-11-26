@@ -92,6 +92,11 @@ interfaces or exceptions of its own.
   clear the leg set, and bump the storage expiry using the registry
   configuration snapshotted at allocation time. The authorizer withdraws a
   successor like any other allocation.
+- An allocation can be settled only before its `expiresAt`, directly or
+  through the settlement factory. With a settlement deadline, `expiresAt` is
+  the deadline. Without one, `expiresAt` is `createdAt + maxTTL`, and a
+  successor's is the time of the settle that created it plus `maxTTL`. From
+  `expiresAt` on, the executors must ask the authorizer for a new allocation.
 - The admin ends a stale transfer instruction or allocation once its
   `expiresAt` has passed: an instruction through
   `TokenTransferInstruction_Expire`, an allocation through `Allocation_Cancel`
@@ -152,8 +157,8 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   settle outside the factory. Operate the admin party so that it signs settles
   only through the settlement factory.
 - A mint-account or burn-account allocation commits the admin to that supply
-  change. The executors decide whether and when it settles, until the
-  settlement deadline or until the admin withdraws an uncommitted allocation.
+  change. The executors decide whether and when it settles, until its
+  `expiresAt` or until the admin withdraws an uncommitted allocation.
   The netting ignores the amount on the special side, so the exact-cover check
   is what bounds the amount minted or burned to the legs the admin allocated.
 - Enabling iterated settlement hands the executors control of the reserve.
@@ -174,7 +179,11 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   lets the account parties unlock or spend the funding first, and the
   contract then ends only through an expiry with the flag cleared. Size
   `lockGrace` to the automation's reaction time (minutes to hours), and size
-  `maxTTL` to the longest workflow the registry accepts.
+  `maxTTL` to the longest workflow the registry accepts. Deadlines are
+  checked against ledger time, which may differ from the synchronizer's
+  record time by up to its ledger-time tolerance. Keep `lockGrace` above
+  twice that tolerance, so that the owner cannot unlock the funding while a
+  settle can still commit.
 - An expiry with the `expire-lock` flag cleared trusts the admin that the
   funding is gone. The ledger cannot check this, because fetching an archived
   holding aborts. The admin clears the flag only after finding the contract's

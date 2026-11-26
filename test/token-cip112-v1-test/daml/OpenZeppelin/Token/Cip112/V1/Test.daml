@@ -8,7 +8,7 @@ import DA.Assert ((===), (=/=))
 import DA.Date (date, Month(Jan))
 import DA.Foldable (forA_)
 import DA.List (sort)
-import DA.Time (addRelTime, days, hours, minutes, time)
+import DA.Time (RelTime, addRelTime, days, hours, microseconds, minutes, time)
 import Daml.Script
 
 import DA.Map qualified as Map
@@ -30,7 +30,8 @@ import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Token.Cip112.V1.Holding
 import OpenZeppelin.Token.Cip112.V1.Registry
 import OpenZeppelin.Token.Cip112.V1.Transfer
-import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (mustFailWith)
+import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (expireCmd, mustFailWith)
+import OpenZeppelin.Token.Cip112.V1.Test.Guard (allocateCmd, settleCmd)
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
 
 -- | Happy path: two-leg DvP with net funding. Alice sends 10 and receives 4,
@@ -803,6 +804,186 @@ testCommittedRequiresDeadline = do
         inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding aliceInput]
         extraArgs = emptyExtraArgs
         actors = [alice]
+
+-- Settlement window
+--------------------
+
+-- | `mkAllocationSpec` without a settlement deadline, so the allocation's
+-- `expiresAt` is `createdAt + maxTTL`.
+mkOpenSpec : Party -> Party -> [AllocationV2.TransferLegSide] -> AllocationV2.AllocationSpecification
+mkOpenSpec admin authorizer sides = (mkAllocationSpec admin authorizer sides) with settlementDeadline = None
+
+-- | The `maxTTL` the scenario's registry was configured with.
+registryMaxTTL : Scenario -> Script RelTime
+registryMaxTTL Scenario{..} = do
+  Some rules <- queryContractId admin rulesCid
+  pure rules.config.maxTTL
+
+-- | The last representable instant before `t`.
+justBefore : Time -> Time
+justBefore t = t `addRelTime` microseconds (-1)
+
+-- | The failure of a settle at or after the allocation's `expiresAt`.
+settleExpired : Text
+settleExpired = "Ledger time is at or past deadline 'allocation.expiresAt'"
+
+-- | Allocate with `requestedAt` set to the current time. `allocateSpec`
+-- requests at `t0`, which is more than `maxTTL` old by the time a
+-- deadline-less allocation expires.
+allocateNow
+  : Scenario -> Party -> AllocationV2.AllocationSpecification -> [ContractId TokenHolding]
+  -> Script (ContractId AllocationV2.Allocation)
+allocateNow s authorizer spec inputs = do
+  now <- getTime
+  result <- submit (actAs authorizer <> discloseMany [s.rulesDisclosure])
+    (allocateCmd s [authorizer] spec now inputs)
+  completedCid result
+
+expiresAtOf : Party -> ContractId AllocationV2.Allocation -> Script Time
+expiresAtOf p cid = do
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation p cid
+  case v.expiresAt of
+    Some t -> pure t
+    None -> abort "allocation reports no expiresAt"
+
+-- | A direct `Allocation_Settle` by the admin and the executors, outside the
+-- settlement factory.
+directSettleCmd : Scenario -> ContractId AllocationV2.Allocation -> Commands AllocationV2.AllocationResult
+directSettleCmd s cid = settleCmd cid [s.admin, s.app] []
+
+-- | Without a settlement deadline an allocation's `expiresAt` is
+-- `createdAt + maxTTL`. A direct settle is accepted up to the instant before
+-- it and refused from it on, and the admin's expiry opens exactly when
+-- settlement closes, so no instant allows both. The expiry then returns the
+-- authorizer's funding.
+testDirectSettleBoundedByExpiresAt : Script ()
+testDirectSettleBoundedByExpiresAt = do
+  s@Scenario{..} <- setup
+  input1 <- mint admin alice 10.0
+  input2 <- mint admin alice 10.0
+  alice1 <- allocateNow s alice (mkOpenSpec admin alice [senderSide legAliceToBob]) [input1]
+  bob1 <- allocateNow s bob (mkOpenSpec admin bob [receiverSide legAliceToBob]) []
+  alice2 <- allocateNow s alice (mkOpenSpec admin alice [senderSide legAliceToBob]) [input2]
+  bob2 <- allocateNow s bob (mkOpenSpec admin bob [receiverSide legAliceToBob]) []
+  maxTTL <- registryMaxTTL s
+  expiresAt <- expiresAtOf alice alice1
+  expiresAt === t1 `addRelTime` maxTTL
+
+  setTime (justBefore expiresAt)
+  mustFailWith "Ledger time is strictly before deadline 'allocation.expiresAt'"
+    (actAs admin <> discloseMany [rulesDisclosure]) (expireCmd s [alice2])
+  _ <- submit (actAs admin <> actAs app) (directSettleCmd s alice1 *> directSettleCmd s bob1)
+  bobSettled <- holdingAmounts bob
+  bobSettled === [10.0]
+
+  setTime expiresAt
+  mustFailWith settleExpired (actAs admin <> actAs app) (directSettleCmd s alice2)
+  -- Bob's side locks nothing, so a direct settle of it alone would mint.
+  mustFailWith settleExpired (actAs admin <> actAs app) (directSettleCmd s bob2)
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) (expireCmd s [alice2, bob2])
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [10.0]
+  assertNoLocks alice
+  bobAfter <- holdingAmounts bob
+  bobAfter === [10.0]
+
+-- | `SettlementFactory_SettleBatch` has the same bound, and one expired
+-- allocation fails the whole batch even when its counterparty's allocation
+-- is still live. Once the admin expires the stale one, its authorizer
+-- allocates again and the batch settles against the same live allocation.
+testSettleBatchBoundedByExpiresAt : Script ()
+testSettleBatchBoundedByExpiresAt = do
+  s@Scenario{..} <- setup
+  input1 <- mint admin alice 10.0
+  input2 <- mint admin alice 10.0
+  alice1 <- allocateNow s alice (mkOpenSpec admin alice [senderSide legAliceToBob]) [input1]
+  bob1 <- allocateNow s bob (mkOpenSpec admin bob [receiverSide legAliceToBob]) []
+  alice2 <- allocateNow s alice (mkOpenSpec admin alice [senderSide legAliceToBob]) [input2]
+  expiresAt <- expiresAtOf alice alice1
+
+  setTime (justBefore expiresAt)
+  _ <- settleBatch s [legAliceToBob] [alice1, bob1] emptyExtraArgs
+  -- Bob allocates for the next trade now, so his side outlives Alice's.
+  bob2 <- allocateNow s bob (mkOpenSpec admin bob [receiverSide legAliceToBob]) []
+
+  setTime expiresAt
+  funding <- allocationDisclosures admin [alice2, bob2]
+  mustFailWith settleExpired (actAs app <> discloseMany (rulesDisclosure :: funding))
+    (settleBatchFinalizedCmd s [legAliceToBob] (map nonIteratedAllocation [alice2, bob2]))
+
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) (expireCmd s [alice2])
+  aliceHoldings <- query @TokenHolding alice
+  alice3 <- allocateNow s alice (mkOpenSpec admin alice [senderSide legAliceToBob])
+    [cid | (cid, h) <- aliceHoldings, h.holding.account.owner == Some alice]
+  _ <- settleBatch s [legAliceToBob] [alice3, bob2] emptyExtraArgs
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === []
+  bobAfter <- holdingAmounts bob
+  bobAfter === [10.0, 10.0]
+
+-- | Every iteration of a deadline-less allocation renews its window: the
+-- successor's `expiresAt` is `maxTTL` after the settle that created it, so it
+-- settles after the original allocation's expiry, and its own successor is
+-- refused from its own `expiresAt` on.
+testIteratedSuccessorBoundedByOwnExpiresAt : Script ()
+testIteratedSuccessorBoundedByOwnExpiresAt = do
+  s@Scenario{..} <- setup
+  input <- mint admin alice 10.0
+  alice1 <- allocateNow s alice
+    ((mkOpenSpec admin alice []) with nextIterationFunding = Some (TextMap.fromList [("TOK", 10.0)])) [input]
+  bob1 <- allocateNow s bob ((mkOpenSpec admin bob []) with nextIterationFunding = Some TextMap.empty) []
+  maxTTL <- registryMaxTTL s
+  originalExpiresAt <- expiresAtOf alice alice1
+
+  -- A month in, Alice sends 3 and both sides roll into successors.
+  let firstIteration = t1 `addRelTime` days 30
+      leg1 = mkTransferLeg "it-1" alice bob 3.0
+  setTime firstIteration
+  r1 <- settleBatchFinalized s [leg1]
+    [ AllocationV2.FinalizedAllocation with
+        allocationCid = alice1
+        extraTransferLegSides = [senderSide leg1]
+        nextIterationFunding = Some (TextMap.fromList [("TOK", 7.0)])
+    , AllocationV2.FinalizedAllocation with
+        allocationCid = bob1
+        extraTransferLegSides = [receiverSide leg1]
+        nextIterationFunding = Some (TextMap.fromList [("TOK", 3.0)])
+    ]
+  [aliceR1, bobR1] <- pure r1.allocationSettleResults
+  Some alice2 <- settledNext aliceR1
+  Some bob2 <- settledNext bobR1
+  successorExpiresAt <- expiresAtOf alice alice2
+  successorExpiresAt === firstIteration `addRelTime` maxTTL
+
+  -- Past the original's expiry, the successors still settle: Alice sends 1
+  -- more and keeps 6 in reserve, and Bob ends his chain.
+  setTime (justBefore successorExpiresAt)
+  assertMsg "the second iteration must run after the original allocation expired"
+    (justBefore successorExpiresAt > originalExpiresAt)
+  let leg2 = mkTransferLeg "it-2" alice bob 1.0
+  r2 <- settleBatchFinalized s [leg2]
+    [ AllocationV2.FinalizedAllocation with
+        allocationCid = alice2
+        extraTransferLegSides = [senderSide leg2]
+        nextIterationFunding = Some (TextMap.fromList [("TOK", 6.0)])
+    , AllocationV2.FinalizedAllocation with
+        allocationCid = bob2
+        extraTransferLegSides = [receiverSide leg2]
+        nextIterationFunding = None
+    ]
+  [aliceR2, _] <- pure r2.allocationSettleResults
+  Some alice3 <- settledNext aliceR2
+  thirdExpiresAt <- expiresAtOf alice alice3
+  thirdExpiresAt === justBefore successorExpiresAt `addRelTime` maxTTL
+
+  setTime thirdExpiresAt
+  mustFailWith settleExpired (actAs admin <> actAs app) (directSettleCmd s alice3)
+  _ <- submit (actAs admin <> discloseMany [rulesDisclosure]) (expireCmd s [alice3])
+  aliceAfter <- holdingAmounts alice
+  aliceAfter === [6.0]
+  assertNoLocks alice
+  bobAfter <- holdingAmounts bob
+  bobAfter === [4.0]
 
 -- | The funding lock outlives the instruction's own expiry, so the
 -- admin's expiry path always has a window in which it is guaranteed to work.

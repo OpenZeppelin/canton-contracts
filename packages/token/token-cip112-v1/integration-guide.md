@@ -107,6 +107,12 @@ one transaction through `SettlementFactory_SettleBatch`, which checks that the
 batch's legs are covered exactly. `examples/token/token-cip112-trading-test` runs a full
 DvP.
 
+Every allocation in the batch, with or without a settlement deadline, must be
+settled before its `expiresAt`. One allocation at or past its `expiresAt`
+fails the settlement of every authorizer in the batch. Before submitting,
+drop each trade with an expired allocation, legs included, or ask that
+allocation's authorizer for a new allocation.
+
 Authorization: each authorizer's account parties allocate; the executors alone
 settle the batch.
 
@@ -148,7 +154,7 @@ An allocation created with `nextIterationFunding` set lets the executors bring
 new legs each settlement round against a locked reserve, rolling the remainder
 into a successor allocation. `testIteratedSettlementLifecycle` runs a
 two-iteration chain; the trading example's deposit flow shows the consumer
-shape.
+shape. Each successor can be settled until its own `expiresAt`.
 
 Authorization: as DvP, per iteration; the authorizer withdraws the current
 successor to exit.
@@ -230,5 +236,5 @@ cleanup.
 | Expecting the admin to expire a live workflow | Expiry choices fail before the workflow deadline | Wait for `expiresAt`; only executors cancel early |
 | Clearing the `expire-lock` flag on every contract past `lockExpiresAt` | A contract whose funding is still locked ends, and its holding stays locked | Clear the flag only after finding the locked holdings archived; return a holding left locked with `TokenHolding_AdminUnlock` |
 | Running the default expiry after the owner unlocked or spent the funding | The expiry fails on the archived holding, and so does its whole batch | Expire that contract with `expire-lock` set to `AV_Bool False` |
-| Reading `availableActions` as "exercisable now" | A committed allocation advertises withdraw that still fails before the deadline | Treat the map as the actor sets; check the deadline separately |
+| Reading `availableActions` as "exercisable now" | A committed allocation advertises withdraw that still fails before the deadline, and every allocation advertises settle that fails from `expiresAt` on | Treat the map as the actor sets; check the deadline and `expiresAt` separately |
 | Reading `transferLegSides` or their `meta` in an `EventLog_HoldingsChange` as value movement | The reader records movements that never happened, such as a settlement whose legs net to zero | Derive value movement from the event's `inputHoldingCids` and `outputHoldingCids` only. Treat the event's `transferLegSides` and their `meta` as labels the submitters supplied |
