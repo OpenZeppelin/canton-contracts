@@ -712,9 +712,11 @@ testTransferFeeMustBeInRange : Script ()
 testTransferFeeMustBeInRange = do
   App{..} <- setup
   Some rules <- queryContractId admin rulesCid
-  mustFailWith "Template precondition violated" (actAs [admin, pauser]) do createCmd rules with transferFeeBps = -1
-  mustFailWith "Template precondition violated" (actAs [admin, pauser]) do createCmd rules with transferFeeBps = 10001
-  _ <- submit (actAs [admin, pauser]) do createCmd rules with transferFeeBps = 10000
+  forA_ [-1, 10001] \fee -> do
+    proposalCid <- submit admin do
+      createCmd MyRulesProposal with rules = (rules with transferFeeBps = fee); replaces = None
+    mustFailWith "Template precondition violated" (actAs pauser) do exerciseCmd proposalCid MyRulesProposal_Accept
+  _ <- proposeRules None rules with transferFeeBps = 10000
   pure ()
 
 -- Registry policy
