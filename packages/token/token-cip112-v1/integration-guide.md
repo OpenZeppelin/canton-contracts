@@ -148,12 +148,6 @@ shape.
 Authorization: as DvP, per iteration; the authorizer withdraws the current
 successor to exit.
 
-### Reading holdings-change events
-
-Follow the rule for readers of `EventLog_HoldingsChange` events in the
-[trust boundary](../token-cip112-utils/README.md#trust-boundary) of the utils
-`README.md`.
-
 ## Token Standard
 
 The package implements CIP-0112 / Token Standard V2: `HoldingV2.Holding`,
@@ -196,3 +190,4 @@ cleanup.
 | Requesting a deadline or execution window beyond the registry's `maxTTL` | Refused outright, not truncated | Keep workflow deadlines within `maxTTL` of submission time |
 | Expecting the admin to expire a live workflow | Expiry choices fail before the workflow deadline | Wait for `expiresAt`; only executors cancel early |
 | Reading `availableActions` as "exercisable now" | A committed allocation advertises withdraw that still fails before the deadline | Treat the map as the actor sets; check the deadline separately |
+| Reading `transferLegSides` or their `meta` in an `EventLog_HoldingsChange` as value movement | The reader records movements that never happened, such as a settlement whose legs net to zero | Derive value movement from the event's `inputHoldingCids` and `outputHoldingCids` only. Treat the event's `transferLegSides` and their `meta` as labels the submitters supplied |
