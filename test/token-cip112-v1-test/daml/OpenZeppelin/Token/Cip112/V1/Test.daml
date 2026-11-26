@@ -31,9 +31,8 @@ import OpenZeppelin.Token.Cip112.V1.Holding
 import OpenZeppelin.Token.Cip112.V1.Registry
 import OpenZeppelin.Token.Cip112.V1.Transfer
 import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (expireCmd, mustFailWith)
-import OpenZeppelin.Token.Cip112.V1.Test.Guard (allocateCmd, settleCmd)
+import OpenZeppelin.Token.Cip112.V1.Test.Guard (allocateCmd, settleCmd, transferCmd)
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
-import OpenZeppelin.Token.Cip112.V1.Test.Guard (allocateCmd, transferCmd)
 
 -- | Happy path: two-leg DvP with net funding. Alice sends 10 and receives 4,
 -- so only 6 is locked; Bob nets +6 and locks nothing. After settlement Alice
