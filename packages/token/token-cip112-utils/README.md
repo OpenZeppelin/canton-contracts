@@ -103,6 +103,13 @@ and every participant hosting them to keep the template packages vetted. A
 template owner that reuses these functions inherits these requirements and
 must document them for its users.
 
+`transferFactoryImpl`, `allocationFactoryImpl`, `transferAcceptImpl`,
+`transferRejectImpl`, `transferWithdrawImpl`, and `allocationWithdrawImpl`
+require every account party of the account they act for as an actor. A
+template owner that reuses them inherits the provider dependency that the
+[security caveats](../token-cip112-v1/README.md#security-caveats) of the
+default templates describe.
+
 `allocationFactoryImpl` creates an allocation and locks its funding on every
 call, even when the authorizer already has a live allocation for the same
 `settlement`. Wallets must retry an allocate as the

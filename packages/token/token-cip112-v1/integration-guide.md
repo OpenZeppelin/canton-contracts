@@ -21,7 +21,11 @@ Three roles interact with the package:
   submission that exercises a factory choice, and the disclosed locked
   funding to accept or reject an incoming transfer. The user's own holdings,
   and the instructions and allocations the user takes part in, are visible
-  to the user directly as a stakeholder.
+  to the user directly as a stakeholder. Open an account whose provider
+  differs from its owner only when the provider commits to staying
+  available, because every choice the owner takes for the account also
+  needs the provider (see the
+  [`README.md` security caveats](README.md#security-caveats)).
 - **Settlement apps** host executor parties. They receive allocations as
   contract observers and drive `SettlementFactory_SettleBatch` with the
   executors as actors.
@@ -41,7 +45,8 @@ The receiver and the executors observe the pending contract itself. Until it
 is archived, these parties must stay hosted, and every participant hosting
 them must keep the packages below vetted. Otherwise every choice on the
 pending contract fails, and the locked funds stay frozen until the lock
-expires and the owner recovers them through `TokenHolding_OwnerUnlock`. The
+expires and the account parties recover them through
+`TokenHolding_OwnerUnlock`. The
 [`README.md` security caveats](README.md#security-caveats) describe who can
 cause this and how long the funds stay frozen.
 
