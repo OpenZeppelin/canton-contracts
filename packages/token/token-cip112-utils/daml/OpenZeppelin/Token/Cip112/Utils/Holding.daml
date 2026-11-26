@@ -64,7 +64,7 @@ isValidRegistryConfig c =
 -- Keep a restriction that must hold while funds are in flight, such as a
 -- compliance freeze, on a separate per-account contract. A field set on the
 -- account's unlocked holdings is missing from the funds already locked and
--- from the funds the account receives, because neither has those holdings
+-- from the funds other accounts send it, because neither has those holdings
 -- as a source.
 --
 -- A rule that tracks live registry state reads the current policy contract
