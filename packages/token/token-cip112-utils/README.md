@@ -103,6 +103,12 @@ and every participant hosting them to keep the template packages vetted. A
 template owner that reuses these functions inherits these requirements and
 must document them for its users.
 
+`allocationFactoryImpl` creates an allocation and locks its funding on every
+call, even when the authorizer already has a live allocation for the same
+`settlement`. Wallets must retry an allocate as the
+[integration guide](../token-cip112-v1/integration-guide.md#retrying-an-allocation)
+describes.
+
 ## Build
 
 From the repository root:
