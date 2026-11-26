@@ -689,7 +689,7 @@ testCommittedRequiresDeadline = do
 --------------------
 
 -- | `mkAllocationSpec` without a settlement deadline, so the allocation's
--- `expiresAt` is `maxTTL` after it is created.
+-- `expiresAt` is `createdAt + maxTTL`.
 mkOpenSpec : Party -> Party -> [AllocationV2.TransferLegSide] -> AllocationV2.AllocationSpecification
 mkOpenSpec admin authorizer sides = (mkAllocationSpec admin authorizer sides) with settlementDeadline = None
 
@@ -731,8 +731,8 @@ expiresAtOf p cid = do
 directSettleCmd : Scenario -> ContractId AllocationV2.Allocation -> Commands AllocationV2.AllocationResult
 directSettleCmd s cid = settleCmd cid [s.admin, s.app] []
 
--- | Without a settlement deadline an allocation's `expiresAt` is `maxTTL`
--- after its creation. A direct settle is accepted up to the instant before
+-- | Without a settlement deadline an allocation's `expiresAt` is
+-- `createdAt + maxTTL`. A direct settle is accepted up to the instant before
 -- it and refused from it on, and the admin's expiry opens exactly when
 -- settlement closes, so no instant allows both. The expiry then returns the
 -- authorizer's funding.
