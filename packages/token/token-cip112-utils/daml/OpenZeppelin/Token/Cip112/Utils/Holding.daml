@@ -62,9 +62,9 @@ isValidRegistryConfig c =
 -- id until its lock expires.
 --
 -- Keep a restriction that must hold while funds are in flight, such as a
--- compliance freeze, on a separate per-account contract. A field on the
--- holding is missing from returned and incoming funds, because their
--- sources never carried it.
+-- compliance freeze, on a separate per-account contract. Kept as a field on
+-- the account's holdings and checked in `fundHolding`, it misses the funds
+-- locked before it was set and the funds other accounts send.
 --
 -- A rule that tracks live registry state reads the current policy contract
 -- from the context, and the operation checks the contract it fetches: its
@@ -205,7 +205,7 @@ mkHoldingView admin account instrumentId amount lock = HoldingV2.HoldingView wit
   lock
   meta = emptyMetadata
 
--- | Create a holding through the owner's constructor, funded by `sources`.
+-- | Create a holding through the owner's constructor.
 newHolding
   : HoldingOps h -> [h] -> Party -> HoldingV2.Account -> Text -> Decimal -> Optional HoldingV2.Lock
   -> Update (ContractId HoldingV2.Holding)
