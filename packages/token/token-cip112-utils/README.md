@@ -139,6 +139,16 @@ contract id enters through an operation the template owner wrote:
   `check` argument of `settleBatchImpl` and `expireAllocationsImpl`, must
   refuse a holding or allocation that names a different such party.
   `examples/token/token-cip112-custom` does this with its pauser.
+- The choice bodies of a pending instruction or allocation run on the
+  pending contract alone, so a policy in a factory body, such as a pause,
+  an allowlist, a cap, or a fee, binds only when the pending contract is
+  created. A policy that must also hold at delivery is checked in the
+  template's own accept or settle before it calls `transferAcceptImpl` or
+  `allocationSettleImpl`, as
+  [`integration-guide.md`](../token-cip112-v1/integration-guide.md#policy-at-delivery)
+  of `openzeppelin-token-cip112-v1` shows. A consumer that counts totals when
+  an offer is made must correct them in every choice that ends the offer
+  undelivered: reject, withdraw, cancel, and expiry.
 - `settleBatchImpl` takes a selector that picks the part of the batch's
   choice context each `Allocation_Settle` receives, given the allocation's
   view. The batch metadata never reaches an allocation. A selector that

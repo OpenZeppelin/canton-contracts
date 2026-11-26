@@ -225,6 +225,34 @@ other actor set releases the funding.
 Authorization: the admin alone expires, clears flags, and runs the admin
 unlock; the executors cancel an allocation at any time.
 
+### Policy at delivery
+
+`TokenRules` adds no policy. A policy in a consumer's own rules template,
+such as a pause, binds after creation only when the consumer's pending
+templates check it again on accept and settle. Before calling the utils
+body, the choice:
+
+1. Reads the rules contract id from `extraArgs.context`, under a key the
+   registry documents, and fails if the entry is missing or is not a
+   contract id. The submitter attaches the rules contract by explicit
+   disclosure, as for a factory call.
+2. Fetches it as the consumer's own rules template, not through an
+   interface, so a contract of another template is refused.
+3. Checks that its admin is the pending contract's admin, and that every
+   other party meant to bind the admin, such as a pauser that co-signs the
+   rules contract, is the party the pending contract records. The submitter
+   chooses the id. Without the admin check, a rules contract of any party
+   passes. Without the co-signer check, one the admin signed alone passes.
+4. Applies the policy to the fetched contract.
+
+Archive the rules contract in every choice that changes the policy, so a
+fetch of an id from before the change fails. A batch settlement builds each
+`Allocation_Settle`'s context through the selector passed to
+`settleBatchImpl`, which can forward the factory's own id. Reject, withdraw,
+cancel, and expiry return funds to their owner and need no check.
+`examples/token/token-cip112-custom` checks its pause this way, with its
+pauser as the co-signer.
+
 ## Token Standard
 
 The package implements CIP-0112 / Token Standard V2: `HoldingV2.Holding`,
