@@ -11,7 +11,7 @@ import DA.Action (unless)
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
 import qualified DA.TextMap as TextMap
 import OpenZeppelin.Api.PausableV1 (Pausable, PausableView (..))
-import qualified OpenZeppelin.PausableV1 as Pausable
+import qualified OpenZeppelin.Pausable.Utils as Pausable
 
 -- | What the vault pays out. The owner receives it on a withdrawal, on
 -- redemption, and on an emergency drain.

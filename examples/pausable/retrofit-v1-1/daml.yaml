@@ -7,7 +7,7 @@ dependencies:
   - daml-stdlib
 data-dependencies:
   - ../../../packages/security/api-pausable-v1/.daml/dist/openzeppelin-api-pausable-v1-0.1.0.dar
-  - ../../../packages/security/pausable-v1/.daml/dist/openzeppelin-pausable-v1-0.1.0.dar
+  - ../../../packages/security/pausable-utils/.daml/dist/openzeppelin-pausable-utils-0.1.0.dar
 upgrades: ../retrofit-v1-0/.daml/dist/pausable-retrofit-example-1.0.0.dar
 build-options:
   - --target=2.1

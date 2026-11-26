@@ -9,6 +9,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## Unreleased
 
+### `openzeppelin-api-timelock-v1`
+
+#### Added
+
+- Added the frozen interface package `openzeppelin-api-timelock-v1` with public
+  module `OpenZeppelin.Api.TimelockV1`, holding the `Timelock`, `Operation`,
+  and `Timelocked` interfaces, their views, `TimelockConfig`, `Pending`, and
+  `DropReason`.
+- The target lifecycle choices `Timelock_Apply` and `Timelock_Drop` call the
+  `applyImpl` and `dropImpl` methods of the implementing template.
+  `Timelock_Drop` takes a `DropReason` for cancellation or expiry cleanup.
+
+### `openzeppelin-timelock-utils`
+
+#### Added
+
+- Added the function package `openzeppelin-timelock-utils` with public module
+  `OpenZeppelin.Timelock.Utils`, holding `applyOperation`, `dropOperation`,
+  `scheduleAt`, `scheduleAfter`, `isValidConfig`, `requireValidConfig`,
+  `addPending`, `takePending`, `requireReady`, `requireExpired`, `isReadyAt`,
+  `isExpiredAt`, and the ten failure statuses of the component. It depends on
+  `openzeppelin-api-timelock-v1`.
+- `applyOperation` and `dropOperation` authenticate `actor` and enforce
+  permissions, time bounds, pending membership, and shared signatory
+  authority. Both archive the operation atomically with the state change.
+
 ### `openzeppelin-scoped-authorization-grant-v1`
 
 #### Added
@@ -25,12 +51,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   module `OpenZeppelin.Api.PausableV1`, holding the `Pausable` interface and
   `PausableView`.
 
-### `openzeppelin-pausable-v1`
+### `openzeppelin-pausable-utils`
 
 #### Added
 
-- Added the function package `openzeppelin-pausable-v1` with public module
-  `OpenZeppelin.PausableV1`, holding the guards `whenNotPaused` and
+- Added the function package `openzeppelin-pausable-utils` with public module
+  `OpenZeppelin.Pausable.Utils`, holding the guards `whenNotPaused` and
   `whenPaused`, `isPaused`, and the failure statuses `eEnforcedPause` and
   `eExpectedPause`. It depends on `openzeppelin-api-pausable-v1`.
 

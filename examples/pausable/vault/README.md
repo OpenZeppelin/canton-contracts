@@ -9,7 +9,7 @@ for one owner, with an emergency stop that the admin controls.
 | Module | `OpenZeppelin.Examples.Pausable.Vault` |
 | Tests | `OpenZeppelin.Examples.Pausable.VaultTest` in [`vault-test`](../vault-test) |
 | Templates | `Vault`, `Payout` |
-| Consumes | `openzeppelin-api-pausable-v1` `0.1.0`, `openzeppelin-pausable-v1` `0.1.0` |
+| Consumes | `openzeppelin-api-pausable-v1` `0.1.0`, `openzeppelin-pausable-utils` `0.1.0` |
 
 ## What it shows
 

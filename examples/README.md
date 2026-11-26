@@ -20,13 +20,21 @@ Tests live in
 
 ## Pausable
 
-Consumers of `openzeppelin-api-pausable-v1` and `openzeppelin-pausable-v1`.
+Consumers of `openzeppelin-api-pausable-v1` and `openzeppelin-pausable-utils`.
 
 | Example | Tests | Shows |
 |---|---|---|
 | [`vault`](pausable/vault) | [`vault-test`](pausable/vault-test) | Minimal adoption: the interface instance, the guards, an escape hatch, and the pause authority |
 | [`registry`](pausable/registry) | [`registry-test`](pausable/registry-test) | Flip choices that set CIP-0112 `pauseInfo` fields in the same create as the flag |
 | [`retrofit-v1-0`](pausable/retrofit-v1-0), [`retrofit-v1-1`](pausable/retrofit-v1-1) | [`retrofit-test`](pausable/retrofit-test) | Adoption in the next SCU version of a template with active contracts |
+
+## `timelock`
+
+Consumers of `openzeppelin-api-timelock-v1` and `openzeppelin-timelock-utils`.
+
+| Example | Tests | Shows |
+|---|---|---|
+| [`treasury`](timelock/treasury) | [`treasury-test`](timelock/treasury-test) | A timelock, a governed config, and a treasury on separate contracts. The spending limit and the delay policy change only through timelocked operations: schedule, wait, apply, cancel, expiry cleanup, and self-administration of the delay |
 
 ## Token CIP-0112
 
