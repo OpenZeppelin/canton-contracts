@@ -140,7 +140,8 @@ transferExpireImpl ops s extraArgs = do
 
 -- | `transferFactory_transferImpl`: check the actors, then execute. The
 -- sender's account parties jointly initiate; including the receiver's account
--- parties completes the transfer in one step.
+-- parties completes the transfer in one step, which shows them the sender's
+-- consumed inputs and change holding.
 transferFactoryImpl
   : RegistryConfig -> HoldingOps h -> CreateTransferInstruction
   -> TransferInstructionV2.TransferFactory_Transfer
@@ -156,7 +157,10 @@ transferFactoryImpl config ops createInstruction arg = do
 -- | Validate, debit the sender's inputs, and either complete in one step or
 -- lock the transfer amount and create a pending instruction. The caller is
 -- responsible for authorization: the debit needs the sender's and the admin's
--- authority, and the one-step path also creates the receiver's holding.
+-- authority, and the one-step path also creates the receiver's holding. When
+-- the receiver's account parties authorize that holding as controllers of
+-- the calling choice or signatories of its contract, they witness the
+-- sender's consumed inputs and change holding.
 -- `context` reaches `fundHolding` for every input. The inputs are the
 -- sources of the sender's change, the locked funding, and a one-step
 -- transfer's receiver holding.

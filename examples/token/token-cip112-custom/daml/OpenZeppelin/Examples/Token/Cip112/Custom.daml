@@ -518,7 +518,10 @@ feeFor rules amount = amount * intToDecimal rules.transferFeeBps / 10000.0
 -- transfer then runs on that change, exactly as the default factory would
 -- on the original inputs. Both legs emit their standard events, so history
 -- parsers see the fee as a transfer to the treasury. Inputs that cover the
--- amount but not the fee fail on the main leg's funding check.
+-- amount but not the fee fail on the main leg's funding check. A one-step
+-- receiver also witnesses the fee leg, including the sender's original
+-- inputs, so a private one-step transfer needs a single holding of exactly
+-- the amount plus the fee.
 transferWithFee
   : MyRules -> TransferInstructionV2.TransferFactory_Transfer
   -> Update TransferInstructionV2.TransferInstructionResult

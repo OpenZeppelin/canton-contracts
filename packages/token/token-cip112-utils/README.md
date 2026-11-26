@@ -278,6 +278,17 @@ and every participant hosting them to keep the template packages vetted. A
 template owner that reuses these functions inherits these requirements and
 must document them for its users.
 
+On the one-step path of `transferFactoryImpl`, the receiver's account
+parties are actors, so they witness the sender's consumed inputs and change
+holding, whatever `transferFactory_transferExtraObservers` returns. Every
+registry built on that function inherits this disclosure.
+`transferAcceptImpl` consumes the locked funding with the authority of the
+sender's account parties, so the transfer-instruction template names them
+as signatories. They witness the receiver's new holding that the accept
+creates. The
+[integration guide](../token-cip112-v1/integration-guide.md#two-step-and-one-step-transfers)
+shows how a sender keeps its balance private from the receiver.
+
 `transferFactoryImpl`, `allocationFactoryImpl`, `transferAcceptImpl`,
 `transferRejectImpl`, `transferWithdrawImpl`, and `allocationWithdrawImpl`
 require every account party of the account they act for as an actor. A

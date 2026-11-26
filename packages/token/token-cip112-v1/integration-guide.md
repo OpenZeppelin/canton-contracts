@@ -97,6 +97,16 @@ lets it expire. `examples/token/token-cip112-trading-test` and the test scripts
 `testTransferOneStep`, `testTransferTwoStep`, and
 `testTransferRejectAndWithdraw` cover the paths.
 
+The receiver's account parties are controllers of a one-step transfer, so
+they see the sender's consumed inputs and change holding. The sender's
+account parties sign the instruction, so they see the receiver's new
+holding when the receiver accepts. When the sender's balance must stay
+private from the receiver, use a two-step transfer, or fund a one-step
+transfer from a single holding of exactly the amount, which leaves no
+change. A `TokenHolding_Split` creates that holding, or a self-transfer of
+exactly the amount for a wallet that uses only the `HoldingV2.Holding`
+interface. Only the sender's account parties and the admin see either.
+
 Authorization: sender parties initiate; receiver parties accept or reject;
 sender parties withdraw; the admin expires after the instruction's storage
 bound (see "Expiry and cleanup").

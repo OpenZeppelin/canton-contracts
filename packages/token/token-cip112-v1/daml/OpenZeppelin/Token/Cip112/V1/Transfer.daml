@@ -13,11 +13,12 @@ import OpenZeppelin.Token.Cip112.V1.Holding
 -- | A funded transfer offer awaiting the receiver's decision. The admin and
 -- the sender's account parties sign; the receiver's account parties observe
 -- so their wallet can render and answer the offer. Every terminal choice is
--- witnessed by the receiver parties even when they are not the actor. A mint
--- offer, from the CIP-0112 mint account, locks nothing and is signed by the
--- admin alone. A burn request, to the CIP-0112 burn account, is accepted or
--- rejected by the admin; accepting it archives the locked funds and creates
--- no holding for the burn account.
+-- witnessed by the receiver parties even when they are not the actor. The
+-- sender parties witness the receiver's new holding that an accept creates.
+-- A mint offer, from the CIP-0112 mint account, locks nothing and is signed
+-- by the admin alone. A burn request, to the CIP-0112 burn account, is
+-- accepted or rejected by the admin; accepting it archives the locked funds
+-- and creates no holding for the burn account.
 template TokenTransferInstruction with
     state : TransferInstructionState
   where

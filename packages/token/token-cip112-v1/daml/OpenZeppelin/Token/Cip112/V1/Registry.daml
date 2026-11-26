@@ -39,6 +39,12 @@ import OpenZeppelin.Token.Cip112.V1.Allocation
 -- that a consumer puts on its own rules contract restrict wallets only: a
 -- control that must bind the admin has to be held by a party that signs the
 -- holdings and the pending contracts.
+--
+-- The transfer factory's extra observers are the vendored private-asset
+-- default, the sender's account parties. That keeps the sender's inputs and
+-- change from the receiver only in a two-step transfer. In a one-step
+-- transfer the receiver's account parties are actors, so they see both.
+-- https://github.com/canton-network/splice/blob/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/splice-token-standard-utils/daml/Splice/TokenStandard/Utils/Internal/Transfers.daml#L234-L240
 template TokenRules with
     config : RegistryConfig
   where
