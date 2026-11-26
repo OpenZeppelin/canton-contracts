@@ -63,11 +63,11 @@ template TokenRules with
 
     nonconsuming choice TokenRules_ExpireAllocations : ()
       -- ^ Batched admin expiry of stale allocations through the standard
-      -- cancel choice, each pinned to `TokenAllocation`.
+      -- cancel choice, each pinned to `TokenAllocation`. The choice has no
+      -- observers, because an observer would witness every cancel in the
+      -- batch and every holding the cancels release.
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
-        observers : [Party]
-      observer observers
       controller config.admin
       do expireAllocationsImpl (pinAllocationTo @TokenAllocation) config.admin cancelArgs
 
@@ -87,11 +87,11 @@ template TokenRules with
 
     nonconsuming choice TokenRules_ExpireTransferInstructions : ()
       -- ^ Batched admin expiry of stale transfer instructions. Template-typed
-      -- on purpose: the registry only ever expires its own instructions.
+      -- on purpose: the registry only ever expires its own instructions. The
+      -- choice has no observers, for the same reason as
+      -- `TokenRules_ExpireAllocations`.
       with
         instructionCids : [ContractId TokenTransferInstruction]
-        observers : [Party]
-      observer observers
       controller config.admin
       do
         forA_ instructionCids $ \cid -> do

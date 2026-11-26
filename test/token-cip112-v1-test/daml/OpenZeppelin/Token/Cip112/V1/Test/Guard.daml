@@ -436,4 +436,4 @@ testExpireTransferInstructionsRefusesOtherRegistry = do
   setTime t3
   mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs admin) do
     exerciseCmd rulesCid TokenRules_ExpireTransferInstructions with
-      instructionCids = [fromInterfaceContractId @TokenTransferInstruction instrCid]; observers = []
+      instructionCids = [fromInterfaceContractId @TokenTransferInstruction instrCid]

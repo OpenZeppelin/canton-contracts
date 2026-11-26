@@ -200,12 +200,22 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
 - An allocation's view advertises the withdraw action statically. For a
   committed allocation the choice still fails until the settlement deadline
   passes; wallets should treat the advertised action as "who", not "when".
+- The batched expiry choices `TokenRules_ExpireAllocations` and
+  `TokenRules_ExpireTransferInstructions` have no observers, so each item is
+  witnessed only by its own stakeholders. A party that must follow expiries
+  without being a stakeholder, such as an auditor, needs read-as rights on
+  the admin, which show it everything the admin sees. To show such a party
+  only some accounts' holdings-change events, a registry owns its templates
+  and returns the party from `HoldingOps.eventObservers` for those accounts.
 
 ## Sandbox validation
 
 `dpm test` runs the test suite on an in-memory ledger. The sandbox gate runs
 mint offers, transfers, querying, and burn requests against a real
-static-time Canton sandbox over the Ledger API. From the repository root:
+static-time Canton sandbox over the Ledger API. It also runs batched admin
+expiry and reads each executor's and receiver's transactions from the JSON
+Ledger API, to check that each one witnesses only its own items in the
+batch. From the repository root:
 
 ```sh
 scripts/check-sandbox.sh
@@ -215,12 +225,15 @@ The script requires:
 
 - `dpm` on the `PATH`
 - Java 21 or newer
-- `lsof`
+- `lsof`, `curl`, and `jq`
 - A free Ledger API port (`6865` by default; override with `OZ_LEDGER_PORT`)
+- A free JSON Ledger API port (`7575` by default; override with
+  `OZ_JSON_API_PORT`)
 
 Logs are written under `.cache/sandbox-token/`. To target a running ledger
 instead of the script-managed sandbox, set `OZ_USE_EXTERNAL_LEDGER=1`,
-`OZ_LEDGER_HOST`, and `OZ_LEDGER_PORT`. The external ledger must run in
+`OZ_LEDGER_HOST`, `OZ_LEDGER_PORT`, and the port its JSON Ledger API listens
+on as `OZ_JSON_API_PORT`. The external ledger must run in
 static-time mode with its clock at or before 2026-01-01T00:10Z: the scripts
 pin the clock with `setTime`, and a static-time ledger only moves its clock
 forward.
