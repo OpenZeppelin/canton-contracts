@@ -258,10 +258,10 @@ payReceiver ops transfer inputCids senderChangeCids = do
       senderChangeCids receiverHoldingCids
   pure receiverHoldingCids
 
--- | Log the standard transfer events as the vendored `logTransfer` does, with
--- the owner's extra observers: one account-local event for a self-transfer,
--- otherwise a sender-side and a receiver-side event. The reason in each
--- event's `extraArgs.meta` is `tokens minted` for a transfer from the
+-- | Log the transfer events of the vendored `logTransfer`: one account-local
+-- event for a self-transfer, otherwise a sender-side and a receiver-side
+-- event. Each event adds the owner's extra observers and, in its
+-- `extraArgs.meta`, the reason `tokens minted` for a transfer from the
 -- CIP-0112 mint account, `tokens burned` for one to the burn account, and
 -- `transfer completed` otherwise. Each leg side carries the transfer's
 -- `meta`, including its reason.
