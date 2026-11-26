@@ -72,6 +72,15 @@ contract id enters through an operation the template owner wrote:
   controls, may create one. A factory body must refuse the mint account as a
   sender, as `transferFactoryImpl` does.
 
+Each `EventLog_HoldingsChange` the workflows emit names the workflow in the
+reason of its `extraArgs.meta`. A reader of the events, such as a wallet, an
+indexer, or an auditor, must derive value movement from
+`inputHoldingCids` and `outputHoldingCids` only, and must treat
+`transferLegSides` and their `meta` as labels the submitters supplied.
+Otherwise it records movements that never happened: an allocation whose legs
+net to zero settles without consuming or creating a holding, and its event
+names any instrument and amount the authorizer chose.
+
 ## Operational assumptions
 
 `executeTransfer`, `allocationFactoryImpl`, and `allocationSettleImpl` name

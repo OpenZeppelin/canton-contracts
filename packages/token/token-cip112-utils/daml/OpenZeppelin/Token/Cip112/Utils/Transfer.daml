@@ -258,11 +258,14 @@ payReceiver ops transfer inputCids senderChangeCids = do
       senderChangeCids receiverHoldingCids
   pure receiverHoldingCids
 
--- | The standard transfer events, as the vendored `logTransfer`, with the
--- owner's extra observers: one account-local event for a self-transfer,
--- otherwise a sender-side and a receiver-side event. Each event carries the
--- transfer's own reason in its `extraArgs`, or names the workflow when the
--- transfer has none.
+-- | Log the transfer events of the vendored `logTransfer`: one account-local
+-- event for a self-transfer, otherwise a sender-side and a receiver-side
+-- event. Each event adds the owner's extra observers and, in its
+-- `extraArgs.meta`, the reason `tokens minted` for a transfer from the
+-- CIP-0112 mint account, `tokens burned` for one to the burn account, and
+-- `transfer completed` otherwise. Each leg side carries the transfer's
+-- `meta`, including its reason.
+-- https://github.com/canton-network/splice/blob/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/splice-token-standard-utils/daml/Splice/TokenStandard/Utils/Internal/Events.daml#L149-L193
 logTransferEvents
   : HoldingOps -> ContractId TransferEventsV2.EventLog -> TransferInstructionV2.Transfer
   -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
@@ -278,11 +281,10 @@ logTransferEvents ops eventLogCid transfer senderOutputHoldingCids receiverOutpu
         meta = transfer.meta
       transferIn = leg TransferEventsV2.ReceiverSide transfer.sender
       transferOut = leg TransferEventsV2.SenderSide transfer.receiver
-      reason = case reasonFromMeta transfer.meta of
-        "" | transfer.sender == mintAccount -> "tokens minted"
-           | transfer.receiver == burnAccount -> "tokens burned"
-           | otherwise -> "transfer completed"
-        r -> r
+      reason
+        | transfer.sender == mintAccount = "tokens minted"
+        | transfer.receiver == burnAccount = "tokens burned"
+        | otherwise = "transfer completed"
       extraArgs = ExtraArgs with context = emptyChoiceContext; meta = reasonToMeta reason emptyMetadata
   if transfer.sender == transfer.receiver
     then

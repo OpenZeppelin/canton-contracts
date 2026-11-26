@@ -3,6 +3,7 @@
 -- interface-driving helpers live in `OpenZeppelin.Token.Cip112.V1.Test.Fixtures`.
 module OpenZeppelin.Token.Cip112.V1.Test where
 
+import DA.Action (replicateA)
 import DA.Assert ((===), (=/=))
 import DA.Date (date, Month(Jan))
 import DA.Foldable (forA_)
@@ -20,7 +21,10 @@ import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, burnAccount, mintAccount, reasonFromMeta, reasonToMeta, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils
+  ( basicAccount, burnAccount, mintAccount, reasonToMeta, senderSide, receiverSide
+  , nonIteratedAllocation
+  )
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Token.Cip112.V1.Allocation
@@ -502,22 +506,101 @@ testTransferOneStep = do
   bobAfter === [7.0]
   assertNoLocks alice
 
--- | Both events of a completed transfer carry the transfer's own reason in
--- their `extraArgs`, or name the workflow when the transfer has none.
+-- | Metadata a submitter writes to pass a transfer off as a mint: the
+-- standard reason key set to `tokens minted`, beside a free-text memo.
+claimedMintMeta : Metadata
+claimedMintMeta = reasonToMeta "tokens minted"
+  (Metadata with values = TextMap.fromList [("example.com/memo", "rent")])
+
+-- | Assert that an event's `extraArgs.meta` holds `reason` alone and that it
+-- has `legCount` leg sides, each carrying `legMeta`.
+assertWorkflowReason
+  : Text -> Metadata -> Int -> TransferEventsV2.EventLog_HoldingsChange -> Script ()
+assertWorkflowReason reason legMeta legCount ev = do
+  ev.extraArgs.meta === reasonToMeta reason emptyMetadata
+  map (.meta) ev.transferLegSides === replicate legCount legMeta
+
+-- | The side, the other side, and the amount of a leg side.
+legShape
+  : TransferEventsV2.TransferLegSide -> (TransferEventsV2.TransferSide, HoldingV2.Account, Decimal)
+legShape l = (l.side, l.otherside, l.amount)
+
+-- | Exercise the transfer factory with `actors` as the submitters, and return
+-- the result with its transaction tree.
+transferWithTree
+  : Scenario -> [Party] -> TransferInstructionV2.Transfer
+  -> Script (TransferInstructionV2.TransferInstructionResult, TransactionTree)
+transferWithTree Scenario{..} actors transfer =
+  submitResultAndTree (actAs actors <> discloseMany [rulesDisclosure]) $
+    exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+      TransferInstructionV2.TransferFactory_Transfer with
+        transfer; actors; extraArgs = emptyExtraArgs
+
+-- | Each event of a one-step, two-step, or self-transfer names the workflow
+-- as its reason, whatever reason the sender's `meta` claims, and each leg
+-- side carries that `meta`.
 testTransferEventReason : Script ()
 testTransferEventReason = do
   s@Scenario{..} <- setup
-  input1 <- mint admin alice 10.0
-  input2 <- mint admin alice 10.0
-  let withReason = (mkTransfer s alice bob 4.0 [input1]) with meta = reasonToMeta "rent" emptyMetadata
-  [(_, tree1), (_, tree2)] <- forA [withReason, mkTransfer s alice bob 4.0 [input2]] $ \transfer ->
-    submitResultAndTree (actAs [alice, bob] <> discloseMany [rulesDisclosure]) $
-      exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
-        TransferInstructionV2.TransferFactory_Transfer with
-          transfer; actors = [alice, bob]; extraArgs = emptyExtraArgs
-  map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents tree1) === ["rent", "rent"]
-  map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents tree2) === ["transfer completed", "transfer completed"]
-  -- A mint offer without a reason names the workflow too.
+  [input1, input2, input3] <- replicateA 3 (mint admin alice 10.0)
+  let claimed sender receiver input =
+        (mkTransfer s sender receiver 4.0 [input]) with meta = claimedMintMeta
+  (_, oneStepTree) <- transferWithTree s [alice, bob] (claimed alice bob input1)
+  pending <- pendingCid =<< instructTransfer s [alice] (claimed alice bob input2)
+  funding <- instructionDisclosures admin pending
+  twoStepTree <- submitTree (actAs bob <> discloseMany funding) (acceptCmd bob pending)
+  forA_ [oneStepTree, twoStepTree] $ \tree -> do
+    let evs = holdingsChangeEvents tree
+    map (.account) evs === [basicAccount alice, basicAccount bob]
+    forA_ evs (assertWorkflowReason "transfer completed" claimedMintMeta 1)
+  (_, selfTree) <- transferWithTree s [alice] (claimed alice alice input3)
+  assertWorkflowReason "transfer completed" claimedMintMeta 2 =<< expectOneHoldingsChange selfTree
+
+-- | Each event of a one-step, two-step, or self-transfer names in its holding
+-- ids the holdings the transfer consumed and created, and only the parties of
+-- its own account observe it.
+testTransferEventHoldings : Script ()
+testTransferEventHoldings = do
+  s@Scenario{..} <- setup
+  [input1, input2, input3] <- replicateA 3 (mint admin alice 10.0)
+  (oneStep, oneStepTree) <- transferWithTree s [alice, bob] (mkTransfer s alice bob 4.0 [input1])
+  bobHoldings <- completedHoldings oneStep
+  [aliceEv, bobEv] <- pure (holdingsChangeEvents oneStepTree)
+  aliceEv.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding input1]
+  aliceEv.outputHoldingCids === oneStep.senderChangeCids
+  map legShape aliceEv.transferLegSides === [(TransferEventsV2.SenderSide, basicAccount bob, 4.0)]
+  aliceEv.observers === [alice]
+  bobEv.inputHoldingCids === []
+  bobEv.outputHoldingCids === bobHoldings
+  map legShape bobEv.transferLegSides === [(TransferEventsV2.ReceiverSide, basicAccount alice, 4.0)]
+  bobEv.observers === [bob]
+
+  pending <- pendingCid =<< instructTransfer s [alice] (mkTransfer s alice bob 4.0 [input2])
+  Some v <- queryInterfaceContractId @TransferInstructionV2.TransferInstruction alice pending
+  funding <- instructionDisclosures admin pending
+  (twoStep, twoStepTree) <-
+    submitResultAndTree (actAs bob <> discloseMany funding) (acceptCmd bob pending)
+  bobHoldings2 <- completedHoldings twoStep
+  [aliceEv2, bobEv2] <- pure (holdingsChangeEvents twoStepTree)
+  aliceEv2.inputHoldingCids === v.transfer.inputHoldingCids
+  aliceEv2.outputHoldingCids === twoStep.senderChangeCids
+  bobEv2.inputHoldingCids === []
+  bobEv2.outputHoldingCids === bobHoldings2
+
+  (selfResult, selfTree) <- transferWithTree s [alice] (mkTransfer s alice alice 4.0 [input3])
+  selfHoldings <- completedHoldings selfResult
+  selfEv <- expectOneHoldingsChange selfTree
+  selfEv.inputHoldingCids === [toInterfaceContractId @HoldingV2.Holding input3]
+  selfEv.outputHoldingCids === selfResult.senderChangeCids <> selfHoldings
+  map (.side) selfEv.transferLegSides
+    === [TransferEventsV2.SenderSide, TransferEventsV2.ReceiverSide]
+  selfEv.observers === [alice]
+
+-- | A mint's event names the workflow as its reason, whatever reason the
+-- admin gives the offer, and its leg side carries the offer's reason.
+testMintEventReason : Script ()
+testMintEventReason = do
+  Scenario{..} <- setup
   offerCid <- submit (actAs admin) do
     exerciseCmd rulesCid TokenRules_OfferMint with
       receiver = basicAccount bob
@@ -525,9 +608,49 @@ testTransferEventReason = do
       amount = 1.0
       requestedAt = t0
       executeBefore = t2
-      reason = ""
+      reason = "tokens burned"
   mintTree <- submitTree (actAs bob) (acceptCmd bob offerCid)
-  map (reasonFromMeta . (.extraArgs.meta)) (holdingsChangeEvents mintTree) === ["tokens minted"]
+  assertWorkflowReason "tokens minted" (reasonToMeta "tokens burned" emptyMetadata) 1
+    =<< expectOneHoldingsChange mintTree
+
+-- | The event of an accepted burn request or a one-step burn names the
+-- workflow as its reason, whatever reason the owner's `meta` claims, and its
+-- leg side carries that `meta`.
+testBurnEventReason : Script ()
+testBurnEventReason = do
+  s@Scenario{..} <- setup
+  [input1, input2] <- replicateA 2 (mint admin alice 10.0)
+  let claimed input = (burnTransfer s alice 4.0 [input]) with meta = claimedMintMeta
+  requestCid <- pendingCid =<< instructTransfer s [alice] (claimed input1)
+  funding <- instructionDisclosures admin requestCid
+  acceptTree <- submitTree (actAs admin <> discloseMany funding) (acceptCmd admin requestCid)
+  oneStepTree <- submitTree (actAs [alice, admin] <> discloseMany [rulesDisclosure])
+    (burnCmd s [alice, admin] (claimed input2))
+  forA_ [acceptTree, oneStepTree] $ \tree -> do
+    ev <- expectOneHoldingsChange tree
+    assertWorkflowReason "tokens burned" claimedMintMeta 1 ev
+
+-- | A settlement's events name the workflow as their reason, whatever reason
+-- the legs' `meta` claims, and each leg side carries its leg's `meta`.
+testSettlementEventReason : Script ()
+testSettlementEventReason = do
+  s@Scenario{..} <- setup
+  aliceInput <- mint admin alice 10.0
+  let leg = legAliceToBob with meta = claimedMintMeta
+  aliceAllocCid <- completedCid =<< allocate s alice [senderSide leg] [aliceInput]
+  bobAllocCid <- completedCid =<< allocate s bob [receiverSide leg] []
+  funding <- allocationDisclosures admin [aliceAllocCid, bobAllocCid]
+  tree <- submitTree (actAs app <> discloseMany (rulesDisclosure :: funding)) do
+    exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
+      AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs = [leg]
+        allocations = map nonIteratedAllocation [aliceAllocCid, bobAllocCid]
+        actors = [app]
+        extraArgs = emptyExtraArgs
+  let evs = holdingsChangeEvents tree
+  map (.account) evs === [basicAccount alice, basicAccount bob]
+  forA_ evs (assertWorkflowReason "allocation settled" claimedMintMeta 1)
 
 -- | Reject and withdraw both return the locked funds to the sender.
 testTransferRejectAndWithdraw : Script ()
@@ -1069,8 +1192,7 @@ testOfferMintAccepted = do
   map (.side) mintEvent.transferLegSides === [TransferEventsV2.ReceiverSide]
   map (.otherside) mintEvent.transferLegSides === [mintAccount]
   map (.amount) mintEvent.transferLegSides === [25.0]
-  -- The offer's reason explains the change.
-  reasonFromMeta mintEvent.extraArgs.meta === "mint"
+  assertWorkflowReason "tokens minted" (reasonToMeta "mint" emptyMetadata) 1 mintEvent
 
 -- | A mint offer that is not accepted creates nothing: the receiver rejects
 -- it, the admin withdraws it, and once `executeBefore` has passed it can no
@@ -1157,8 +1279,7 @@ testBurnRequestAccepted = do
   map (.side) burnEvent.transferLegSides === [TransferEventsV2.SenderSide]
   map (.otherside) burnEvent.transferLegSides === [burnAccount]
   map (.amount) burnEvent.transferLegSides === [4.0]
-  -- The request carries no reason, so the event names the workflow.
-  reasonFromMeta burnEvent.extraArgs.meta === "tokens burned"
+  assertWorkflowReason "tokens burned" emptyMetadata 1 burnEvent
 
 -- | The owner and the admin acting together burn in one step: the input is
 -- consumed, the change returned, and one event explains both.
