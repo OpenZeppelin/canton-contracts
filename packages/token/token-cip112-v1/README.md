@@ -28,8 +28,9 @@ their own templates reuses directly.
 ## What it provides
 
 - `TokenHolding` (`Holding`): an asset holding maintained jointly by the
-  instrument admin and the account parties, with optional locks and an
-  owner-unlock choice.
+  instrument admin and the account parties, with optional locks and unlock
+  choices for an expired lock: one for the account parties, one for the admin
+  alone.
 - `TokenTransferInstruction` (`Transfer`): the TSv2 transfer-instruction
   lifecycle over a `TransferInstructionState` payload, including accept,
   reject, withdraw, and expiry paths.
@@ -77,9 +78,9 @@ interfaces or exceptions of its own.
   reject it. The admin can withdraw it until then and expire it after
   `executeBefore`. A mint is always two-step.
 - A holder burns with `TransferFactory_Transfer` to the CIP-0112 burn account
-  (`cip-112/burn`), whose only account party is the admin. The holder alone
-  creates a burn request that locks the amount, and the admin accepts or
-  rejects it; the holder and the admin acting together burn in one step.
+  (`cip-112/burn`), whose only account party is the admin. The holder's
+  account parties create a burn request that locks the amount, and the admin
+  accepts or rejects it; together with the admin they burn in one step.
   Accepting archives the locked amount and creates no holding for the burn
   account.
 - An allocation created with `nextIterationFunding` set enables iterated
@@ -91,6 +92,22 @@ interfaces or exceptions of its own.
   clear the leg set, and extend the previous storage expiry by the `maxTTL`
   snapshotted at allocation time, capped by the settlement deadline. The
   authorizer withdraws a successor like any other allocation.
+- An allocation can be settled only before its `expiresAt`, directly or
+  through the settlement factory. With a settlement deadline, `expiresAt` is
+  the deadline. Without one, `expiresAt` is `createdAt + maxTTL`, and a
+  successor's is the previous `expiresAt` plus `maxTTL`. From `expiresAt`
+  on, the executors must ask the authorizer for a new allocation.
+- The admin ends a stale transfer instruction or allocation once its
+  `expiresAt` has passed: an instruction through
+  `TokenTransferInstruction_Expire`, an allocation through `Allocation_Cancel`
+  with `actors = [admin]`, or many at once through
+  `TokenRules_ExpireTransferInstructions` and `TokenRules_ExpireAllocations`.
+  Each expiry reads Splice's `expire-lock` flag from its `extraArgs.context`.
+  With the flag missing or set to `AV_Bool True`, the funding returns to its
+  account. With the flag cleared, which is `AV_Bool False`, the expiry ends
+  the contract without touching the funding, and only once `lockExpiresAt`
+  has passed. For an allocation the flag is read only when the actors are
+  exactly `[admin]`, including when the admin is its only executor.
 - Every time check is a ledger-time bound. See "Time bounds" in the
   `token-cip112-utils` [`README.md`](../token-cip112-utils/README.md).
 - The consuming application selects and discloses the canonical `TokenRules`
@@ -142,8 +159,8 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   settle outside the factory. Operate the admin party so that it signs settles
   only through the settlement factory.
 - A mint-account or burn-account allocation commits the admin to that supply
-  change. The executors decide whether and when it settles, until the
-  settlement deadline or until the admin withdraws an uncommitted allocation.
+  change. The executors decide whether and when it settles, until its
+  `expiresAt` or until the admin withdraws an uncommitted allocation.
   The netting ignores the amount on the special side, so the exact-cover check
   is what bounds the amount minted or burned to the legs the admin allocated.
 - Enabling iterated settlement hands the executors control of the reserve.
@@ -159,19 +176,31 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   `FinalizedAllocation.nextIterationFunding`; the check in
   `allocation_settleImpl` is the effective guard. Registry forks that replace
   that choice body must keep an equivalent check.
-- `maxTTL` and `lockGrace` are only required to be positive. A `lockGrace` too
-  short for the admin's cleanup automation to act in leaves expiry to the
-  owner-recovery path; size it to the automation's reaction time (minutes to
-  hours), and size `maxTTL` to the longest workflow the registry accepts,
-  counted from ledger time for a transfer and from `requestedAt` for an
-  allocation.
+- `maxTTL` and `lockGrace` are only required to be positive. Between
+  `expiresAt` and `lockExpiresAt` only the pending contract can move its
+  funding, so an expiry that does not clear the `expire-lock` flag releases
+  it. A `lockGrace` too short for the admin's expiry automation to act in
+  lets the account parties unlock or spend the funding first, and the
+  contract then ends only through an expiry with the flag cleared. Size
+  `lockGrace` to the automation's reaction time (minutes to hours), and size
+  `maxTTL` to the longest workflow the registry accepts, counted from ledger
+  time for a transfer and from `requestedAt` for an allocation. Deadlines
+  are checked against ledger time, which may differ from the
+  synchronizer's record time by up to its ledger-time tolerance. Keep
+  `lockGrace` above twice that tolerance, so that the owner cannot unlock
+  the funding while a settle can still commit.
+- An expiry with the `expire-lock` flag cleared trusts the admin that the
+  funding is gone. The ledger cannot check this, because fetching an archived
+  holding aborts. The admin clears the flag only after finding the contract's
+  locked holdings no longer active, and never on `lockExpiresAt` alone. A
+  flag cleared while the funding is still locked ends the contract and leaves
+  the holding locked; `TokenHolding_AdminUnlock` repairs this.
 - The receiver's account parties and the settlement executors observe the
   pending transfer instruction or allocation. Canton rejects a transaction
   if one of its informees has no hosting participant, or if a participant
   hosting one has not vetted the packages. If either happens to a receiver
   or an executor, every choice on the pending contract fails, including
-  withdraw, admin expiry, and the admin's last-resort cleanup through
-  `TokenTransferInstruction_AdminGC` or `TokenAllocation_AdminGC`. A
+  withdraw and admin expiry, with or without the `expire-lock` flag. A
   counterparty's operator can cause this at will by unvetting the packages.
   The funds then stay locked until the lock expires: `lockGrace` after
   `executeBefore` for a transfer, and `lockGrace` after the view's
@@ -180,30 +209,52 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   contract's creation, so `maxTTL` plus `lockGrace` caps how long the funds
   stay frozen. A successor without a settlement deadline can carry an
   `expiresAt` later than its creation plus `maxTTL`, as the iterated-settlement
-  caveat above describes. Size both settings with that cap in mind. The owner
-  then recovers the funds through `TokenHolding_OwnerUnlock`, which involves
-  only the owner's and the admin's participants, because the admin is the
-  only lock holder. The pending contract stays on the ledger until the
+  caveat above describes. Size both settings with that cap in mind. The
+  account parties then recover the funds through `TokenHolding_OwnerUnlock`,
+  which involves only their participants and the admin's, because the admin
+  is the only lock holder. The pending contract stays on the ledger until the
   counterparty is hosted again with the packages vetted, or until
   [participant repair](https://docs.canton.network/global-synchronizer/production-operations/repair-canton-nodes)
   removes it if the party has lost its last hosting participant.
 - `TokenHolding` makes every lock holder an observer. If a workflow that
-  reuses it names another lock holder, `TokenHolding_OwnerUnlock` also fails
-  while that party has no hosting participant or a participant hosting it
-  has not vetted the packages.
-- Recovering an expired-lock holding through `TokenHolding_OwnerUnlock` needs
-  every account party. On accounts with a distinct provider, an unresponsive
-  provider blocks recovery until it cooperates; single-party accounts avoid
-  this.
+  reuses it names another lock holder, `TokenHolding_OwnerUnlock` and
+  `TokenHolding_AdminUnlock` also fail while that party has no hosting
+  participant or a participant hosting it has not vetted the packages.
+- On an account whose provider differs from its owner, every choice the
+  owner takes for the account needs the provider too:
+  `TransferFactory_Transfer` and `AllocationFactory_Allocate`, accepting,
+  rejecting, or withdrawing a transfer instruction, withdrawing an
+  allocation, and `TokenHolding_OwnerUnlock`. Other parties still end a
+  pending workflow without the sender's or authorizer's provider signing:
+  the receiver's account parties accept or reject a transfer instruction,
+  the executors cancel an allocation at any time or settle it, and after
+  the pending contract's `expiresAt` the admin expires a transfer
+  instruction or cancels an allocation. Once a lock has expired, the admin
+  also returns the holding alone with `TokenHolding_AdminUnlock`. Reject,
+  cancel, expiry, and the admin unlock return the locked funds to the same
+  account as unlocked holdings, and a settle pays the authorizer's proceeds
+  there. Spending them still needs the provider, so no path returns control
+  to the owner alone. Open provider accounts only with a provider committed
+  to staying available; accounts without a separate provider avoid this.
 - An allocation's view advertises the withdraw action statically. For a
   committed allocation the choice still fails until the settlement deadline
   passes; wallets should treat the advertised action as "who", not "when".
+- The batched expiry choices `TokenRules_ExpireAllocations` and
+  `TokenRules_ExpireTransferInstructions` have no observers, so each item is
+  witnessed only by its own stakeholders. A party that must follow expiries
+  without being a stakeholder, such as an auditor, needs read-as rights on
+  the admin, which show it everything the admin sees. To show such a party
+  only some accounts' holdings-change events, a registry owns its templates
+  and returns the party from `HoldingOps.eventObservers` for those accounts.
 
 ## Sandbox validation
 
 `dpm test` runs the test suite on an in-memory ledger. The sandbox gate runs
 mint offers, transfers, querying, and burn requests against a real
-static-time Canton sandbox over the Ledger API. From the repository root:
+static-time Canton sandbox over the Ledger API. It also runs batched admin
+expiry and reads each executor's and receiver's transactions from the JSON
+Ledger API, to check that each one witnesses only its own items in the
+batch. From the repository root:
 
 ```sh
 scripts/check-sandbox.sh
@@ -213,12 +264,15 @@ The script requires:
 
 - `dpm` on the `PATH`
 - Java 21 or newer
-- `lsof`
+- `lsof`, `curl`, and `jq`
 - A free Ledger API port (`6865` by default; override with `OZ_LEDGER_PORT`)
+- A free JSON Ledger API port (`7575` by default; override with
+  `OZ_JSON_API_PORT`)
 
 Logs are written under `.cache/sandbox-token/`. To target a running ledger
 instead of the script-managed sandbox, set `OZ_USE_EXTERNAL_LEDGER=1`,
-`OZ_LEDGER_HOST`, and `OZ_LEDGER_PORT`. The external ledger must run in
+`OZ_LEDGER_HOST`, `OZ_LEDGER_PORT`, and the port its JSON Ledger API listens
+on as `OZ_JSON_API_PORT`. The external ledger must run in
 static-time mode with its clock at or before 2026-01-01T00:10Z: the scripts
 pin the clock with `setTime`, and a static-time ledger only moves its clock
 forward.

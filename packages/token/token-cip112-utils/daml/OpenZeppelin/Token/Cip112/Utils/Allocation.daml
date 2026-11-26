@@ -15,7 +15,21 @@
 -- every per-instrument total must be non-negative and must cover any
 -- requested next-iteration reserve, so a settle can never create or strand
 -- value within the allocation.
-module OpenZeppelin.Token.Cip112.Utils.Allocation where
+module OpenZeppelin.Token.Cip112.Utils.Allocation
+  ( CreateAllocation
+  , PinAllocation
+  , pinAllocationTo
+  , isValidAllocationState
+  , allocationView
+  , allocationAvailableActions
+  , allocationSettleImpl
+  , allocationWithdrawImpl
+  , allocationCancelImpl
+  , privateAssetAllocateExtraObservers
+  , allocationFactoryImpl
+  , unlockAndLog
+  , toEventLegSide
+  ) where
 
 import DA.Assert (assertDeadlineExceeded, assertWithinDeadline)
 import DA.Foldable (forA_)
@@ -85,10 +99,11 @@ allocationView s = AllocationV2.AllocationView with
   availableActions = allocationAvailableActions s
   meta = emptyMetadata
 
--- | Actions wallets may take, reported to exactly match what the choice
--- bodies accept. Withdraw is advertised statically: for a committed
--- allocation the choice body still refuses it until the settlement deadline
--- has passed.
+-- | Actions wallets may take, each with the actor sets its choice body
+-- accepts. The map is static, so it does not say when an action succeeds:
+-- the withdraw body still refuses a committed allocation until the
+-- settlement deadline has passed, and the settle body refuses every
+-- allocation from `expiresAt` on.
 allocationAvailableActions : AllocationState -> Map.Map AllocationV2.AllocationAction [[Party]]
 allocationAvailableActions s = Map.fromList $
   [ (AllocationV2.AA_Cancel, [dedupSort s.settlement.executors])
@@ -101,9 +116,10 @@ allocationAvailableActions s = Map.fromList $
 -- Allocation choice bodies
 ---------------------------
 
--- | `allocation_settleImpl`. Re-checks the deadline and iteration arguments
--- even when driven by the settlement factory: this choice is also directly
--- callable by admin plus executors, and a direct settle bypasses the
+-- | `allocation_settleImpl`. Fails when the ledger time is at or past
+-- the settlement deadline or `expiresAt`. Validates the iteration
+-- arguments. The admin plus the executors can also exercise
+-- `Allocation_Settle` directly, and a direct settle bypasses the
 -- factory's exact-cover check.
 allocationSettleImpl
   : HoldingOps -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
@@ -111,7 +127,10 @@ allocationSettleImpl
   -> Update AllocationV2.AllocationResult
 allocationSettleImpl ops createSuccessor self s arg = do
   archiveAndCheckActors self arg.actors [s.allocation.admin :: s.settlement.executors]
+  -- The factory and successors never set `expiresAt` past the deadline, but
+  -- `ensure` does not require it, so a state built elsewhere needs both.
   forA_ s.allocation.settlementDeadline (assertWithinDeadline "allocation.settlementDeadline")
+  assertWithinDeadline "allocation.expiresAt" s.expiresAt
   validateNextIterationArgs "Allocation_Settle" (isSome s.allocation.nextIterationFunding)
     arg.extraTransferLegSides arg.nextIterationFunding
   -- Executor-supplied legs pass the checks the allocation's own legs passed at
@@ -139,9 +158,15 @@ allocationWithdrawImpl ops self s arg = do
     authorizerHoldingCids = holdings
     meta = emptyMetadata
 
--- | `allocation_cancelImpl`. Executors may cancel any time; the admin only
--- once `expiresAt` has passed (checked by the vendored default, which reads
--- the interface value of the contract being exercised).
+-- | `allocation_cancelImpl`. Executors may cancel at any time, and the admin
+-- once `expiresAt` has passed. The vendored default checks both.
+--
+-- A cancel by exactly the admin reads the `expire-lock` flag. On `False` it
+-- ends the allocation without touching its locked holdings, and only once
+-- `lockExpiresAt` has passed. Every other actor set releases the holdings,
+-- so executors other than the admin cannot end an allocation without
+-- releasing its funding. When the admin is the only executor, the vendored
+-- default treats its cancel as an executor cancel and checks no expiry.
 allocationCancelImpl
   : HoldingOps -> ContractId AllocationV2.Allocation -> AllocationState
   -> AllocationV2.Allocation_Cancel
@@ -149,13 +174,17 @@ allocationCancelImpl
 allocationCancelImpl ops self s arg = do
   this <- fetch self
   allocationV2_cancelDefaultImpl this self arg $ do
-    holdings <- unlockAndLog ops s "allocation cancelled"
-    pure (holdings, emptyMetadata)
-
--- | Body of a consuming last-resort admin cleanup choice for an allocation
--- whose funding was already reclaimed. Creates nothing.
-allocationGcImpl : AllocationState -> Update ()
-allocationGcImpl s = assertDeadlineExceeded "allocation lockExpiresAt" s.lockExpiresAt
+    expireLock <-
+      if dedupSort arg.actors == [s.allocation.admin]
+        then expireLockFromContext arg.extraArgs.context
+        else pure True
+    if expireLock
+      then do
+        holdings <- unlockAndLog ops s "allocation cancelled"
+        pure (holdings, emptyMetadata)
+      else do
+        assertDeadlineExceeded "allocation lockExpiresAt" s.lockExpiresAt
+        pure (TextMap.empty, emptyMetadata)
 
 -- Factory body
 ---------------
@@ -300,6 +329,9 @@ allocationFactoryImpl config ops createAllocation arg = do
 -- funding as freshly locked holdings, and pay out the remainder unlocked.
 -- When a reservation is requested a successor allocation is created through
 -- the owner's constructor.
+--
+-- It checks no actors, deadline, expiry or iteration arguments, so the
+-- module does not export it: templates settle through `allocationSettleImpl`.
 settleAllocation
   : HoldingOps -> CreateAllocation -> ContractId AllocationV2.Allocation -> AllocationState
   -> [AllocationV2.TransferLegSide] -> Optional (TextMap.TextMap Decimal)

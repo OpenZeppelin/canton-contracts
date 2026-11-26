@@ -67,7 +67,8 @@ data AllocationState = AllocationState with
     numIterations : Int
       -- ^ Settlement iterations executed so far; zero for the original.
     expiresAt : Time
-      -- ^ Storage bound; the admin may cancel the allocation after it.
+      -- ^ Storage bound; settle fails and the admin may cancel the
+      -- allocation from it on.
     lockExpiresAt : Time
       -- ^ When the funding lock expires. Strictly after `expiresAt`.
     maxTTL : RelTime

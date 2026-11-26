@@ -112,19 +112,25 @@ transferWithdrawImpl ops self s arg = do
   archiveAndCheckActors self arg.actors [senderParties s.transfer]
   returnFundsToSender ops s "transfer withdrawn"
 
--- | Body of a consuming admin-expiry choice: the storage bound has passed and
--- the locked funds return to the sender.
+-- | Body of a consuming admin-expiry choice. It fails before `expiresAt`,
+-- then reads the `expire-lock` flag. On `True` it returns the locked funds
+-- to the sender. On `False` it ends the instruction without touching them,
+-- and only once `lockExpiresAt` has passed. Both end with
+-- `TransferInstructionResult_Failed`.
 transferExpireImpl
-  : HoldingOps -> TransferInstructionState
+  : HoldingOps -> TransferInstructionState -> ExtraArgs
   -> Update TransferInstructionV2.TransferInstructionResult
-transferExpireImpl ops s = do
+transferExpireImpl ops s extraArgs = do
   assertDeadlineExceeded "expiresAt" s.expiresAt
-  returnFundsToSender ops s "transfer instruction expired"
-
--- | Body of a consuming last-resort admin cleanup choice for an instruction
--- whose funding was already reclaimed. Creates nothing.
-transferGcImpl : TransferInstructionState -> Update ()
-transferGcImpl s = assertDeadlineExceeded "lockExpiresAt" s.lockExpiresAt
+  expireLock <- expireLockFromContext extraArgs.context
+  if expireLock
+    then returnFundsToSender ops s "transfer instruction expired"
+    else do
+      assertDeadlineExceeded "lockExpiresAt" s.lockExpiresAt
+      pure TransferInstructionV2.TransferInstructionResult with
+        output = TransferInstructionV2.TransferInstructionResult_Failed
+        senderChangeCids = []
+        meta = s.transfer.meta
 
 -- Factory body
 ---------------
@@ -262,11 +268,14 @@ payReceiver ops transfer inputCids senderChangeCids = do
       senderChangeCids receiverHoldingCids
   pure receiverHoldingCids
 
--- | The standard transfer events, as the vendored `logTransfer`, with the
--- owner's extra observers: one account-local event for a self-transfer,
--- otherwise a sender-side and a receiver-side event. Each event carries the
--- transfer's own reason in its `extraArgs`, or names the workflow when the
--- transfer has none.
+-- | Log the transfer events of the vendored `logTransfer`: one account-local
+-- event for a self-transfer, otherwise a sender-side and a receiver-side
+-- event. Each event adds the owner's extra observers and, in its
+-- `extraArgs.meta`, the reason `tokens minted` for a transfer from the
+-- CIP-0112 mint account, `tokens burned` for one to the burn account, and
+-- `transfer completed` otherwise. Each leg side carries the transfer's
+-- `meta`, including its reason.
+-- https://github.com/canton-network/splice/blob/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/splice-token-standard-utils/daml/Splice/TokenStandard/Utils/Internal/Events.daml#L149-L193
 logTransferEvents
   : HoldingOps -> ContractId TransferEventsV2.EventLog -> TransferInstructionV2.Transfer
   -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
@@ -282,11 +291,10 @@ logTransferEvents ops eventLogCid transfer senderOutputHoldingCids receiverOutpu
         meta = transfer.meta
       transferIn = leg TransferEventsV2.ReceiverSide transfer.sender
       transferOut = leg TransferEventsV2.SenderSide transfer.receiver
-      reason = case reasonFromMeta transfer.meta of
-        "" | transfer.sender == mintAccount -> "tokens minted"
-           | transfer.receiver == burnAccount -> "tokens burned"
-           | otherwise -> "transfer completed"
-        r -> r
+      reason
+        | transfer.sender == mintAccount = "tokens minted"
+        | transfer.receiver == burnAccount = "tokens burned"
+        | otherwise = "transfer completed"
       extraArgs = ExtraArgs with context = emptyChoiceContext; meta = reasonToMeta reason emptyMetadata
   if transfer.sender == transfer.receiver
     then
