@@ -25,7 +25,6 @@ module OpenZeppelin.Token.Cip112.Utils.Allocation
   , allocationSettleImpl
   , allocationWithdrawImpl
   , allocationCancelImpl
-  , allocationGcImpl
   , privateAssetAllocateExtraObservers
   , allocationFactoryImpl
   , unlockAndLog
@@ -159,9 +158,15 @@ allocationWithdrawImpl ops self s arg = do
     authorizerHoldingCids = holdings
     meta = emptyMetadata
 
--- | `allocation_cancelImpl`. Executors may cancel any time; the admin only
--- once `expiresAt` has passed (checked by the vendored default, which reads
--- the interface value of the contract being exercised).
+-- | `allocation_cancelImpl`. Executors may cancel at any time, and the admin
+-- once `expiresAt` has passed. The vendored default checks both.
+--
+-- A cancel by exactly the admin reads the `expire-lock` flag. On `False` it
+-- ends the allocation without touching its locked holdings, and only once
+-- `lockExpiresAt` has passed. Every other actor set releases the holdings,
+-- so executors other than the admin cannot end an allocation without
+-- releasing its funding. When the admin is the only executor, the vendored
+-- default treats its cancel as an executor cancel and checks no expiry.
 allocationCancelImpl
   : HoldingOps -> ContractId AllocationV2.Allocation -> AllocationState
   -> AllocationV2.Allocation_Cancel
@@ -169,13 +174,17 @@ allocationCancelImpl
 allocationCancelImpl ops self s arg = do
   this <- fetch self
   allocationV2_cancelDefaultImpl this self arg $ do
-    holdings <- unlockAndLog ops s "allocation cancelled"
-    pure (holdings, emptyMetadata)
-
--- | Body of a consuming last-resort admin cleanup choice for an allocation
--- whose funding was already reclaimed. Creates nothing.
-allocationGcImpl : AllocationState -> Update ()
-allocationGcImpl s = assertDeadlineExceeded "allocation lockExpiresAt" s.lockExpiresAt
+    expireLock <-
+      if dedupSort arg.actors == [s.allocation.admin]
+        then expireLockFromContext arg.extraArgs.context
+        else pure True
+    if expireLock
+      then do
+        holdings <- unlockAndLog ops s "allocation cancelled"
+        pure (holdings, emptyMetadata)
+      else do
+        assertDeadlineExceeded "allocation lockExpiresAt" s.lockExpiresAt
+        pure (TextMap.empty, emptyMetadata)
 
 -- Factory body
 ---------------
