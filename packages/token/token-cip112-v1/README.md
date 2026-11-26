@@ -70,12 +70,12 @@ interfaces or exceptions of its own.
 - A two-step transfer locks the transfer amount in a sender holding whose
   only lock holder is the admin. The registry serves that holding to the
   receiver's wallet by explicit disclosure, and the wallet attaches it when
-  it accepts or rejects. Accept fails after `executeBefore`. Reject and
-  withdraw have no deadline. After `executeBefore`, the admin may also
-  return the funds to the sender through `TokenTransferInstruction_Expire`.
-  Withdraw and expiry archive the pending instruction, so they need the
-  receiver to stay hosted with the packages vetted (see
-  [Security caveats](#security-caveats)). Once the lock expires at
+  it accepts or rejects. Accept fails once ledger time reaches
+  `executeBefore`. Reject and withdraw have no deadline. From `executeBefore`
+  on, the admin may also return the funds to the sender through
+  `TokenTransferInstruction_Expire`. Withdraw and expiry archive the pending
+  instruction, so they need the receiver to stay hosted with the packages
+  vetted (see [Security caveats](#security-caveats)). Once the lock expires at
   `executeBefore` plus `lockGrace`, the sender's parties can also recover the
   funds through `TokenHolding_OwnerUnlock`, which does not involve the
   receiver.
@@ -210,12 +210,25 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   `maxTTL` to the longest workflow the registry accepts, counted from ledger
   time for a transfer and from `requestedAt` for an allocation. Deadlines
   are checked against ledger time, which may differ from the
-  synchronizer's record time by up to its ledger-time tolerance. Keep
-  `lockGrace` above twice that tolerance, so that the owner cannot unlock
-  the funding while a settle can still commit.
+  synchronizer's record time by up to its ledger-time tolerance. By record
+  time, a choice that must run before a deadline, such as an accept or a
+  settle, can commit up to one tolerance after it, and a choice that must
+  wait for one, such as the owner's unlock, up to one tolerance before it.
+  The owner's early unlock cuts the admin's expiry window short by as much.
+  Keep `lockGrace` above twice that tolerance, so that the owner cannot unlock
+  the funding while an accept or settle can still commit.
   A time computed from an oversized value saturates at the bounds of `Time`.
   The time bounds section of the `token-cip112-utils`
   [`README.md`](../token-cip112-utils/README.md) lists the effects.
+- A late accept or settle carries a ledger time before its deadline, so its
+  choice body accepts it like a timely one. Only the transaction's record
+  time shows the delay. Withdraw the old transfer instruction as part of
+  every retry, in the same transaction as the new instruction where possible.
+  Otherwise a late accept of the old instruction pays the receiver twice. The
+  admin replaces a mint offer, and an authorizer an allocation for the same
+  settlement, the same way.
+  [`integration-guide.md`](integration-guide.md#retrying-a-transfer) shows
+  how.
 - An expiry with the `expire-lock` flag cleared trusts the admin that the
   funding is gone. The ledger cannot check this, because fetching an archived
   holding aborts. The admin clears the flag only after finding the contract's
