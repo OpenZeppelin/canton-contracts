@@ -71,7 +71,9 @@ The co-signature has costs:
   allowlist, or roles needs the admin's and the pauser's authority in one
   transaction.
   With the two on separate participants, the admin creates or replaces it
-  through a `MyRulesProposal` that the pauser accepts. Pausing and
+  through a `MyRulesProposal` that the pauser accepts. Archiving `MyRules`
+  also needs the admin and the pauser in one transaction. No proposal does
+  that, because accepting one always creates a `MyRules`. Pausing and
   unpausing need the pauser alone. The pauser itself cannot be replaced
   through a new rules contract. Every holding and pending contract names
   the old pauser, so a rules contract with a new pauser refuses them all,
