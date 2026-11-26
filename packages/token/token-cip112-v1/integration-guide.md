@@ -21,7 +21,11 @@ Three roles interact with the package:
   submission that exercises a factory choice, and the disclosed locked
   funding to accept or reject an incoming transfer. The user's own holdings,
   and the instructions and allocations the user takes part in, are visible
-  to the user directly as a stakeholder.
+  to the user directly as a stakeholder. Open an account whose provider
+  differs from its owner only when the provider commits to staying
+  available, because every choice the owner takes for the account also
+  needs the provider (see the
+  [`README.md` security caveats](README.md#security-caveats)).
 - **Settlement apps** host executor parties. They receive allocations as
   contract observers and drive `SettlementFactory_SettleBatch` with the
   executors as actors.
@@ -41,7 +45,8 @@ The receiver and the executors observe the pending contract itself. Until it
 is archived, these parties must stay hosted, and every participant hosting
 them must keep the packages below vetted. Otherwise every choice on the
 pending contract fails, and the locked funds stay frozen until the lock
-expires and the owner recovers them through `TokenHolding_OwnerUnlock`. The
+expires and the account parties recover them through
+`TokenHolding_OwnerUnlock`. The
 [`README.md` security caveats](README.md#security-caveats) describe who can
 cause this and how long the funds stay frozen.
 
@@ -92,7 +97,7 @@ lets it expire. `examples/token/token-cip112-trading-test` and the test scripts
 
 Authorization: sender parties initiate; receiver parties accept or reject;
 sender parties withdraw; the admin expires after the instruction's storage
-bound.
+bound (see "Expiry and cleanup").
 
 ### Delivery-versus-payment settlement
 
@@ -101,6 +106,12 @@ Each trader allocates their side of the legs through
 one transaction through `SettlementFactory_SettleBatch`, which checks that the
 batch's legs are covered exactly. `examples/token/token-cip112-trading-test` runs a full
 DvP.
+
+Every allocation in the batch, with or without a settlement deadline, must be
+settled before its `expiresAt`. One allocation at or past its `expiresAt`
+fails the settlement of every authorizer in the batch. Before submitting,
+drop each trade with an expired allocation, legs included, or ask that
+allocation's authorizer for a new allocation.
 
 Authorization: each authorizer's account parties allocate; the executors alone
 settle the batch.
@@ -118,16 +129,69 @@ both directions.
 Authorization: the admin alone allocates for a special account, with
 `actors = [admin]`; the executors settle the batch.
 
+### Retrying an allocation
+
+Each `AllocationFactory_Allocate` creates an allocation and locks its funding,
+even when the authorizer already has a live allocation for the same
+`settlement`. The authorizer can withdraw an uncommitted duplicate at any
+time, and a committed one only after the settlement deadline. The executors
+can cancel either at any time.
+
+A retry that names any of the same `inputHoldingCids` fails once the first
+allocate has archived them. A retry that selects other holdings locks the
+funds again unless
+[command deduplication](https://docs.canton.network/appdev/deep-dives/command-deduplication)
+rejects it. A wallet must retry an allocate like any other Canton command:
+with the same command ID, user ID, and `actAs` parties, through the same
+participant. Deduplication holds only within the deduplication period. After
+that period, the wallet must search the authorizer's transactions since the
+first submission for an allocation with the same `settlement` and
+`transferLegSides`, settled or not, and retry only when it finds none.
+
 ### Iterated settlement
 
 An allocation created with `nextIterationFunding` set lets the executors bring
 new legs each settlement round against a locked reserve, rolling the remainder
 into a successor allocation. `testIteratedSettlementLifecycle` runs a
 two-iteration chain; the trading example's deposit flow shows the consumer
-shape.
+shape. Each successor can be settled until its own `expiresAt`.
 
 Authorization: as DvP, per iteration; the authorizer withdraws the current
 successor to exit.
+
+### Expiry and cleanup
+
+The registry operator's automation ends stale workflow contracts once their
+`expiresAt` has passed. Transfer instructions end through
+`TokenRules_ExpireTransferInstructions`, with one
+`TokenTransferInstruction_Expire` argument per instruction. Allocations end
+through `TokenRules_ExpireAllocations`, with one `Allocation_Cancel` argument
+per allocation and `actors = [admin]`. Each argument carries its own
+`extraArgs`, whose choice context may hold the `expire-lock` flag (this key
+has the same function as in Splice):
+
+- A missing flag, or `AV_Bool True`, releases the funding to its account
+  and emits the `EventLog_HoldingsChange` that wallets track returned funds
+  by. Use it by default: it fails, rolling back the whole batch, if the
+  funding is already gone.
+- `AV_Bool False` clears the flag. The expiry then leaves the locked holdings
+  untouched, emits nothing, and fails before `lockExpiresAt`. Use it only
+  for a contract whose funding is already unlocked or spent.
+
+The ledger cannot check that the funding is gone, so the automation must
+look before it clears a flag. The flag covers every locked holding of the
+contract, and an allocation locks one holding per instrument, so the
+automation checks each of them. If the owner reclaimed only some of them,
+the admin returns the rest with `TokenHolding_AdminUnlock` and then clears
+the flag. A flag cleared while a holding is still locked ends the contract
+and leaves that holding locked; the admin returns it with
+`TokenHolding_AdminUnlock`, without the account's provider. For
+allocations, the flag is read only when the actors are exactly `[admin]`,
+including when the admin is the allocation's only executor. A cancel by any
+other actor set releases the funding.
+
+Authorization: the admin alone expires, clears flags, and runs the admin
+unlock; the executors cancel an allocation at any time.
 
 ## Token Standard
 
@@ -171,4 +235,7 @@ cleanup.
 | Requesting a deadline or execution window beyond the registry's `maxTTL` | Refused outright, not truncated | Keep `executeBefore` within `maxTTL` of ledger time, and a settlement deadline within `maxTTL` of the allocation's `requestedAt` |
 | Backdating an allocation's `requestedAt` | Without a deadline, `expiresAt` is `requestedAt + maxTTL`, so the allocation expires early. A deadline later than `requestedAt + maxTTL` is refused | Set `requestedAt` to the time the wallet prepares the request |
 | Expecting the admin to expire a live workflow | Expiry choices fail before the workflow deadline | Wait for `expiresAt`; only executors cancel early |
-| Reading `availableActions` as "exercisable now" | A committed allocation advertises withdraw that still fails before the deadline | Treat the map as the actor sets; check the deadline separately |
+| Clearing the `expire-lock` flag on every contract past `lockExpiresAt` | A contract whose funding is still locked ends, and its holding stays locked | Clear the flag only after finding the locked holdings archived; return a holding left locked with `TokenHolding_AdminUnlock` |
+| Running the default expiry after the owner unlocked or spent the funding | The expiry fails on the archived holding, and so does its whole batch | Expire that contract with `expire-lock` set to `AV_Bool False` |
+| Reading `availableActions` as "exercisable now" | A committed allocation advertises withdraw that still fails before the deadline, and every allocation advertises settle that fails from `expiresAt` on | Treat the map as the actor sets; check the deadline and `expiresAt` separately |
+| Reading `transferLegSides` or their `meta` in an `EventLog_HoldingsChange` as value movement | The reader records movements that never happened, such as a settlement whose legs net to zero | Derive value movement from the event's `inputHoldingCids` and `outputHoldingCids` only. Treat the event's `transferLegSides` and their `meta` as labels the submitters supplied |

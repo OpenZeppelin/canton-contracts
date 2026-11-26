@@ -255,6 +255,10 @@ testHoldingViewPredicate = do
   isValidHoldingView (ok with lock = Some relLock) === False
   isValidHoldingView (ok with lock = Some (relLock with expiresAfter = None)) === True
 
+-- | The admin expiry reads Splice's choice-context key.
+testExpireLockKeyMatchesSplice : Script ()
+testExpireLockKeyMatchesSplice = expireLockKey === "expire-lock"
+
 testRegistryConfigPredicate : Script ()
 testRegistryConfigPredicate = do
   admin <- allocateParty "admin"

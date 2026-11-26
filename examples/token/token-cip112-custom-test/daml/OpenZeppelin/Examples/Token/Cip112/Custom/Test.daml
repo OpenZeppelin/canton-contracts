@@ -17,7 +17,7 @@ import DA.Map qualified as Map
 import DA.Optional (isNone, isSome, optionalToList)
 import DA.Text (isInfixOf)
 import DA.TextMap qualified as TextMap
-import DA.Time (days, hours, time)
+import DA.Time (addRelTime, days, hours, time)
 import Daml.Script
 
 import Splice.Api.Token.MetadataV1
@@ -26,7 +26,8 @@ import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (basicAccount, burnAccount, senderSide, receiverSide, nonIteratedAllocation)
+import Splice.TokenStandard.Utils
+  (basicAccount, burnAccount, reasonToMeta, senderSide, receiverSide, nonIteratedAllocation)
 
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Examples.Token.Cip112.Custom
@@ -362,6 +363,35 @@ testDvpSettles = do
   balanceSeenBy alice alice >>= (=== [5.0])
   balanceSeenBy bob bob >>= (=== [10.0])
 
+-- | `MyAllocation` settles through `allocationSettleImpl`. Without a
+-- settlement deadline, `expiresAt` is `createdAt + maxTTL`. From `expiresAt`
+-- on, the batch fails and the admin's expiry returns the funding.
+testSettlementRefusedAfterExpiresAt : Script ()
+testSettlementRefusedAfterExpiresAt = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 15.0
+  Some rules <- queryContractId admin rulesCid
+  let leg = mkLeg "leg-1" alice bob 10.0
+      openSpec trader sides = (mkSpec app trader sides None) with settlementDeadline = None
+      expiresAt = t0 `addRelTime` rules.config.maxTTL
+  aliceAlloc <- allocate app alice (openSpec alice [senderSide leg]) [aliceTok]
+  bobAlloc <- allocate app bob (openSpec bob [receiverSide leg]) []
+  Some v <- queryInterfaceContractId @AllocationV2.Allocation alice aliceAlloc
+  v.expiresAt === Some expiresAt
+  setTime expiresAt
+  let finalized = map nonIteratedAllocation [aliceAlloc, bobAlloc]
+  disclosures <- settlementDisclosures app finalized
+  mustFailWith "Ledger time is at or past deadline 'allocation.expiresAt'"
+    (actAs exchange <> discloseMany disclosures)
+    (settleBatchCmd app [leg] finalized)
+  submit (actAs admin) do
+    exerciseCmd rulesCid MyRules_ExpireAllocations with
+      cancelArgs =
+        [ (cid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)
+        | cid <- [aliceAlloc, bobAlloc] ]
+  balanceSeenBy alice alice >>= (=== [5.0, 10.0])
+  balanceSeenBy bob bob >>= (=== [])
+
 -- | The auditor is an informee of every event the workflows emit for the
 -- token: mint, the lock on instruction, both sides of the accepted
 -- transfer, a one-step burn, and both events of a two-step burn: the lock
@@ -481,6 +511,22 @@ testFrozenHoldingCannotUnlock = do
   _ <- submit (actAs alice) do exerciseCmd thawedCid MyHolding_OwnerUnlock
   assertNoLocks alice
 
+-- | The admin unlock recreates the holding the same way, so it makes the
+-- same freeze check.
+testFrozenHoldingCannotAdminUnlock : Script ()
+testFrozenHoldingCannotAdminUnlock = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  _ <- submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
+  [(lockedCid, _)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock)
+  setTime t4
+  frozenCid <- submit (actAs complianceOfficer) do exerciseCmd lockedCid MyHolding_Freeze
+  mustFailWith "holding is frozen" (actAs admin) do exerciseCmd frozenCid MyHolding_AdminUnlock
+  thawedCid <- submit (actAs complianceOfficer) do exerciseCmd frozenCid MyHolding_Unfreeze
+  _ <- submit (actAs admin) do exerciseCmd thawedCid MyHolding_AdminUnlock
+  assertNoLocks alice
+
 -- | A holding with a live lock backs a pending contract that names it by
 -- contract id, so the freeze refuses it. The pending transfer stays intact:
 -- the receiver accepts it afterwards.
@@ -592,6 +638,23 @@ testFeeComposesTwoWorkflowCalls = do
   balanceSeenBy alice alice >>= (=== [49.5])
   balanceSeenBy bob bob >>= (=== [50.0])
 
+-- | Each event of a transfer and its fee leg names the workflow as its
+-- reason, whatever reason the sender's `meta` claims, and each leg side
+-- carries that `meta`.
+testFeeEventsNameTheWorkflow : Script ()
+testFeeEventsNameTheWorkflow = do
+  app@App{..} <- setupWith 100
+  aliceTok <- mint app alice 100.0
+  let claimed = reasonToMeta "tokens minted"
+        (Metadata with values = TextMap.fromList [("example.com/memo", "rent")])
+  tree <- submitTree (actAs [alice, bob] <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice, bob] ((mkTransfer app alice bob 50.0 [aliceTok]) with meta = claimed))
+  let evs = holdingsChangeEvents tree
+  map (.account) evs === map basicAccount [alice, admin, alice, bob]
+  forA_ evs $ \ev -> do
+    ev.extraArgs.meta === reasonToMeta "transfer completed" emptyMetadata
+    map (.meta) ev.transferLegSides === [claimed]
+
 -- | A burn pays no fee: the treasury receives nothing and the change keeps
 -- the full remainder.
 testBurnPaysNoFee : Script ()
@@ -677,31 +740,66 @@ testAdminExpiryReturnsFunds = do
   setTime t3
   submit (actAs admin) do
     exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
-      instructionCids = [fromInterfaceContractId @MyTransferInstruction instrCid]
+      expireArgs = [(fromInterfaceContractId @MyTransferInstruction instrCid, MyTransferInstruction_Expire with extraArgs = emptyExtraArgs)]
   submit (actAs admin) do
     exerciseCmd rulesCid MyRules_ExpireAllocations with
       cancelArgs = [(allocCid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)]
   balanceSeenBy alice alice >>= (=== [3.0, 5.0, 7.0])
   assertNoLocks alice
 
+-- | `ExtraArgs` that clear the `expire-lock` flag, so an admin expiry leaves
+-- the funding untouched. Splice's key, spelled out.
+skipFunding : ExtraArgs
+skipFunding = ExtraArgs with
+  context = ChoiceContext with values = TextMap.fromList [("expire-lock", AV_Bool False)]
+  meta = emptyMetadata
+
 -- | Once the funding locks expire, alice unlocks her own holdings and the
--- admin removes the instruction and allocation that still reference them.
-testOwnerUnlockThenAdminGC : Script ()
-testOwnerUnlockThenAdminGC = do
+-- admin expires the instruction and allocation that still reference them
+-- with the `expire-lock` flag cleared. Both end with the standard result,
+-- and the same calls fail before the locks expire.
+testOwnerUnlockThenExpiryWithFlagCleared : Script ()
+testOwnerUnlockThenExpiryWithFlagCleared = do
   app@App{..} <- setup
   (instrCid, allocCid) <- lockAliceFunds app
+  let instrTemplateCid = fromInterfaceContractId @MyTransferInstruction instrCid
+      expireInstr = exerciseCmd instrTemplateCid MyTransferInstruction_Expire with extraArgs = skipFunding
+      cancelAlloc = exerciseCmd allocCid AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = skipFunding
+  -- t3 is past both expiries, before the locks expire.
+  setTime t3
+  mustFailWith "strictly before deadline 'lockExpiresAt'" (actAs admin) expireInstr
+  mustFailWith "strictly before deadline 'allocation lockExpiresAt'" (actAs admin) cancelAlloc
   setTime t4
   holdings <- query @MyHolding alice
   forA_ [cid | (cid, h) <- holdings, isSome h.holding.lock] $ \cid ->
     submit (actAs alice) do exerciseCmd cid MyHolding_OwnerUnlock
   balanceSeenBy alice alice >>= (=== [3.0, 5.0, 7.0])
   assertNoLocks alice
-  let instrTemplateCid = fromInterfaceContractId @MyTransferInstruction instrCid
-      allocTemplateCid = fromInterfaceContractId @MyAllocation allocCid
-  submit (actAs admin) do exerciseCmd instrTemplateCid MyTransferInstruction_AdminGC
-  submit (actAs admin) do exerciseCmd allocTemplateCid MyAllocation_AdminGC
+  instrResult <- submit (actAs admin) expireInstr
+  instrResult.output === TransferInstructionV2.TransferInstructionResult_Failed
+  instrResult.senderChangeCids === []
+  allocResult <- submit (actAs admin) cancelAlloc
+  allocResult.output === AllocationV2.AllocationResult_Cancelled
+  allocResult.authorizerHoldingCids === TextMap.empty
   queryContractId admin instrTemplateCid >>= (=== None)
-  queryContractId admin allocTemplateCid >>= (=== None)
+  queryContractId admin (fromInterfaceContractId @MyAllocation allocCid) >>= (=== None)
+  balanceSeenBy alice alice >>= (=== [3.0, 5.0, 7.0])
+
+-- | A flag cleared while the funding is still locked leaves it locked; the
+-- admin unlock returns it.
+testAdminUnlockAfterEarlyClearedFlag : Script ()
+testAdminUnlockAfterEarlyClearedFlag = do
+  app@App{..} <- setup
+  (instrCid, _) <- lockAliceFunds app
+  setTime t4
+  _ <- submit (actAs admin) do
+    exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
+      expireArgs = [(fromInterfaceContractId @MyTransferInstruction instrCid, MyTransferInstruction_Expire with extraArgs = skipFunding)]
+  [(lockedCid, locked)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock && h.holding.amount == 7.0)
+  _ <- submit (actAs admin) do exerciseCmd lockedCid MyHolding_AdminUnlock
+  [(_, unlocked)] <- queryFilter @MyHolding alice (\h -> isNone h.holding.lock && h.holding.amount == 7.0)
+  unlocked.holding.account === locked.holding.account
+  unlocked.frozen === False
 
 -- | The signatories can archive a holding and the rules contract directly.
 testSignatoriesArchive : Script ()
@@ -821,4 +919,4 @@ testExpireTransferInstructionsRefusesOtherRegistry = do
   setTime t3
   mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs admin) do
     exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
-      instructionCids = [fromInterfaceContractId @MyTransferInstruction instrCid]
+      expireArgs = [(fromInterfaceContractId @MyTransferInstruction instrCid, MyTransferInstruction_Expire with extraArgs = emptyExtraArgs)]

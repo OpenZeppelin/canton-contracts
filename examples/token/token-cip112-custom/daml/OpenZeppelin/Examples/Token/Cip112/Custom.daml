@@ -148,6 +148,14 @@ template MyHolding with
         require "holding is frozen" (not frozen)
         holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
 
+    -- | Unlock an expired lock with the admin's authority alone. Refused
+    -- while frozen, for the same reason as `MyHolding_OwnerUnlock`.
+    choice MyHolding_AdminUnlock : ContractId HoldingV2.Holding
+      controller holding.instrumentId.admin
+      do
+        require "holding is frozen" (not frozen)
+        holdingAdminUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
+
     interface instance HoldingV2.Holding for MyHolding where
       view = holding
 
@@ -181,12 +189,10 @@ template MyTransferInstruction with
       transferInstruction_withdrawImpl self arg = transferWithdrawImpl (ops this) self state arg
 
     choice MyTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
+      with
+        extraArgs : ExtraArgs
       controller state.transfer.instrumentId.admin
-      do transferExpireImpl (ops this) state
-
-    choice MyTransferInstruction_AdminGC : ()
-      controller state.transfer.instrumentId.admin
-      do transferGcImpl state
+      do transferExpireImpl (ops this) state extraArgs
 
 -- Allocation
 -------------
@@ -208,10 +214,6 @@ template MyAllocation with
         allocationSettleImpl (ops this) (\s -> toInterfaceContractId <$> create this with state = s) self state arg
       allocation_withdrawImpl self arg = allocationWithdrawImpl (ops this) self state arg
       allocation_cancelImpl self arg = allocationCancelImpl (ops this) self state arg
-
-    choice MyAllocation_AdminGC : ()
-      controller state.allocation.admin
-      do allocationGcImpl state
 
 -- Registry
 -----------
@@ -299,13 +301,13 @@ template MyRules with
 
     nonconsuming choice MyRules_ExpireTransferInstructions : ()
       with
-        instructionCids : [ContractId MyTransferInstruction]
+        expireArgs : [(ContractId MyTransferInstruction, MyTransferInstruction_Expire)]
       controller config.admin
       do
-        forA_ instructionCids $ \cid -> do
+        forA_ expireArgs $ \(cid, expireArg) -> do
           instr <- fetch cid
           requireMatchExpected ("transfer.instrumentId.admin", instr.state.transfer.instrumentId.admin) config.admin
-          _ <- exercise cid MyTransferInstruction_Expire
+          _ <- exercise cid expireArg
           pure ()
 
 -- Registry policy
