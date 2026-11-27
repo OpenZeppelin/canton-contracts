@@ -189,6 +189,9 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   synchronizer's record time by up to its ledger-time tolerance. Keep
   `lockGrace` above twice that tolerance, so that the owner cannot unlock
   the funding while a settle can still commit.
+  A time computed from an oversized value saturates at the bounds of `Time`.
+  The time bounds section of the `token-cip112-utils`
+  [`README.md`](../token-cip112-utils/README.md) lists the effects.
 - An expiry with the `expire-lock` flag cleared trusts the admin that the
   funding is gone. The ledger cannot check this, because fetching an archived
   holding aborts. The admin clears the flag only after finding the contract's
@@ -207,7 +210,8 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   `expiresAt` for an allocation. For a transfer and for an allocation the
   factory creates, these deadlines fall within `maxTTL` of the pending
   contract's creation, so `maxTTL` plus `lockGrace` caps how long the funds
-  stay frozen. A successor without a settlement deadline can carry an
+  stay frozen. A lock expiry that saturates at `maxTime` leaves no finite
+  cap. A successor without a settlement deadline can carry an
   `expiresAt` later than its creation plus `maxTTL`, as the iterated-settlement
   caveat above describes. Size both settings with that cap in mind. The
   account parties then recover the funds through `TokenHolding_OwnerUnlock`,

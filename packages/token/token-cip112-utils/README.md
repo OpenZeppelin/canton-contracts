@@ -132,6 +132,15 @@ ledger-time tolerance.
   repeatedly. The executors are trusted with the reserve, and an allocation
   without a deadline is never committed, so its authorizer can withdraw it
   and end the chain.
+- A time computed from `maxTTL` or `lockGrace` saturates at the bounds of
+  `Time`, which are `minBound` and `maxTime` (9999-12-31T23:59:59.999999Z).
+  A check against a saturated `executeBefore - maxTTL` or
+  `requestedAt + maxTTL` passes.
+- A `lockExpiresAt` of `maxTime` never passes, so `holdingOwnerUnlockImpl`
+  fails on the locked holding. An `expiresAt` of `maxTime` never passes
+  either, so the admin can never expire the contract.
+- A committed allocation must have a settlement deadline before `maxTime`,
+  since one at `maxTime` would never let its authorizer withdraw it.
 
 ## Operational assumptions
 

@@ -9,7 +9,7 @@ import DA.Date (date, Month(Jan))
 import DA.List (sort)
 import DA.Optional (isNone, isSome, optionalToList)
 import DA.TextMap qualified as TextMap
-import DA.Time (days, hours, time)
+import DA.Time (RelTime, convertMicrosecondsToRelTime, days, hours, time)
 import Daml.Script
 
 import Splice.Api.Token.MetadataV1
@@ -185,7 +185,17 @@ holdingAmounts owner = do
 -- script that shares a ledger needs its own prefix; the in-memory `dpm test`
 -- ledger is fresh per script and never collides.
 setupPrefixed : Text -> Script Scenario
-setupPrefixed prefix = do
+setupPrefixed prefix = setupWithConfig prefix (days 90) (hours 1)
+
+-- | The largest `RelTime`, about 292,000 years: as a `maxTTL` or a
+-- `lockGrace`, every time a workflow derives from it saturates at the bounds
+-- of `Time`.
+maxRelTime : RelTime
+maxRelTime = convertMicrosecondsToRelTime maxBound
+
+-- | As `setupPrefixed`, with the registry's `maxTTL` and `lockGrace`.
+setupWithConfig : Text -> RelTime -> RelTime -> Script Scenario
+setupWithConfig prefix maxTTL lockGrace = do
   admin <- allocateParty (prefix <> "admin")
   app <- allocateParty (prefix <> "app")
   alice <- allocateParty (prefix <> "alice")
@@ -195,8 +205,8 @@ setupPrefixed prefix = do
     createCmd TokenRules with
       config = RegistryConfig with
         admin
-        maxTTL = days 90
-        lockGrace = hours 1
+        maxTTL
+        lockGrace
   Some rulesDisclosure <- queryDisclosure @TokenRules admin rulesCid
   let settlement = AllocationV2.SettlementInfo with
         executors = [app]

@@ -15,7 +15,7 @@ import DA.List (dedupSort)
 import DA.Map qualified as Map
 import DA.Text (isInfixOf)
 import DA.TextMap qualified as TextMap
-import DA.Time (addRelTime, days, hours, minutes, time)
+import DA.Time (RelTime, addRelTime, convertMicrosecondsToRelTime, days, hours, microseconds, minutes, subTime, time)
 import Daml.Script
 
 import Splice.Api.Token.MetadataV1
@@ -36,6 +36,12 @@ t0 = time (date 2026 Jan 1) 0 0 0
 t1 = time (date 2026 Jan 1) 0 10 0
 t2 = time (date 2026 Jan 1) 0 20 0
 t3 = time (date 2026 Jan 1) 0 30 0
+
+-- | The extremes of `RelTime`, about 292,000 years either way: every time
+-- derived from them leaves the range of `Time`.
+maxRelTime, minRelTime : RelTime
+maxRelTime = convertMicrosecondsToRelTime maxBound
+minRelTime = convertMicrosecondsToRelTime minBound
 
 -- Local templates
 ------------------
@@ -91,9 +97,9 @@ template ForeignAllocation with
 
 -- | Runs a builder inside a choice, since builders are `Update` functions.
 -- Signed by the admin and the owner so the consumption authority matches.
--- The choices take `actors` like the standard ones, so a caller's own
--- authority is in scope for the fetch, as an attacker's is when they act on
--- a factory.
+-- The fetching choices take `actors` like the standard ones, so a caller's
+-- own authority is in scope for the fetch, as an attacker's is when they act
+-- on a factory.
 template Harness with
     admin : Party
     owner : Party
@@ -124,6 +130,11 @@ template Harness with
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]; actors : [Party]
       controller actors
       do expireAllocationsImpl (pinAllocationTo @UnitAllocation) admin cancelArgs
+
+    nonconsuming choice Harness_IsLedgerTimeAtMost : Bool
+      with t : Time
+      controller admin
+      do isLedgerTimeAtMost t
 
 -- | The operations the harness runs the bodies with. Events are not under
 -- test here, so emission does nothing.
@@ -255,6 +266,8 @@ testRegistryConfigPredicate = do
   isValidRegistryConfig c === True
   isValidRegistryConfig (c with maxTTL = minutes 0) === False
   isValidRegistryConfig (c with lockGrace = minutes 0) === False
+  -- Oversized values stay valid: the times derived from them saturate.
+  isValidRegistryConfig (c with maxTTL = maxRelTime; lockGrace = maxRelTime) === True
 
 testTransferInstructionStatePredicate : Script ()
 testTransferInstructionStatePredicate = do
@@ -290,6 +303,10 @@ testTransferInstructionStatePredicate = do
   isValidTransferInstructionState ((s with lockedHoldingCids = []) with transfer = transfer with sender = mintAccount; receiver = burnAccount) === False
   isValidTransferInstructionState (s with lockedHoldingCids = []) === False
   isValidTransferInstructionState (s with lockExpiresAt = t2) === False
+  -- `lockExpiresAt` may equal `expiresAt` only when both are `maxTime`.
+  isValidTransferInstructionState (s with lockExpiresAt = maxTime) === True
+  isValidTransferInstructionState (s with expiresAt = maxTime; lockExpiresAt = maxTime) === True
+  isValidTransferInstructionState (s with expiresAt = maxTime; lockExpiresAt = t2) === False
   -- The view advertises each side's account parties as the actor set.
   let v = transferInstructionView s
   Map.lookup TransferInstructionV2.TIA_Accept v.availableActions === Some [[bob]]
@@ -336,9 +353,25 @@ testAllocationStatePredicate = do
   isValidAllocationState (s with allocation = allocation with authorizer = mintAccount; nextIterationFunding = Some TextMap.empty) === False
   isValidAllocationState (s with numIterations = -1) === False
   isValidAllocationState (s with lockExpiresAt = t2) === False
+  isValidAllocationState (s with expiresAt = maxTime; lockExpiresAt = maxTime) === True
+  isValidAllocationState (s with expiresAt = maxTime; lockExpiresAt = t2) === False
+  isValidAllocationState (s with maxTTL = maxRelTime; lockGrace = maxRelTime) === True
   isValidAllocationState (s with maxTTL = minutes 0) === False
   isValidAllocationState (s with lockGrace = minutes 0) === False
   isValidAllocationState (s with allocation = allocation with committed = True; settlementDeadline = None) === False
+  -- A committed allocation needs a deadline that can pass, which `maxTime`
+  -- never does. An uncommitted one may run until `maxTime`.
+  isValidAllocationState (s with allocation = allocation with committed = True) === True
+  isValidAllocationState (s with allocation = allocation with committed = True; settlementDeadline = Some maxTime) === False
+  isValidAllocationState (s with allocation = allocation with settlementDeadline = Some maxTime) === True
+  -- The view advertises withdraw for the same shapes, so a template whose
+  -- `ensure` allows more never advertises a withdraw that cannot succeed.
+  let withdrawers st = Map.lookup AllocationV2.AA_Withdraw (allocationAvailableActions st)
+  withdrawers s === Some [[alice]]
+  withdrawers (s with allocation = allocation with committed = True) === Some [[alice]]
+  withdrawers (s with allocation = allocation with committed = True; settlementDeadline = None) === None
+  withdrawers (s with allocation = allocation with committed = True; settlementDeadline = Some maxTime) === None
+  withdrawers (s with allocation = allocation with settlementDeadline = Some maxTime) === Some [[alice]]
 
 -- | The executors observe a factory call only when it needs no funding and
 -- names no inputs: an unnecessary input would show them its id and the
@@ -392,6 +425,43 @@ testComputeStorageExpiry = do
   computeStorageExpiry (minutes 5) t1 (Some t2) === (t1 `addRelTime` minutes 5)
   computeStorageExpiry (days 90) t1 None === (t1 `addRelTime` days 90)
   computeStorageExpiry (days 3000000) t1 None === maxTime
+  computeStorageExpiry maxRelTime t1 None === maxTime
+  computeStorageExpiry maxRelTime t1 (Some t2) === t2
+  computeStorageExpiry maxRelTime maxTime None === maxTime
+
+-- | Shifting a time saturates at either end of `Time`, where `addRelTime`
+-- raises an `ArithmeticError`, and is exact everywhere in between, up to one
+-- microsecond short of each end.
+testAddRelTimeSaturating : Script ()
+testAddRelTimeSaturating = do
+  let toMax = maxTime `subTime` t1
+      toMin = (minBound : Time) `subTime` t1
+  addRelTimeSaturating t1 (hours 1) === (t1 `addRelTime` hours 1)
+  addRelTimeSaturating t1 (negate (hours 1)) === (t1 `addRelTime` negate (hours 1))
+  addRelTimeSaturating t1 (toMax - microseconds 1) === (maxTime `addRelTime` negate (microseconds 1))
+  addRelTimeSaturating t1 toMax === maxTime
+  addRelTimeSaturating t1 (toMax + microseconds 1) === maxTime
+  addRelTimeSaturating t1 (toMin + microseconds 1) === (minBound `addRelTime` microseconds 1)
+  addRelTimeSaturating t1 toMin === minBound
+  addRelTimeSaturating t1 (toMin - microseconds 1) === minBound
+  -- At the extremes of `RelTime`, the microsecond sum itself would overflow.
+  addRelTimeSaturating t1 maxRelTime === maxTime
+  addRelTimeSaturating t1 minRelTime === minBound
+  addRelTimeSaturating maxTime maxRelTime === maxTime
+  addRelTimeSaturating minBound minRelTime === minBound
+  addRelTimeSaturating maxTime (hours 0) === maxTime
+  addRelTimeSaturating minBound (hours 0) === minBound
+
+-- | `isLedgerTimeAtMost` is `isLedgerTimeLE`, but holds at `maxTime`, where
+-- `isLedgerTimeLE` fails the transaction.
+testIsLedgerTimeAtMost : Script ()
+testIsLedgerTimeAtMost = do
+  Fixture{..} <- setup
+  let atMost t = submit admin do exerciseCmd harnessCid Harness_IsLedgerTimeAtMost with t
+  atMost t1 >>= (=== True)
+  atMost t2 >>= (=== True)
+  atMost (t1 `addRelTime` negate (microseconds 1)) >>= (=== False)
+  atMost maxTime >>= (=== True)
 
 -- | Event informees are the account parties plus the owner's extra
 -- observers, deduplicated, so listing an account party twice is harmless.

@@ -26,7 +26,7 @@ import DA.Foldable (forA_)
 import DA.List (dedupSort)
 import DA.Optional (isNone, isSome)
 import DA.TextMap qualified as TextMap
-import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime)
+import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime, isLedgerTimeLE)
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
@@ -269,8 +269,25 @@ eventObserversFor ops admin account =
 -- capped by the workflow deadline, saturating at `maxTime`.
 computeStorageExpiry : RelTime -> Time -> Optional Time -> Time
 computeStorageExpiry maxTTL base deadline =
-    optional identity min deadline candidate
-  where
-    candidate
-      | maxTime `subTime` base <= maxTTL = maxTime
-      | otherwise = base `addRelTime` maxTTL
+  optional identity min deadline (base `addRelTimeSaturating` maxTTL)
+
+-- | `t` shifted by `delta`, saturating at `maxTime` or `minBound` where
+-- `addRelTime` raises an `ArithmeticError`.
+addRelTimeSaturating : Time -> RelTime -> Time
+addRelTimeSaturating t delta
+  | delta >= maxTime `subTime` t = maxTime
+  | delta <= minBound `subTime` t = minBound
+  | otherwise = t `addRelTime` delta
+
+-- | Whether ledger time is at or before `t`. Holds at `maxTime`, where
+-- `isLedgerTimeLE` raises an error.
+isLedgerTimeAtMost : Time -> Update Bool
+isLedgerTimeAtMost t
+  | t == maxTime = pure True
+  | otherwise = isLedgerTimeLE t
+
+-- | Whether `lockExpiresAt`, the second argument, is strictly after
+-- `expiresAt`, the first, or both are `maxTime`.
+lockOutlivesExpiry : Time -> Time -> Bool
+lockOutlivesExpiry expiresAt lockExpiresAt =
+  expiresAt < lockExpiresAt || lockExpiresAt == maxTime
