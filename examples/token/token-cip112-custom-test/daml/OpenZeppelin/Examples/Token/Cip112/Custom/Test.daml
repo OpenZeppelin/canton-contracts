@@ -1511,9 +1511,8 @@ testPauseKeepsTheRules = do
   Some after <- queryContractId admin app.rulesCid
   after === before
 
--- | Withdraw, cancel, and expiry read no rules contract, so each returns
--- its funds while the registry is paused. `testPauseHoldsAccept` covers
--- reject.
+-- | Withdraw, cancel, and the admin's expiry choices run while the registry
+-- is paused and return the funds. `testPauseHoldsAccept` covers reject.
 testPauseReturnsFunds : Script ()
 testPauseReturnsFunds = do
   app0@App{..} <- setup
