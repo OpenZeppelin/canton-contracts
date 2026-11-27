@@ -1108,11 +1108,10 @@ testPausedEarlierRulesStillOpenStatuses = do
 -- | In a batch, each allocation receives only its own authorizer's status,
 -- under the key a direct settle uses. Alice sends 10 TOK for bob's 4 USD, so
 -- both lock funding. The executors also put alice's status under the plain
--- key, which reaches neither, and a rules contract they sign with the
--- pauser under `rulesKey`, which each settle receives as the factory's own
--- id instead.
--- Swapped statuses fail on the account check, and a frozen bob fails the
--- whole batch though alice is not frozen.
+-- key and a rules contract they sign with the pauser under `rulesKey`.
+-- Neither reaches a settle, which receives the factory's own id under
+-- `rulesKey`. Swapped statuses fail on the account check, and a frozen bob
+-- fails the whole batch though alice is not frozen.
 testBatchForwardsEachAuthorizerItsStatus : Script ()
 testBatchForwardsEachAuthorizerItsStatus = do
   app@App{..} <- setup
