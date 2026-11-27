@@ -28,7 +28,7 @@ import DA.Foldable (forA_)
 import DA.List (dedupSort, unique)
 import DA.Optional (isNone, isSome)
 import DA.TextMap qualified as TextMap
-import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime)
+import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime, isLedgerTimeLE)
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
@@ -93,10 +93,9 @@ data HoldingOps = HoldingOps with
       -- its owner: an accept's surplus, a settlement's payout to the
       -- authorizer, and a reserve rolled into the next iteration. Fails
       -- unless the contract is an accepted implementation, then removes the
-      -- holding from the ledger and returns the view it had.
-      -- `settleBatchImpl` passes each `Allocation_Settle` an empty context,
-      -- so a rule that requires a context entry refuses every batch
-      -- settlement.
+      -- holding from the ledger and returns the view it had. In a batch
+      -- settlement, the context is what the `select` argument of
+      -- `settleBatchImpl` returns for the allocation.
     returnHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
       -- ^ Consume locked funding to return it to its owner, through
       -- `unlockHoldings`: `transferRejectImpl`, `transferWithdrawImpl`,
@@ -195,17 +194,57 @@ newHolding ops admin account instrumentId amount lock =
 holdingOwnerUnlockImpl
   : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
   -> Update (ContractId HoldingV2.Holding)
-holdingOwnerUnlockImpl ops self holding = do
+holdingOwnerUnlockImpl ops self holding =
+  releaseExpiredLock ops self holding "its owner" "expired lock released by owner"
+
+-- | Body of a consuming admin-unlock choice on a holding template, controlled
+-- by the admin alone. It does what `holdingOwnerUnlockImpl` does, with its
+-- own event reason. It moves no value: the holding returns unlocked to the
+-- same account, and only once its lock has expired.
+holdingAdminUnlockImpl
+  : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
+  -> Update (ContractId HoldingV2.Holding)
+holdingAdminUnlockImpl ops self holding =
+  releaseExpiredLock ops self holding "the admin" "expired lock released by admin"
+
+-- | Recreate a holding whose lock has expired without its lock, and log the
+-- change with `reason`. `releaser` names who unlocks, for the failure on an
+-- indefinite lock.
+releaseExpiredLock
+  : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> Text -> Text
+  -> Update (ContractId HoldingV2.Holding)
+releaseExpiredLock ops self holding releaser reason = do
   lock <- case holding.lock of
     None -> fail "holding is not locked"
     Some l -> pure l
   case lock.expiresAt of
-    None -> fail "holding is locked indefinitely and cannot be unlocked by its owner"
+    None -> fail ("holding is locked indefinitely and cannot be unlocked by " <> releaser)
     Some expiresAt -> assertDeadlineExceeded "lock expiresAt" expiresAt
   newCid <- ops.createHolding (holding with lock = None)
-  emitHoldingsChange ops holding.instrumentId.admin holding.account [] [self] [newCid] []
-    "expired lock released by owner"
+  emitHoldingsChange ops holding.instrumentId.admin holding.account [] [self] [newCid] [] reason
   pure newCid
+
+-- Admin expiry
+---------------
+
+-- | The choice-context key an admin expiry reads to decide whether to release
+-- the funding of the contract it ends. It is Splice's key:
+--
+-- https://github.com/canton-network/splice/blob/8460154135f39019b8bb370c9c1321ff13c9bb10/daml/splice-amulet/daml/Splice/Amulet/TokenApiUtils.daml#L180-L181
+expireLockKey : Text
+expireLockKey = "expire-lock"
+
+-- | Reads the `expire-lock` flag from the choice context of an admin expiry.
+-- A missing entry reads as `True`, and any value other than a Bool fails. On
+-- `True` the expiry returns the locked holdings to their account, and on
+-- `False` it ends the contract without touching them. Check that the funding
+-- lock has expired before acting on `False`. Otherwise the contract ends
+-- while its holdings stay locked.
+expireLockFromContext : ChoiceContext -> Update Bool
+expireLockFromContext context = case TextMap.lookup expireLockKey context.values of
+  None -> pure True
+  Some (AV_Bool expireLock) -> pure expireLock
+  Some _ -> fail ("choice context entry '" <> expireLockKey <> "' must be a Bool")
 
 -- | Body of a consuming merge choice on a holding template, controlled by
 -- the account parties. It consumes `inputHoldingCids` through
@@ -222,8 +261,8 @@ holdingOwnerUnlockImpl ops self holding = do
 -- accepts one whose lock has expired. Fails while the exercised holding
 -- carries a lock, even an expired one. A pending instruction or allocation
 -- that names a merged expired-lock input fails to return its funding, and
--- only the admin's cleanup through `transferGcImpl` or `allocationGcImpl`
--- removes it.
+-- only an admin expiry through `transferExpireImpl` or `allocationCancelImpl`
+-- with the `expire-lock` flag cleared removes it.
 --
 -- Check a rule that must block a merge, such as a freeze, in the holding's
 -- choice before it calls this body. Otherwise the account parties can merge
@@ -373,12 +412,29 @@ eventObserversFor : HoldingOps -> Party -> HoldingV2.Account -> [Party]
 eventObserversFor ops admin account =
   dedupSort (accountParties admin account <> ops.eventObservers account)
 
--- | Storage bound for a pending contract: at most `maxTTL` from now, capped
--- by the workflow deadline, saturating at `maxTime` instead of overflowing.
+-- | Storage bound for a pending contract: at most `maxTTL` after `base`,
+-- capped by the workflow deadline, saturating at `maxTime`.
 computeStorageExpiry : RelTime -> Time -> Optional Time -> Time
-computeStorageExpiry maxTTL now deadline =
-    optional identity min deadline candidate
-  where
-    candidate
-      | maxTime `subTime` now <= maxTTL = maxTime
-      | otherwise = now `addRelTime` maxTTL
+computeStorageExpiry maxTTL base deadline =
+  optional identity min deadline (base `addRelTimeSaturating` maxTTL)
+
+-- | `t` shifted by `delta`, saturating at `maxTime` or `minBound` where
+-- `addRelTime` raises an `ArithmeticError`.
+addRelTimeSaturating : Time -> RelTime -> Time
+addRelTimeSaturating t delta
+  | delta >= maxTime `subTime` t = maxTime
+  | delta <= minBound `subTime` t = minBound
+  | otherwise = t `addRelTime` delta
+
+-- | Whether ledger time is at or before `t`. Holds at `maxTime`, where
+-- `isLedgerTimeLE` raises an error.
+isLedgerTimeAtMost : Time -> Update Bool
+isLedgerTimeAtMost t
+  | t == maxTime = pure True
+  | otherwise = isLedgerTimeLE t
+
+-- | Whether `lockExpiresAt`, the second argument, is strictly after
+-- `expiresAt`, the first, or both are `maxTime`.
+lockOutlivesExpiry : Time -> Time -> Bool
+lockOutlivesExpiry expiresAt lockExpiresAt =
+  expiresAt < lockExpiresAt || lockExpiresAt == maxTime

@@ -156,7 +156,8 @@ testRebalanceNeedsBothAccountParties = do
 -- As an input of a merge on an unlocked holding, the same expired-lock
 -- holding is accepted and the merged holding is unlocked. As with an owner
 -- unlock, the pending transfer that named it then fails to return its
--- funding, and the admin's garbage collection removes it.
+-- funding, and an admin expiry with the `expire-lock` flag cleared removes
+-- it.
 testRebalanceRefusesALockedHolding : Script ()
 testRebalanceRefusesALockedHolding = do
   s@Scenario{..} <- setup
@@ -174,8 +175,10 @@ testRebalanceRefusesALockedHolding = do
   mustFailWith "Could not find contract" (actAs alice) do
     exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferInstruction instrCid)
       TransferInstructionV2.TransferInstruction_Withdraw with actors = [alice]; extraArgs = emptyExtraArgs
-  mustFailWith "Could not find contract" (actAs admin) do exerciseCmd instrCid TokenTransferInstruction_Expire
-  _ <- submit (actAs admin) do exerciseCmd instrCid TokenTransferInstruction_AdminGC
+  mustFailWith "Could not find contract" (actAs admin) do
+    exerciseCmd instrCid TokenTransferInstruction_Expire with extraArgs = emptyExtraArgs
+  _ <- submit (actAs admin) do
+    exerciseCmd instrCid TokenTransferInstruction_Expire with extraArgs = expireLockArgs False
   queryContractId admin instrCid >>= (=== None)
   holdingAmounts alice >>= (=== [3.0, 8.0])
 

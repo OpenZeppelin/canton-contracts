@@ -35,6 +35,15 @@ functions, with every template decision left to the caller.
   needs: `transferFactoryImpl`, `transferAcceptImpl`, `allocationFactoryImpl`,
   `allocationSettleImpl`, `settleBatchImpl`, `offerMintImpl`, and the
   rest.
+- `holdingOwnerUnlockImpl` and `holdingAdminUnlockImpl`: the bodies of a
+  holding template's two unlock choices for an expired lock, one controlled
+  by the account parties and one by the admin alone. A consumer holding
+  template exposes both.
+- `expireLockFromContext`: reads Splice's `expire-lock` flag from the choice
+  context for `transferExpireImpl` and `allocationCancelImpl`. Set it to
+  `AV_Bool False` only for a contract whose locked holdings are archived.
+  A flag cleared earlier leaves them with their expired lock until the
+  account parties spend or unlock them, or the admin unlock returns them.
 - `holdingMergeImpl` and `holdingSplitImpl`: the bodies of consuming merge
   and split choices on a holding template, for account parties who
   rebalance without the registry.
@@ -75,10 +84,21 @@ contract id enters through an operation the template owner wrote:
   the holding does not follow later registry changes, and a policy contract
   id stored in the holding fails every spend once the registry replaces that
   contract.
-- `settleBatchImpl` passes each `Allocation_Settle` an empty context, so a
-  `deliverHolding` rule that requires a context entry refuses every batch
+- `settleBatchImpl` takes a selector that picks the part of the batch's
+  choice context each `Allocation_Settle` receives, given the allocation's
+  view. The batch metadata never reaches an allocation. A selector that
+  forwards nothing, as `\_ _ -> emptyChoiceContext` does, makes a
+  `deliverHolding` rule that requires a context entry refuse every batch
   settlement. `expireAllocationsImpl` cancels its allocations in one
   transaction, so one refusing `returnHolding` fails the whole batch.
+- Each authorizer sees its own `Allocation_Settle` with that choice's
+  arguments. The batch exercise, whose context may describe other
+  authorizers' trades, stays with the factory's signatories and the
+  executors only if `settlementFactory_settleBatchExtraObservers` is empty
+  and the selector forwards only the entries for the view's
+  `allocation.authorizer`. The vendored public-asset default makes every
+  leg's account parties observers. An executor that is also an authorizer
+  sees the whole batch.
 - `holdingOwnerUnlockImpl` runs none of the consumption operations. A rule
   that must block an owner unlock, such as a freeze, is checked inside the
   holding's own owner-unlock choice. A rule that must hold funds after the
@@ -101,6 +121,12 @@ contract id enters through an operation the template owner wrote:
 - The `PinAllocation` passed to `settleBatchImpl` and `expireAllocationsImpl`
   must fail on any allocation whose choice bodies the registry does not
   control. Use `pinAllocationTo @YourAllocation`.
+- A choice that runs `expireAllocationsImpl`, or expires a batch of transfer
+  instructions, must have no choice observers unless every party may see
+  every account's holdings. A choice observer witnesses every expiry in the
+  batch and every holding the expiries release. To show a party one account's
+  holdings-change events, return the party from `eventObservers` for that
+  account.
 - `createHolding` must create a contract whose view equals the argument and
   whose signatories include the admin and the account parties.
 - The settlement factory must settle through `settleBatchImpl`, or keep its
@@ -108,11 +134,66 @@ contract id enters through an operation the template owner wrote:
   allocation with the same amount. Without it, a settlement can create
   tokens. No other choice may exercise `Allocation_Settle` with the admin's
   authority, because that skips the check.
+- An allocation template's `allocation_settleImpl` must settle through
+  `allocationSettleImpl`, or keep its checks of the actors, the settlement
+  deadline, the allocation's `expiresAt`, and the iteration arguments.
+  Without them, a settle can run after the allocation's `expiresAt`.
 - A transfer instruction whose sender is the CIP-0112 mint account is a mint
   offer: `transferAcceptImpl` creates the receiver's holding without any
   locked funding. Only `offerMintImpl`, from a choice the admin alone
   controls, may create one. A factory body must refuse the mint account as a
   sender, as `transferFactoryImpl` does.
+
+Each `EventLog_HoldingsChange` the workflows emit names the workflow in the
+reason of its `extraArgs.meta`. A reader of the events, such as a wallet, an
+indexer, or an auditor, must derive value movement from
+`inputHoldingCids` and `outputHoldingCids` only, and must treat
+`transferLegSides` and their `meta` as labels the submitters supplied.
+Otherwise it records movements that never happened: an allocation whose legs
+net to zero settles without consuming or creating a holding, and its event
+names any instrument and amount the authorizer chose.
+
+## Time bounds
+
+No workflow reads the time with `getTime`. Every time check is a
+ledger-time bound, which constrains the ledger time the participant picks
+when the transaction executes instead of fixing it when the transaction is
+prepared. An externally signed submission can therefore execute after the
+ledger-time tolerance of its preparation while its bounds hold. Keep
+`getTime` out of the choice bodies that call these functions and out of
+their `HoldingOps`. Otherwise the submission must execute within the
+ledger-time tolerance.
+
+- A transfer, including a mint offer, needs `requestedAt` at or before
+  ledger time and `executeBefore` after it. `executeBefore` may be at most
+  `maxTTL` after ledger time and `requestedAt` at most `maxTTL` before it.
+- An allocation's `expiresAt` is its settlement deadline, or `requestedAt`
+  plus `maxTTL` without one, and must lie after ledger time. A deadline more
+  than `maxTTL` after `requestedAt` is refused, so the lock never expires
+  before the deadline.
+- The authorizer's wallet chooses an allocation's `requestedAt`, at or
+  before ledger time and less than `maxTTL` before it. `createdAt` equals
+  `requestedAt`, so executors must not treat `createdAt` as the time the
+  ledger created the allocation.
+- A settlement that creates a successor moves `expiresAt` to the previous
+  `expiresAt` plus the allocation's `maxTTL`, capped by the settlement
+  deadline, and refuses a result that has already passed. A settlement
+  without a successor sets no new bound.
+- Without a settlement deadline, each settlement adds a full `maxTTL`, so
+  the executors can push an iterated allocation's `expiresAt`, and its
+  reserve's lock, well past `maxTTL` from ledger time by settling it
+  repeatedly. The executors are trusted with the reserve, and an allocation
+  without a deadline is never committed, so its authorizer can withdraw it
+  and end the chain.
+- A time computed from `maxTTL` or `lockGrace` saturates at the bounds of
+  `Time`, which are `minBound` and `maxTime` (9999-12-31T23:59:59.999999Z).
+  A check against a saturated `executeBefore - maxTTL` or
+  `requestedAt + maxTTL` passes.
+- A `lockExpiresAt` of `maxTime` never passes, so `holdingOwnerUnlockImpl`
+  fails on the locked holding. An `expiresAt` of `maxTime` never passes
+  either, so the admin can never expire the contract.
+- A committed allocation must have a settlement deadline before `maxTime`,
+  since one at `maxTime` would never let its authorizer withdraw it.
 
 ## Operational assumptions
 
@@ -135,6 +216,19 @@ do. Every choice on such a contract then needs those parties to stay hosted
 and every participant hosting them to keep the template packages vetted. A
 template owner that reuses these functions inherits these requirements and
 must document them for its users.
+
+`transferFactoryImpl`, `allocationFactoryImpl`, `transferAcceptImpl`,
+`transferRejectImpl`, `transferWithdrawImpl`, and `allocationWithdrawImpl`
+require every account party of the account they act for as an actor. A
+template owner that reuses them inherits the provider dependency that the
+[security caveats](../token-cip112-v1/README.md#security-caveats) of the
+default templates describe.
+
+`allocationFactoryImpl` creates an allocation and locks its funding on every
+call, even when the authorizer already has a live allocation for the same
+`settlement`. Wallets must retry an allocate as the
+[integration guide](../token-cip112-v1/integration-guide.md#retrying-an-allocation)
+describes.
 
 ## Build
 

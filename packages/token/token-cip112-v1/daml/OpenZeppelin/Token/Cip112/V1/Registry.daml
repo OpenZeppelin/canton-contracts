@@ -44,8 +44,10 @@ template TokenRules with
       -- No extra observers: batch participants must not learn about the
       -- other allocations being settled.
       settlementFactory_settleBatchExtraObservers _ = []
+      -- The default operations read no context, so no allocation receives
+      -- any part of the batch's.
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @TokenAllocation) config.admin self arg
+        settleBatchImpl (pinAllocationTo @TokenAllocation) (\_ _ -> emptyChoiceContext) config.admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for TokenRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
@@ -63,11 +65,12 @@ template TokenRules with
 
     nonconsuming choice TokenRules_ExpireAllocations : ()
       -- ^ Batched admin expiry of stale allocations through the standard
-      -- cancel choice, each pinned to `TokenAllocation`.
+      -- cancel choice, each pinned to `TokenAllocation`. Each cancel argument
+      -- has `actors = [admin]` and carries its own `expire-lock` flag. The
+      -- choice has no observers, because an observer would witness every
+      -- cancel in the batch and every holding the cancels release.
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
-        observers : [Party]
-      observer observers
       controller config.admin
       do expireAllocationsImpl (pinAllocationTo @TokenAllocation) config.admin cancelArgs
 
@@ -86,18 +89,19 @@ template TokenRules with
       do offerMintImpl config createInstruction receiver instrumentId amount requestedAt executeBefore reason
 
     nonconsuming choice TokenRules_ExpireTransferInstructions : ()
-      -- ^ Batched admin expiry of stale transfer instructions. Template-typed
-      -- on purpose: the registry only ever expires its own instructions.
+      -- ^ Batched admin expiry of stale transfer instructions, each with its
+      -- own `TokenTransferInstruction_Expire` argument and so its own
+      -- `expire-lock` flag. Template-typed on purpose: the registry only
+      -- ever expires its own instructions. The choice has no observers, for
+      -- the same reason as `TokenRules_ExpireAllocations`.
       with
-        instructionCids : [ContractId TokenTransferInstruction]
-        observers : [Party]
-      observer observers
+        expireArgs : [(ContractId TokenTransferInstruction, TokenTransferInstruction_Expire)]
       controller config.admin
       do
-        forA_ instructionCids $ \cid -> do
+        forA_ expireArgs $ \(cid, expireArg) -> do
           instr <- fetch cid
           requireMatchExpected ("transfer.instrumentId.admin", instr.state.transfer.instrumentId.admin) config.admin
-          _ <- exercise cid TokenTransferInstruction_Expire
+          _ <- exercise cid expireArg
           pure ()
 
 rulesOps : RegistryConfig -> HoldingOps
