@@ -8,9 +8,8 @@
 -- transfer's change, locked funding, and payout, an accept's surplus, every
 -- return of locked funding, an allocation's locked funding, change, reserve,
 -- and payout, an owner or admin unlock, a merge, and a split. A mint, and a
--- settlement payout funded
--- only by net credit, have no sources, so their holdings take the closure's
--- default.
+-- settlement payout funded only by net credit, have no sources, so their
+-- holdings take the closure's default.
 module OpenZeppelin.Token.Cip112.Utils.Test.Sources where
 
 import DA.Assert ((===))
