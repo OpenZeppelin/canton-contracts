@@ -28,8 +28,8 @@ data RegistryConfig = RegistryConfig with
       -- or past the previous `expiresAt` for a successor.
     lockGrace : RelTime
       -- ^ How long a funding lock outlives its workflow contract's
-      -- `expiresAt`: the window in which the admin's expiry path is
-      -- guaranteed to succeed.
+      -- `expiresAt`, during which, by ledger time, only that contract can
+      -- move the funding.
   deriving (Eq, Show)
 
 -- | Payload of a pending transfer instruction. A template stores this record

@@ -749,6 +749,28 @@ testTransferWithdrawAfterDeadline = do
   aliceAfter <- holdingAmounts alice
   sum aliceAfter === 10.0
 
+-- | A retry that withdraws the old instruction in the same transaction as the
+-- new transfer leaves the old instruction unacceptable.
+testTransferRetryWithdrawsInSameTransaction : Script ()
+testTransferRetryWithdrawsInSameTransaction = do
+  s@Scenario{..} <- setup
+  oldInput <- mint admin alice 7.0
+  newInput <- mint admin alice 7.0
+  oldCid <- pendingCid =<< instructTransfer s [alice] (mkTransfer s alice bob 7.0 [oldInput])
+  oldFunding <- instructionDisclosures admin oldCid
+  (_, retried) <- submit (actAs alice <> discloseMany [rulesDisclosure]) $ (,)
+    <$> exerciseCmd oldCid TransferInstructionV2.TransferInstruction_Withdraw with
+          actors = [alice]
+          extraArgs = emptyExtraArgs
+    <*> transferCmd s [alice] (mkTransfer s alice bob 7.0 [newInput])
+  newCid <- pendingCid retried
+  mustFailWith "Could not find contract" (actAs bob <> discloseMany oldFunding)
+    (acceptCmd bob oldCid)
+  newFunding <- instructionDisclosures admin newCid
+  _ <- submit (actAs bob <> discloseMany newFunding) (acceptCmd bob newCid)
+  holdingAmounts bob >>= (=== [7.0])
+  holdingAmounts alice >>= (=== [7.0])
+
 -- | Guards: underfunded transfers and expired execution windows fail closed.
 testTransferGuards : Script ()
 testTransferGuards = do
@@ -1362,7 +1384,7 @@ testIteratedSuccessorBoundedByOwnExpiresAt = do
   bobAfter === [4.0]
 
 -- | The funding lock outlives the instruction's own expiry, so the
--- admin's expiry path always has a window in which it is guaranteed to work.
+-- admin can expire the instruction before the funding unlocks.
 -- Once the lock expires the sender's account parties unlock the funding, and
 -- the admin ends the instruction with the `expire-lock` flag cleared.
 testLockGraceAndOwnerUnlock : Script ()

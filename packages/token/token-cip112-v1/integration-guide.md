@@ -131,6 +131,34 @@ two ways:
 
 Authorization: the account parties alone, on both paths.
 
+### Retrying a transfer
+
+An accept of the old instruction can commit after `executeBefore` by record
+time, as the [`README.md` security caveats](README.md#security-caveats)
+describe, so a wallet that re-instructs a transfer withdraws the old
+instruction with `TransferInstruction_Withdraw`. When other holdings fund the
+new transfer, the wallet submits the withdraw and the new
+`TransferFactory_Transfer` as one transaction. Otherwise it re-instructs with
+the holdings the withdraw returns. When the withdraw fails because the
+instruction is archived, the wallet re-instructs unless the transaction that
+archived it is an accept. When the withdraw fails because the receiver is
+not hosted with the packages vetted, the wallet re-instructs only after
+`TokenHolding_OwnerUnlock` or the admin's `TokenHolding_AdminUnlock` releases
+the funding, after which an accept of the old instruction fails.
+
+The admin replaces a mint offer by withdrawing it in the same transaction
+as the new `TokenRules_OfferMint`. An authorizer replaces a live allocation
+for the same `settlement` with `Allocation_Withdraw` in the same transaction
+as the new `AllocationFactory_Allocate` when other holdings fund the new
+allocation. Otherwise it allocates again with the holdings the withdraw
+returns.
+[Retrying an allocation](#retrying-an-allocation) covers a retry after an
+allocate whose outcome the wallet does not know.
+
+Authorization: sender parties withdraw and re-instruct; the admin withdraws
+and re-offers a mint; the authorizer's account parties withdraw and
+allocate.
+
 ### Delivery-versus-payment settlement
 
 Each trader allocates their side of the legs through
@@ -272,6 +300,10 @@ Conformance notes:
   see this token (see the README's "Standards conformance").
 - Lock shape is restricted: locks always carry a finite `expiresAt` and never
   `expiresAfter`; holdings with `expiresAfter` locks are rejected at creation.
+- The standard tells senders they can
+  [retry after `executeBefore`](https://github.com/canton-network/splice/blob/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/splice-api-token-transfer-instruction-v2/daml/Splice/Api/Token/TransferInstructionV2.daml#L26-L31).
+  A wallet for this token withdraws the old instruction first, as
+  [Retrying a transfer](#retrying-a-transfer) describes.
 - The standard's off-ledger halves are deployment infrastructure outside
   this package: factory discovery, instrument metadata, pause reporting, and
   serving the funding disclosures that receivers and executors attach to
