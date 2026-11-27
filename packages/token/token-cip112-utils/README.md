@@ -135,9 +135,9 @@ contract id enters through an operation the template owner wrote:
   compares fields, and the admin can copy those fields into a contract it
   signs alone, such as a second rules contract without the first one's
   roles. A control that must bind the admin has to be held by a party that
-  signs the holdings and the pending contracts. The operations must refuse a
-  holding, and the `check` passed to `settleBatchImpl` and
-  `expireAllocationsImpl` an allocation, that names a different such party.
+  signs the holdings and the pending contracts. The operations, and the
+  `check` argument of `settleBatchImpl` and `expireAllocationsImpl`, must
+  refuse a holding or allocation that names a different such party.
   `examples/token/token-cip112-custom` does this with its pauser.
 - `settleBatchImpl` takes a selector that picks the part of the batch's
   choice context each `Allocation_Settle` receives, given the allocation's
@@ -181,8 +181,7 @@ contract id enters through an operation the template owner wrote:
   template as a type argument, `@YourAllocation`, and pin every allocation
   to it before exercising it with the admin's authority. An interface there
   fails to compile. A batch accepts exactly one allocation template. Their
-  first argument checks each pinned allocation against a rule of the
-  registry's own.
+  `check` argument runs on each pinned allocation.
 - A choice that runs `expireAllocationsImpl`, or expires a batch of transfer
   instructions, must have no choice observers unless every party may see
   every account's holdings. A choice observer witnesses every expiry in the

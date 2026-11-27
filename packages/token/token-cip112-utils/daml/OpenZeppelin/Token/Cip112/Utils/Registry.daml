@@ -66,8 +66,8 @@ settleBatchImpl check select admin self arg = do
   forA_ arg.allocations $ \finalizedAlloc -> pinAllocationTo @t check finalizedAlloc.allocationCid
   settlementFactoryV2_settleBatchDefaultImpl selectedArgs admin self arg
 
--- | Body of a batched admin-expiry choice: `pinAllocationTo` pins each
--- allocation to template `t` and runs `check` on it, and actors, admin, and
+-- | Body of a batched admin-expiry choice. `pinAllocationTo` pins each
+-- allocation to template `t` and runs `check` on it. Actors, admin, and
 -- expiry are re-verified per allocation independently of the cancel
 -- implementation. Each cancel's `extraArgs.context` reaches the
 -- allocation's `returnHolding`, and one refusal fails the whole batch.
