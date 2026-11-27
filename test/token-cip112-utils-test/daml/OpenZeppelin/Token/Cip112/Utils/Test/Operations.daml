@@ -12,11 +12,14 @@
 -- the factory's selector picks for its authorizer, and one refusal fails a
 -- whole expiry batch. A merge funds its inputs through `fundHolding`, while
 -- the holding a merge or split is exercised on runs no operation at all.
+-- The last scripts check the allocation pin of batch settlement and expiry,
+-- and the registry check that runs after it.
 module OpenZeppelin.Token.Cip112.Utils.Test.Operations where
 
 import DA.Action (replicateA, unless)
 import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
+import DA.Foldable (forA_)
 import DA.List (sort)
 import DA.Optional (isNone, isSome, optionalToList)
 import DA.Text (isInfixOf)
@@ -36,6 +39,7 @@ import OpenZeppelin.Token.Cip112.Utils.Holding
 import OpenZeppelin.Token.Cip112.Utils.Transfer
 import OpenZeppelin.Token.Cip112.Utils.Allocation
 import OpenZeppelin.Token.Cip112.Utils.Registry
+import OpenZeppelin.Token.Cip112.Utils.Test (ForeignAllocation(..))
 
 -- Times
 --------
@@ -198,6 +202,9 @@ template PolicyAllocation with
 template PolicyRules with
     config : RegistryConfig
     policy : Policy
+    acceptedPolicy : Optional Policy
+      -- ^ With `Some p`, batch settlement and the expiry batch accept only
+      -- allocations under `p`.
   where
     signatory config.admin
     ensure isValidRegistryConfig config
@@ -221,12 +228,19 @@ template PolicyRules with
       settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
       settlementFactory_settleBatchExtraObservers _ = []
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @PolicyAllocation) authorizerPath config.admin self arg
+        settleBatchImpl (acceptPolicy acceptedPolicy) authorizerPath config.admin self arg
 
     nonconsuming choice PolicyRules_ExpireAllocations : ()
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
       controller config.admin
-      do expireAllocationsImpl (pinAllocationTo @PolicyAllocation) config.admin cancelArgs
+      do expireAllocationsImpl (acceptPolicy acceptedPolicy) config.admin cancelArgs
+
+-- | Fail unless a pinned allocation's `policy` is `accepted`, when set.
+-- Its type pins `settleBatchImpl` and `expireAllocationsImpl` to
+-- `PolicyAllocation`.
+acceptPolicy : Optional Policy -> PolicyAllocation -> Update ()
+acceptPolicy accepted alloc = forA_ accepted $ \p ->
+  require "allocation is under a policy this registry does not accept" (alloc.policy == p)
 
 -- | The batch-settlement selector: each allocation receives the batch's
 -- entry for its authorizer, under `test/path`, and nothing else.
@@ -267,21 +281,29 @@ setupWith policy = do
   bob <- allocateParty "bob"
   exchange <- allocateParty "exchange"
   setTime mintedAt
-  (rulesCid, rulesDisclosure) <- createRules admin policy
+  (rulesCid, rulesDisclosure) <- createRules admin policy None
   pure World with ..
 
 -- | The world with a new rules contract of the same admin under `policy`.
 withRules : World -> Policy -> Script World
 withRules w policy = do
-  (rulesCid, rulesDisclosure) <- createRules w.admin policy
+  (rulesCid, rulesDisclosure) <- createRules w.admin policy None
   pure w with rulesCid; rulesDisclosure; policy
 
-createRules : Party -> Policy -> Script (ContractId PolicyRules, Disclosure)
-createRules admin policy = do
+-- | The world with a new rules contract of the same admin and policy that
+-- settles and expires only allocations under that policy.
+withCheckingRules : World -> Script World
+withCheckingRules w = do
+  (rulesCid, rulesDisclosure) <- createRules w.admin w.policy (Some w.policy)
+  pure w with rulesCid; rulesDisclosure
+
+createRules : Party -> Policy -> Optional Policy -> Script (ContractId PolicyRules, Disclosure)
+createRules admin policy acceptedPolicy = do
   rulesCid <- submit admin do
     createCmd PolicyRules with
       config = RegistryConfig with admin; maxTTL = days 2; lockGrace = hours 2
       policy
+      acceptedPolicy
   Some rulesDisclosure <- queryDisclosure @PolicyRules admin rulesCid
   pure (rulesCid, rulesDisclosure)
 
@@ -728,3 +750,104 @@ testMergeFundsOnlyItsInputs = do
   _ <- submit (actAs alice) do
     exerciseCmd (fromInterfaceContractId @PolicyHolding j1) PolicyHolding_Split with amounts = [4.0, 6.0]
   balanceOf alice >>= (=== [4.0, 6.0, 10.0, 10.0, 20.0])
+
+-- Allocation pin
+-----------------
+
+-- | The admin's expiry batch through the world's rules, cancelling each of
+-- `allocs` with an empty context.
+expireAllocationsCmd : World -> [ContractId AllocationV2.Allocation] -> Commands ()
+expireAllocationsCmd World{..} allocs =
+  exerciseCmd rulesCid PolicyRules_ExpireAllocations with
+    cancelArgs =
+      [ (cid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = withContext emptyChoiceContext)
+      | cid <- allocs ]
+
+-- | Batch settlement pins every allocation to `PolicyAllocation` before the
+-- exact-cover check or any allocation body runs. A foreign allocation that
+-- copies alice's view and names the admin as an observer, disclosed to the
+-- executor by its signatory, is refused in her place, and the trade settles
+-- with her own allocation.
+testBatchRefusesAnotherAllocationTemplate : Script ()
+testBatchRefusesAnotherAllocationTemplate = do
+  w@World{..} <- setupWith allowAll
+  attacker <- allocateParty "attacker"
+  i1 <- mint w alice
+  setTime fundedAt
+  trade@(aliceAlloc, bobAlloc) <- allocateTrade w [i1]
+  Some aliceView <- queryInterfaceContractId admin aliceAlloc
+  foreign <- submit attacker do
+    createCmd ForeignAllocation with claimedView = aliceView; attacker; observers = [admin]
+  Some foreignDisclosure <- queryDisclosure attacker foreign
+  settleAs <- asExecutor w [aliceAlloc, bobAlloc]
+  mustFailWith "allocation is not an accepted implementation" (settleAs <> discloseMany [foreignDisclosure])
+    (settleBatchCmd w emptyChoiceContext (toInterfaceContractId foreign, bobAlloc))
+  _ <- submit settleAs (settleBatchCmd w emptyChoiceContext trade)
+  balanceOf bob >>= (=== [5.0])
+
+-- | The registry's check runs on each allocation that batch settlement and
+-- expiry pin. Rules that accept only allocations under their own policy
+-- refuse a trade allocated under another policy, which rules without the
+-- check settle, and settle a trade under their own. The expiry batch refuses
+-- an allocation under another policy before its cancel body runs, and
+-- expires one under its own.
+testRegistryCheckRunsOnPinnedAllocations : Script ()
+testRegistryCheckRunsOnPinnedAllocations = do
+  w@World{..} <- setupWith allowAll
+  [i1, i2, i3, i4] <- replicateA 4 (mint w alice)
+  -- Refuses every return, so an expiry that reached the cancel body would
+  -- fail with "return rule refuses" rather than the check.
+  other <- withRules w (allowAll with returnRule = Refuse)
+  checking <- withCheckingRules w
+  setTime fundedAt
+  mismatched@(otherAlice, otherBob) <- allocateTrade other [i1]
+  matched@(aliceAlloc, bobAlloc) <- allocateTrade w [i2]
+
+  mismatchedAs <- asExecutor checking [otherAlice, otherBob]
+  mustFailWith "allocation is under a policy this registry does not accept" mismatchedAs
+    (settleBatchCmd checking emptyChoiceContext mismatched)
+  uncheckedAs <- asExecutor w [otherAlice, otherBob]
+  _ <- submit uncheckedAs (settleBatchCmd w emptyChoiceContext mismatched)
+  matchedAs <- asExecutor checking [aliceAlloc, bobAlloc]
+  _ <- submit matchedAs (settleBatchCmd checking emptyChoiceContext matched)
+  balanceOf bob >>= (=== [5.0, 5.0])
+
+  (expiringOther, _) <- allocateTrade other [i3]
+  (expiring, _) <- allocateTrade w [i4]
+  setTime expiredAt
+  mustFailWith "allocation is under a policy this registry does not accept" (actAs admin)
+    (expireAllocationsCmd checking [expiringOther])
+  submit (actAs admin) (expireAllocationsCmd checking [expiring])
+  [(_, stillLocked)] <- queryFilter @PolicyHolding alice (\h -> isSome h.holding.lock)
+  stillLocked.policy === other.policy
+
+-- | The check runs on every allocation of a batch. A batch whose first
+-- allocation is under the accepted policy and whose second is not is refused
+-- whole, in settlement and in expiry. The settlement batch goes through rules
+-- without the check, and the refused expiry leaves both fundings locked.
+testRegistryCheckRunsOnEveryAllocation : Script ()
+testRegistryCheckRunsOnEveryAllocation = do
+  w@World{..} <- setupWith allowAll
+  [i1, i2, i3] <- replicateA 3 (mint w alice)
+  -- Refuses every return, so an expiry that reached its cancel body would
+  -- fail with "return rule refuses" rather than the check.
+  other <- withRules w (allowAll with returnRule = Refuse)
+  checking <- withCheckingRules w
+  setTime fundedAt
+  aliceAlloc <- completedAllocation =<< submit (disclosed w alice) (allocateCmd w emptyChoiceContext [i1])
+  otherBob <- completedAllocation =<< submit (disclosed other bob)
+    (allocateSideCmd other emptyChoiceContext bob (receiverSide (tradeLeg w)) [])
+  mixedAs <- asExecutor checking [aliceAlloc, otherBob]
+  mustFailWith "allocation is under a policy this registry does not accept" mixedAs
+    (settleBatchCmd checking emptyChoiceContext (aliceAlloc, otherBob))
+  uncheckedAs <- asExecutor w [aliceAlloc, otherBob]
+  _ <- submit uncheckedAs (settleBatchCmd w emptyChoiceContext (aliceAlloc, otherBob))
+  balanceOf bob >>= (=== [5.0])
+
+  (expiring, _) <- allocateTrade w [i2]
+  (expiringOther, _) <- allocateTrade other [i3]
+  setTime expiredAt
+  mustFailWith "allocation is under a policy this registry does not accept" (actAs admin)
+    (expireAllocationsCmd checking [expiring, expiringOther])
+  locked <- queryFilter @PolicyHolding alice (\h -> isSome h.holding.lock)
+  length locked === 2

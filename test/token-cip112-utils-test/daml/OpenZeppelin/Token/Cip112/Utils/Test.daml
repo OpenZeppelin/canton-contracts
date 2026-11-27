@@ -23,7 +23,7 @@ import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (accountParties, basicAccount, burnAccount, maxTime, mintAccount, receiverSide, senderSide)
+import Splice.TokenStandard.Utils (accountParties, basicAccount, burnAccount, maxTime, mintAccount, receiverSide, require, senderSide)
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 
 import OpenZeppelin.Token.Cip112.TypesV1
@@ -71,6 +71,7 @@ template ForeignHolding with
 template UnitAllocation with
     claimedView : AllocationV2.AllocationView
     admin : Party
+      -- ^ The signatory, which may differ from the view's admin.
   where
     signatory admin
     interface instance AllocationV2.Allocation for UnitAllocation where
@@ -82,11 +83,16 @@ template UnitAllocation with
       allocation_withdrawImpl _ _ = fail "not exercised in this test"
       allocation_cancelImpl _ _ = fail "not exercised in this test"
 
+-- | An allocation signed by its attacker, claiming any view it likes.
 template ForeignAllocation with
     claimedView : AllocationV2.AllocationView
     attacker : Party
+    observers : [Party]
+      -- ^ With the admin here, a registry choice fetches it with the admin's
+      -- authority alone.
   where
     signatory attacker
+    observer observers
     interface instance AllocationV2.Allocation for ForeignAllocation where
       view = claimedView
       allocation_settleExtraObservers _ = []
@@ -115,7 +121,7 @@ template Harness with
     nonconsuming choice Harness_PinAllocation : AllocationV2.AllocationView
       with cid : ContractId AllocationV2.Allocation; actors : [Party]
       controller actors
-      do pinAllocationTo @UnitAllocation cid
+      do pinAllocationTo (signedBy admin) cid
 
     nonconsuming choice Harness_ConsumeLocked : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
@@ -137,12 +143,18 @@ template Harness with
     nonconsuming choice Harness_ExpireAllocations : ()
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]; actors : [Party]
       controller actors
-      do expireAllocationsImpl (pinAllocationTo @UnitAllocation) admin cancelArgs
+      do expireAllocationsImpl (signedBy admin) admin cancelArgs
 
     nonconsuming choice Harness_IsLedgerTimeAtMost : Bool
       with t : Time
       controller admin
       do isLedgerTimeAtMost t
+
+-- | Fail unless a pinned allocation is signed by `admin`, whatever its view
+-- says. Its type sets `t` to `UnitAllocation` in `pinAllocationTo` and
+-- `expireAllocationsImpl`.
+signedBy : Party -> UnitAllocation -> Update ()
+signedBy admin alloc = require "allocation is signed by another admin" (alloc.admin == admin)
 
 -- | The operations the harness runs the bodies with. Events are not under
 -- test here, so emission does nothing.
@@ -231,6 +243,10 @@ unitAllocationView admin alice = AllocationV2.AllocationView with
   availableActions = Map.empty
   meta = emptyMetadata
 
+-- | `pinAllocationTo` accepts a `UnitAllocation` that passes the check,
+-- refuses another template whose view is identical, and runs the check on
+-- the pinned contract, which refuses a `UnitAllocation` signed by another
+-- admin.
 testPinAllocation : Script ()
 testPinAllocation = do
   Fixture{..} <- setup
@@ -241,10 +257,15 @@ testPinAllocation = do
       cid = toInterfaceContractId @AllocationV2.Allocation genuine
       actors = [admin]
   pinned.allocation.authorizer === basicAccount alice
-  foreign <- submit attacker do createCmd ForeignAllocation with claimedView = v; attacker
+  foreign <- submit attacker do createCmd ForeignAllocation with claimedView = v; attacker; observers = []
   mustFailWith "allocation is not an accepted implementation" (actAs [admin, attacker]) $
     exerciseCmd harnessCid Harness_PinAllocation with
       cid = toInterfaceContractId @AllocationV2.Allocation foreign
+      actors = [admin, attacker]
+  otherSigned <- submit attacker do createCmd UnitAllocation with claimedView = v; admin = attacker
+  mustFailWith "allocation is signed by another admin" (actAs [admin, attacker]) $
+    exerciseCmd harnessCid Harness_PinAllocation with
+      cid = toInterfaceContractId @AllocationV2.Allocation otherSigned
       actors = [admin, attacker]
 
 -- Predicates and bounds
@@ -593,15 +614,21 @@ testConsumeUnlockedRefusesIndefiniteLock = do
 -- allocation's cancel body, so each refusal below happens before
 -- `UnitAllocation`'s cancel body, which always fails, could run.
 expireUnit : Fixture -> AllocationV2.AllocationView -> [Party] -> Script (Commands ())
-expireUnit Fixture{..} v cancelActors = do
+expireUnit f@Fixture{..} v cancelActors = do
   cid <- submit admin do createCmd UnitAllocation with claimedView = v; admin
-  pure $ exerciseCmd harnessCid Harness_ExpireAllocations with
+  pure (expireOne f (toInterfaceContractId cid) cancelActors [admin])
+
+-- | The harness's expiry batch of one allocation, cancelled by
+-- `cancelActors` and run by `actors`.
+expireOne : Fixture -> ContractId AllocationV2.Allocation -> [Party] -> [Party] -> Commands ()
+expireOne Fixture{..} cid cancelActors actors =
+  exerciseCmd harnessCid Harness_ExpireAllocations with
     cancelArgs =
-      [ ( toInterfaceContractId @AllocationV2.Allocation cid
+      [ ( cid
         , AllocationV2.Allocation_Cancel with
             actors = cancelActors
             extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata ) ]
-    actors = [admin]
+    actors
 
 testExpireAllocationsRefusesOtherCancelActors : Script ()
 testExpireAllocationsRefusesOtherCancelActors = do
@@ -630,3 +657,26 @@ testExpireAllocationsRefusesLiveAllocation = do
   f@Fixture{..} <- setup
   cmd <- expireUnit f (unitAllocationView admin alice) [admin]
   mustFailWith "strictly before deadline 'allocation.expiresAt'" (actAs admin) cmd
+
+-- | Each allocation is pinned before the batch reads its view. A foreign
+-- template whose view names this admin and has expired is refused.
+testExpireAllocationsRefusesForeignAllocation : Script ()
+testExpireAllocationsRefusesForeignAllocation = do
+  f@Fixture{..} <- setup
+  setTime t3
+  foreign <- submit attacker do
+    createCmd ForeignAllocation with claimedView = unitAllocationView admin alice; attacker; observers = []
+  mustFailWith "allocation is not an accepted implementation" (actAs [admin, attacker])
+    (expireOne f (toInterfaceContractId foreign) [admin] [admin, attacker])
+
+-- | The check runs on each pinned allocation. An expired `UnitAllocation`
+-- signed by another admin, whose view names this one, is refused before
+-- its cancel body runs.
+testExpireAllocationsRunsTheCheck : Script ()
+testExpireAllocationsRunsTheCheck = do
+  f@Fixture{..} <- setup
+  setTime t3
+  otherSigned <- submit attacker do
+    createCmd UnitAllocation with claimedView = unitAllocationView admin alice; admin = attacker
+  mustFailWith "allocation is signed by another admin" (actAs [admin, attacker])
+    (expireOne f (toInterfaceContractId otherSigned) [admin] [admin, attacker])

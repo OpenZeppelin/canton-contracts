@@ -16,8 +16,10 @@ import OpenZeppelin.Token.Cip112.Utils.Holding (addRelTimeSaturating)
 import OpenZeppelin.Token.Cip112.Utils.Transfer
 import OpenZeppelin.Token.Cip112.Utils.Allocation
 
--- | `settlementFactory_settleBatchImpl`: pin every allocation to an accepted
--- implementation, then run the vendored exact-cover settlement.
+-- | `settlementFactory_settleBatchImpl`: pin every allocation to template
+-- `t` with `pinAllocationTo`, running `check` on each, then run the
+-- vendored exact-cover settlement. A batch settles allocations of one
+-- template only.
 --
 -- `select` decides which part of the batch's choice context reaches each
 -- allocation's `Allocation_Settle`, and from there its `deliverHolding`
@@ -49,39 +51,42 @@ import OpenZeppelin.Token.Cip112.Utils.Allocation
 -- not its `nextIterationFunding`; the `validateNextIterationArgs` call in
 -- `allocationSettleImpl` is the effective guard for that field.
 settleBatchImpl
-  : PinAllocation
+  : forall t. (HasEnsure t, HasFromInterface t AllocationV2.Allocation, HasToInterface t AllocationV2.Allocation)
+  => (t -> Update ())
   -> (AllocationV2.AllocationView -> ChoiceContext -> ChoiceContext)
   -> Party -> ContractId AllocationV2.SettlementFactory
   -> AllocationV2.SettlementFactory_SettleBatch
   -> Update AllocationV2.SettlementFactory_SettleBatchResult
-settleBatchImpl pin select admin self arg = do
+settleBatchImpl check select admin self arg = do
   require "a settlement batch must cover at least one transfer leg"
     (not (null arg.transferLegs))
   let selectedArgs allocView settleArg = pure ExtraArgs with
         context = select allocView settleArg.extraArgs.context
         meta = emptyMetadata
-  forA_ arg.allocations $ \finalizedAlloc -> pin finalizedAlloc.allocationCid
+  forA_ arg.allocations $ \finalizedAlloc -> pinAllocationTo @t check finalizedAlloc.allocationCid
   settlementFactoryV2_settleBatchDefaultImpl selectedArgs admin self arg
 
--- | Body of a batched admin-expiry choice: each allocation is pinned, and
--- actors, admin, and expiry are re-verified per allocation independently of
--- the cancel implementation. Each cancel's `extraArgs.context` reaches the
+-- | Body of a batched admin-expiry choice. `pinAllocationTo` pins each
+-- allocation to template `t` and runs `check` on it. Actors, admin, and
+-- expiry are re-verified per allocation independently of the cancel
+-- implementation. Each cancel's `extraArgs.context` reaches the
 -- allocation's `returnHolding`, and one refusal fails the whole batch.
 --
 -- The "Trust boundary" section of the package `README.md` says when the
 -- choice that runs this body may have observers.
 expireAllocationsImpl
-  : PinAllocation -> Party
+  : forall t. (HasEnsure t, HasFromInterface t AllocationV2.Allocation, HasToInterface t AllocationV2.Allocation)
+  => (t -> Update ()) -> Party
   -> [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
   -> Update ()
-expireAllocationsImpl pin admin cancelArgs =
+expireAllocationsImpl check admin cancelArgs =
   forA_ cancelArgs $ \(allocCid, cancelArg) -> do
     requireMatchExpected ("cancelArg.actors", cancelArg.actors) [admin]
-    v <- pin allocCid
+    v <- pinAllocationTo @t check allocCid
     requireMatchExpected ("allocation.admin", v.allocation.admin) admin
     case v.expiresAt of
       None -> fail "cannot expire an allocation without an expiry time"
-      Some t -> assertDeadlineExceeded "allocation.expiresAt" t
+      Some expiresAt -> assertDeadlineExceeded "allocation.expiresAt" expiresAt
     _ <- exercise allocCid cancelArg
     pure ()
 

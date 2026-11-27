@@ -123,6 +123,8 @@ myOps admin roles = HoldingOps with
     auditorObserves _ = [roles.auditor]
     -- Pin the template and the pauser first: a foreign `Holding`, or a
     -- `MyHolding` that names another pauser, never reaches the spend.
+    -- `consumeByArchive @MyHolding` would pin the template too, but archives
+    -- a frozen holding without exercising `MyHolding_Spend`.
     spend context cid = do
       fetched <- fetchFromInterface @MyHolding cid
       case fetched of
@@ -379,7 +381,7 @@ template MyRules with
       settlementFactory_settleBatchImpl self arg = do
         whenNotPaused this
         requireAllowedExecutors this arg.settlement.executors
-        settleBatchImpl (pinMyAllocation roles) authorizerStatus config.admin self arg
+        settleBatchImpl @MyAllocation (checkMyAllocation roles) authorizerStatus config.admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for MyRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
@@ -421,7 +423,7 @@ template MyRules with
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
       controller config.admin
-      do expireAllocationsImpl (pinMyAllocation roles) config.admin cancelArgs
+      do expireAllocationsImpl @MyAllocation (checkMyAllocation roles) config.admin cancelArgs
 
     nonconsuming choice MyRules_ExpireTransferInstructions : ()
       -- ^ The admin's expiry of stale transfer instructions. Each expiry's
@@ -494,18 +496,12 @@ requireAllowedExecutors rules executors =
   require "a settlement executor is not approved by this registry"
     (all (`elem` rules.allowedExecutors) executors)
 
--- | Accept a `MyAllocation` that names `roles.pauser` and fail on any other
--- allocation. An allocation that names another pauser spends holdings this
--- pauser never signed, so it would cover a leg of this token with funding
--- from outside it.
-pinMyAllocation : AppRoles -> PinAllocation
-pinMyAllocation roles cid = do
-  fetched <- fetchFromInterface @MyAllocation cid
-  case fetched of
-    None -> fail "allocation is not an accepted implementation"
-    Some (_, alloc) -> do
-      require "allocation names a different pauser" (alloc.roles.pauser == roles.pauser)
-      pure (view (toInterface @AllocationV2.Allocation alloc))
+-- | Fail on a `MyAllocation` that names a different pauser. Such an
+-- allocation spends holdings this pauser never signed, so it would cover a
+-- leg of this token with funding from outside it.
+checkMyAllocation : AppRoles -> MyAllocation -> Update ()
+checkMyAllocation roles alloc =
+  require "allocation names a different pauser" (alloc.roles.pauser == roles.pauser)
 
 -- | The fee account: a regular account owned by the admin. A one-step
 -- transfer into it needs the admin's authority on the receiving side, which

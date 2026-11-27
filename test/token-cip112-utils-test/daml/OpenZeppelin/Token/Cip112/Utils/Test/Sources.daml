@@ -157,7 +157,7 @@ template TaggedRules with
       settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
       settlementFactory_settleBatchExtraObservers _ = []
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @TaggedAllocation) (\_ _ -> emptyChoiceContext) config.admin self arg
+        settleBatchImpl @TaggedAllocation (\_ -> pure ()) (\_ _ -> emptyChoiceContext) config.admin self arg
 
     nonconsuming choice TaggedRules_OfferMint : ContractId TransferInstructionV2.TransferInstruction
       with receiver : HoldingV2.Account; amount : Decimal
@@ -167,7 +167,7 @@ template TaggedRules with
     nonconsuming choice TaggedRules_ExpireAllocations : ()
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
       controller config.admin
-      do expireAllocationsImpl (pinAllocationTo @TaggedAllocation) config.admin cancelArgs
+      do expireAllocationsImpl @TaggedAllocation (\_ -> pure ()) config.admin cancelArgs
 
 createTaggedInstruction : CreateTransferInstruction
 createTaggedInstruction s = toInterfaceContractId <$> create TaggedInstruction with state = s
