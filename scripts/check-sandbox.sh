@@ -48,10 +48,11 @@ token)
 		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxMintAndBurn
 		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxMergeAndSplit
 		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxSettleBatchContextWitnesses
+		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxTransferWitnesses
 		# Moves the clock past every other script's deadlines: keep it last.
 		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxBatchExpiryWitnesses
 	)
-	WITNESS_SCRIPTS="sandboxSettleBatchContextWitnesses sandboxBatchExpiryWitnesses"
+	WITNESS_SCRIPTS="sandboxSettleBatchContextWitnesses sandboxTransferWitnesses sandboxBatchExpiryWitnesses"
 	;;
 authorization)
 	TEST_PKG="test/scoped-authorization-grant-v1-test"

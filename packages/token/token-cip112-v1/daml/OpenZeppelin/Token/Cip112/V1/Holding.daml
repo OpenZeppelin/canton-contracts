@@ -25,12 +25,15 @@ import OpenZeppelin.Token.Cip112.V1.Base
 -- vetted the packages. Regular accounts only: special (ownerless) accounts
 -- never hold.
 --
--- Disclosure: the contract and its `HoldingV2.Holding` view are visible to
--- the admin, the account parties, and any other party a lock names as
--- holder. Receivers and settlement executors get locked funding from the
--- registry by explicit disclosure. Creating a holding requires the admin's
--- and every account party's authority, so holdings only ever appear through
--- registry choices and the choices below.
+-- The contract and its `HoldingV2.Holding` view are visible to the admin,
+-- the account parties, and any other party a lock names as holder.
+-- Receivers and settlement executors get locked funding from the registry
+-- by explicit disclosure. In a one-step transfer, the receiver's account
+-- parties also see the sender's consumed inputs and new change holding. In
+-- an accepted two-step transfer, the sender's account parties see the
+-- receiver's new holding. Creating a holding requires the admin's and every
+-- account party's authority, so holdings only ever appear through registry
+-- choices and the choices below.
 --
 -- The account parties rebalance their holdings with `TokenHolding_Merge`
 -- and `TokenHolding_Split`, which bypass the rules contract and its

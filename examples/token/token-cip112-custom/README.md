@@ -26,6 +26,11 @@ run while the registry is paused and pay no fee. A self-transfer through
 the transfer factory rebalances the same way, but is paused and charged
 like any other transfer.
 
+A one-step receiver witnesses the fee leg too: the sender's original
+inputs, the treasury's fee holding, and the change the main transfer
+spends. To keep the sender's balance private in a one-step transfer, fund
+it from a single holding of exactly the amount plus the fee.
+
 The auditor observes every holding and every holdings-change event, and the
 compliance officer observes every holding. Every transaction that archives a
 `MyHolding`, including `MyHolding_OwnerUnlock`, fails while either party has
