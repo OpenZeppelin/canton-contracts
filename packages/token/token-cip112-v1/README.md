@@ -190,6 +190,16 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   `FinalizedAllocation.nextIterationFunding`; the check in
   `allocation_settleImpl` is the effective guard. Registry forks that replace
   that choice body must keep an equivalent check.
+- `TokenTransferInstruction` and `TokenAllocation` run accept, reject,
+  withdraw, settle, cancel, and expiry on the pending contract alone. A
+  policy that a consumer's own rules template checks in a factory body,
+  such as a pause, an allowlist, a cap, or a fee, therefore binds only when
+  the instruction or allocation is created. A consumer that counts totals
+  when an offer is made, such as minted supply against a cap, must correct
+  them when the offer is rejected, withdrawn, cancelled, or expired. Such a
+  consumer owns its pending templates, which check policy at delivery as
+  [`integration-guide.md`](integration-guide.md#policy-at-delivery) shows
+  and correct the totals in their own choices.
 - `maxTTL` and `lockGrace` are only required to be positive. Between
   `expiresAt` and `lockExpiresAt` only the pending contract can move its
   funding, so an expiry that does not clear the `expire-lock` flag releases

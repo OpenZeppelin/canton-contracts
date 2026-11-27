@@ -24,11 +24,14 @@
 --   workflows knowing what a freeze is. Holdings never change on a freeze,
 --   so pending instructions and allocations stay valid and complete once the
 --   account is unfrozen. In a batch settlement, the settlement factory
---   forwards each allocation only its own authorizer's status.
+--   forwards each allocation its own authorizer's status and no other
+--   account's.
 --   `MyHolding_OwnerUnlock`, `MyHolding_Merge`, and `MyHolding_Split` make
 --   the same check.
 -- - A pause switch on the registry. A template field plus two choices,
---   checked before each factory and the mint offer delegate to the workflow.
+--   checked before each factory and the mint offer delegate to the workflow,
+--   and again when a pending instruction is accepted or an allocation
+--   settles, against the rules contract passed in the choice context.
 --   Merges and splits bypass the rules contract, so they run while the
 --   registry is paused and pay no fee.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
@@ -178,10 +181,16 @@ accountStatusKey = "examples.openzeppelin.com/account-status"
 
 -- | The status id a submitter passed, read from the choice context.
 statusFromContext : ChoiceContext -> Update (ContractId MyAccountStatus)
-statusFromContext context = case TextMap.lookup accountStatusKey context.values of
+statusFromContext = cidFromContext accountStatusKey
+
+-- | Read the contract id a submitter passed under `key`. Fails when the
+-- entry is missing or is not a contract id. Fetch the result as `t` and
+-- check the contract, because the submitter chooses the id.
+cidFromContext : Text -> ChoiceContext -> Update (ContractId t)
+cidFromContext key context = case TextMap.lookup key context.values of
   Some (AV_ContractId cid) -> pure (coerceContractId cid)
-  Some _ -> fail ("choice context entry '" <> accountStatusKey <> "' must be a contract id")
-  None -> fail ("choice context has no '" <> accountStatusKey <> "' entry")
+  Some _ -> fail ("choice context entry '" <> key <> "' must be a contract id")
+  None -> fail ("choice context has no '" <> key <> "' entry")
 
 -- | The choice context that passes `statusCid` to the consumption
 -- operations, for a holding choice that takes the status as an argument.
@@ -306,7 +315,11 @@ template MyTransferInstruction with
       transferInstruction_acceptExtraObservers _ = observer this
       transferInstruction_rejectExtraObservers _ = observer this
       transferInstruction_withdrawExtraObservers _ = observer this
-      transferInstruction_acceptImpl self arg = transferAcceptImpl (ops this) self state arg
+      -- `extraArgs.context` carries the live rules contract, besides the
+      -- sender's account status.
+      transferInstruction_acceptImpl self arg = do
+        requireRegistryNotPaused state.transfer.instrumentId.admin roles arg.extraArgs.context
+        transferAcceptImpl (ops this) self state arg
       transferInstruction_rejectImpl self arg = transferRejectImpl (ops this) self state arg
       transferInstruction_withdrawImpl self arg = transferWithdrawImpl (ops this) self state arg
 
@@ -333,7 +346,11 @@ template MyAllocation with
       allocation_settleExtraObservers _ = observer this
       allocation_cancelExtraObservers _ = observer this
       allocation_withdrawExtraObservers _ = observer this
-      allocation_settleImpl self arg =
+      -- Checked here, so a direct settle by the admin and the executors is
+      -- held like a batch. `extraArgs.context` carries the live rules
+      -- contract, besides the authorizer's account status.
+      allocation_settleImpl self arg = do
+        requireRegistryNotPaused state.allocation.admin roles arg.extraArgs.context
         allocationSettleImpl (ops this) (\s -> toInterfaceContractId <$> create this with state = s) self state arg
       allocation_withdrawImpl self arg = allocationWithdrawImpl (ops this) self state arg
       allocation_cancelImpl self arg = allocationCancelImpl (ops this) self state arg
@@ -343,9 +360,9 @@ template MyAllocation with
 
 -- | The registry rules contract: the three standard factories behind a pause
 -- switch, a fee on transfers, an executor allowlist, supply operations, and
--- account opening. Pausing replaces the contract, so wallets need the new
--- disclosure after a pause or unpause, as with any change to the rules
--- contract.
+-- account opening. Pausing and unpausing replace the contract, so an id from
+-- before the change fails the delivery check and wallets need the new
+-- disclosure, as with any change to the rules contract.
 template MyRules with
     config : RegistryConfig
     roles : AppRoles
@@ -381,7 +398,7 @@ template MyRules with
       settlementFactory_settleBatchImpl self arg = do
         whenNotPaused this
         requireAllowedExecutors this arg.settlement.executors
-        settleBatchImpl @MyAllocation (checkMyAllocation roles) authorizerStatus config.admin self arg
+        settleBatchImpl @MyAllocation (checkMyAllocation roles) (authorizerContext (coerceContractId self)) config.admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for MyRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
@@ -470,6 +487,21 @@ template MyRulesProposal with
 whenNotPaused : MyRules -> Update ()
 whenNotPaused rules = require "registry is paused" (not rules.paused)
 
+-- | The choice-context key under which an accept or a settle passes the
+-- registry's live rules contract.
+rulesKey : Text
+rulesKey = "examples.openzeppelin.com/rules"
+
+-- | Fail unless `context` holds, under `rulesKey`, a `MyRules` that `admin`
+-- and the pauser in `roles` signed and that is not paused.
+requireRegistryNotPaused : Party -> AppRoles -> ChoiceContext -> Update ()
+requireRegistryNotPaused admin roles context = do
+  rulesCid <- cidFromContext @MyRules rulesKey context
+  rules <- fetch rulesCid
+  require "rules contract belongs to another admin" (rules.config.admin == admin)
+  require "rules contract names a different pauser" (rules.roles.pauser == roles.pauser)
+  whenNotPaused rules
+
 -- | The batch-context key of an authorizer's status: `accountStatusKey`, the
 -- owner, the provider, and the account id, joined by `/`, with an absent
 -- party as empty text. Party ids contain no `/`, and the account id comes
@@ -479,17 +511,19 @@ batchStatusKey account =
   accountStatusKey <> "/" <> optional "" partyToText account.owner
     <> "/" <> optional "" partyToText account.provider <> "/" <> account.id
 
--- | The settlement factory's selector. The executors put each authorizer's
--- status under `batchStatusKey` of its account, and each allocation's
--- settle receives only its own authorizer's, under `accountStatusKey`, as a
--- direct settle would. Nothing else in the batch context reaches it. An
--- allocation that locked nothing consumes no holding, so it needs no
--- status.
-authorizerStatus : AllocationV2.AllocationView -> ChoiceContext -> ChoiceContext
-authorizerStatus v batch = ChoiceContext with
-  values = TextMap.fromList
-    [ (accountStatusKey, status)
-    | status <- optionalToList (TextMap.lookup (batchStatusKey v.allocation.authorizer) batch.values) ]
+-- | The settlement factory's selector. Each allocation's settle receives
+-- `rulesCid`, the factory's own id, under `rulesKey`, so its delivery check
+-- fetches the rules contract the batch runs on. The executors put each
+-- authorizer's status under `batchStatusKey` of its account, and the settle
+-- receives its own authorizer's under `accountStatusKey`, as a direct settle
+-- would. Nothing else in the batch context reaches it. An allocation that
+-- locked nothing consumes no holding, so it needs no status.
+authorizerContext : ContractId MyRules -> AllocationV2.AllocationView -> ChoiceContext -> ChoiceContext
+authorizerContext rulesCid v batch = ChoiceContext with
+  values = TextMap.fromList $
+    (rulesKey, AV_ContractId (coerceContractId rulesCid))
+      :: [ (accountStatusKey, status)
+         | status <- optionalToList (TextMap.lookup (batchStatusKey v.allocation.authorizer) batch.values) ]
 
 requireAllowedExecutors : MyRules -> [Party] -> Update ()
 requireAllowedExecutors rules executors =

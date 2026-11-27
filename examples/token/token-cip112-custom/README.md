@@ -12,14 +12,10 @@ What it adds, and where each addition lives:
 |---|---|
 | Pauser and compliance-officer roles | Controllers of consumer choices. The pauser also co-signs every holding, pending, and rules contract, so the admin holds neither power (see [Binding the admin](#binding-the-admin)) |
 | Auditor observing every contract and every holdings-change event | A consumer field on each template, reached through the closure that builds `HoldingOps`, plus the `eventObservers` operation |
-| Compliance freeze on accounts | A per-account `MyAccountStatus`, signed by the admin and the compliance officer, who replaces it through `MyAccountStatus_Freeze` and `MyAccountStatus_Unfreeze`. All three consumption operations read its id from the choice context and exercise `MyHolding_Spend`, which refuses a frozen account, so a frozen account's holdings cannot fund a transfer, allocation, or burn, and its locked funding is neither paid out nor returned. `MyHolding_OwnerUnlock`, `MyHolding_Merge`, and `MyHolding_Split` make the same check, and a merge's other inputs must carry the exercised holding's roles. In a batch, the settlement factory forwards each allocation only its authorizer's status |
-| Pause switch on the registry | A template field plus `MyRules_Pause` and `MyRules_Unpause`, checked before each factory delegates and before a mint offer |
+| Compliance freeze on accounts | A per-account `MyAccountStatus`, signed by the admin and the compliance officer, who replaces it through `MyAccountStatus_Freeze` and `MyAccountStatus_Unfreeze`. All three consumption operations read its id from the choice context and exercise `MyHolding_Spend`, which refuses a frozen account, so a frozen account's holdings cannot fund a transfer, allocation, or burn, and its locked funding is neither paid out nor returned. `MyHolding_OwnerUnlock`, `MyHolding_Merge`, and `MyHolding_Split` make the same check, and a merge's other inputs must carry the exercised holding's roles. In a batch, the settlement factory forwards each allocation its own authorizer's status and no other account's |
+| Pause switch on the registry | A template field plus `MyRules_Pause` and `MyRules_Unpause`, checked before each factory delegates and before a mint offer, and again when a pending instruction is accepted or an allocation settles (see [Pause at delivery](#pause-at-delivery)) |
 | Fee on every transfer except a burn | Two workflow calls composed in the factory body: a one-step fee transfer to the treasury, then the main transfer on the fee leg's change |
 | Executor allowlist | Checked before delegating to the allocation and settlement workflows |
-
-The pause does not cover pending transfer instructions. Their accept choice
-does not read the rules contract, so a transfer, mint offer, or burn request
-created before the pause can still be accepted while the registry is paused.
 
 `MyHolding_Merge` and `MyHolding_Split` bypass the rules contract, so they
 run while the registry is paused and pay no fee. A self-transfer through
@@ -38,6 +34,38 @@ no hosting participant or a participant hosting it has not vetted the
 packages. The compliance officer also signs every account status, so its
 participant confirms every `MyHolding_Spend` and `MyHolding_OwnerUnlock`, and
 each one fails while that participant is unavailable.
+
+## Pause at delivery
+
+A pending transfer instruction or allocation completes without running a
+factory again, so `MyTransferInstruction` checks the pause again when it is
+accepted, and `MyAllocation` when it settles, in a batch or directly by the
+admin and the executors. A transfer, mint offer, burn request, or
+allocation made before a pause therefore completes only against an
+unpaused `MyRules` of its admin.
+
+Each accept and settle passes the registry's live `MyRules` in its choice
+context, under `rulesKey`. The choice fetches it as `MyRules` and refuses
+unless the pending contract's admin and pauser signed it and it is not
+paused. A missing entry, an archived rules contract, a contract of another
+template, and a `MyRules` of another admin or another pauser are all
+refused. `MyRules_Pause` and
+`MyRules_Unpause` archive the rules contract and create a new one, so a fetch
+of an id from before the change fails. The receiver, and the executors
+on a direct settle, get the rules contract by disclosure, as for a factory
+call. In a batch, the selector also passes each allocation the factory's
+own id under `rulesKey`, so every settle checks the rules contract the batch
+runs on.
+
+Reject, withdraw, cancel, and the admin's expiry choices run while the
+registry is paused and return the funds to their owner. The fee binds when
+a transfer instruction is created, and the executor allowlist when an
+allocation is created and again in the settlement factory.
+
+Any live `MyRules` of the admin and the pauser passes the check, so the
+pause holds delivery only while every such rules contract is paused. The
+admin alone can sign only a `MyRules` that names another pauser, which the
+check refuses.
 
 ## Account statuses
 
@@ -70,9 +98,10 @@ as a disclosed contract from the registry:
 | Owner unlock | The account parties | Its own, as the `statusCid` argument of `MyHolding_OwnerUnlock` |
 
 In a batch, `MyRules` passes `settleBatchImpl` a selector that forwards each
-allocation only its authorizer's status, under `accountStatusKey`. The batch
-context stays with the executors and the admin, because no authorizer
-observes the batch. An allocation that locked nothing needs no status.
+allocation its own authorizer's status, under `accountStatusKey`, and no
+other account's. The batch context stays with the executors and the admin,
+because no authorizer observes the batch. An allocation that locked nothing
+needs no status.
 
 A freeze stops the account's own holdings from moving. It does not stop the
 account from receiving: an accept or settle checks only the status of the
@@ -100,10 +129,12 @@ holding is refused whichever status the sender passes.
 To change who acts as the compliance officer, keep the officer party and
 change who controls it. To replace the party:
 
-1. The pauser pauses the earlier rules, and the admin creates the new ones.
+1. The pauser pauses the earlier rules, and the admin and the pauser create
+   the new ones.
    The paused rules refuse new transfers, allocations, settlements, and
    mints. `MyRules_OpenAccount` and the admin's expiry choices still run on
-   them. The earlier rules stay paused until the admin archives them.
+   them. The earlier rules stay paused until the admin and the pauser
+   archive them.
 2. The earlier officer opens a status, through the paused rules, for each
    receiver of a pending instruction and each authorizer of a pending
    allocation that has none. These parties receive holdings under the
@@ -117,7 +148,7 @@ change who controls it. To replace the party:
 
 The earlier officer keeps its statuses live, and freezes through them, until
 no earlier holding or pending instruction or allocation is left. The admin
-then archives the earlier rules.
+and the pauser then archive the earlier rules in one transaction.
 
 No workflow body changes. `token-cip112-custom-test` drives the token through the
 standard interfaces and checks each addition.
@@ -132,9 +163,11 @@ through it. So the pauser co-signs `MyRules`, `MyHolding`,
 authority too. Every `MyRules` that accepts these holdings therefore carries
 the pauser's signature, and with it the pause, the executor allowlist, the
 fee, and the roles the pauser agreed to. A pending contract is a separate
-case. Its choices run with the authority the pauser gave when it was created
-and do not read `MyRules`, so neither the pause nor the allowlist binds a
-settle that the admin and the executors exercise directly on an allocation.
+case. Its choices run with the authority the pauser gave when it was
+created. Accept and settle check the pause against a `MyRules` passed in the
+choice context (see [Pause at delivery](#pause-at-delivery)), but the
+allowlist does not bind a settle that the admin and the executors exercise
+directly on an allocation.
 
 The admin can still sign the same templates naming a pauser it controls.
 Those contracts form a separate token: the consumption operations refuse a
