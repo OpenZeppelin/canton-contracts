@@ -28,9 +28,9 @@ their own templates reuses directly.
 ## What it provides
 
 - `TokenHolding` (`Holding`): an asset holding maintained jointly by the
-  instrument admin and the account parties, with optional locks and unlock
-  choices for an expired lock: one for the account parties, one for the admin
-  alone.
+  instrument admin and the account parties, with optional locks, unlock
+  choices for an expired lock (one for the account parties, one for the
+  admin alone), and merge and split choices.
 - `TokenTransferInstruction` (`Transfer`): the TSv2 transfer-instruction
   lifecycle over a `TransferInstructionState` payload, including accept,
   reject, withdraw, and expiry paths.
@@ -110,6 +110,13 @@ interfaces or exceptions of its own.
   exactly `[admin]`, including when the admin is its only executor.
 - Every time check is a ledger-time bound. See "Time bounds" in the
   `token-cip112-utils` [`README.md`](../token-cip112-utils/README.md).
+- The account parties rebalance their holdings with `TokenHolding_Merge`,
+  which merges other holdings of the same account and instrument into the
+  exercised one, and `TokenHolding_Split`, which splits a holding into the
+  amounts given. A wallet that uses only the `HoldingV2.Holding` interface
+  rebalances with a one-step self-transfer through
+  `TransferFactory_Transfer`, which merges its inputs and splits off the
+  transfer amount from the change.
 - The consuming application selects and discloses the canonical `TokenRules`
   contract for its instrument.
 - Only regular (owned) accounts hold balances. The admin also authors
@@ -228,7 +235,8 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   owner takes for the account needs the provider too:
   `TransferFactory_Transfer` and `AllocationFactory_Allocate`, accepting,
   rejecting, or withdrawing a transfer instruction, withdrawing an
-  allocation, and `TokenHolding_OwnerUnlock`. Other parties still end a
+  allocation, `TokenHolding_OwnerUnlock`, `TokenHolding_Merge`, and
+  `TokenHolding_Split`. Other parties still end a
   pending workflow without the sender's or authorizer's provider signing:
   the receiver's account parties accept or reject a transfer instruction,
   the executors cancel an allocation at any time or settle it, and after
@@ -240,6 +248,12 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   there. Spending them still needs the provider, so no path returns control
   to the owner alone. Open provider accounts only with a provider committed
   to staying available; accounts without a separate provider avoid this.
+- `TokenHolding_Merge` and `TokenHolding_Split` bypass the rules contract
+  and its transfer policy, so a gate, fee, or pause that a fork adds to its
+  factories leaves them running. They keep value within one account, but a
+  holder can split one holding into as many parts as a transaction holds,
+  each a contract the admin signs and stores. To bound that storage, cap
+  the parts or their size in a fork's split choice.
 - An allocation's view advertises the withdraw action statically. For a
   committed allocation the choice still fails until the settlement deadline
   passes; wallets should treat the advertised action as "who", not "when".
@@ -254,11 +268,11 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
 ## Sandbox validation
 
 `dpm test` runs the test suite on an in-memory ledger. The sandbox gate runs
-mint offers, transfers, querying, and burn requests against a real
-static-time Canton sandbox over the Ledger API. It also runs batched admin
-expiry and reads each executor's and receiver's transactions from the JSON
-Ledger API, to check that each one witnesses only its own items in the
-batch. From the repository root:
+mint offers, transfers, querying, burn requests, and merges and splits
+against a real static-time Canton sandbox over the Ledger API. It also runs
+batched admin expiry and reads each executor's and receiver's transactions
+from the JSON Ledger API, to check that each one witnesses only its own
+items in the batch. From the repository root:
 
 ```sh
 scripts/check-sandbox.sh

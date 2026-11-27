@@ -23,9 +23,12 @@
 --   so pending instructions and allocations stay valid and complete once the
 --   account is unfrozen. In a batch settlement, the settlement factory
 --   forwards each allocation only its own authorizer's status.
---   `MyHolding_OwnerUnlock` makes the same check.
+--   `MyHolding_OwnerUnlock`, `MyHolding_Merge`, and `MyHolding_Split` make
+--   the same check.
 -- - A pause switch on the registry. A template field plus two choices,
 --   checked before each factory and the mint offer delegate to the workflow.
+--   Merges and splits bypass the rules contract, so they run while the
+--   registry is paused and pay no fee.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
 --   account. The factory composes two workflow calls: a one-step fee
 --   transfer, then the main transfer funded by the fee leg's change.
@@ -162,6 +165,12 @@ statusFromContext context = case TextMap.lookup accountStatusKey context.values 
   Some _ -> fail ("choice context entry '" <> accountStatusKey <> "' must be a contract id")
   None -> fail ("choice context has no '" <> accountStatusKey <> "' entry")
 
+-- | The choice context that passes `statusCid` to the consumption
+-- operations, for a holding choice that takes the status as an argument.
+accountStatusContext : ContractId MyAccountStatus -> ChoiceContext
+accountStatusContext statusCid = ChoiceContext with
+  values = TextMap.fromList [(accountStatusKey, AV_ContractId (coerceContractId statusCid))]
+
 -- | Refuse unless `statusCid` is a live status of the holding's account,
 -- under the holding's admin and compliance officer, and the account is not
 -- frozen. The submitter chooses the id, so each of these is checked. The
@@ -213,6 +222,40 @@ template MyHolding with
       do
         requireNotFrozen roles holding statusCid
         holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
+
+    choice MyHolding_Merge : ContractId HoldingV2.Holding
+      -- ^ Merge other holdings of this account and instrument into this one.
+      -- Refused while the account is frozen: this holding checks `statusCid`,
+      -- and each input's `fundHolding` exercises `MyHolding_Spend` with the
+      -- same status. Fails unless every input carries this holding's roles,
+      -- which the merged holding keeps, so the value stays under the same
+      -- auditor and compliance officer.
+      with
+        statusCid : ContractId MyAccountStatus
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+      controller accountParties holding.instrumentId.admin holding.account
+      do
+        requireNotFrozen roles holding statusCid
+        -- A foreign input fetches as `None` and the spend refuses it. The
+        -- exercised holding is already archived; the body refuses it as an
+        -- input.
+        forA_ (filter (/= toInterfaceContractId self) inputHoldingCids) $ \cid -> do
+          fetched <- fetchFromInterface @MyHolding cid
+          forA_ fetched $ \(_, input) ->
+            require "input holding carries other roles" (input.roles == roles)
+        holdingMergeImpl (myOps holding.instrumentId.admin roles) (accountStatusContext statusCid)
+          (toInterfaceContractId self) holding inputHoldingCids
+
+    choice MyHolding_Split : [ContractId HoldingV2.Holding]
+      -- ^ Split this holding into one holding per amount. Refused while the
+      -- account is frozen.
+      with
+        statusCid : ContractId MyAccountStatus
+        amounts : [Decimal]
+      controller accountParties holding.instrumentId.admin holding.account
+      do
+        requireNotFrozen roles holding statusCid
+        holdingSplitImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding amounts
 
     -- | Unlock an expired lock with the admin's authority alone. Refused
     -- while the account is frozen, for the same reason as
@@ -462,6 +505,9 @@ createAllocation rules s =
 -- | One class so every template builds its ops the same way.
 class HasOps t where
   ops : t -> HoldingOps
+
+instance HasOps MyHolding where
+  ops this = myOps this.holding.instrumentId.admin this.roles
 
 instance HasOps MyTransferInstruction where
   ops this = myOps this.state.transfer.instrumentId.admin this.roles

@@ -99,6 +99,26 @@ Authorization: sender parties initiate; receiver parties accept or reject;
 sender parties withdraw; the admin expires after the instruction's storage
 bound (see "Expiry and cleanup").
 
+### Rebalancing holdings
+
+A wallet merges small holdings or splits one into exact amounts in one of
+two ways:
+
+- **Through the holding's own choices.** A wallet that knows `TokenHolding`
+  exercises `TokenHolding_Merge` on one holding, naming the others as
+  `inputHoldingCids`, or `TokenHolding_Split` with the amounts to create,
+  which must sum to the holding's amount. Each submission needs only the
+  account's own holdings. Each emits one `EventLog_HoldingsChange` on the
+  account with no transfer legs, naming every consumed and created holding.
+- **Through a self-transfer.** `TransferFactory_Transfer` from an account to
+  itself completes in one step: it consumes the inputs and creates one
+  holding of the transfer amount, plus one of the change when the inputs
+  exceed it. A wallet that uses only the `HoldingV2.Holding` interface
+  rebalances this way. The event carries a sender and a receiver leg on the
+  same account.
+
+Authorization: the account parties alone, on both paths.
+
 ### Delivery-versus-payment settlement
 
 Each trader allocates their side of the legs through
@@ -229,6 +249,7 @@ cleanup.
 | Accepting or rejecting a transfer, or settling or cancelling an allocation, without its locked funding disclosed | The submission fails to resolve the locked holding | Attach the holdings the registry serves for the instruction view's `transfer.inputHoldingCids` or the allocation view's `holdingCids` |
 | Holding a `ContractId TokenHolding` across a balance change | The client holds a stale id and the next exercise fails | Re-query holdings after every transfer, allocation, or settle |
 | Funding one transfer with holdings of different instruments | `executeTransfer` fails: input holdings must all match the transfer's instrument | Split by instrument; only allocations take multi-instrument inputs |
+| Exercising `TokenHolding_Merge` or `TokenHolding_Split` on a holding whose lock has expired | Refused: holding is locked | Pass it as an input of a merge on an unlocked holding, or release it with `TokenHolding_OwnerUnlock` first |
 | Enabling iterated settlement with a zero reserve entry | Allocation is refused: reserve amounts must be positive | Use `Some TextMap.empty` for "iterated, no reserve" |
 | Passing `extraTransferLegSides` or `nextIterationFunding` when settling a non-iterated allocation | The settle fails | Reserve iteration arguments for allocations created with `nextIterationFunding` set |
 | Creating a committed allocation without a settlement deadline | Refused at the factory and by the template | Set `settlementDeadline`; commitment ends at the deadline |

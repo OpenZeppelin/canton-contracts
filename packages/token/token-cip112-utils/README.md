@@ -44,6 +44,9 @@ functions, with every template decision left to the caller.
   `AV_Bool False` only for a contract whose locked holdings are archived.
   A flag cleared earlier leaves them with their expired lock until the
   account parties spend or unlock them, or the admin unlock returns them.
+- `holdingMergeImpl` and `holdingSplitImpl`: the bodies of consuming merge
+  and split choices on a holding template, for account parties who
+  rebalance without the registry.
 
 The functions read and return the `RegistryConfig`,
 `TransferInstructionState`, and `AllocationState` records of
@@ -69,12 +72,13 @@ contract id enters through an operation the template owner wrote:
 - A refusal in `deliverHolding` or `returnHolding` leaves the other
   operation's paths open, and a refusal in both holds the locked funds until
   the lock expires. After that the owner recovers them through the holding's
-  owner-unlock choice or by passing the holding to a factory, which runs
-  `fundHolding`. Put a rule in `deliverHolding` or `returnHolding` only if a
-  known party can lift it without re-creating the locked holding: pending
-  instructions and allocations name their locked holdings by id, so they can
-  neither pay out nor return a replaced holding. A rule that only limits new
-  spending, such as a minimum holding age, belongs in `fundHolding`.
+  owner-unlock choice or by passing the holding to a factory or to a merge
+  choice as an input, both of which run `fundHolding`. Put a rule in
+  `deliverHolding` or `returnHolding` only if a known party can lift it
+  without re-creating the locked holding: pending instructions and
+  allocations name their locked holdings by id, so they can neither pay out
+  nor return a replaced holding. A rule that only limits new spending, such
+  as a minimum holding age, belongs in `fundHolding`.
 - A rule that tracks live registry state reads the current policy contract
   from the context and checks the contract it fetches. A value copied into
   the holding does not follow later registry changes, and a policy contract
@@ -98,8 +102,22 @@ contract id enters through an operation the template owner wrote:
 - `holdingOwnerUnlockImpl` runs none of the consumption operations. A rule
   that must block an owner unlock, such as a freeze, is checked inside the
   holding's own owner-unlock choice. A rule that must hold funds after the
-  lock expires also belongs in `fundHolding`, because `transferFactoryImpl`
-  and `allocationFactoryImpl` accept an input whose lock has expired.
+  lock expires also belongs in `fundHolding`, because `transferFactoryImpl`,
+  `allocationFactoryImpl`, and `holdingMergeImpl` accept an input whose lock
+  has expired.
+- `holdingSplitImpl` runs none of the consumption operations either, and
+  `holdingMergeImpl` runs `fundHolding` only on its inputs. Apply the
+  template's own spend rules, such as a freeze, to the exercised holding
+  inside its merge and split choices before calling the body. Otherwise the
+  account parties can turn a frozen holding into unfrozen ones, because
+  every holding these bodies create comes from `createHolding`.
+- `holdingMergeImpl` checks each input's standard view only, and the merged
+  holding takes its template fields from the `createHolding` closure. Refuse
+  an input whose own fields differ from the exercised holding's, such as
+  other roles, in the merge choice or in `fundHolding`. Otherwise the merge
+  moves the input's value out from under those fields.
+- Merge and split choices bypass the registry contract. Check a factory
+  policy that must cover them, such as a pause, inside the holding's choice.
 - The `PinAllocation` passed to `settleBatchImpl` and `expireAllocationsImpl`
   must fail on any allocation whose choice bodies the registry does not
   control. Use `pinAllocationTo @YourAllocation`.

@@ -25,7 +25,7 @@ module OpenZeppelin.Token.Cip112.Utils.Holding where
 
 import DA.Assert (assertDeadlineExceeded)
 import DA.Foldable (forA_)
-import DA.List (dedupSort)
+import DA.List (dedupSort, unique)
 import DA.Optional (isNone, isSome)
 import DA.TextMap qualified as TextMap
 import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime, isLedgerTimeLE)
@@ -75,9 +75,10 @@ data HoldingOps = HoldingOps with
       -- template fields come from the closure that builds the record.
     fundHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
       -- ^ Consume a caller-supplied input holding that funds a new transfer
-      -- or allocation, through `consumeUnlockedHolding`: the inputs of
-      -- `transferFactoryImpl` and `executeTransfer`, including a one-step
-      -- transfer and a burn, and of `allocationFactoryImpl`. Fails unless the
+      -- or allocation or is merged into another holding, through
+      -- `consumeUnlockedHolding`: the inputs of `transferFactoryImpl` and
+      -- `executeTransfer`, including a one-step transfer and a burn, of
+      -- `allocationFactoryImpl`, and of `holdingMergeImpl`. Fails unless the
       -- contract is an accepted implementation, then removes the holding from
       -- the ledger and returns the view it had. An input may be a holding
       -- whose lock has expired, such as the funding of an instruction or
@@ -244,6 +245,81 @@ expireLockFromContext context = case TextMap.lookup expireLockKey context.values
   None -> pure True
   Some (AV_Bool expireLock) -> pure expireLock
   Some _ -> fail ("choice context entry '" <> expireLockKey <> "' must be a Bool")
+
+-- | Body of a consuming merge choice on a holding template, controlled by
+-- the account parties. It consumes `inputHoldingCids` through
+-- `fundHolding`, recreates the exercised holding with their amounts added,
+-- and emits an account-local `EventLog_HoldingsChange` with no transfer
+-- legs, naming the exercised holding and the inputs as inputs. The merged
+-- holding keeps the exercised holding's `meta` and drops the inputs'.
+-- `self` is the holding being exercised. `context` reaches `fundHolding`
+-- for every input.
+--
+-- Fails unless `inputHoldingCids` holds at least one holding. Fails unless
+-- each input is a different holding of the same admin, account, and
+-- instrument. Fails on an input whose lock is live or indefinite, and
+-- accepts one whose lock has expired. Fails while the exercised holding
+-- carries a lock, even an expired one. A pending instruction or allocation
+-- that names a merged expired-lock input fails to return its funding, and
+-- only an admin expiry through `transferExpireImpl` or `allocationCancelImpl`
+-- with the `expire-lock` flag cleared removes it.
+--
+-- Check a rule that must block a merge, such as a freeze, in the holding's
+-- choice before it calls this body. Otherwise the account parties can merge
+-- a frozen holding into an unfrozen one. `fundHolding` applies the rule to
+-- the inputs. No registry contract takes part, so no factory policy, such
+-- as a pause or a fee, applies to a merge.
+holdingMergeImpl
+  : HoldingOps -> ChoiceContext -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
+  -> [ContractId HoldingV2.Holding]
+  -> Update (ContractId HoldingV2.Holding)
+holdingMergeImpl ops context self holding inputHoldingCids = do
+  requireNoLock holding
+  require "merge requires at least one input holding" (not (null inputHoldingCids))
+  require "merge inputs must be distinct and must not include the exercised holding"
+    (unique (self :: inputHoldingCids))
+  let admin = holding.instrumentId.admin
+  amounts <- forA inputHoldingCids $ \cid -> do
+    h <- consumeUnlockedHolding ops context admin holding.account cid
+    require' ("inputHolding.instrumentId.id", h.instrumentId.id)
+      isEqualR ("holding.instrumentId.id", holding.instrumentId.id)
+    pure h.amount
+  newCid <- ops.createHolding (holding with amount = holding.amount + sum amounts)
+  emitHoldingsChange ops admin holding.account [] (self :: inputHoldingCids) [newCid] []
+    "holdings merged"
+  pure newCid
+
+-- | Body of a consuming split choice on a holding template, controlled by
+-- the account parties. It recreates the exercised holding as one holding
+-- per entry of `amounts`, returned in the same order, each with the
+-- exercised holding's `meta`, and emits an account-local
+-- `EventLog_HoldingsChange` with no transfer legs. `self` is the holding
+-- being exercised.
+--
+-- Fails unless `amounts` holds at least two entries. Fails unless each
+-- entry is positive. Fails unless the entries sum to the holding's amount.
+-- Fails while the holding carries a lock, even an expired one.
+--
+-- Check a rule that must block a split, such as a freeze, in the holding's
+-- choice before it calls this body. Otherwise the account parties can split
+-- a frozen holding into unfrozen parts. No registry contract takes part, so
+-- no factory policy applies to a split.
+holdingSplitImpl
+  : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> [Decimal]
+  -> Update [ContractId HoldingV2.Holding]
+holdingSplitImpl ops self holding amounts = do
+  requireNoLock holding
+  require "split requires at least two amounts" (length amounts >= 2)
+  require "split amounts must be positive" (all (> 0.0) amounts)
+  require' ("sum of split amounts", sum amounts) isEqualR ("holding.amount", holding.amount)
+  newCids <- forA amounts $ \amount -> ops.createHolding (holding with amount)
+  emitHoldingsChange ops holding.instrumentId.admin holding.account [] [self] newCids []
+    "holding split"
+  pure newCids
+
+-- | Fail when the holding carries a lock, even an expired one.
+requireNoLock : HoldingV2.HoldingView -> Update ()
+requireNoLock holding = require "holding is locked" (isNone holding.lock)
 
 -- Consumption
 --------------

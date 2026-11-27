@@ -46,6 +46,7 @@ token)
 		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxMintAndQuery
 		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxTransferLifecycle
 		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxMintAndBurn
+		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxMergeAndSplit
 		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxSettleBatchContextWitnesses
 		# Moves the clock past every other script's deadlines: keep it last.
 		OpenZeppelin.Token.Cip112.V1.Test.Sandbox:sandboxBatchExpiryWitnesses

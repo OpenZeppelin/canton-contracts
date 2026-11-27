@@ -12,7 +12,7 @@ What it adds, and where each addition lives:
 |---|---|
 | Pauser and compliance-officer roles | Controllers of consumer choices; the admin stays the signatory and holds neither power |
 | Auditor observing every contract and every holdings-change event | A consumer field on each template, reached through the closure that builds `HoldingOps`, plus the `eventObservers` operation |
-| Compliance freeze on accounts | A per-account `MyAccountStatus`, signed by the admin and the compliance officer, who replaces it through `MyAccountStatus_Freeze` and `MyAccountStatus_Unfreeze`. All three consumption operations read its id from the choice context and exercise `MyHolding_Spend`, which refuses a frozen account, so a frozen account's holdings cannot fund a transfer, allocation, or burn, and its locked funding is neither paid out nor returned. `MyHolding_OwnerUnlock` makes the same check. In a batch, the settlement factory forwards each allocation only its authorizer's status |
+| Compliance freeze on accounts | A per-account `MyAccountStatus`, signed by the admin and the compliance officer, who replaces it through `MyAccountStatus_Freeze` and `MyAccountStatus_Unfreeze`. All three consumption operations read its id from the choice context and exercise `MyHolding_Spend`, which refuses a frozen account, so a frozen account's holdings cannot fund a transfer, allocation, or burn, and its locked funding is neither paid out nor returned. `MyHolding_OwnerUnlock`, `MyHolding_Merge`, and `MyHolding_Split` make the same check, and a merge's other inputs must carry the exercised holding's roles. In a batch, the settlement factory forwards each allocation only its authorizer's status |
 | Pause switch on the registry | A template field plus `MyRules_Pause` and `MyRules_Unpause`, checked before each factory delegates and before a mint offer |
 | Fee on every transfer except a burn | Two workflow calls composed in the factory body: a one-step fee transfer to the treasury, then the main transfer on the fee leg's change |
 | Executor allowlist | Checked before delegating to the allocation and settlement workflows |
@@ -20,6 +20,11 @@ What it adds, and where each addition lives:
 The pause does not cover pending transfer instructions. Their accept choice
 does not read the rules contract, so a transfer, mint offer, or burn request
 created before the pause can still be accepted while the registry is paused.
+
+`MyHolding_Merge` and `MyHolding_Split` bypass the rules contract, so they
+run while the registry is paused and pay no fee. A self-transfer through
+the transfer factory rebalances the same way, but is paused and charged
+like any other transfer.
 
 The auditor observes every holding and every holdings-change event, and the
 compliance officer observes every holding. Every transaction that archives a
