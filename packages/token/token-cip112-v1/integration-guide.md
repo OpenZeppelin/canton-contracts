@@ -246,7 +246,9 @@ body, the choice:
 4. Applies the policy to the fetched contract.
 
 Archive the rules contract in every choice that changes the policy, so a
-fetch of an id from before the change fails. A batch settlement builds each
+fetch of an id from before the change fails. Any live rules contract that
+the admin and the co-signers signed passes, so the policy holds at delivery
+only while each such contract applies it. A batch settlement builds each
 `Allocation_Settle`'s context through the selector passed to
 `settleBatchImpl`, which can forward the factory's own id. Reject, withdraw,
 cancel, and expiry return funds to their owner and need no check.

@@ -57,11 +57,10 @@ call. In a batch, the selector also passes each allocation the factory's
 own id under `rulesKey`, so every settle checks the rules contract the batch
 runs on.
 
-Reject, withdraw, expiry, and cancel read no rules contract, so a pause
-never holds funds that return to their owner. The fee and the executor
-allowlist bind when the instruction or allocation is created, and the
-settlement factory checks the allowlist again, but a direct settle does
-not.
+Reject, withdraw, cancel, and the admin's expiry choices run while the
+registry is paused and return the funds to their owner. The fee binds when
+a transfer instruction is created, and the executor allowlist when an
+allocation is created and again in the settlement factory.
 
 Any live `MyRules` of the admin and the pauser passes the check, so the
 pause holds delivery only while every such rules contract is paused. The
@@ -130,7 +129,8 @@ holding is refused whichever status the sender passes.
 To change who acts as the compliance officer, keep the officer party and
 change who controls it. To replace the party:
 
-1. The pauser pauses the earlier rules, and the admin creates the new ones.
+1. The pauser pauses the earlier rules, and the admin and the pauser create
+   the new ones.
    The paused rules refuse new transfers, allocations, settlements, and
    mints. `MyRules_OpenAccount` and the admin's expiry choices still run on
    them. The earlier rules stay paused until the admin and the pauser

@@ -492,10 +492,8 @@ whenNotPaused rules = require "registry is paused" (not rules.paused)
 rulesKey : Text
 rulesKey = "examples.openzeppelin.com/rules"
 
--- | Refuse unless `context` holds, under `rulesKey`, a live `MyRules` that
--- is not paused and that `admin` and the pauser in `roles`, the pending
--- contract's admin and pauser, signed. The admin cannot create an unpaused
--- `MyRules` that passes without the pauser.
+-- | Fail unless `context` holds, under `rulesKey`, a `MyRules` that `admin`
+-- and the pauser in `roles` signed and that is not paused.
 requireRegistryNotPaused : Party -> AppRoles -> ChoiceContext -> Update ()
 requireRegistryNotPaused admin roles context = do
   rulesCid <- cidFromContext @MyRules rulesKey context
