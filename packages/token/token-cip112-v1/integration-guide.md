@@ -148,8 +148,9 @@ the funding, after which an accept of the old instruction fails.
 
 The admin replaces a mint offer by withdrawing it in the same transaction
 as the new `TokenRules_OfferMint`. An authorizer replaces a live allocation
-for the same `settlement` by withdrawing it in the same transaction as the
-new `AllocationFactory_Allocate`.
+for the same `settlement` with `Allocation_Withdraw` in the same transaction
+as the new `AllocationFactory_Allocate` when other holdings fund it.
+Otherwise it allocates again with the holdings the withdraw returns.
 [Retrying an allocation](#retrying-an-allocation) covers a retry after an
 allocate whose outcome the wallet does not know.
 

@@ -211,10 +211,9 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   time for a transfer and from `requestedAt` for an allocation. Deadlines
   are checked against ledger time, which may differ from the
   synchronizer's record time by up to its ledger-time tolerance. By record
-  time, a choice that must run before a deadline, such as an accept or a
-  settle, can commit up to one tolerance after it, and a choice that must
-  wait for one, such as the owner's unlock, up to one tolerance before it.
-  The owner's early unlock cuts the admin's expiry window short by as much.
+  time, an accept or a settle can commit up to one tolerance after its
+  deadline. The owner's unlock can commit up to one tolerance before
+  `lockExpiresAt`, which shortens the admin's expiry window by as much.
   Keep `lockGrace` above twice that tolerance, so that the owner cannot unlock
   the funding while an accept or settle can still commit.
   A time computed from an oversized value saturates at the bounds of `Time`.
@@ -224,9 +223,9 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   choice body accepts it like a timely one. Only the transaction's record
   time shows the delay. Withdraw the old transfer instruction as part of
   every retry, in the same transaction as the new instruction where possible.
-  Otherwise a late accept of the old instruction pays the receiver twice. The
-  admin replaces a mint offer, and an authorizer an allocation for the same
-  settlement, the same way.
+  Without the withdraw, a late accept of the old instruction pays the
+  receiver twice. The admin replaces a mint offer, and an authorizer an
+  allocation for the same settlement, the same way.
   [`integration-guide.md`](integration-guide.md#retrying-a-transfer) shows
   how.
 - An expiry with the `expire-lock` flag cleared trusts the admin that the

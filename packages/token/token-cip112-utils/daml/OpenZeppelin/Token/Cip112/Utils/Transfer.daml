@@ -200,9 +200,7 @@ executeTransfer config ops context createInstruction oneStep transfer = do
     else do
       -- The admin is the only lock holder, so the owner's unlock after expiry
       -- involves only the participants of the holding's signatories, and the
-      -- receiver gets the locked funding by explicit disclosure. The lock
-      -- expires `lockGrace` after the instruction, the admin's window to
-      -- expire it, or at `maxTime` if that sum saturates.
+      -- receiver gets the locked funding by explicit disclosure.
       let instructionExpiresAt = transfer.executeBefore
           lockExpiresAt = instructionExpiresAt `addRelTimeSaturating` config.lockGrace
           lock = HoldingV2.Lock with
