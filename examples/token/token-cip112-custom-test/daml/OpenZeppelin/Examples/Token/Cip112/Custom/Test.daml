@@ -1,12 +1,14 @@
 -- | Drives `OpenZeppelin.Examples.Token.Cip112.Custom` through the Token Standard V2 interfaces and checks
--- each consumer addition: the auditor sees every contract, funding and
--- payouts run `MyHolding_Spend` while returns do not, a late acceptance
--- creates a `MyHolding`, iteration successors are `MyAllocation`s, a frozen
--- holding cannot fund any workflow,
--- the pause switch blocks the factories, mint offers, and burns, the fee
--- leg pays the treasury and exempts burns, the
--- executor allowlist is enforced, roles are separate, expired funding is
--- reclaimed, and a foreign holding or allocation is refused.
+-- each consumer addition: the auditor sees every contract, every path that
+-- consumes a holding runs `MyHolding_Spend`, a late acceptance creates a
+-- `MyHolding`, iteration successors are `MyAllocation`s, a frozen account's
+-- holdings cannot fund, be paid out, or be returned, its pending transfers
+-- and allocations complete once it is unfrozen, batch settlement forwards
+-- each authorizer only its own status, a stale or missing status is
+-- refused, the pause switch blocks the factories, mint offers, and burns,
+-- the fee leg pays the treasury and exempts burns, the executor allowlist is
+-- enforced, roles are separate, expired funding is reclaimed, and a foreign
+-- holding or allocation is refused.
 module OpenZeppelin.Examples.Token.Cip112.Custom.Test where
 
 import DA.Action (unless)
@@ -75,13 +77,15 @@ setupWith transferFeeBps = do
       transferFeeBps
       allowedExecutors = [exchange]
   Some rulesDisclosure <- queryDisclosure @MyRules admin rulesCid
-  pure App with
-    admin; auditor; complianceOfficer; pauser; exchange; alice; bob; rulesCid; rulesDisclosure
-    settlement = AllocationV2.SettlementInfo with
-      executors = [exchange]
-      id = "trade-1"
-      cid = None
-      meta = emptyMetadata
+  let app = App with
+        admin; auditor; complianceOfficer; pauser; exchange; alice; bob; rulesCid; rulesDisclosure
+        settlement = AllocationV2.SettlementInfo with
+          executors = [exchange]
+          id = "trade-1"
+          cid = None
+          meta = emptyMetadata
+  forA_ [alice, bob] (openAccount app)
+  pure app
 
 setup : Script App
 setup = setupWith 0
@@ -99,20 +103,96 @@ unpauseRegistry app = do
   Some disclosure <- queryDisclosure @MyRules app.admin newCid
   pure app with rulesCid = newCid; rulesDisclosure = disclosure
 
+-- Account statuses
+-------------------
+
+-- | The compliance officer opens `owner`'s account status.
+openAccount : App -> Party -> Script (ContractId MyAccountStatus)
+openAccount App{..} owner = submit (actAs complianceOfficer) do
+  exerciseCmd rulesCid MyRules_OpenAccount with account = basicAccount owner
+
+-- | `owner`'s one live account status under this registry's admin.
+statusOf : App -> Party -> Script (ContractId MyAccountStatus)
+statusOf app owner = do
+  statuses <- queryFilter @MyAccountStatus app.admin
+    (\s -> s.admin == app.admin && s.account == basicAccount owner)
+  case statuses of
+    [(cid, _)] -> pure cid
+    other -> abort ("expected one live status for " <> show owner <> ", got " <> show (length other))
+
+-- | A status as the registry serves it to a submitter that does not observe
+-- it: the receiver on accept and reject, and the executors.
+statusDisclosure : App -> ContractId MyAccountStatus -> Script Disclosure
+statusDisclosure app statusCid = do
+  Some disclosure <- queryDisclosure @MyAccountStatus app.admin statusCid
+  pure disclosure
+
+statusValue : ContractId MyAccountStatus -> AnyValue
+statusValue statusCid = AV_ContractId (coerceContractId statusCid)
+
+-- | The choice context of a choice that consumes a holding of the status's
+-- account.
+statusContext : ContractId MyAccountStatus -> ChoiceContext
+statusContext statusCid = ChoiceContext with values = TextMap.fromList [(accountStatusKey, statusValue statusCid)]
+
+statusArgs : ContractId MyAccountStatus -> ExtraArgs
+statusArgs statusCid = ExtraArgs with context = statusContext statusCid; meta = emptyMetadata
+
+-- | `owner`'s live status as extra arguments, with its disclosure.
+statusFor : App -> Party -> Script (ExtraArgs, Disclosure)
+statusFor app owner = do
+  statusCid <- statusOf app owner
+  disclosure <- statusDisclosure app statusCid
+  pure (statusArgs statusCid, disclosure)
+
+-- | The batch context the executors build: each authorizer's live status
+-- under its batch key, with the disclosures they submit.
+batchStatusArgs : App -> [Party] -> Script (ExtraArgs, [Disclosure])
+batchStatusArgs app authorizers = do
+  entries <- forA authorizers $ \authorizer -> do
+    statusCid <- statusOf app authorizer
+    disclosure <- statusDisclosure app statusCid
+    pure ((batchStatusKey (basicAccount authorizer), statusValue statusCid), disclosure)
+  pure
+    ( ExtraArgs with
+        context = ChoiceContext with values = TextMap.fromList (map fst entries)
+        meta = emptyMetadata
+    , map snd entries )
+
+freeze : App -> Party -> Script (ContractId MyAccountStatus)
+freeze app owner = do
+  statusCid <- statusOf app owner
+  submit (actAs app.complianceOfficer) do exerciseCmd statusCid MyAccountStatus_Freeze
+
+unfreeze : App -> Party -> Script (ContractId MyAccountStatus)
+unfreeze app owner = do
+  statusCid <- statusOf app owner
+  submit (actAs app.complianceOfficer) do exerciseCmd statusCid MyAccountStatus_Unfreeze
+
+-- Supply
+---------
+
 offerMintCmd : App -> Party -> Decimal -> Commands (ContractId TransferInstructionV2.TransferInstruction)
-offerMintCmd App{..} receiver amount =
+offerMintCmd app receiver amount = offerMintOfCmd app receiver "TOK" amount
+
+offerMintOfCmd : App -> Party -> Text -> Decimal -> Commands (ContractId TransferInstructionV2.TransferInstruction)
+offerMintOfCmd App{..} receiver instrumentId amount =
   exerciseCmd rulesCid MyRules_OfferMint with
     receiver = basicAccount receiver
-    instrumentId = "TOK"
+    instrumentId
     amount
     requestedAt = t0
     executeBefore = t2
     reason = "mint"
 
--- | The admin offers a mint and the owner accepts it.
+-- | The admin offers a mint and the owner accepts it. A mint offer locks
+-- nothing, so its accept needs no status.
 mint : App -> Party -> Decimal -> Script (ContractId HoldingV2.Holding)
-mint app owner amount = do
-  offerCid <- submit (actAs app.admin) (offerMintCmd app owner amount)
+mint app owner amount = mintOf app owner "TOK" amount
+
+mintOf : App -> Party -> Text -> Decimal -> Script (ContractId HoldingV2.Holding)
+mintOf app owner instrumentId amount = do
+  offerCid <- submit (actAs app.admin) (offerMintOfCmd app owner instrumentId amount)
   result <- submit (actAs owner) do
     exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
       actors = [owner]
@@ -139,15 +219,20 @@ mkTransfer App{..} sender receiver amount inputs = TransferInstructionV2.Transfe
   inputHoldingCids = inputs
   meta = emptyMetadata
 
-transferCmd : App -> [Party] -> TransferInstructionV2.Transfer -> Commands TransferInstructionV2.TransferInstructionResult
-transferCmd App{..} actors transfer =
+-- | A transfer through the factory. `extraArgs` carries the sender's status.
+transferCmd
+  : App -> [Party] -> ExtraArgs -> TransferInstructionV2.Transfer
+  -> Commands TransferInstructionV2.TransferInstructionResult
+transferCmd App{..} actors extraArgs transfer =
   exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
-    TransferInstructionV2.TransferFactory_Transfer with transfer; actors; extraArgs = emptyExtraArgs
+    TransferInstructionV2.TransferFactory_Transfer with transfer; actors; extraArgs
 
 -- | The owner and the admin burn `amount` of a holding in one step.
-burnCmd : App -> Party -> Decimal -> ContractId HoldingV2.Holding -> Commands TransferInstructionV2.TransferInstructionResult
-burnCmd app owner amount holdingCid =
-  transferCmd app [owner, app.admin] ((mkTransfer app owner owner amount [holdingCid]) with receiver = burnAccount)
+burnCmd
+  : App -> Party -> Decimal -> ExtraArgs -> ContractId HoldingV2.Holding
+  -> Commands TransferInstructionV2.TransferInstructionResult
+burnCmd app owner amount extraArgs holdingCid =
+  transferCmd app [owner, app.admin] extraArgs ((mkTransfer app owner owner amount [holdingCid]) with receiver = burnAccount)
 
 pendingCid : TransferInstructionV2.TransferInstructionResult -> Script (ContractId TransferInstructionV2.TransferInstruction)
 pendingCid result = case result.output of
@@ -167,13 +252,33 @@ instructionDisclosures app instrCid = do
   Some v <- queryInterfaceContractId app.admin instrCid
   fundingDisclosures app v.transfer.inputHoldingCids
 
-accept : App -> Party -> ContractId TransferInstructionV2.TransferInstruction -> Script ()
-accept app receiver instrCid = do
+-- | Disclosures of the locked funding of an allocation.
+allocationDisclosures : App -> ContractId AllocationV2.Allocation -> Script [Disclosure]
+allocationDisclosures app allocCid = do
+  Some v <- queryInterfaceContractId app.admin allocCid
+  fundingDisclosures app v.holdingCids
+
+acceptCmd, rejectCmd
+  : Party -> ExtraArgs -> ContractId TransferInstructionV2.TransferInstruction
+  -> Commands TransferInstructionV2.TransferInstructionResult
+acceptCmd receiver extraArgs cid = exerciseCmd cid TransferInstructionV2.TransferInstruction_Accept with
+  actors = [receiver]; extraArgs
+rejectCmd receiver extraArgs cid = exerciseCmd cid TransferInstructionV2.TransferInstruction_Reject with
+  actors = [receiver]; extraArgs
+
+withdrawCmd
+  : Party -> ExtraArgs -> ContractId TransferInstructionV2.TransferInstruction
+  -> Commands TransferInstructionV2.TransferInstructionResult
+withdrawCmd sender extraArgs cid = exerciseCmd cid TransferInstructionV2.TransferInstruction_Withdraw with
+  actors = [sender]; extraArgs
+
+-- | The receiver accepts, passing the sender's status. The registry
+-- discloses the status and the locked funding to it.
+accept : App -> Party -> Party -> ContractId TransferInstructionV2.TransferInstruction -> Script ()
+accept app sender receiver instrCid = do
+  (senderArgs, senderStatus) <- statusFor app sender
   funding <- instructionDisclosures app instrCid
-  _ <- submit (actAs receiver <> discloseMany funding) do
-    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
-      actors = [receiver]
-      extraArgs = emptyExtraArgs
+  _ <- submit (actAs receiver <> discloseMany (senderStatus :: funding)) (acceptCmd receiver senderArgs instrCid)
   pure ()
 
 mkLeg : Text -> Party -> Party -> Decimal -> AllocationV2.TransferLeg
@@ -195,36 +300,42 @@ mkSpec App{..} authorizer sides reserve = AllocationV2.AllocationSpecification w
   committed = False
   meta = emptyMetadata
 
+-- | An allocation through the factory. `extraArgs` carries the trader's
+-- status.
 allocateCmd
   : App -> AllocationV2.SettlementInfo -> Party -> AllocationV2.AllocationSpecification
-  -> [ContractId HoldingV2.Holding]
+  -> [ContractId HoldingV2.Holding] -> ExtraArgs
   -> Commands AllocationInstructionV2.AllocationInstructionResult
-allocateCmd App{..} settlementInfo trader spec inputs =
+allocateCmd App{..} settlementInfo trader spec inputs extraArgs =
   exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
     AllocationInstructionV2.AllocationFactory_Allocate with
       settlement = settlementInfo
       allocation = spec
       requestedAt = t0
       inputHoldingCids = inputs
-      extraArgs = emptyExtraArgs
+      extraArgs
       actors = [trader]
 
+-- | The trader allocates, passing its own status, which it observes.
 allocate : App -> Party -> AllocationV2.AllocationSpecification -> [ContractId HoldingV2.Holding] -> Script (ContractId AllocationV2.Allocation)
 allocate app trader spec inputs = do
-  result <- submit (actAs trader <> discloseMany [app.rulesDisclosure]) (allocateCmd app app.settlement trader spec inputs)
+  traderArgs <- statusArgs <$> statusOf app trader
+  result <- submit (actAs trader <> discloseMany [app.rulesDisclosure]) (allocateCmd app app.settlement trader spec inputs traderArgs)
   case result.output of
     AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
     other -> abort ("expected completed allocation, got: " <> show other)
 
-settleBatchCmd : App -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation] -> Commands AllocationV2.SettlementFactory_SettleBatchResult
-settleBatchCmd App{..} legs finalizedAllocs =
+settleBatchCmd
+  : App -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation] -> ExtraArgs
+  -> Commands AllocationV2.SettlementFactory_SettleBatchResult
+settleBatchCmd App{..} legs finalizedAllocs extraArgs =
   exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory rulesCid)
     AllocationV2.SettlementFactory_SettleBatch with
       settlement
       transferLegs = legs
       allocations = finalizedAllocs
       actors = [exchange]
-      extraArgs = emptyExtraArgs
+      extraArgs
 
 -- | The disclosures the exchange attaches to a settlement: the rules
 -- contract and the locked funding of every allocation.
@@ -236,10 +347,52 @@ settlementDisclosures app finalizedAllocs = do
   funding <- fundingDisclosures app (concat holdingCids)
   pure (app.rulesDisclosure :: funding)
 
-settleBatch : App -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation] -> Script AllocationV2.SettlementFactory_SettleBatchResult
-settleBatch app legs finalizedAllocs = do
+-- | The exchange settles, passing the statuses of `authorizers` in the batch
+-- context.
+settleBatch
+  : App -> [Party] -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation]
+  -> Script AllocationV2.SettlementFactory_SettleBatchResult
+settleBatch app authorizers legs finalizedAllocs = do
   disclosures <- settlementDisclosures app finalizedAllocs
-  submit (actAs app.exchange <> discloseMany disclosures) (settleBatchCmd app legs finalizedAllocs)
+  (batchArgs, statuses) <- batchStatusArgs app authorizers
+  submit (actAs app.exchange <> discloseMany (disclosures <> statuses))
+    (settleBatchCmd app legs finalizedAllocs batchArgs)
+cancelCmd : Party -> ExtraArgs -> ContractId AllocationV2.Allocation -> Commands AllocationV2.AllocationResult
+cancelCmd actor extraArgs cid = exerciseCmd cid AllocationV2.Allocation_Cancel with
+  actors = [actor]; extraArgs
+
+allocationWithdrawCmd : Party -> ExtraArgs -> ContractId AllocationV2.Allocation -> Commands AllocationV2.AllocationResult
+allocationWithdrawCmd authorizer extraArgs cid = exerciseCmd cid AllocationV2.Allocation_Withdraw with
+  actors = [authorizer]; extraArgs
+
+-- | The admin expires transfer instructions, each with its sender's status.
+expireInstructionsCmd : App -> [(ContractId TransferInstructionV2.TransferInstruction, ExtraArgs)] -> Commands ()
+expireInstructionsCmd App{..} instructions =
+  exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
+    expireArgs =
+      [ (fromInterfaceContractId @MyTransferInstruction cid, MyTransferInstruction_Expire with extraArgs)
+      | (cid, extraArgs) <- instructions ]
+
+-- | The admin expires allocations, each with its authorizer's status.
+expireAllocationsCmd : App -> [(ContractId AllocationV2.Allocation, ExtraArgs)] -> Commands ()
+expireAllocationsCmd App{..} allocations =
+  exerciseCmd rulesCid MyRules_ExpireAllocations with
+    cancelArgs =
+      [ (cid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs)
+      | (cid, extraArgs) <- allocations ]
+
+-- | The context of every `Allocation_Settle` in a transaction tree, with the
+-- allocation it settled.
+settleContexts : TransactionTree -> [(ContractId MyAllocation, ChoiceContext)]
+settleContexts tree = concatMap settleContextsIn tree.rootEvents
+
+settleContextsIn : TreeEvent -> [(ContractId MyAllocation, ChoiceContext)]
+settleContextsIn (CreatedEvent _) = []
+settleContextsIn (ExercisedEvent ex) =
+  [ (cid, settle.extraArgs.context)
+  | settle <- optionalToList (fromAnyChoice @AllocationV2.Allocation ex.argument : Optional AllocationV2.Allocation_Settle)
+  , cid <- optionalToList (fromAnyContractId @MyAllocation ex.contractId) ]
+    <> concatMap settleContextsIn ex.childEvents
 
 -- | `MyHolding_Spend` exercises anywhere in a transaction tree.
 countSpends : TransactionTree -> Int
@@ -279,6 +432,7 @@ mustFailWith expected options cmds = do
       unless (expected `isInfixOf` msg) $
         abort ("submission failed for an unexpected reason: " <> msg)
 
+
 -- Consumer fields and constructors
 -----------------------------------
 
@@ -289,12 +443,13 @@ testLateAcceptCreatesMyHolding : Script ()
 testLateAcceptCreatesMyHolding = do
   app@App{..} <- setup
   aliceTok <- mint app alice 10.0
+  (aliceArgs, _) <- statusFor app alice
   result <- submit (actAs alice <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
   instrCid <- pendingCid result
   -- The pending contract is the consumer's template, visible to the auditor.
   Some _ <- queryContractId auditor (fromInterfaceContractId @MyTransferInstruction instrCid)
-  accept app bob instrCid
+  accept app alice bob instrCid
   balanceSeenBy bob bob >>= (=== [7.0])
   balanceSeenBy alice alice >>= (=== [3.0])
   -- The auditor and the compliance officer observe every holding without
@@ -303,7 +458,7 @@ testLateAcceptCreatesMyHolding = do
   balanceSeenBy auditor alice >>= (=== [3.0])
   balanceSeenBy complianceOfficer bob >>= (=== [7.0])
   bobHoldings <- query @MyHolding bob
-  all (\(_, h) -> h.roles.auditor == auditor && not h.frozen) bobHoldings === True
+  all (\(_, h) -> h.roles.auditor == auditor) bobHoldings === True
 
 -- | Funding goes through the consumer's spend choice. A one-step transfer
 -- funded by two inputs exercises it twice; a burn once.
@@ -312,14 +467,16 @@ testSpendChoiceRunsOnFunding = do
   app@App{..} <- setup
   in1 <- mint app alice 4.0
   in2 <- mint app alice 6.0
+  (aliceArgs, _) <- statusFor app alice
   tree <- submitTree (actAs [alice, bob] <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice, bob] (mkTransfer app alice bob 7.0 [in1, in2]))
+    (transferCmd app [alice, bob] aliceArgs (mkTransfer app alice bob 7.0 [in1, in2]))
   countSpends tree === 2
   balanceSeenBy alice alice >>= (=== [3.0])
   balanceSeenBy bob bob >>= (=== [7.0])
   [(bobCid, _)] <- query @MyHolding bob
+  (bobArgs, _) <- statusFor app bob
   burnTree <- submitTree (actAs [admin, bob] <> discloseMany [rulesDisclosure])
-    (burnCmd app bob 7.0 (toInterfaceContractId @HoldingV2.Holding bobCid))
+    (burnCmd app bob 7.0 bobArgs (toInterfaceContractId @HoldingV2.Holding bobCid))
   countSpends burnTree === 1
   balanceSeenBy bob bob >>= (=== [])
 
@@ -335,63 +492,58 @@ unlockedOf owner = do
 alicePendingTransfer : App -> Decimal -> Script (ContractId TransferInstructionV2.TransferInstruction)
 alicePendingTransfer app@App{..} amount = do
   inputs <- unlockedOf alice
+  (aliceArgs, _) <- statusFor app alice
   result <- submit (actAs alice <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob amount inputs))
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob amount inputs))
   pendingCid result
 
--- | Paying out locked funding, on accept or settle, runs the spend choice.
--- Returning it to its owner, on reject, withdraw, cancel, or expiry,
--- archives it without the spend, so the freeze check never runs there.
-testSpendRunsOnPayoutButNotOnReturn : Script ()
-testSpendRunsOnPayoutButNotOnReturn = do
+-- | Every path that consumes locked funding runs the spend choice, once per
+-- locked holding: paying it out on accept or settle, and returning it to
+-- its owner on reject, either withdraw, cancel, or expiry.
+testSpendRunsOnEveryPath : Script ()
+testSpendRunsOnEveryPath = do
   app@App{..} <- setup
   _ <- mint app alice 10.0
+  (aliceArgs, aliceStatus) <- statusFor app alice
 
   accepted <- alicePendingTransfer app 4.0
   acceptFunding <- instructionDisclosures app accepted
-  acceptTree <- submitTree (actAs bob <> discloseMany acceptFunding) do
-    exerciseCmd accepted TransferInstructionV2.TransferInstruction_Accept with
-      actors = [bob]; extraArgs = emptyExtraArgs
+  acceptTree <- submitTree (actAs bob <> discloseMany (aliceStatus :: acceptFunding)) (acceptCmd bob aliceArgs accepted)
   countSpends acceptTree === 1
 
   rejected <- alicePendingTransfer app 2.0
   rejectFunding <- instructionDisclosures app rejected
-  rejectTree <- submitTree (actAs bob <> discloseMany rejectFunding) do
-    exerciseCmd rejected TransferInstructionV2.TransferInstruction_Reject with
-      actors = [bob]; extraArgs = emptyExtraArgs
-  countSpends rejectTree === 0
+  rejectTree <- submitTree (actAs bob <> discloseMany (aliceStatus :: rejectFunding)) (rejectCmd bob aliceArgs rejected)
+  countSpends rejectTree === 1
 
   withdrawn <- alicePendingTransfer app 2.0
-  withdrawTree <- submitTree (actAs alice) do
-    exerciseCmd withdrawn TransferInstructionV2.TransferInstruction_Withdraw with
-      actors = [alice]; extraArgs = emptyExtraArgs
-  countSpends withdrawTree === 0
+  withdrawTree <- submitTree (actAs alice) (withdrawCmd alice aliceArgs withdrawn)
+  countSpends withdrawTree === 1
 
   let leg = mkLeg "leg-1" alice bob 3.0
   cancelled <- allocate app alice (mkSpec app alice [senderSide leg] None) =<< unlockedOf alice
-  Some cancelledView <- queryInterfaceContractId admin cancelled
-  cancelFunding <- fundingDisclosures app cancelledView.holdingCids
-  cancelTree <- submitTree (actAs exchange <> discloseMany cancelFunding) do
-    exerciseCmd cancelled AllocationV2.Allocation_Cancel with
-      actors = [exchange]; extraArgs = emptyExtraArgs
-  countSpends cancelTree === 0
+  cancelFunding <- allocationDisclosures app cancelled
+  cancelTree <- submitTree (actAs exchange <> discloseMany (aliceStatus :: cancelFunding)) (cancelCmd exchange aliceArgs cancelled)
+  countSpends cancelTree === 1
+
+  withdrawnAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) =<< unlockedOf alice
+  allocWithdrawTree <- submitTree (actAs alice) (allocationWithdrawCmd alice aliceArgs withdrawnAlloc)
+  countSpends allocWithdrawTree === 1
 
   aliceAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) =<< unlockedOf alice
   bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
   let finalized = map nonIteratedAllocation [aliceAlloc, bobAlloc]
   disclosures <- settlementDisclosures app finalized
-  settleTree <- submitTree (actAs exchange <> discloseMany disclosures)
-    (settleBatchCmd app [leg] finalized)
+  (batchArgs, statuses) <- batchStatusArgs app [alice, bob]
+  settleTree <- submitTree (actAs exchange <> discloseMany (disclosures <> statuses))
+    (settleBatchCmd app [leg] finalized batchArgs)
   -- Alice's one locked holding; bob's allocation locks nothing.
   countSpends settleTree === 1
 
   expiring <- alicePendingTransfer app 1.0
   setTime t3
-  expireTree <- submitTree (actAs admin) do
-    exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
-      expireArgs =
-        [ (fromInterfaceContractId @MyTransferInstruction expiring, MyTransferInstruction_Expire with extraArgs = emptyExtraArgs) ]
-  countSpends expireTree === 0
+  expireTree <- submitTree (actAs admin) (expireInstructionsCmd app [(expiring, aliceArgs)])
+  countSpends expireTree === 1
 
   balanceSeenBy bob bob >>= (=== [3.0, 4.0])
   balanceSeenBy alice alice >>= (=== [1.0, 2.0])
@@ -406,7 +558,7 @@ testIteratedSuccessorIsMyAllocation = do
   aliceDep <- allocate app alice (mkSpec app alice [] (Some (TextMap.fromList [("TOK", 10.0)]))) [aliceInput]
   bobDep <- allocate app bob (mkSpec app bob [] (Some TextMap.empty)) []
   let fill = mkLeg "fill-1" alice bob 3.0
-  r <- settleBatch app [fill]
+  r <- settleBatch app [alice, bob] [fill]
     [ AllocationV2.FinalizedAllocation with
         allocationCid = aliceDep
         extraTransferLegSides = [senderSide fill]
@@ -434,7 +586,7 @@ testDvpSettles = do
   let leg = mkLeg "leg-1" alice bob 10.0
   aliceAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) [aliceTok]
   bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
-  _ <- settleBatch app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc])
+  _ <- settleBatch app [alice, bob] [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc])
   balanceSeenBy alice alice >>= (=== [5.0])
   balanceSeenBy bob bob >>= (=== [10.0])
 
@@ -456,14 +608,13 @@ testSettlementRefusedAfterExpiresAt = do
   setTime expiresAt
   let finalized = map nonIteratedAllocation [aliceAlloc, bobAlloc]
   disclosures <- settlementDisclosures app finalized
+  (batchArgs, statuses) <- batchStatusArgs app [alice, bob]
   mustFailWith "Ledger time is at or past deadline 'allocation.expiresAt'"
-    (actAs exchange <> discloseMany disclosures)
-    (settleBatchCmd app [leg] finalized)
-  submit (actAs admin) do
-    exerciseCmd rulesCid MyRules_ExpireAllocations with
-      cancelArgs =
-        [ (cid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)
-        | cid <- [aliceAlloc, bobAlloc] ]
+    (actAs exchange <> discloseMany (disclosures <> statuses))
+    (settleBatchCmd app [leg] finalized batchArgs)
+  (aliceArgs, _) <- statusFor app alice
+  (bobArgs, _) <- statusFor app bob
+  submit (actAs admin) (expireAllocationsCmd app [(aliceAlloc, aliceArgs), (bobAlloc, bobArgs)])
   balanceSeenBy alice alice >>= (=== [5.0, 10.0])
   balanceSeenBy bob bob >>= (=== [])
 
@@ -475,115 +626,537 @@ testSettlementRefusedAfterExpiresAt = do
 testAuditorObservesEvents : Script ()
 testAuditorObservesEvents = do
   app@App{..} <- setup
+  (aliceArgs, aliceStatus) <- statusFor app alice
+  (bobArgs, _) <- statusFor app bob
   offerCid <- submit (actAs admin) (offerMintCmd app alice 10.0)
-  (mintResult, mintTree) <- submitResultAndTree (actAs alice) do
-    exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
-      actors = [alice]
-      extraArgs = emptyExtraArgs
+  (mintResult, mintTree) <- submitResultAndTree (actAs alice) (acceptCmd alice emptyExtraArgs offerCid)
   auditorSeesEvents auditor 1 mintTree
   [aliceTok] <- case mintResult.output of
     TransferInstructionV2.TransferInstructionResult_Completed cids -> pure cids
     other -> abort ("expected a completed mint, got: " <> show other)
   (result, instructTree) <- submitResultAndTree (actAs alice <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
   auditorSeesEvents auditor 1 instructTree
   instrCid <- pendingCid result
   funding <- instructionDisclosures app instrCid
-  acceptTree <- submitTree (actAs bob <> discloseMany funding) do
-    exerciseCmd instrCid TransferInstructionV2.TransferInstruction_Accept with
-      actors = [bob]
-      extraArgs = emptyExtraArgs
+  acceptTree <- submitTree (actAs bob <> discloseMany (aliceStatus :: funding)) (acceptCmd bob aliceArgs instrCid)
   -- Sender-side and receiver-side events of the completed transfer.
   auditorSeesEvents auditor 2 acceptTree
   [(bobCid, _)] <- query @MyHolding bob
   (burnResult, burnTree) <- submitResultAndTree (actAs [admin, bob] <> discloseMany [rulesDisclosure])
-    (burnCmd app bob 3.0 (toInterfaceContractId @HoldingV2.Holding bobCid))
+    (burnCmd app bob 3.0 bobArgs (toInterfaceContractId @HoldingV2.Holding bobCid))
   auditorSeesEvents auditor 1 burnTree
   -- Bob requests a burn of the change alone; the auditor observes the
   -- pending request, and the admin accepts it.
   (requestResult, requestTree) <- submitResultAndTree (actAs bob <> discloseMany [rulesDisclosure])
-    (transferCmd app [bob] ((mkTransfer app bob bob 4.0 burnResult.senderChangeCids) with receiver = burnAccount))
+    (transferCmd app [bob] bobArgs ((mkTransfer app bob bob 4.0 burnResult.senderChangeCids) with receiver = burnAccount))
   auditorSeesEvents auditor 1 requestTree
   requestCid <- pendingCid requestResult
   Some _ <- queryContractId auditor (fromInterfaceContractId @MyTransferInstruction requestCid)
-  burnAcceptTree <- submitTree (actAs admin) do
-    exerciseCmd requestCid TransferInstructionV2.TransferInstruction_Accept with
-      actors = [admin]
-      extraArgs = emptyExtraArgs
+  burnAcceptTree <- submitTree (actAs admin) (acceptCmd admin bobArgs requestCid)
   auditorSeesEvents auditor 1 burnAcceptTree
   balanceSeenBy auditor bob >>= (=== [])
 
 -- Compliance freeze
 --------------------
 
--- | Only the compliance officer can freeze. A frozen holding is refused as
--- funding for a transfer, an allocation, and a burn, while the standard view
--- still shows it as an ordinary holding. After unfreezing, the same transfer
--- goes through.
-testFrozenHoldingCannotMove : Script ()
-testFrozenHoldingCannotMove = do
+-- | Only the compliance officer opens a status, and only for a regular
+-- account. The account parties and the auditor observe it. Only the
+-- officer freezes and unfreezes, and each refuses the status it would
+-- leave unchanged.
+testOnlyComplianceOfficerControlsAccountStatus : Script ()
+testOnlyComplianceOfficerControlsAccountStatus = do
+  app@App{..} <- setup
+  carol <- allocateParty "carol"
+  submitMustFail (actAs admin) do
+    exerciseCmd rulesCid MyRules_OpenAccount with account = basicAccount carol
+  submitMustFail (actAs complianceOfficer) do
+    exerciseCmd rulesCid MyRules_OpenAccount with account = burnAccount
+  carolStatus <- openAccount app carol
+  Some opened <- queryContractId carol carolStatus
+  opened.frozen === False
+  Some _ <- queryContractId auditor carolStatus
+
+  -- Neither the admin (a signatory), the owner, nor the pauser can freeze.
+  aliceStatus <- statusOf app alice
+  submitMustFail (actAs admin) do exerciseCmd aliceStatus MyAccountStatus_Freeze
+  submitMustFail (actAs alice) do exerciseCmd aliceStatus MyAccountStatus_Freeze
+  submitMustFail (actAs pauser) do exerciseCmd aliceStatus MyAccountStatus_Freeze
+  mustFailWith "account is not frozen" (actAs complianceOfficer) do
+    exerciseCmd aliceStatus MyAccountStatus_Unfreeze
+  frozenStatus <- freeze app alice
+  mustFailWith "account is already frozen" (actAs complianceOfficer) do
+    exerciseCmd frozenStatus MyAccountStatus_Freeze
+  submitMustFail (actAs admin) do exerciseCmd frozenStatus MyAccountStatus_Unfreeze
+  submitMustFail (actAs alice) do exerciseCmd frozenStatus MyAccountStatus_Unfreeze
+  _ <- unfreeze app alice
+  pure ()
+
+-- | A frozen account's holdings are refused as funding for a transfer, an
+-- allocation, and a burn. The holding keeps its id, and the standard view
+-- still shows it as an ordinary holding. After unfreezing, the same
+-- holding funds the transfer.
+testFrozenAccountCannotFund : Script ()
+testFrozenAccountCannotFund = do
   app@App{..} <- setup
   aliceTok <- mint app alice 10.0
-  let aliceCid = fromInterfaceContractId @MyHolding aliceTok
-  -- Neither the admin (a signatory), the owner, nor the pauser can freeze.
-  submitMustFail (actAs admin) do exerciseCmd aliceCid MyHolding_Freeze
-  submitMustFail (actAs alice) do exerciseCmd aliceCid MyHolding_Freeze
-  submitMustFail (actAs pauser) do exerciseCmd aliceCid MyHolding_Freeze
-  frozenCid <- submit (actAs complianceOfficer) do exerciseCmd aliceCid MyHolding_Freeze
-  let frozenIface = toInterfaceContractId @HoldingV2.Holding frozenCid
+  frozenArgs <- statusArgs <$> freeze app alice
 
-  mustFailWith "holding is frozen" (actAs alice <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [frozenIface]))
-  mustFailWith "holding is frozen" (actAs alice <> discloseMany [rulesDisclosure])
-    (allocateCmd app settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [frozenIface])
-  mustFailWith "holding is frozen" (actAs [admin, alice] <> discloseMany [rulesDisclosure])
-    (burnCmd app alice 10.0 frozenIface)
+  mustFailWith "account is frozen" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] frozenArgs (mkTransfer app alice bob 7.0 [aliceTok]))
+  mustFailWith "account is frozen" (actAs alice <> discloseMany [rulesDisclosure])
+    (allocateCmd app settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [aliceTok] frozenArgs)
+  mustFailWith "account is frozen" (actAs [admin, alice] <> discloseMany [rulesDisclosure])
+    (burnCmd app alice 10.0 frozenArgs aliceTok)
 
   -- Wallets reading the standard interface see nothing unusual.
-  Some v <- queryInterfaceContractId @HoldingV2.Holding alice frozenIface
+  Some v <- queryInterfaceContractId @HoldingV2.Holding alice aliceTok
   v.amount === 10.0
   v.lock === None
 
-  thawedCid <- submit (actAs complianceOfficer) do exerciseCmd frozenCid MyHolding_Unfreeze
+  thawedArgs <- statusArgs <$> unfreeze app alice
   _ <- submit (actAs [alice, bob] <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice, bob] (mkTransfer app alice bob 7.0 [toInterfaceContractId @HoldingV2.Holding thawedCid]))
+    (transferCmd app [alice, bob] thawedArgs (mkTransfer app alice bob 7.0 [aliceTok]))
   balanceSeenBy bob bob >>= (=== [7.0])
   balanceSeenBy alice alice >>= (=== [3.0])
 
--- | A frozen holding cannot be frozen again.
-testFrozenHoldingCannotBeFrozenAgain : Script ()
-testFrozenHoldingCannotBeFrozenAgain = do
+-- | Freezing an account with a live locked transfer and allocation holds
+-- both. New funding, accept, reject, both withdraws, batch and direct
+-- settle, and cancel all fail. The freeze replaces only the status, so
+-- after unfreezing the same instruction is accepted and the same allocation
+-- settles.
+testFreezeHoldsPendingFundsUntilUnfrozen : Script ()
+testFreezeHoldsPendingFundsUntilUnfrozen = do
   app@App{..} <- setup
-  aliceTok <- mint app alice 10.0
-  frozenCid <- submit (actAs complianceOfficer) do
-    exerciseCmd (fromInterfaceContractId @MyHolding aliceTok) MyHolding_Freeze
-  mustFailWith "holding is already frozen" (actAs complianceOfficer) do
-    exerciseCmd frozenCid MyHolding_Freeze
+  _ <- mint app alice 10.0
+  instrCid <- alicePendingTransfer app 4.0
+  let leg = mkLeg "leg-1" alice bob 3.0
+  aliceAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) =<< unlockedOf alice
+  bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
+  change <- unlockedOf alice
 
--- | A holding that is not frozen cannot be unfrozen.
-testUnfrozenHoldingCannotBeUnfrozen : Script ()
-testUnfrozenHoldingCannotBeUnfrozen = do
-  app@App{..} <- setup
-  aliceTok <- mint app alice 10.0
-  mustFailWith "holding is not frozen" (actAs complianceOfficer) do
-    exerciseCmd (fromInterfaceContractId @MyHolding aliceTok) MyHolding_Unfreeze
+  frozenStatus <- freeze app alice
+  frozenDisclosure <- statusDisclosure app frozenStatus
+  funding <- instructionDisclosures app instrCid
+  allocFunding <- allocationDisclosures app aliceAlloc
+  let frozenArgs = statusArgs frozenStatus
+      asBob = actAs bob <> discloseMany (frozenDisclosure :: funding)
+  mustFailWith "account is frozen" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] frozenArgs (mkTransfer app alice bob 1.0 change))
+  mustFailWith "account is frozen" asBob (acceptCmd bob frozenArgs instrCid)
+  mustFailWith "account is frozen" asBob (rejectCmd bob frozenArgs instrCid)
+  mustFailWith "account is frozen" (actAs alice) (withdrawCmd alice frozenArgs instrCid)
+  disclosures <- settlementDisclosures app (map nonIteratedAllocation [aliceAlloc, bobAlloc])
+  (batchArgs, statuses) <- batchStatusArgs app [alice, bob]
+  mustFailWith "account is frozen" (actAs exchange <> discloseMany (disclosures <> statuses))
+    (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]) batchArgs)
+  mustFailWith "account is frozen" (actAs [admin, exchange]) do
+    exerciseCmd aliceAlloc AllocationV2.Allocation_Settle with
+      actors = [admin, exchange]
+      extraTransferLegSides = []
+      nextIterationFunding = None
+      extraArgs = frozenArgs
+  mustFailWith "account is frozen" (actAs exchange <> discloseMany (frozenDisclosure :: allocFunding))
+    (cancelCmd exchange frozenArgs aliceAlloc)
+  mustFailWith "account is frozen" (actAs alice) (allocationWithdrawCmd alice frozenArgs aliceAlloc)
+  [(lockedCid, _)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock && h.holding.amount == 4.0)
 
--- | Owner unlock recreates the holding through `createHolding`, which would
--- drop the freeze, so a frozen holding whose lock has expired is refused.
--- Once unfrozen, the same unlock goes through.
-testFrozenHoldingCannotUnlock : Script ()
-testFrozenHoldingCannotUnlock = do
+  _ <- unfreeze app alice
+  -- The locked holdings kept their ids through the freeze.
+  Some _ <- queryContractId alice lockedCid
+  accept app alice bob instrCid
+  _ <- settleBatch app [alice, bob] [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc])
+  balanceSeenBy bob bob >>= (=== [3.0, 4.0])
+  balanceSeenBy alice alice >>= (=== [3.0])
+  assertNoLocks alice
+
+-- | A frozen account's expired funding stays locked too: the admin's expiry
+-- of its instruction and its allocation fails, and so does an expiry batch
+-- that also holds another account's allocation, which goes through alone.
+-- After unfreezing, both expire and return the funds.
+testFreezeHoldsExpiryUntilUnfrozen : Script ()
+testFreezeHoldsExpiryUntilUnfrozen = do
+  app@App{..} <- setup
+  (instrCid, aliceAlloc) <- lockAliceFunds app
+  bobTok <- mint app bob 5.0
+  bobAlloc <- allocate app bob (mkSpec app bob [senderSide (mkLeg "leg-2" bob alice 5.0)] None) [bobTok]
+  frozenArgs <- statusArgs <$> freeze app alice
+  (bobArgs, _) <- statusFor app bob
+  setTime t3
+
+  mustFailWith "account is frozen" (actAs admin) (expireInstructionsCmd app [(instrCid, frozenArgs)])
+  mustFailWith "account is frozen" (actAs admin) (expireAllocationsCmd app [(aliceAlloc, frozenArgs)])
+  mustFailWith "account is frozen" (actAs admin)
+    (expireAllocationsCmd app [(bobAlloc, bobArgs), (aliceAlloc, frozenArgs)])
+  submit (actAs admin) (expireAllocationsCmd app [(bobAlloc, bobArgs)])
+  balanceSeenBy bob bob >>= (=== [5.0])
+
+  thawedArgs <- statusArgs <$> unfreeze app alice
+  submit (actAs admin) (expireInstructionsCmd app [(instrCid, thawedArgs)])
+  submit (actAs admin) (expireAllocationsCmd app [(aliceAlloc, thawedArgs)])
+  balanceSeenBy alice alice >>= (=== [3.0, 5.0, 7.0])
+  assertNoLocks alice
+
+-- | The status a submitter passes must be live: the ids from before a freeze
+-- and before the unfreeze no longer fetch. A context without the entry, or
+-- with an entry that is not a contract id, is refused. Only the live id
+-- moves the holding.
+testStaleOrMissingStatusIsRefused : Script ()
+testStaleOrMissingStatusIsRefused = do
   app@App{..} <- setup
   aliceTok <- mint app alice 10.0
+  original <- statusOf app alice
+  frozenStatus <- freeze app alice
+  thawed <- unfreeze app alice
+  let send extraArgs = transferCmd app [alice, bob] extraArgs (mkTransfer app alice bob 7.0 [aliceTok])
+      options = actAs [alice, bob] <> discloseMany [rulesDisclosure]
+  submitMustFail options (send (statusArgs original))
+  submitMustFail options (send (statusArgs frozenStatus))
+  mustFailWith ("choice context has no '" <> accountStatusKey <> "' entry") options (send emptyExtraArgs)
+  mustFailWith "must be a contract id" options
+    (send (emptyExtraArgs with context = ChoiceContext with values = TextMap.fromList [(accountStatusKey, AV_Text "active")]))
+  _ <- submit options (send (statusArgs thawed))
+  balanceSeenBy bob bob >>= (=== [7.0])
+
+-- | A live status of another account does not cover the holding, even when
+-- that account is not frozen.
+testOtherAccountsStatusIsRefused : Script ()
+testOtherAccountsStatusIsRefused = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  (bobArgs, bobStatus) <- statusFor app bob
+  mustFailWith "account status does not cover this holding" (actAs [alice, bob] <> discloseMany [rulesDisclosure, bobStatus])
+    (transferCmd app [alice, bob] bobArgs (mkTransfer app alice bob 7.0 [aliceTok]))
+
+-- | A status counts only if the compliance officer recorded on the holding
+-- signed it. The admin alone can create a status that names itself as the
+-- officer, and it does not cover the holding. Neither does a status opened
+-- under rules with another officer. A status opened under rules that
+-- changed only the auditor still covers it.
+testStatusMustCarryTheHoldingsOfficer : Script ()
+testStatusMustCarryTheHoldingsOfficer = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  otherOfficer <- allocateParty "otherOfficer"
+  newAuditor <- allocateParty "newAuditor"
+  Some rules <- queryContractId admin rulesCid
+  let send statusCid = transferCmd app [alice, bob] (statusArgs statusCid) (mkTransfer app alice bob 7.0 [aliceTok])
+      options = actAs [alice, bob] <> discloseMany [rulesDisclosure]
+      openUnder newRoles = do
+        newRulesCid <- submit admin do createCmd rules with roles = newRoles
+        submit (actAs newRoles.complianceOfficer) do
+          exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
+
+  selfSigned <- submit admin do
+    createCmd MyAccountStatus with
+      admin
+      account = basicAccount alice
+      roles = AppRoles with auditor; complianceOfficer = admin
+      frozen = False
+  mustFailWith "account status does not cover this holding" options (send selfSigned)
+  otherOfficerStatus <- openUnder (AppRoles with auditor; complianceOfficer = otherOfficer)
+  mustFailWith "account status does not cover this holding" options (send otherOfficerStatus)
+  newAuditorStatus <- openUnder (AppRoles with auditor = newAuditor; complianceOfficer)
+  _ <- submit options (send newAuditorStatus)
+  balanceSeenBy bob bob >>= (=== [7.0])
+
+-- | The compliance officer signs every status, so the admin alone cannot
+-- create one that names the officer. A status opened under rules with
+-- another admin and the same officer does not cover alice's holding.
+-- `testStatusMustCarryTheHoldingsOfficer` covers a status of another officer.
+testStatusNeedsOfficerSignatureAndHoldingsAdmin : Script ()
+testStatusNeedsOfficerSignatureAndHoldingsAdmin = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  forged <- trySubmit (actAs admin) do
+    createCmd MyAccountStatus with
+      admin
+      account = basicAccount alice
+      roles = AppRoles with auditor; complianceOfficer
+      frozen = False
+  case forged of
+    Left (AuthorizationError _) -> pure ()
+    other -> abort ("expected an authorization error, got: " <> show other)
+  otherAdmin <- allocateParty "otherAdmin"
+  Some rules <- queryContractId admin rulesCid
+  otherRulesCid <- submit otherAdmin do
+    createCmd rules with config = rules.config with admin = otherAdmin
+  otherStatus <- submit (actAs complianceOfficer) do
+    exerciseCmd otherRulesCid MyRules_OpenAccount with account = basicAccount alice
+  mustFailWith "account status does not cover this holding" (actAs [alice, bob] <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice, bob] (statusArgs otherStatus) (mkTransfer app alice bob 7.0 [aliceTok]))
+
+-- | A holding keeps the compliance officer it was created with. After the
+-- admin creates rules with another officer, a transfer that pays a fee from
+-- an earlier holding is refused for the earlier officer's status and for
+-- the new officer's. The fee leg's change carries the new officer, and one
+-- choice context carries one status. A burn pays no fee, so the earlier
+-- status still burns the holding.
+testEarlierHoldingCannotPayFeeAfterOfficerChange : Script ()
+testEarlierHoldingCannotPayFeeAfterOfficerChange = do
+  app@App{..} <- setupWith 100
+  aliceTok <- mint app alice 250.0
+  earlierStatus <- statusOf app alice
+  newOfficer <- allocateParty "newOfficer"
+  Some rules <- queryContractId admin rulesCid
+  newRulesCid <- submit admin do
+    createCmd rules with roles = AppRoles with auditor; complianceOfficer = newOfficer
+  Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
+  newStatus <- submit (actAs newOfficer) do
+    exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
+  let newApp = app with rulesCid = newRulesCid; rulesDisclosure = newDisclosure
+      send statusCid = transferCmd newApp [alice, bob] (statusArgs statusCid) (mkTransfer newApp alice bob 100.0 [aliceTok])
+      options = actAs [alice, bob] <> discloseMany [newDisclosure]
+  mustFailWith "account status does not cover this holding" options (send earlierStatus)
+  mustFailWith "account status does not cover this holding" options (send newStatus)
+  _ <- submit (actAs [admin, alice] <> discloseMany [newDisclosure])
+    (burnCmd newApp alice 250.0 (statusArgs earlierStatus) aliceTok)
+  balanceSeenBy alice alice >>= (=== [])
+
+-- | The move the README describes for a new officer. Under the new rules, an
+-- allocation funded by an earlier holding with the earlier status creates
+-- its locked funding and change under the new officer, and a withdraw with
+-- the new status returns the funding. Once every holding answers to the new
+-- officer, a transfer that pays a fee goes through with the new status.
+testHoldingMovesToNewOfficerThroughAllocation : Script ()
+testHoldingMovesToNewOfficerThroughAllocation = do
+  app@App{..} <- setupWith 100
+  aliceTok <- mint app alice 250.0
+  earlierStatus <- statusOf app alice
+  newOfficer <- allocateParty "newOfficer"
+  Some rules <- queryContractId admin rulesCid
+  let newRoles = AppRoles with auditor; complianceOfficer = newOfficer
+  newRulesCid <- submit admin do createCmd rules with roles = newRoles
+  Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
+  newStatus <- submit (actAs newOfficer) do
+    exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
+  let newApp = app with rulesCid = newRulesCid; rulesDisclosure = newDisclosure
+      spec = mkSpec newApp alice [senderSide (mkLeg "leg-move" alice bob 100.0)] None
+
+  allocated <- submit (actAs alice <> discloseMany [newDisclosure])
+    (allocateCmd newApp settlement alice spec [aliceTok] (statusArgs earlierStatus))
+  allocCid <- case allocated.output of
+    AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
+    other -> abort ("expected completed allocation, got: " <> show other)
+  funded <- query @MyHolding alice
+  sort [(isSome h.holding.lock, h.holding.amount) | (_, h) <- funded] === [(False, 150.0), (True, 100.0)]
+  all (\(_, h) -> h.roles == newRoles) funded === True
+  _ <- submit (actAs alice) (allocationWithdrawCmd alice (statusArgs newStatus) allocCid)
+  holdings <- query @MyHolding alice
+  sort [h.holding.amount | (_, h) <- holdings] === [100.0, 150.0]
+  all (\(_, h) -> h.roles == newRoles) holdings === True
+
+  _ <- submit (actAs [alice, bob] <> discloseMany [newDisclosure])
+    (transferCmd newApp [alice, bob] (statusArgs newStatus)
+      (mkTransfer newApp alice bob 100.0 [toInterfaceContractId cid | (cid, _) <- holdings]))
+  balanceSeenBy bob bob >>= (=== [100.0])
+  balanceSeenBy alice alice >>= (=== [149.0])
+
+-- | A pending instruction keeps the officer it was created with, so after
+-- the admin replaces the rules, its accept still needs the earlier status
+-- and gives the receiver a holding under the earlier officer.
+testPendingInstructionKeepsItsOfficer : Script ()
+testPendingInstructionKeepsItsOfficer = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  (aliceArgs, aliceStatus) <- statusFor app alice
+  instrCid <- pendingCid =<< submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
+  newOfficer <- allocateParty "newOfficer"
+  Some rules <- queryContractId admin rulesCid
+  submit admin do archiveCmd rulesCid
+  newRulesCid <- submit admin do
+    createCmd rules with roles = AppRoles with auditor; complianceOfficer = newOfficer
+  newStatus <- submit (actAs newOfficer) do
+    exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
+  newDisclosure <- statusDisclosure app newStatus
+  funding <- instructionDisclosures app instrCid
+  mustFailWith "account status does not cover this holding" (actAs bob <> discloseMany (newDisclosure :: funding))
+    (acceptCmd bob (statusArgs newStatus) instrCid)
+  _ <- submit (actAs bob <> discloseMany (aliceStatus :: funding)) (acceptCmd bob aliceArgs instrCid)
+  [(_, received)] <- query @MyHolding bob
+  received.roles.complianceOfficer === complianceOfficer
+  received.holding.amount === 7.0
+
+-- | The README's steps for a new officer. The paused earlier rules refuse a
+-- new transfer, and the earlier officer still opens a status through them
+-- for carol, who receives a transfer made under the earlier officer. Only
+-- that status covers carol's holding, not the one the new officer opens.
+-- Carol spends it through the new rules, and bob's holding answers to the
+-- new officer.
+testPausedEarlierRulesStillOpenStatuses : Script ()
+testPausedEarlierRulesStillOpenStatuses = do
+  app@App{..} <- setup
+  carol <- allocateParty "carol"
+  aliceTok <- mint app alice 10.0
+  (aliceArgs, _) <- statusFor app alice
+  instrCid <- pendingCid =<< submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice carol 7.0 [aliceTok]))
+  earlier <- pauseRegistry app
+  newOfficer <- allocateParty "newOfficer"
+  Some rules <- queryContractId admin earlier.rulesCid
+  newRulesCid <- submit admin do
+    createCmd rules with
+      roles = AppRoles with auditor; complianceOfficer = newOfficer
+      paused = False
+  Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
+  let newApp = app with rulesCid = newRulesCid; rulesDisclosure = newDisclosure
+
+  aliceChange <- unlockedOf alice
+  mustFailWith "registry is paused" (actAs alice <> discloseMany [earlier.rulesDisclosure])
+    (transferCmd earlier [alice] aliceArgs (mkTransfer earlier alice bob 1.0 aliceChange))
+
+  carolStatus <- openAccount earlier carol
+  carolNewStatus <- submit (actAs newOfficer) do
+    exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount carol
+  accept app alice carol instrCid
+  [(carolCid, received)] <- query @MyHolding carol
+  received.roles.complianceOfficer === complianceOfficer
+  let spendCarol statusCid = transferCmd newApp [carol, bob] (statusArgs statusCid)
+        (mkTransfer newApp carol bob 7.0 [toInterfaceContractId carolCid])
+      asCarolAndBob = actAs [carol, bob] <> discloseMany [newDisclosure]
+  mustFailWith "account status does not cover this holding" asCarolAndBob (spendCarol carolNewStatus)
+  _ <- submit asCarolAndBob (spendCarol carolStatus)
+  [(_, paid)] <- query @MyHolding bob
+  paid.roles.complianceOfficer === newOfficer
+  balanceSeenBy bob bob >>= (=== [7.0])
+
+-- | In a batch, each allocation receives only its own authorizer's status,
+-- under the key a direct settle uses. Alice sends 10 TOK for bob's 4 USD, so
+-- both lock funding. The executors also put alice's status under the plain
+-- key, which reaches neither. Swapped statuses fail on the account check,
+-- and a frozen bob fails the whole batch though alice is not frozen.
+testBatchForwardsEachAuthorizerItsStatus : Script ()
+testBatchForwardsEachAuthorizerItsStatus = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  bobUsd <- mintOf app bob "USD" 4.0
+  let tokLeg = mkLeg "leg-tok" alice bob 10.0
+      usdLeg = (mkLeg "leg-usd" bob alice 4.0) with instrumentId = "USD"
+      allocs cids = map nonIteratedAllocation cids
+      legs = [tokLeg, usdLeg]
+  aliceAlloc <- allocate app alice (mkSpec app alice [senderSide tokLeg, receiverSide usdLeg] None) [aliceTok]
+  bobAlloc <- allocate app bob (mkSpec app bob [receiverSide tokLeg, senderSide usdLeg] None) [bobUsd]
+  aliceStatus <- statusOf app alice
+  bobStatus <- statusOf app bob
+  aliceDisclosure <- statusDisclosure app aliceStatus
+  bobDisclosure <- statusDisclosure app bobStatus
+  funding <- settlementDisclosures app (allocs [aliceAlloc, bobAlloc])
+  -- Disclose only live statuses: a submission that discloses an archived
+  -- contract is refused.
+  let asExchange statuses = actAs exchange <> discloseMany (funding <> (aliceDisclosure :: statuses))
+      batchWith entries = ExtraArgs with
+        context = ChoiceContext with values = TextMap.fromList entries
+        meta = emptyMetadata
+
+  mustFailWith "account status does not cover this holding" (asExchange [bobDisclosure])
+    (settleBatchCmd app legs (allocs [aliceAlloc, bobAlloc]) (batchWith
+      [ (batchStatusKey (basicAccount alice), statusValue bobStatus)
+      , (batchStatusKey (basicAccount bob), statusValue aliceStatus) ]))
+
+  frozenBob <- freeze app bob
+  frozenBobDisclosure <- statusDisclosure app frozenBob
+  mustFailWith "account is frozen" (asExchange [frozenBobDisclosure])
+    (settleBatchCmd app legs (allocs [aliceAlloc, bobAlloc]) (batchWith
+      [ (batchStatusKey (basicAccount alice), statusValue aliceStatus)
+      , (batchStatusKey (basicAccount bob), statusValue frozenBob) ]))
+  thawedBob <- unfreeze app bob
+  thawedBobDisclosure <- statusDisclosure app thawedBob
+
+  tree <- submitTree (asExchange [thawedBobDisclosure])
+    (settleBatchCmd app legs (allocs [aliceAlloc, bobAlloc]) (batchWith
+      [ (batchStatusKey (basicAccount alice), statusValue aliceStatus)
+      , (batchStatusKey (basicAccount bob), statusValue thawedBob)
+      , (accountStatusKey, statusValue aliceStatus) ]))
+  settleContexts tree ===
+    [ (fromInterfaceContractId @MyAllocation aliceAlloc, statusContext aliceStatus)
+    , (fromInterfaceContractId @MyAllocation bobAlloc, statusContext thawedBob) ]
+  countSpends tree === 2
+  balanceSeenBy alice alice >>= (=== [4.0])
+  balanceSeenBy bob bob >>= (=== [10.0])
+
+-- | `MyRules` declares no extra observers of a batch settlement.
+testSettlementAddsNoBatchObservers : Script ()
+testSettlementAddsNoBatchObservers = do
+  App{..} <- setup
+  Some rules <- queryContractId admin rulesCid
+  let batch = AllocationV2.SettlementFactory_SettleBatch with
+        settlement
+        transferLegs =
+          [ mkLeg "leg-tok" alice bob 10.0
+          , (mkLeg "leg-usd" bob alice 4.0) with instrumentId = "USD" ]
+        allocations = []
+        actors = [exchange]
+        extraArgs = emptyExtraArgs
+  AllocationV2.settlementFactory_settleBatchExtraObservers
+    (toInterface @AllocationV2.SettlementFactory rules) batch === []
+
+-- | An allocation that locked nothing consumes no holding, so the batch
+-- context needs no status for its authorizer. With only alice's status in
+-- the batch context, bob's receiving settle gets an empty context. With only
+-- bob's, alice's locked funding finds no status and the batch fails.
+testReceiveOnlyAuthorizerNeedsNoStatus : Script ()
+testReceiveOnlyAuthorizerNeedsNoStatus = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  let leg = mkLeg "leg-1" alice bob 10.0
+  aliceAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) [aliceTok]
+  bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
+  let finalized = map nonIteratedAllocation [aliceAlloc, bobAlloc]
+  disclosures <- settlementDisclosures app finalized
+  (bobOnlyArgs, bobStatuses) <- batchStatusArgs app [bob]
+  mustFailWith ("choice context has no '" <> accountStatusKey <> "' entry")
+    (actAs exchange <> discloseMany (disclosures <> bobStatuses))
+    (settleBatchCmd app [leg] finalized bobOnlyArgs)
+  (aliceOnlyArgs, aliceStatuses) <- batchStatusArgs app [alice]
+  tree <- submitTree (actAs exchange <> discloseMany (disclosures <> aliceStatuses))
+    (settleBatchCmd app [leg] finalized aliceOnlyArgs)
+  aliceStatus <- statusOf app alice
+  settleContexts tree ===
+    [ (fromInterfaceContractId @MyAllocation aliceAlloc, statusContext aliceStatus)
+    , (fromInterfaceContractId @MyAllocation bobAlloc, emptyChoiceContext) ]
+  balanceSeenBy bob bob >>= (=== [10.0])
+
+-- | One frozen sender fails the admin's whole instruction expiry batch, and
+-- the other sender's instruction stays pending. Without the frozen sender,
+-- the batch goes through.
+testOneFrozenSenderFailsTheInstructionExpiryBatch : Script ()
+testOneFrozenSenderFailsTheInstructionExpiryBatch = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  bobTok <- mint app bob 5.0
+  (aliceArgs, _) <- statusFor app alice
+  (bobArgs, _) <- statusFor app bob
+  aliceInstr <- pendingCid =<< submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
+  bobInstr <- pendingCid =<< submit (actAs bob <> discloseMany [rulesDisclosure])
+    (transferCmd app [bob] bobArgs (mkTransfer app bob alice 5.0 [bobTok]))
+  frozenArgs <- statusArgs <$> freeze app alice
+  setTime t3
+  mustFailWith "account is frozen" (actAs admin)
+    (expireInstructionsCmd app [(bobInstr, bobArgs), (aliceInstr, frozenArgs)])
+  Some _ <- queryContractId admin (fromInterfaceContractId @MyTransferInstruction bobInstr)
+  submit (actAs admin) (expireInstructionsCmd app [(bobInstr, bobArgs)])
+  balanceSeenBy bob bob >>= (=== [5.0])
+
+-- | An owner unlock of expired funding is refused while the account is
+-- frozen, so it cannot orphan the pending instruction that names the
+-- locked holding. Once unfrozen, the same unlock goes through.
+testFrozenAccountCannotUnlock : Script ()
+testFrozenAccountCannotUnlock = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  (aliceArgs, _) <- statusFor app alice
   _ <- submit (actAs alice <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
   [(lockedCid, _)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock)
   -- t4 is past the lock's expiry: t2 plus the one-hour lock grace.
   setTime t4
-  frozenCid <- submit (actAs complianceOfficer) do exerciseCmd lockedCid MyHolding_Freeze
-  mustFailWith "holding is frozen" (actAs alice) do exerciseCmd frozenCid MyHolding_OwnerUnlock
-  thawedCid <- submit (actAs complianceOfficer) do exerciseCmd frozenCid MyHolding_Unfreeze
-  _ <- submit (actAs alice) do exerciseCmd thawedCid MyHolding_OwnerUnlock
+  frozenStatus <- freeze app alice
+  mustFailWith "account is frozen" (actAs alice) do
+    exerciseCmd lockedCid MyHolding_OwnerUnlock with statusCid = frozenStatus
+  thawed <- unfreeze app alice
+  _ <- submit (actAs alice) do exerciseCmd lockedCid MyHolding_OwnerUnlock with statusCid = thawed
   assertNoLocks alice
 
 -- | The admin unlock recreates the holding the same way, so it makes the
@@ -592,31 +1165,56 @@ testFrozenHoldingCannotAdminUnlock : Script ()
 testFrozenHoldingCannotAdminUnlock = do
   app@App{..} <- setup
   aliceTok <- mint app alice 10.0
+  (aliceArgs, _) <- statusFor app alice
   _ <- submit (actAs alice <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
   [(lockedCid, _)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock)
   setTime t4
-  frozenCid <- submit (actAs complianceOfficer) do exerciseCmd lockedCid MyHolding_Freeze
-  mustFailWith "holding is frozen" (actAs admin) do exerciseCmd frozenCid MyHolding_AdminUnlock
-  thawedCid <- submit (actAs complianceOfficer) do exerciseCmd frozenCid MyHolding_Unfreeze
-  _ <- submit (actAs admin) do exerciseCmd thawedCid MyHolding_AdminUnlock
+  frozenStatus <- freeze app alice
+  mustFailWith "account is frozen" (actAs admin) do
+    exerciseCmd lockedCid MyHolding_AdminUnlock with statusCid = frozenStatus
+  thawed <- unfreeze app alice
+  _ <- submit (actAs admin) do exerciseCmd lockedCid MyHolding_AdminUnlock with statusCid = thawed
   assertNoLocks alice
 
 -- | A holding with a live lock backs a pending contract that names it by
--- contract id, so the freeze refuses it. The pending transfer stays intact:
--- the receiver accepts it afterwards.
-testLockedHoldingCannotBeFrozen : Script ()
-testLockedHoldingCannotBeFrozen = do
+-- contract id. The freeze replaces only the account's status, so it covers
+-- that holding without re-creating it: the receiver's accept and the
+-- exchange's settlement both refuse to pay out the frozen account's locked
+-- funding. The locked holdings keep their ids, so after the unfreeze the
+-- same transfer is accepted and the same allocation settles.
+testLockedHoldingCanBeFrozen : Script ()
+testLockedHoldingCanBeFrozen = do
   app@App{..} <- setup
   aliceTok <- mint app alice 10.0
-  result <- submit (actAs alice <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
-  instrCid <- pendingCid result
-  [(lockedCid, _)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock)
-  mustFailWith "holding lock expiresAt" (actAs complianceOfficer) do
-    exerciseCmd lockedCid MyHolding_Freeze
-  accept app bob instrCid
-  balanceSeenBy bob bob >>= (=== [7.0])
+  allocTok <- mint app alice 5.0
+  (aliceArgs, _) <- statusFor app alice
+  instrCid <- pendingCid =<< submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
+  let leg = mkLeg "leg-1" alice bob 5.0
+      finalized cids = map nonIteratedAllocation cids
+  aliceAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) [allocTok]
+  bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
+  locked <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock)
+  length locked === 2
+
+  frozenStatus <- freeze app alice
+  frozenDisclosure <- statusDisclosure app frozenStatus
+  funding <- instructionDisclosures app instrCid
+  mustFailWith "account is frozen" (actAs bob <> discloseMany (frozenDisclosure :: funding))
+    (acceptCmd bob (statusArgs frozenStatus) instrCid)
+  disclosures <- settlementDisclosures app (finalized [aliceAlloc, bobAlloc])
+  (batchArgs, statuses) <- batchStatusArgs app [alice, bob]
+  mustFailWith "account is frozen" (actAs exchange <> discloseMany (disclosures <> statuses))
+    (settleBatchCmd app [leg] (finalized [aliceAlloc, bobAlloc]) batchArgs)
+
+  _ <- unfreeze app alice
+  forA_ locked $ \(cid, _) -> do
+    Some _ <- queryContractId alice cid
+    pure ()
+  accept app alice bob instrCid
+  _ <- settleBatch app [alice, bob] [leg] (finalized [aliceAlloc, bobAlloc])
+  balanceSeenBy bob bob >>= (=== [5.0, 7.0])
   balanceSeenBy alice alice >>= (=== [3.0])
 
 -- Pause switch
@@ -630,22 +1228,23 @@ testPauseBlocksFactories = do
   app0@App{..} <- setup
   aliceTok <- mint app0 alice 10.0
   burnMe <- mint app0 alice 1.0
+  (aliceArgs, _) <- statusFor app0 alice
   submitMustFail (actAs admin) do exerciseCmd rulesCid MyRules_Pause
   submitMustFail (actAs complianceOfficer) do exerciseCmd rulesCid MyRules_Pause
   app <- pauseRegistry app0
 
   mustFailWith "registry is paused" (actAs alice <> discloseMany [app.rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [aliceTok]))
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
   mustFailWith "registry is paused" (actAs alice <> discloseMany [app.rulesDisclosure])
-    (allocateCmd app app.settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [aliceTok])
+    (allocateCmd app app.settlement alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 7.0)] None) [aliceTok] aliceArgs)
   mustFailWith "registry is paused" (actAs admin) (offerMintCmd app alice 1.0)
   mustFailWith "registry is paused" (actAs [admin, alice] <> discloseMany [app.rulesDisclosure])
-    (burnCmd app alice 1.0 burnMe)
+    (burnCmd app alice 1.0 aliceArgs burnMe)
   balanceSeenBy alice alice >>= (=== [1.0, 10.0])
 
   app2 <- unpauseRegistry app
   _ <- submit (actAs [alice, bob] <> discloseMany [app2.rulesDisclosure])
-    (transferCmd app2 [alice, bob] (mkTransfer app2 alice bob 7.0 [aliceTok]))
+    (transferCmd app2 [alice, bob] aliceArgs (mkTransfer app2 alice bob 7.0 [aliceTok]))
   balanceSeenBy bob bob >>= (=== [7.0])
 
 -- | The settlement factory is paused too, so allocations made before the
@@ -658,8 +1257,9 @@ testPauseBlocksSettlement = do
   aliceAlloc <- allocate app0 alice (mkSpec app0 alice [senderSide leg] None) [aliceTok]
   bobAlloc <- allocate app0 bob (mkSpec app0 bob [receiverSide leg] None) []
   app <- pauseRegistry app0
-  mustFailWith "registry is paused" (actAs exchange <> discloseMany [app.rulesDisclosure])
-    (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]))
+  (batchArgs, statuses) <- batchStatusArgs app [alice, bob]
+  mustFailWith "registry is paused" (actAs exchange <> discloseMany (app.rulesDisclosure :: statuses))
+    (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]) batchArgs)
 
 -- | A paused registry cannot be paused again.
 testPausedRegistryCannotBePausedAgain : Script ()
@@ -686,18 +1286,19 @@ testTransferFeeGoesToTreasury : Script ()
 testTransferFeeGoesToTreasury = do
   app@App{..} <- setupWith 100
   aliceTok <- mint app alice 250.0
+  (aliceArgs, _) <- statusFor app alice
   result <- submit (actAs alice <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob 100.0 [aliceTok]))
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 100.0 [aliceTok]))
   instrCid <- pendingCid result
   balanceSeenBy admin admin >>= (=== [1.0])
   balanceSeenBy alice alice >>= (=== [100.0, 149.0])
-  accept app bob instrCid
+  accept app alice bob instrCid
   balanceSeenBy bob bob >>= (=== [100.0])
   balanceSeenBy alice alice >>= (=== [149.0])
   -- 149 covers a transfer of 149 but not its 1.49 fee.
   [(changeCid, _)] <- query @MyHolding alice
   submitMustFail (actAs alice <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob 149.0 [toInterfaceContractId @HoldingV2.Holding changeCid]))
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 149.0 [toInterfaceContractId @HoldingV2.Holding changeCid]))
 
 -- | The fee is two workflow calls: the fee leg consumes both inputs, the
 -- main transfer consumes the fee leg's change. Three spends, one transfer.
@@ -706,8 +1307,9 @@ testFeeComposesTwoWorkflowCalls = do
   app@App{..} <- setupWith 100
   in1 <- mint app alice 40.0
   in2 <- mint app alice 60.0
+  (aliceArgs, _) <- statusFor app alice
   tree <- submitTree (actAs [alice, bob] <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice, bob] (mkTransfer app alice bob 50.0 [in1, in2]))
+    (transferCmd app [alice, bob] aliceArgs (mkTransfer app alice bob 50.0 [in1, in2]))
   countSpends tree === 3
   balanceSeenBy admin admin >>= (=== [0.5])
   balanceSeenBy alice alice >>= (=== [49.5])
@@ -722,8 +1324,9 @@ testFeeEventsNameTheWorkflow = do
   aliceTok <- mint app alice 100.0
   let claimed = reasonToMeta "tokens minted"
         (Metadata with values = TextMap.fromList [("example.com/memo", "rent")])
+  (aliceArgs, _) <- statusFor app alice
   tree <- submitTree (actAs [alice, bob] <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice, bob] ((mkTransfer app alice bob 50.0 [aliceTok]) with meta = claimed))
+    (transferCmd app [alice, bob] aliceArgs ((mkTransfer app alice bob 50.0 [aliceTok]) with meta = claimed))
   let evs = holdingsChangeEvents tree
   map (.account) evs === map basicAccount [alice, admin, alice, bob]
   forA_ evs $ \ev -> do
@@ -736,7 +1339,8 @@ testBurnPaysNoFee : Script ()
 testBurnPaysNoFee = do
   app@App{..} <- setupWith 100
   aliceTok <- mint app alice 100.0
-  _ <- submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) (burnCmd app alice 40.0 aliceTok)
+  (aliceArgs, _) <- statusFor app alice
+  _ <- submit (actAs [admin, alice] <> discloseMany [rulesDisclosure]) (burnCmd app alice 40.0 aliceArgs aliceTok)
   balanceSeenBy admin admin >>= (=== [])
   balanceSeenBy alice alice >>= (=== [60.0])
 
@@ -761,10 +1365,11 @@ testExecutorAllowlist = do
   app@App{..} <- setup
   rogue <- allocateParty "rogue"
   aliceTok <- mint app alice 10.0
+  (aliceArgs, _) <- statusFor app alice
   let leg = mkLeg "leg-1" alice bob 10.0
       rogueSettlement = settlement with executors = [rogue]
   mustFailWith "a settlement executor is not approved" (actAs alice <> discloseMany [rulesDisclosure])
-    (allocateCmd app rogueSettlement alice (mkSpec app alice [senderSide leg] None) [aliceTok])
+    (allocateCmd app rogueSettlement alice (mkSpec app alice [senderSide leg] None) [aliceTok] aliceArgs)
   _ <- allocate app alice (mkSpec app alice [senderSide leg] None) [aliceTok]
   pure ()
 
@@ -782,8 +1387,9 @@ testSettlementChecksExecutorAllowlist = do
   newRulesCid <- submit admin do createCmd rules with allowedExecutors = []
   Some disclosure <- queryDisclosure @MyRules admin newRulesCid
   let app = app0 with rulesCid = newRulesCid; rulesDisclosure = disclosure
-  mustFailWith "a settlement executor is not approved" (actAs exchange <> discloseMany [disclosure])
-    (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]))
+  (batchArgs, statuses) <- batchStatusArgs app [alice, bob]
+  mustFailWith "a settlement executor is not approved" (actAs exchange <> discloseMany (disclosure :: statuses))
+    (settleBatchCmd app [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]) batchArgs)
 
 -- Expiry and cleanup
 ---------------------
@@ -794,8 +1400,9 @@ lockAliceFunds : App -> Script (ContractId TransferInstructionV2.TransferInstruc
 lockAliceFunds app@App{..} = do
   transferInput <- mint app alice 10.0
   allocationInput <- mint app alice 5.0
+  (aliceArgs, _) <- statusFor app alice
   result <- submit (actAs alice <> discloseMany [rulesDisclosure])
-    (transferCmd app [alice] (mkTransfer app alice bob 7.0 [transferInput]))
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [transferInput]))
   instrCid <- pendingCid result
   allocCid <- allocate app alice (mkSpec app alice [senderSide (mkLeg "leg-1" alice bob 5.0)] None) [allocationInput]
   pure (instrCid, allocCid)
@@ -812,13 +1419,10 @@ testAdminExpiryReturnsFunds : Script ()
 testAdminExpiryReturnsFunds = do
   app@App{..} <- setup
   (instrCid, allocCid) <- lockAliceFunds app
+  (aliceArgs, _) <- statusFor app alice
   setTime t3
-  submit (actAs admin) do
-    exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
-      expireArgs = [(fromInterfaceContractId @MyTransferInstruction instrCid, MyTransferInstruction_Expire with extraArgs = emptyExtraArgs)]
-  submit (actAs admin) do
-    exerciseCmd rulesCid MyRules_ExpireAllocations with
-      cancelArgs = [(allocCid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)]
+  submit (actAs admin) (expireInstructionsCmd app [(instrCid, aliceArgs)])
+  submit (actAs admin) (expireAllocationsCmd app [(allocCid, aliceArgs)])
   balanceSeenBy alice alice >>= (=== [3.0, 5.0, 7.0])
   assertNoLocks alice
 
@@ -845,9 +1449,10 @@ testOwnerUnlockThenExpiryWithFlagCleared = do
   mustFailWith "strictly before deadline 'lockExpiresAt'" (actAs admin) expireInstr
   mustFailWith "strictly before deadline 'allocation lockExpiresAt'" (actAs admin) cancelAlloc
   setTime t4
+  aliceStatus <- statusOf app alice
   holdings <- query @MyHolding alice
   forA_ [cid | (cid, h) <- holdings, isSome h.holding.lock] $ \cid ->
-    submit (actAs alice) do exerciseCmd cid MyHolding_OwnerUnlock
+    submit (actAs alice) do exerciseCmd cid MyHolding_OwnerUnlock with statusCid = aliceStatus
   balanceSeenBy alice alice >>= (=== [3.0, 5.0, 7.0])
   assertNoLocks alice
   instrResult <- submit (actAs admin) expireInstr
@@ -871,10 +1476,11 @@ testAdminUnlockAfterEarlyClearedFlag = do
     exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
       expireArgs = [(fromInterfaceContractId @MyTransferInstruction instrCid, MyTransferInstruction_Expire with extraArgs = skipFunding)]
   [(lockedCid, locked)] <- queryFilter @MyHolding alice (\h -> isSome h.holding.lock && h.holding.amount == 7.0)
-  _ <- submit (actAs admin) do exerciseCmd lockedCid MyHolding_AdminUnlock
+  aliceStatus <- statusOf app alice
+  _ <- submit (actAs admin) do exerciseCmd lockedCid MyHolding_AdminUnlock with statusCid = aliceStatus
   [(_, unlocked)] <- queryFilter @MyHolding alice (\h -> isNone h.holding.lock && h.holding.amount == 7.0)
   unlocked.holding.account === locked.holding.account
-  unlocked.frozen === False
+  unlocked.roles === locked.roles
 
 -- | The signatories can archive a holding and the rules contract directly.
 testSignatoriesArchive : Script ()
@@ -912,7 +1518,7 @@ testForeignHoldingRefused = do
         lock = None
         meta = emptyMetadata
   mustFailWith "holding is not a MyHolding" (actAs attacker <> discloseMany [rulesDisclosure])
-    (transferCmd app [attacker] (mkTransfer app attacker attacker 1000000.0
+    (transferCmd app [attacker] emptyExtraArgs (mkTransfer app attacker attacker 1000000.0
       [toInterfaceContractId @HoldingV2.Holding forgedCid]))
   balanceSeenBy attacker attacker >>= (=== [])
 
@@ -965,7 +1571,7 @@ testForeignAllocationRefusedAtSettlement = do
   forged <- forgeAllocation app attacker [senderSide leg]
   bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
   mustFailWith "allocation is not an accepted implementation" (actAs exchange <> discloseMany [rulesDisclosure])
-    (settleBatchCmd app [leg] (map nonIteratedAllocation [forged, bobAlloc]))
+    (settleBatchCmd app [leg] (map nonIteratedAllocation [forged, bobAlloc]) emptyExtraArgs)
 
 -- | Expiry would run the forged allocation's cancel body with the admin's
 -- authority. It accepts only `MyAllocation`s.
@@ -974,9 +1580,8 @@ testForeignAllocationRefusedAtExpiry = do
   app@App{..} <- setup
   attacker <- allocateParty "attacker"
   forged <- forgeAllocation app attacker [senderSide (mkLeg "leg-1" attacker bob 10.0)]
-  mustFailWith "allocation is not an accepted implementation" (actAs admin) do
-    exerciseCmd rulesCid MyRules_ExpireAllocations with
-      cancelArgs = [(forged, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)]
+  mustFailWith "allocation is not an accepted implementation" (actAs admin)
+    (expireAllocationsCmd app [(forged, emptyExtraArgs)])
 
 -- | The registry only expires its own instructions. Its admin can fetch
 -- another registry's instruction when it is the receiver of that transfer.
@@ -988,10 +1593,11 @@ testExpireTransferInstructionsRefusesOtherRegistry = do
   otherRulesCid <- submit otherAdmin do createCmd rules with config = rules.config with admin = otherAdmin
   Some otherDisclosure <- queryDisclosure @MyRules otherAdmin otherRulesCid
   let other = app with admin = otherAdmin; rulesCid = otherRulesCid; rulesDisclosure = otherDisclosure
+  _ <- openAccount other alice
   aliceTok <- mint other alice 10.0
+  (aliceArgs, _) <- statusFor other alice
   instrCid <- pendingCid =<< submit (actAs alice <> discloseMany [otherDisclosure])
-    (transferCmd other [alice] (mkTransfer other alice admin 7.0 [aliceTok]))
+    (transferCmd other [alice] aliceArgs (mkTransfer other alice admin 7.0 [aliceTok]))
   setTime t3
-  mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs admin) do
-    exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
-      expireArgs = [(fromInterfaceContractId @MyTransferInstruction instrCid, MyTransferInstruction_Expire with extraArgs = emptyExtraArgs)]
+  mustFailWith "'transfer.instrumentId.admin' is not equal to" (actAs admin)
+    (expireInstructionsCmd app [(instrCid, emptyExtraArgs)])

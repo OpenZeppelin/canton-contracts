@@ -12,15 +12,18 @@
 --   is an informee of every holdings-change event. A consumer field on each
 --   template, reached through the closure that builds the operations
 --   record, plus the `eventObservers` operation.
--- - A compliance freeze on holdings. A template field plus two choices. The
---   `fundHolding` and `deliverHolding` operations exercise `MyHolding_Spend`,
---   which refuses a frozen holding, so a frozen holding cannot fund a
---   transfer, an allocation, or a burn, and a payout of locked funding runs
---   the same check, without the workflows knowing what a freeze is.
---   `returnHolding` stays the pinned archive, so no return path refuses a
---   holding for being frozen. `MyHolding_OwnerUnlock` checks the freeze
---   itself. The freeze refuses a holding with a live lock, because that
---   holding backs a pending contract.
+-- - A compliance freeze on accounts, kept on a per-account `MyAccountStatus`
+--   contract that the compliance officer replaces to freeze or unfreeze.
+--   Every choice that moves a holding passes the current status id in its
+--   choice context, and all three consumption operations exercise
+--   `MyHolding_Spend` with it, which refuses a frozen account. A frozen
+--   account's holdings cannot fund a transfer, an allocation, or a burn, and
+--   its locked funding is neither paid out nor returned, without the
+--   workflows knowing what a freeze is. Holdings never change on a freeze,
+--   so pending instructions and allocations stay valid and complete once the
+--   account is unfrozen. In a batch settlement, the settlement factory
+--   forwards each allocation only its own authorizer's status.
+--   `MyHolding_OwnerUnlock` makes the same check.
 -- - A pause switch on the registry. A template field plus two choices,
 --   checked before each factory and the mint offer delegate to the workflow.
 -- - A fee on every transfer except a burn, paid to the admin's treasury
@@ -34,8 +37,9 @@
 -- holding needs custom instruction and allocation templates too.
 module OpenZeppelin.Examples.Token.Cip112.Custom where
 
-import DA.Assert (assertDeadlineExceeded)
 import DA.Foldable (forA_)
+import DA.Optional (optionalToList)
+import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
@@ -60,7 +64,7 @@ data AppRoles = AppRoles with
     auditor : Party
       -- ^ Observes every contract; holds no power.
     complianceOfficer : Party
-      -- ^ Freezes and unfreezes holdings.
+      -- ^ Opens account statuses, and freezes and unfreezes accounts.
   deriving (Eq, Show)
 
 -- Event-log host
@@ -80,20 +84,20 @@ template MyEventLog with
 
 -- | Built inside every choice body from the template's own fields. The
 -- closure over `roles` is how consumer fields reach `createHolding` without
--- the workflows knowing about them. New holdings are never frozen. No
--- operation reads the choice context.
+-- the workflows knowing about them. Every consumption operation reads the
+-- account status from the choice context, so a freeze stops a holding from
+-- funding a workflow, from being paid out of one, and from being returned
+-- to its owner.
 myOps : Party -> AppRoles -> HoldingOps
-myOps admin roles =
-    (holdingOpsFor @MyHolding createMyHolding withMyEventLog auditorObserves)
-      with
-        -- The freeze stops a holding from funding a workflow and from being
-        -- paid out of one. `returnHolding` stays the pinned archive: a
-        -- reject, withdraw, expiry, or cancel returns locked funds to their
-        -- owner without exercising the spend.
-        fundHolding = const spend
-        deliverHolding = const spend
+myOps admin roles = HoldingOps with
+    createHolding = createMyHolding
+    fundHolding = spend
+    deliverHolding = spend
+    returnHolding = spend
+    withEventLog = withMyEventLog
+    eventObservers = auditorObserves
   where
-    createMyHolding v = toInterfaceContractId <$> create MyHolding with holding = v; roles; frozen = False
+    createMyHolding v = toInterfaceContractId <$> create MyHolding with holding = v; roles
     withMyEventLog emit = do
       cid <- create MyEventLog with admin
       emit (toInterfaceContractId cid)
@@ -102,85 +106,127 @@ myOps admin roles =
     -- follow the standard event stream, not only the contracts.
     auditorObserves _ = [roles.auditor]
     -- Pin the template first: a foreign `Holding` never reaches the spend.
-    spend cid = do
+    spend context cid = do
       fetched <- fetchFromInterface @MyHolding cid
       case fetched of
         None -> fail "holding is not a MyHolding"
-        Some (tcid, _) -> exercise tcid MyHolding_Spend
+        Some (tcid, _) -> do
+          statusCid <- statusFromContext context
+          exercise tcid MyHolding_Spend with statusCid
+
+-- Account status
+-----------------
+
+-- | One regular account's compliance status. The compliance officer
+-- freezes and unfreezes the account by replacing the contract, so an id
+-- from before the change fails to fetch. The account parties observe their
+-- own status, so the owner's wallet finds it without the registry.
+--
+-- Nothing on the ledger stops two live statuses for one account, and a
+-- submitter could pass the one that is not frozen. Open exactly one per
+-- account, through `MyRules_OpenAccount`, and retry an open with the same
+-- command id so that command deduplication refuses a second one. The
+-- compliance officer signs every status, so it sees them all and can check
+-- before opening one.
+template MyAccountStatus with
+    admin : Party
+    account : HoldingV2.Account
+    roles : AppRoles
+    frozen : Bool
+  where
+    signatory admin, roles.complianceOfficer
+    observer accountParties admin account, roles.auditor
+    ensure isRegularAccount account
+
+    choice MyAccountStatus_Freeze : ContractId MyAccountStatus
+      controller roles.complianceOfficer
+      do
+        require "account is already frozen" (not frozen)
+        create this with frozen = True
+
+    choice MyAccountStatus_Unfreeze : ContractId MyAccountStatus
+      controller roles.complianceOfficer
+      do
+        require "account is not frozen" frozen
+        create this with frozen = False
+
+-- | The choice-context key under which every choice that consumes a
+-- holding passes the status of the holding's account.
+accountStatusKey : Text
+accountStatusKey = "examples.openzeppelin.com/account-status"
+
+-- | The status id a submitter passed, read from the choice context.
+statusFromContext : ChoiceContext -> Update (ContractId MyAccountStatus)
+statusFromContext context = case TextMap.lookup accountStatusKey context.values of
+  Some (AV_ContractId cid) -> pure (coerceContractId cid)
+  Some _ -> fail ("choice context entry '" <> accountStatusKey <> "' must be a contract id")
+  None -> fail ("choice context has no '" <> accountStatusKey <> "' entry")
+
+-- | Refuse unless `statusCid` is a live status of the holding's account,
+-- under the holding's admin and compliance officer, and the account is not
+-- frozen. The submitter chooses the id, so each of these is checked. The
+-- officer check means the status was signed by the officer recorded on the
+-- holding: the admin alone can create a status that names itself as the
+-- officer, and that status must not lift the officer's freeze.
+requireNotFrozen : AppRoles -> HoldingV2.HoldingView -> ContractId MyAccountStatus -> Update ()
+requireNotFrozen roles holding statusCid = do
+  status <- fetch statusCid
+  require "account status does not cover this holding"
+    (status.admin == holding.instrumentId.admin
+      && status.account == holding.account
+      && status.roles.complianceOfficer == roles.complianceOfficer)
+  require "account is frozen" (not status.frozen)
 
 -- Holding
 ----------
 
--- | A holding with a compliance freeze. The standard view is unchanged, so
--- wallets see a frozen holding as an ordinary one; the freeze shows up when
--- they try to spend it.
+-- | A holding of an account that may be frozen. The standard view is
+-- unchanged, so wallets see a frozen account's holdings as ordinary ones;
+-- the freeze shows up when they try to spend them.
 template MyHolding with
     holding : HoldingV2.HoldingView
     roles : AppRoles
-    frozen : Bool
   where
     signatory holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
     observer lockHolders holding.lock, roles.auditor, roles.complianceOfficer
     ensure isValidHoldingView holding
 
-    -- | How funding and payouts consume this holding. Controlled by the
-    -- parties whose authority a plain archive would need, so the
-    -- authorization model is unchanged; what changes is that the spend is a
-    -- named choice the auditor sees, with a consumer rule inside it.
     choice MyHolding_Spend : HoldingV2.HoldingView
+      -- ^ How every workflow consumes this holding. Controlled by the parties
+      -- whose authority a plain archive would need, so the authorization
+      -- model is unchanged; what changes is that the spend is a named choice
+      -- the auditor sees, with the freeze check inside it.
+      with
+        statusCid : ContractId MyAccountStatus
       controller holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
       do
-        require "holding is frozen" (not frozen)
+        requireNotFrozen roles holding statusCid
         pure holding
 
-    -- | Re-create the holding as frozen, so `MyHolding_Spend` refuses it.
-    choice MyHolding_Freeze : ContractId MyHolding
-      controller roles.complianceOfficer
-      do
-        require "holding is already frozen" (not frozen)
-        -- A pending transfer instruction or allocation consumes its locked
-        -- holding by contract id, so re-creating the holding under a new id
-        -- would leave it unable to complete, release, or expire.
-        requireLockReleased holding
-        create this with frozen = True
-
-    -- | Re-create the holding as unfrozen, so `MyHolding_Spend` accepts it
-    -- again.
-    choice MyHolding_Unfreeze : ContractId MyHolding
-      controller roles.complianceOfficer
-      do
-        require "holding is not frozen" frozen
-        -- No lock check: a frozen holding never carries a live lock.
-        create this with frozen = False
-
-    -- | Refused while frozen: the workflow recreates the holding through
-    -- `createHolding`, which would drop the freeze. Any consumer choice that
-    -- recreates a holding has to make the same check.
     choice MyHolding_OwnerUnlock : ContractId HoldingV2.Holding
+      -- ^ Refused while the account is frozen, like every workflow path that
+      -- releases locked funding, so a freeze keeps the funding locked until
+      -- the compliance officer lifts it.
+      with
+        statusCid : ContractId MyAccountStatus
       controller accountParties holding.instrumentId.admin holding.account
       do
-        require "holding is frozen" (not frozen)
+        requireNotFrozen roles holding statusCid
         holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
 
     -- | Unlock an expired lock with the admin's authority alone. Refused
-    -- while frozen, for the same reason as `MyHolding_OwnerUnlock`.
+    -- while the account is frozen, for the same reason as
+    -- `MyHolding_OwnerUnlock`.
     choice MyHolding_AdminUnlock : ContractId HoldingV2.Holding
+      with
+        statusCid : ContractId MyAccountStatus
       controller holding.instrumentId.admin
       do
-        require "holding is frozen" (not frozen)
+        requireNotFrozen roles holding statusCid
         holdingAdminUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
 
     interface instance HoldingV2.Holding for MyHolding where
       view = holding
-
--- | Fails while the holding carries a live lock, with the bound that
--- `holdingOwnerUnlockImpl` applies before it re-creates a holding. Any
--- consumer choice that re-creates or archives a holding outside the
--- workflows has to make the same check.
-requireLockReleased : HoldingV2.HoldingView -> Update ()
-requireLockReleased holding = forA_ holding.lock $ \lock -> case lock.expiresAt of
-  None -> fail "holding is locked indefinitely"
-  Some expiresAt -> assertDeadlineExceeded "holding lock expiresAt" expiresAt
 
 -- Transfer instruction
 -----------------------
@@ -203,6 +249,7 @@ template MyTransferInstruction with
       transferInstruction_withdrawImpl self arg = transferWithdrawImpl (ops this) self state arg
 
     choice MyTransferInstruction_Expire : TransferInstructionV2.TransferInstructionResult
+      -- ^ `extraArgs.context` carries the sender's account status.
       with
         extraArgs : ExtraArgs
       controller state.transfer.instrumentId.admin
@@ -233,9 +280,10 @@ template MyAllocation with
 -----------
 
 -- | The registry rules contract: the three standard factories behind a pause
--- switch, a fee on transfers, an executor allowlist, and supply operations.
--- Pausing replaces the contract, so wallets need the new disclosure after
--- a pause or unpause, as with any change to the rules contract.
+-- switch, a fee on transfers, an executor allowlist, supply operations, and
+-- account opening. Pausing replaces the contract, so wallets need the new
+-- disclosure after a pause or unpause, as with any change to the rules
+-- contract.
 template MyRules with
     config : RegistryConfig
     roles : AppRoles
@@ -249,7 +297,7 @@ template MyRules with
       -- ^ The only settlement executors this registry accepts.
   where
     signatory config.admin
-    observer pauser, roles.auditor
+    observer pauser, roles.auditor, roles.complianceOfficer
     ensure isValidRegistryConfig config
       && transferFeeBps >= 0 && transferFeeBps <= 10000
 
@@ -268,11 +316,12 @@ template MyRules with
     interface instance AllocationV2.SettlementFactory for MyRules where
       view = AllocationV2.SettlementFactoryView with admin = config.admin; meta = emptyMetadata
       settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
+      -- No extra observers, so no authorizer sees the batch context.
       settlementFactory_settleBatchExtraObservers _ = []
       settlementFactory_settleBatchImpl self arg = do
         whenNotPaused this
         requireAllowedExecutors this arg.settlement.executors
-        settleBatchImpl (pinAllocationTo @MyAllocation) config.admin self arg
+        settleBatchImpl (pinAllocationTo @MyAllocation) authorizerStatus config.admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for MyRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
@@ -308,12 +357,18 @@ template MyRules with
         offerMintImpl config (createInstruction this) receiver instrumentId amount requestedAt executeBefore reason
 
     nonconsuming choice MyRules_ExpireAllocations : ()
+      -- ^ The admin's expiry of stale allocations. Each cancel's `extraArgs`
+      -- carries its authorizer's account status. One frozen account fails the
+      -- whole batch, so cleanup leaves frozen accounts out.
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
       controller config.admin
       do expireAllocationsImpl (pinAllocationTo @MyAllocation) config.admin cancelArgs
 
     nonconsuming choice MyRules_ExpireTransferInstructions : ()
+      -- ^ The admin's expiry of stale transfer instructions. Each expiry's
+      -- `extraArgs` carries its sender's account status. One frozen account
+      -- fails the whole batch, so cleanup leaves frozen accounts out.
       with
         expireArgs : [(ContractId MyTransferInstruction, MyTransferInstruction_Expire)]
       controller config.admin
@@ -324,11 +379,40 @@ template MyRules with
           _ <- exercise cid expireArg
           pure ()
 
+    nonconsuming choice MyRules_OpenAccount : ContractId MyAccountStatus
+      -- ^ Open a regular account's status, not frozen. The compliance officer
+      -- controls it, so both signatories authorize the status.
+      with
+        account : HoldingV2.Account
+      controller roles.complianceOfficer
+      do create MyAccountStatus with admin = config.admin; account; roles; frozen = False
+
 -- Registry policy
 ------------------
 
 whenNotPaused : MyRules -> Update ()
 whenNotPaused rules = require "registry is paused" (not rules.paused)
+
+-- | The batch-context key of an authorizer's status: `accountStatusKey`, the
+-- owner, the provider, and the account id, joined by `/`, with an absent
+-- party as empty text. Party ids contain no `/`, and the account id comes
+-- last, so distinct accounts get distinct keys.
+batchStatusKey : HoldingV2.Account -> Text
+batchStatusKey account =
+  accountStatusKey <> "/" <> optional "" partyToText account.owner
+    <> "/" <> optional "" partyToText account.provider <> "/" <> account.id
+
+-- | The settlement factory's selector. The executors put each authorizer's
+-- status under `batchStatusKey` of its account, and each allocation's
+-- settle receives only its own authorizer's, under `accountStatusKey`, as a
+-- direct settle would. Nothing else in the batch context reaches it. An
+-- allocation that locked nothing consumes no holding, so it needs no
+-- status.
+authorizerStatus : AllocationV2.AllocationView -> ChoiceContext -> ChoiceContext
+authorizerStatus v batch = ChoiceContext with
+  values = TextMap.fromList
+    [ (accountStatusKey, status)
+    | status <- optionalToList (TextMap.lookup (batchStatusKey v.allocation.authorizer) batch.values) ]
 
 requireAllowedExecutors : MyRules -> [Party] -> Update ()
 requireAllowedExecutors rules executors =

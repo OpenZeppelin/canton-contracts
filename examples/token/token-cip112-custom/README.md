@@ -12,16 +12,10 @@ What it adds, and where each addition lives:
 |---|---|
 | Pauser and compliance-officer roles | Controllers of consumer choices; the admin stays the signatory and holds neither power |
 | Auditor observing every contract and every holdings-change event | A consumer field on each template, reached through the closure that builds `HoldingOps`, plus the `eventObservers` operation |
-| Compliance freeze on holdings | A template field plus `MyHolding_Freeze` and `MyHolding_Unfreeze`; `fundHolding` and `deliverHolding` exercise `MyHolding_Spend`, which refuses a frozen holding, so a frozen holding cannot fund a transfer, allocation, or burn, and a payout of locked funding runs the same check. `returnHolding` stays the pinned archive, so no return path refuses a holding for being frozen. The freeze refuses a holding with a live lock |
+| Compliance freeze on accounts | A per-account `MyAccountStatus`, signed by the admin and the compliance officer, who replaces it through `MyAccountStatus_Freeze` and `MyAccountStatus_Unfreeze`. All three consumption operations read its id from the choice context and exercise `MyHolding_Spend`, which refuses a frozen account, so a frozen account's holdings cannot fund a transfer, allocation, or burn, and its locked funding is neither paid out nor returned. `MyHolding_OwnerUnlock` makes the same check. In a batch, the settlement factory forwards each allocation only its authorizer's status |
 | Pause switch on the registry | A template field plus `MyRules_Pause` and `MyRules_Unpause`, checked before each factory delegates and before a mint offer |
 | Fee on every transfer except a burn | Two workflow calls composed in the factory body: a one-step fee transfer to the treasury, then the main transfer on the fee leg's change |
 | Executor allowlist | Checked before delegating to the allocation and settlement workflows |
-
-The freeze does not cover funds locked for a pending transfer instruction or
-allocation. The pending contract names its locked holding by contract id, and
-a freeze re-creates the holding under a new id. `MyHolding_Freeze` therefore
-refuses a holding until its lock expires, and the pending contract completes,
-releases, or expires as usual.
 
 The pause does not cover pending transfer instructions. Their accept choice
 does not read the rules contract, so a transfer, mint offer, or burn request
@@ -31,7 +25,89 @@ The auditor observes every holding and every holdings-change event, and the
 compliance officer observes every holding. Every transaction that archives a
 `MyHolding`, including `MyHolding_OwnerUnlock`, fails while either party has
 no hosting participant or a participant hosting it has not vetted the
-packages.
+packages. The compliance officer also signs every account status, so its
+participant confirms every `MyHolding_Spend` and `MyHolding_OwnerUnlock`, and
+each one fails while that participant is unavailable.
+
+## Account statuses
+
+The compliance officer opens one status per regular account through
+`MyRules_OpenAccount`. Freezing or unfreezing replaces the status and leaves
+the holdings untouched, so a pending transfer instruction or allocation keeps
+naming live holdings and completes once the account is unfrozen. Nothing on
+the ledger stops a second live status for the same account, and a submitter
+could pass the one that is not frozen. The officer, who signs every status,
+opens each account once and retries an open with the same command id, so
+that command deduplication refuses a second one.
+
+Every workflow choice that consumes a holding passes the current status of
+the holding's account in its choice context, under `accountStatusKey`.
+`MyHolding_OwnerUnlock` takes it as its `statusCid` argument. A missing
+entry, an archived status, a status of another account, and a status signed
+by a compliance officer other than the one recorded on the holding are all
+refused. The account parties observe their own status. Everyone else gets it
+as a disclosed contract from the registry:
+
+| Path | Submitter | Status passed |
+|---|---|---|
+| Transfer, allocation, or burn | The sender or authorizer | Its own |
+| Accept or reject | The receiver | The sender's |
+| Withdraw a transfer instruction or an allocation | The sender or authorizer | Its own |
+| Admin expiry of an instruction | The admin | The sender's, in each `MyTransferInstruction_Expire` |
+| Cancel, or admin expiry of an allocation | The executors or the admin | The authorizer's, in each `Allocation_Cancel` |
+| Direct `Allocation_Settle` | The admin and the executors | The authorizer's |
+| Batch settlement | The executors | Each authorizer's, under `batchStatusKey` of its account |
+| Owner unlock | The account parties | Its own, as the `statusCid` argument of `MyHolding_OwnerUnlock` |
+
+In a batch, `MyRules` passes `settleBatchImpl` a selector that forwards each
+allocation only its authorizer's status, under `accountStatusKey`. The batch
+context stays with the executors and the admin, because no authorizer
+observes the batch. An allocation that locked nothing needs no status.
+
+A freeze stops the account's own holdings from moving. It does not stop the
+account from receiving: an accept or settle checks only the status of the
+account whose funding it pays out.
+
+What each status shows, and to whom:
+
+- The receiver sees the sender's status, including whether it is frozen, on
+  every path that pays out or returns the instruction's locked funding.
+- The executors see the authorizer's status on every path that pays out or
+  returns an allocation's locked funding, and each status they put in a
+  batch context.
+
+A frozen account fails the admin's whole expiry batch, so cleanup leaves
+frozen accounts out and expires them after they are unfrozen.
+
+A holding keeps the compliance officer of the contract whose choice created
+it, and only a status signed by that officer covers it. A pending
+instruction or allocation keeps its officer too, and creates its holdings
+under it. Rules with another officer create every new holding under the new
+officer, a fee leg's change included, and one choice context carries one
+status. Through such rules, a transfer that pays a fee from an earlier
+holding is refused whichever status the sender passes.
+
+To change who acts as the compliance officer, keep the officer party and
+change who controls it. To replace the party:
+
+1. The pauser pauses the earlier rules, and the admin creates the new ones.
+   The paused rules refuse new transfers, allocations, settlements, and
+   mints. `MyRules_OpenAccount` and the admin's expiry choices still run on
+   them. The earlier rules stay paused until the admin archives them.
+2. The earlier officer opens a status, through the paused rules, for each
+   receiver of a pending instruction and each authorizer of a pending
+   allocation that has none. These parties receive holdings under the
+   earlier officer.
+3. The new officer opens a status for every account and freezes each account
+   the earlier officer has frozen. `MyRules_OpenAccount` opens every status
+   unfrozen.
+4. Each account moves its earlier holdings through the new rules on a path
+   with no fee leg. An allocation funded with the earlier status and then
+   withdrawn with the new one returns the funds under the new officer.
+
+The earlier officer keeps its statuses live, and freezes through them, until
+no earlier holding or pending instruction or allocation is left. The admin
+then archives the earlier rules.
 
 No workflow body changes. `token-cip112-custom-test` drives the token through the
 standard interfaces and checks each addition.
