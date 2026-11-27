@@ -103,9 +103,9 @@ account parties sign the instruction, so they see the receiver's new
 holding when the receiver accepts. When the sender's balance must stay
 private from the receiver, use a two-step transfer, or fund a one-step
 transfer from a single holding of exactly the amount, which leaves no
-change. A `TokenHolding_Split` creates that holding, or a self-transfer of
-exactly the amount for a wallet that uses only the `HoldingV2.Holding`
-interface. Only the sender's account parties and the admin see either.
+change. Create that holding first, as
+[Rebalancing holdings](#rebalancing-holdings) describes. Only the sender's
+account parties and the admin see the rebalancing.
 
 Authorization: sender parties initiate; receiver parties accept or reject;
 sender parties withdraw; the admin expires after the instruction's storage

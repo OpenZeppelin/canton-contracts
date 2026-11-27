@@ -61,12 +61,11 @@ interfaces or exceptions of its own.
   authorize the same transaction. Otherwise the receiver accepts a pending
   instruction. A one-step transfer shows the receiver's account parties the
   sender's consumed inputs and change holding. An accepted two-step transfer
-  shows the sender's account parties the receiver's new holding. A provider
-  distinct from the owner is one of those parties (see
-  [Security caveats](#security-caveats)). Where the sender's balance must
-  stay private from the receiver, use a two-step transfer, or fund a
-  one-step transfer from a single holding of exactly the amount, as the
-  [integration guide](integration-guide.md#two-step-and-one-step-transfers)
+  shows the sender's account parties the receiver's new holding. Account
+  parties include a provider distinct from the owner. Where the sender's
+  balance must stay private from the receiver, use a two-step transfer, or
+  fund a one-step transfer from a single holding of exactly the amount, as
+  the [integration guide](integration-guide.md#two-step-and-one-step-transfers)
   describes.
 - A two-step transfer locks the transfer amount in a sender holding whose
   only lock holder is the admin. The registry serves that holding to the
