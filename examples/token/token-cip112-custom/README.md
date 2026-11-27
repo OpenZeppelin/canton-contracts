@@ -57,11 +57,10 @@ call. In a batch, the selector also passes each allocation the factory's
 own id under `rulesKey`, so every settle checks the rules contract the batch
 runs on.
 
-Reject, withdraw, expiry, and cancel read no rules contract, so a pause
-never holds funds that return to their owner. The fee and the executor
-allowlist bind when the instruction or allocation is created, and the
-settlement factory checks the allowlist again, but a direct settle does
-not.
+Reject, withdraw, cancel, and the admin's expiry choices run while the
+registry is paused and return the funds to their owner. The fee binds when
+a transfer instruction is created, and the executor allowlist when an
+allocation is created and again in the settlement factory.
 
 Any live `MyRules` of the admin and the pauser passes the check, so the
 pause holds delivery only while every such rules contract is paused. The
