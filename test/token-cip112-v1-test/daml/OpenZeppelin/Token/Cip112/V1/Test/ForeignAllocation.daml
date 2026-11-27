@@ -16,11 +16,12 @@
 -- `TokenHolding`.
 --
 -- The three attack scripts build each attack in full and assert that the
--- registry refuses it. The guard is the `PinAllocation` policy `TokenRules`
--- passes to the utils package (`pinAllocationTo @TokenAllocation`);
--- without it every attack goes through, and the doc comments record the
--- balances that resulted. The final script pins the other side of the guard:
--- genuine `TokenAllocation`s pass through both guarded choices unchanged.
+-- registry refuses it. The guard is the pin to `TokenAllocation` that
+-- `TokenRules` requests with `settleBatchImpl @TokenAllocation` and
+-- `expireAllocationsImpl @TokenAllocation`; without it every attack goes
+-- through, and the doc comments record the balances that resulted. The
+-- final script pins the other side of the guard: genuine `TokenAllocation`s
+-- pass through both guarded choices unchanged.
 module OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation where
 
 import DA.Action (unless)
@@ -139,7 +140,6 @@ expireCmd Scenario{..} cids =
     cancelArgs =
       [ (cid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)
       | cid <- cids ]
-    observers = []
 
 -- | The message `pinAllocationTo` fails with.
 notTokenAllocation : Text
@@ -263,12 +263,12 @@ testForeignCancelViaAdminExpiryMints = do
 -- Guard acceptance
 -------------------
 
--- | `pinAllocationTo @TokenAllocation` accepts this package's allocations
--- and rejects only the foreign contract, in both guarded choices. A forged contract with
--- an empty view claims no leg sides, so the default's exact-cover check would
--- not object to it; the guard is what refuses it. The refusal is atomic and
--- leaves the genuine allocations untouched, so the same call without the
--- forged contract still goes through.
+-- | The pin to `TokenAllocation` accepts this package's allocations and
+-- rejects only the foreign contract, in both guarded choices. A forged
+-- contract with an empty view claims no leg sides, so the default's
+-- exact-cover check would not object to it; the guard is what refuses it.
+-- The refusal is atomic and leaves the genuine allocations untouched, so the
+-- same call without the forged contract still goes through.
 testGuardAcceptsGenuineAllocations : Script ()
 testGuardAcceptsGenuineAllocations = do
   s@Scenario{..} <- setup

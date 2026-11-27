@@ -139,8 +139,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   module namespace `OpenZeppelin.Token.Cip112.Utils`): the transfer,
   allocation, settlement, mint-offer, and expiry choice bodies as functions
   parameterised over the caller's templates through a `HoldingOps` record and
-  constructor and pinning operations. It defines no serializable types and
+  constructor and pinning operations. The expiry bodies read Splice's
+  `expire-lock` choice-context flag to release the funding or leave it
+  untouched, and the holding bodies unlock an expired lock for the account
+  parties or for the admin alone. It defines no serializable types and
   depends on `openzeppelin-token-cip112-types-v1`.
+- `HoldingOps` consumes holdings through three operations: `fundHolding`
+  for caller-supplied inputs, `deliverHolding` for locked funding paid out,
+  and `returnHolding` for locked funding returned to its owner. A rule in
+  one operation runs only on that operation's paths. Each receives the
+  exercising choice's `ChoiceContext` and the holding id. `holdingOpsFor @T`
+  sets all three to `consumeByArchive @T`.
+- `settleBatchImpl` takes a selector, given each allocation's view and the
+  batch's choice context, that picks the context its `Allocation_Settle`
+  receives, so a registry can forward each authorizer its own entries. The
+  batch metadata never reaches an allocation.
+- `holdingMergeImpl` and `holdingSplitImpl` are the bodies of merge and
+  split choices on a holding template. A merge consumes its inputs through
+  `fundHolding`. Both conserve value, emit a holdings-change event with no
+  transfer legs, and refuse an exercised holding with any lock.
+- `HoldingOps h` takes the owner's per-holding state as a type parameter.
+  The consumption operations return each consumed holding's view and state,
+  and `createHolding` receives the states of the holdings that fund the new
+  one, so a consumer template field can survive re-creation on transfers,
+  allocations, returns, unlocks, merges, and splits. `consumeByArchive @T`
+  returns the archived `T`, `holdingOpsFor @T` builds a `HoldingOps T`, and
+  `holdingOwnerUnlockImpl`, `holdingAdminUnlockImpl`, `holdingMergeImpl`,
+  and `holdingSplitImpl` take the exercised holding's state.
 
 ### `openzeppelin-token-cip112-v1`
 
@@ -148,9 +173,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 - Added the CIP-0112 token package `openzeppelin-token-cip112-v1` (public
   module namespace `OpenZeppelin.Token.Cip112.V1`): ready-to-use templates over
-  the types and utils packages with holdings with expiring locks and owner
-  recovery, one-step and two-step transfers, allocations with exact-cover
+  the types and utils packages with holdings with expiring locks that the
+  account parties or the admin alone unlock, admin expiry of transfer
+  instructions and allocations under Splice's `expire-lock` flag, one-step
+  and two-step transfers, allocations with exact-cover
   batch settlement and iterated settlement, delivery-vs-mint and
   delivery-vs-burn settlement through the CIP-0112 mint and burn accounts,
   registry rules with mint offers from the mint account, and burns as
   transfers to the burn account.
+- `TokenHolding_Merge` and `TokenHolding_Split` let the account parties
+  merge holdings of one account and instrument, or split a holding into
+  given amounts, without going through the registry.

@@ -93,15 +93,14 @@ template TestEventLog with
       view = TransferEventsV2.EventLogView with admin; meta = emptyMetadata
       eventLog_holdingsChangeImpl = eventLog_holdingsChangeDefaultImpl admin
 
-holdingOps : Party -> HoldingOps
-holdingOps admin = HoldingOps with
-  createHolding = \v -> toInterfaceContractId <$> create TestHolding with holding = v
-  consumeHolding = consumeByArchive @TestHolding
-  withEventLog = \emit -> do
+holdingOps : Party -> HoldingOps TestHolding
+holdingOps admin = holdingOpsFor @TestHolding
+  (\_ holding -> toInterfaceContractId <$> create TestHolding with holding)
+  (\emit -> do
     logCid <- create TestEventLog with admin
     emit (toInterfaceContractId logCid)
-    archive logCid
-  eventObservers = const []
+    archive logCid)
+  (const [])
 
 template TestAllocation with
     state : AllocationState
@@ -143,7 +142,8 @@ template TestRegistry with
       settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
       settlementFactory_settleBatchExtraObservers _ = []
       settlementFactory_settleBatchImpl self arg =
-        TokenRegistry.settleBatchImpl (pinAllocationTo @TestAllocation) config.admin self arg
+        TokenRegistry.settleBatchImpl @TestAllocation
+          (\_ -> pure ()) (\_ _ -> emptyChoiceContext) config.admin self arg
 
 -- Scenario
 -------------------------------------------------------

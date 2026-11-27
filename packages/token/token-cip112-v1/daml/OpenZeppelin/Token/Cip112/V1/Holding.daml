@@ -8,6 +8,7 @@
 -- default templates pass to the workflows.
 module OpenZeppelin.Token.Cip112.V1.Holding where
 
+import Splice.Api.Token.MetadataV1 (emptyChoiceContext)
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.TokenStandard.Utils
 
@@ -24,12 +25,19 @@ import OpenZeppelin.Token.Cip112.V1.Base
 -- vetted the packages. Regular accounts only: special (ownerless) accounts
 -- never hold.
 --
--- Disclosure: the contract and its `HoldingV2.Holding` view are visible to
--- the admin, the account parties, and any other party a lock names as
--- holder. Receivers and settlement executors get locked funding from the
--- registry by explicit disclosure. Creating a holding requires the admin's
--- and every account party's authority, so holdings only ever appear through
--- registry choices.
+-- The contract and its `HoldingV2.Holding` view are visible to the admin,
+-- the account parties, and any other party a lock names as holder.
+-- Receivers and settlement executors get locked funding from the registry
+-- by explicit disclosure. In a one-step transfer, the receiver's account
+-- parties also see the sender's consumed inputs and new change holding. In
+-- an accepted two-step transfer, the sender's account parties see the
+-- receiver's new holding. Creating a holding requires the admin's and every
+-- account party's authority, so holdings only ever appear through registry
+-- choices and the choices below.
+--
+-- The account parties rebalance their holdings with `TokenHolding_Merge`
+-- and `TokenHolding_Split`, which bypass the rules contract and its
+-- transfer policy.
 template TokenHolding with
     holding : HoldingV2.HoldingView
   where
@@ -43,17 +51,51 @@ template TokenHolding with
       -- this template's signatories, so the account parties exercise alone.
       controller accountParties holding.instrumentId.admin holding.account
       do holdingOwnerUnlockImpl (defaultHoldingOps holding.instrumentId.admin)
-           (toInterfaceContractId self) holding
+           (toInterfaceContractId self) holding this
+
+    choice TokenHolding_AdminUnlock : ContractId HoldingV2.Holding
+      -- ^ Return a holding whose lock has expired to its account, unlocked,
+      -- with the admin's authority alone. Fails while the lock is live or
+      -- indefinite. It moves no value: once the lock has expired, the
+      -- account parties can already spend this holding as unlocked.
+      controller holding.instrumentId.admin
+      do holdingAdminUnlockImpl (defaultHoldingOps holding.instrumentId.admin)
+           (toInterfaceContractId self) holding this
+
+    choice TokenHolding_Merge : ContractId HoldingV2.Holding
+      -- ^ Merge other holdings of the same account and instrument into this
+      -- one. Fails unless `inputHoldingCids` holds at least one holding, each
+      -- distinct from the others and from this one. Fails on an input whose
+      -- lock is live or indefinite, and accepts one whose lock has expired.
+      -- Fails while this holding carries a lock, even an expired one. The
+      -- admin's authority comes from the signatories, so the account parties
+      -- exercise alone.
+      with
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingMergeImpl (defaultHoldingOps holding.instrumentId.admin) emptyChoiceContext
+           (toInterfaceContractId self) holding this inputHoldingCids
+
+    choice TokenHolding_Split : [ContractId HoldingV2.Holding]
+      -- ^ Split this holding into one holding per entry of `amounts`,
+      -- returned in the same order. Fails unless `amounts` holds at least two
+      -- entries, each positive, that sum to this holding's amount. Fails
+      -- while this holding carries a lock, even an expired one.
+      with
+        amounts : [Decimal]
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingSplitImpl (defaultHoldingOps holding.instrumentId.admin)
+           (toInterfaceContractId self) holding this amounts
 
     interface instance HoldingV2.Holding for TokenHolding where
       view = holding
 
--- | The operations the default templates run the workflows with: create
--- `TokenHolding`, consume by archiving a pinned `TokenHolding`, and emit
--- through a transient `TokenEventLog`.
-defaultHoldingOps : Party -> HoldingOps
-defaultHoldingOps admin = HoldingOps with
-  createHolding = \v -> toInterfaceContractId <$> create TokenHolding with holding = v
-  consumeHolding = consumeByArchive @TokenHolding
-  withEventLog = withTempEventLog admin
-  eventObservers = const []
+-- | Build the operations the default templates run the workflows with:
+-- create `TokenHolding` from the view alone, consume by archiving a pinned
+-- `TokenHolding` in all three consumption operations, and emit through a
+-- transient `TokenEventLog`.
+defaultHoldingOps : Party -> HoldingOps TokenHolding
+defaultHoldingOps admin = holdingOpsFor @TokenHolding
+  (\_ v -> toInterfaceContractId <$> create TokenHolding with holding = v)
+  (withTempEventLog admin)
+  (const [])

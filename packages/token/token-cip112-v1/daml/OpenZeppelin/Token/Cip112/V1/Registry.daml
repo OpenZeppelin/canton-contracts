@@ -32,6 +32,19 @@ import OpenZeppelin.Token.Cip112.V1.Allocation
 -- | The registry's policy and entry-point contract, signed by the admin
 -- alone. Consumers obtain it by explicit disclosure; the factory choices are
 -- nonconsuming, so concurrent workflows never contend on it.
+--
+-- The admin can create another `TokenRules` at any time, and the workflows
+-- accept the admin's holdings through any of them. Every parameter here is
+-- the admin's to set, so a second contract grants the admin nothing. Roles
+-- that a consumer puts on its own rules contract restrict wallets only: a
+-- control that must bind the admin has to be held by a party that signs the
+-- holdings and the pending contracts.
+--
+-- The transfer factory's extra observers are the vendored private-asset
+-- default, the sender's account parties. That keeps the sender's inputs and
+-- change from the receiver only in a two-step transfer. In a one-step
+-- transfer the receiver's account parties are actors, so they see both.
+-- https://github.com/canton-network/splice/blob/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/splice-token-standard-utils/daml/Splice/TokenStandard/Utils/Internal/Transfers.daml#L234-L240
 template TokenRules with
     config : RegistryConfig
   where
@@ -44,8 +57,10 @@ template TokenRules with
       -- No extra observers: batch participants must not learn about the
       -- other allocations being settled.
       settlementFactory_settleBatchExtraObservers _ = []
+      -- The default operations read no context, so no allocation receives
+      -- any part of the batch's.
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @TokenAllocation) config.admin self arg
+        settleBatchImpl @TokenAllocation (\_ -> pure ()) (\_ _ -> emptyChoiceContext) config.admin self arg
 
     interface instance AllocationInstructionV2.AllocationFactory for TokenRules where
       view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
@@ -63,13 +78,14 @@ template TokenRules with
 
     nonconsuming choice TokenRules_ExpireAllocations : ()
       -- ^ Batched admin expiry of stale allocations through the standard
-      -- cancel choice, each pinned to `TokenAllocation`.
+      -- cancel choice, each pinned to `TokenAllocation`. Each cancel argument
+      -- has `actors = [admin]` and carries its own `expire-lock` flag. The
+      -- choice has no observers, because an observer would witness every
+      -- cancel in the batch and every holding the cancels release.
       with
         cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
-        observers : [Party]
-      observer observers
       controller config.admin
-      do expireAllocationsImpl (pinAllocationTo @TokenAllocation) config.admin cancelArgs
+      do expireAllocationsImpl @TokenAllocation (\_ -> pure ()) config.admin cancelArgs
 
     nonconsuming choice TokenRules_OfferMint : ContractId TransferInstructionV2.TransferInstruction
       -- ^ Offer new holdings to a regular account: a pending transfer
@@ -86,21 +102,22 @@ template TokenRules with
       do offerMintImpl config createInstruction receiver instrumentId amount requestedAt executeBefore reason
 
     nonconsuming choice TokenRules_ExpireTransferInstructions : ()
-      -- ^ Batched admin expiry of stale transfer instructions. Template-typed
-      -- on purpose: the registry only ever expires its own instructions.
+      -- ^ Batched admin expiry of stale transfer instructions, each with its
+      -- own `TokenTransferInstruction_Expire` argument and so its own
+      -- `expire-lock` flag. Template-typed on purpose: the registry only
+      -- ever expires its own instructions. The choice has no observers, for
+      -- the same reason as `TokenRules_ExpireAllocations`.
       with
-        instructionCids : [ContractId TokenTransferInstruction]
-        observers : [Party]
-      observer observers
+        expireArgs : [(ContractId TokenTransferInstruction, TokenTransferInstruction_Expire)]
       controller config.admin
       do
-        forA_ instructionCids $ \cid -> do
+        forA_ expireArgs $ \(cid, expireArg) -> do
           instr <- fetch cid
           requireMatchExpected ("transfer.instrumentId.admin", instr.state.transfer.instrumentId.admin) config.admin
-          _ <- exercise cid TokenTransferInstruction_Expire
+          _ <- exercise cid expireArg
           pure ()
 
-rulesOps : RegistryConfig -> HoldingOps
+rulesOps : RegistryConfig -> HoldingOps TokenHolding
 rulesOps config = defaultHoldingOps config.admin
 
 createInstruction : CreateTransferInstruction

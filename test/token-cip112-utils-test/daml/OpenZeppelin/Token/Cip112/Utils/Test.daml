@@ -3,9 +3,10 @@
 -- against a minimal local template it accepts and a foreign template it must
 -- refuse. The consumption and expiry bodies are run here too, for the
 -- guards that only a consumer's own `HoldingOps` or allocation template can
--- reach. The full workflows run under `test/token-cip112-v1-test` through the
--- default templates and under `examples/token/token-cip112-custom-test`
--- through a consumer's templates.
+-- reach. `OpenZeppelin.Token.Cip112.Utils.Test.Operations` runs every
+-- workflow path through operations with a spend rule. The full workflows run
+-- under `test/token-cip112-v1-test` through the default templates and under
+-- `examples/token/token-cip112-custom-test` through a consumer's templates.
 module OpenZeppelin.Token.Cip112.Utils.Test where
 
 import DA.Action (unless)
@@ -15,14 +16,14 @@ import DA.List (dedupSort)
 import DA.Map qualified as Map
 import DA.Text (isInfixOf)
 import DA.TextMap qualified as TextMap
-import DA.Time (addRelTime, days, hours, minutes, time)
+import DA.Time (RelTime, addRelTime, convertMicrosecondsToRelTime, days, hours, microseconds, minutes, subTime, time)
 import Daml.Script
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.AllocationV2 qualified as AllocationV2
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
-import Splice.TokenStandard.Utils (accountParties, basicAccount, burnAccount, maxTime, mintAccount, receiverSide, senderSide)
+import Splice.TokenStandard.Utils (accountParties, basicAccount, burnAccount, maxTime, mintAccount, receiverSide, require, senderSide)
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 
 import OpenZeppelin.Token.Cip112.TypesV1
@@ -36,6 +37,12 @@ t0 = time (date 2026 Jan 1) 0 0 0
 t1 = time (date 2026 Jan 1) 0 10 0
 t2 = time (date 2026 Jan 1) 0 20 0
 t3 = time (date 2026 Jan 1) 0 30 0
+
+-- | The extremes of `RelTime`, about 292,000 years either way: every time
+-- derived from them leaves the range of `Time`.
+maxRelTime, minRelTime : RelTime
+maxRelTime = convertMicrosecondsToRelTime maxBound
+minRelTime = convertMicrosecondsToRelTime minBound
 
 -- Local templates
 ------------------
@@ -64,6 +71,7 @@ template ForeignHolding with
 template UnitAllocation with
     claimedView : AllocationV2.AllocationView
     admin : Party
+      -- ^ The signatory, which may differ from the view's admin.
   where
     signatory admin
     interface instance AllocationV2.Allocation for UnitAllocation where
@@ -75,11 +83,16 @@ template UnitAllocation with
       allocation_withdrawImpl _ _ = fail "not exercised in this test"
       allocation_cancelImpl _ _ = fail "not exercised in this test"
 
+-- | An allocation signed by its attacker, claiming any view it likes.
 template ForeignAllocation with
     claimedView : AllocationV2.AllocationView
     attacker : Party
+    observers : [Party]
+      -- ^ With the admin here, a registry choice fetches it with the admin's
+      -- authority alone.
   where
     signatory attacker
+    observer observers
     interface instance AllocationV2.Allocation for ForeignAllocation where
       view = claimedView
       allocation_settleExtraObservers _ = []
@@ -91,9 +104,9 @@ template ForeignAllocation with
 
 -- | Runs a builder inside a choice, since builders are `Update` functions.
 -- Signed by the admin and the owner so the consumption authority matches.
--- The choices take `actors` like the standard ones, so a caller's own
--- authority is in scope for the fetch, as an attacker's is when they act on
--- a factory.
+-- The fetching choices take `actors` like the standard ones, so a caller's
+-- own authority is in scope for the fetch, as an attacker's is when they act
+-- on a factory.
 template Harness with
     admin : Party
     owner : Party
@@ -103,36 +116,53 @@ template Harness with
     nonconsuming choice Harness_ConsumeByArchive : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; actors : [Party]
       controller actors
-      do consumeByArchive @UnitHolding cid
+      do fst <$> consumeByArchive @UnitHolding cid
 
     nonconsuming choice Harness_PinAllocation : AllocationV2.AllocationView
       with cid : ContractId AllocationV2.Allocation; actors : [Party]
       controller actors
-      do pinAllocationTo @UnitAllocation cid
+      do pinAllocationTo (signedBy admin) cid
 
     nonconsuming choice Harness_ConsumeLocked : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
       controller actors
-      do consumeLockedHolding unitOps admin expectedAccount cid
+      do fst <$> consumeLockedHolding unitOps emptyChoiceContext admin expectedAccount cid
 
     nonconsuming choice Harness_ConsumeUnlocked : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
       controller actors
-      do consumeUnlockedHolding unitOps admin expectedAccount cid
+      do fst <$> consumeUnlockedHolding unitOps emptyChoiceContext admin expectedAccount cid
+
+    nonconsuming choice Harness_UnlockHoldings : ()
+      with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
+      controller actors
+      do
+        _ <- unlockHoldings unitOps emptyChoiceContext admin expectedAccount [cid]
+        pure ()
 
     nonconsuming choice Harness_ExpireAllocations : ()
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]; actors : [Party]
       controller actors
-      do expireAllocationsImpl (pinAllocationTo @UnitAllocation) admin cancelArgs
+      do expireAllocationsImpl (signedBy admin) admin cancelArgs
+
+    nonconsuming choice Harness_IsLedgerTimeAtMost : Bool
+      with t : Time
+      controller admin
+      do isLedgerTimeAtMost t
+
+-- | Fail unless a pinned allocation is signed by `admin`, whatever its view
+-- says. Its type sets `t` to `UnitAllocation` in `pinAllocationTo` and
+-- `expireAllocationsImpl`.
+signedBy : Party -> UnitAllocation -> Update ()
+signedBy admin alloc = require "allocation is signed by another admin" (alloc.admin == admin)
 
 -- | The operations the harness runs the bodies with. Events are not under
 -- test here, so emission does nothing.
-unitOps : HoldingOps
-unitOps = HoldingOps with
-  createHolding = \v -> toInterfaceContractId <$> create UnitHolding with holding = v
-  consumeHolding = consumeByArchive @UnitHolding
-  withEventLog = \_ -> pure ()
-  eventObservers = const []
+unitOps : HoldingOps UnitHolding
+unitOps = holdingOpsFor @UnitHolding
+  (\_ v -> toInterfaceContractId <$> create UnitHolding with holding = v)
+  (\_ -> pure ())
+  (const [])
 
 basicOwner : HoldingV2.HoldingView -> Party
 basicOwner v = case v.account.owner of
@@ -213,6 +243,10 @@ unitAllocationView admin alice = AllocationV2.AllocationView with
   availableActions = Map.empty
   meta = emptyMetadata
 
+-- | `pinAllocationTo` accepts a `UnitAllocation` that passes the check,
+-- refuses another template whose view is identical, and runs the check on
+-- the pinned contract, which refuses a `UnitAllocation` signed by another
+-- admin.
 testPinAllocation : Script ()
 testPinAllocation = do
   Fixture{..} <- setup
@@ -223,10 +257,15 @@ testPinAllocation = do
       cid = toInterfaceContractId @AllocationV2.Allocation genuine
       actors = [admin]
   pinned.allocation.authorizer === basicAccount alice
-  foreign <- submit attacker do createCmd ForeignAllocation with claimedView = v; attacker
+  foreign <- submit attacker do createCmd ForeignAllocation with claimedView = v; attacker; observers = []
   mustFailWith "allocation is not an accepted implementation" (actAs [admin, attacker]) $
     exerciseCmd harnessCid Harness_PinAllocation with
       cid = toInterfaceContractId @AllocationV2.Allocation foreign
+      actors = [admin, attacker]
+  otherSigned <- submit attacker do createCmd UnitAllocation with claimedView = v; admin = attacker
+  mustFailWith "allocation is signed by another admin" (actAs [admin, attacker]) $
+    exerciseCmd harnessCid Harness_PinAllocation with
+      cid = toInterfaceContractId @AllocationV2.Allocation otherSigned
       actors = [admin, attacker]
 
 -- Predicates and bounds
@@ -244,6 +283,10 @@ testHoldingViewPredicate = do
   isValidHoldingView (ok with lock = Some relLock) === False
   isValidHoldingView (ok with lock = Some (relLock with expiresAfter = None)) === True
 
+-- | The admin expiry reads Splice's choice-context key.
+testExpireLockKeyMatchesSplice : Script ()
+testExpireLockKeyMatchesSplice = expireLockKey === "expire-lock"
+
 testRegistryConfigPredicate : Script ()
 testRegistryConfigPredicate = do
   admin <- allocateParty "admin"
@@ -251,6 +294,8 @@ testRegistryConfigPredicate = do
   isValidRegistryConfig c === True
   isValidRegistryConfig (c with maxTTL = minutes 0) === False
   isValidRegistryConfig (c with lockGrace = minutes 0) === False
+  -- Oversized values stay valid: the times derived from them saturate.
+  isValidRegistryConfig (c with maxTTL = maxRelTime; lockGrace = maxRelTime) === True
 
 testTransferInstructionStatePredicate : Script ()
 testTransferInstructionStatePredicate = do
@@ -286,6 +331,10 @@ testTransferInstructionStatePredicate = do
   isValidTransferInstructionState ((s with lockedHoldingCids = []) with transfer = transfer with sender = mintAccount; receiver = burnAccount) === False
   isValidTransferInstructionState (s with lockedHoldingCids = []) === False
   isValidTransferInstructionState (s with lockExpiresAt = t2) === False
+  -- `lockExpiresAt` may equal `expiresAt` only when both are `maxTime`.
+  isValidTransferInstructionState (s with lockExpiresAt = maxTime) === True
+  isValidTransferInstructionState (s with expiresAt = maxTime; lockExpiresAt = maxTime) === True
+  isValidTransferInstructionState (s with expiresAt = maxTime; lockExpiresAt = t2) === False
   -- The view advertises each side's account parties as the actor set.
   let v = transferInstructionView s
   Map.lookup TransferInstructionV2.TIA_Accept v.availableActions === Some [[bob]]
@@ -332,9 +381,25 @@ testAllocationStatePredicate = do
   isValidAllocationState (s with allocation = allocation with authorizer = mintAccount; nextIterationFunding = Some TextMap.empty) === False
   isValidAllocationState (s with numIterations = -1) === False
   isValidAllocationState (s with lockExpiresAt = t2) === False
+  isValidAllocationState (s with expiresAt = maxTime; lockExpiresAt = maxTime) === True
+  isValidAllocationState (s with expiresAt = maxTime; lockExpiresAt = t2) === False
+  isValidAllocationState (s with maxTTL = maxRelTime; lockGrace = maxRelTime) === True
   isValidAllocationState (s with maxTTL = minutes 0) === False
   isValidAllocationState (s with lockGrace = minutes 0) === False
   isValidAllocationState (s with allocation = allocation with committed = True; settlementDeadline = None) === False
+  -- A committed allocation needs a deadline that can pass, which `maxTime`
+  -- never does. An uncommitted one may run until `maxTime`.
+  isValidAllocationState (s with allocation = allocation with committed = True) === True
+  isValidAllocationState (s with allocation = allocation with committed = True; settlementDeadline = Some maxTime) === False
+  isValidAllocationState (s with allocation = allocation with settlementDeadline = Some maxTime) === True
+  -- The view advertises withdraw for the same shapes, so a template whose
+  -- `ensure` allows more never advertises a withdraw that cannot succeed.
+  let withdrawers st = Map.lookup AllocationV2.AA_Withdraw (allocationAvailableActions st)
+  withdrawers s === Some [[alice]]
+  withdrawers (s with allocation = allocation with committed = True) === Some [[alice]]
+  withdrawers (s with allocation = allocation with committed = True; settlementDeadline = None) === None
+  withdrawers (s with allocation = allocation with committed = True; settlementDeadline = Some maxTime) === None
+  withdrawers (s with allocation = allocation with settlementDeadline = Some maxTime) === Some [[alice]]
 
 -- | The executors observe a factory call only when it needs no funding and
 -- names no inputs: an unnecessary input would show them its id and the
@@ -388,6 +453,43 @@ testComputeStorageExpiry = do
   computeStorageExpiry (minutes 5) t1 (Some t2) === (t1 `addRelTime` minutes 5)
   computeStorageExpiry (days 90) t1 None === (t1 `addRelTime` days 90)
   computeStorageExpiry (days 3000000) t1 None === maxTime
+  computeStorageExpiry maxRelTime t1 None === maxTime
+  computeStorageExpiry maxRelTime t1 (Some t2) === t2
+  computeStorageExpiry maxRelTime maxTime None === maxTime
+
+-- | Shifting a time saturates at either end of `Time`, where `addRelTime`
+-- raises an `ArithmeticError`, and is exact everywhere in between, up to one
+-- microsecond short of each end.
+testAddRelTimeSaturating : Script ()
+testAddRelTimeSaturating = do
+  let toMax = maxTime `subTime` t1
+      toMin = (minBound : Time) `subTime` t1
+  addRelTimeSaturating t1 (hours 1) === (t1 `addRelTime` hours 1)
+  addRelTimeSaturating t1 (negate (hours 1)) === (t1 `addRelTime` negate (hours 1))
+  addRelTimeSaturating t1 (toMax - microseconds 1) === (maxTime `addRelTime` negate (microseconds 1))
+  addRelTimeSaturating t1 toMax === maxTime
+  addRelTimeSaturating t1 (toMax + microseconds 1) === maxTime
+  addRelTimeSaturating t1 (toMin + microseconds 1) === (minBound `addRelTime` microseconds 1)
+  addRelTimeSaturating t1 toMin === minBound
+  addRelTimeSaturating t1 (toMin - microseconds 1) === minBound
+  -- At the extremes of `RelTime`, the microsecond sum itself would overflow.
+  addRelTimeSaturating t1 maxRelTime === maxTime
+  addRelTimeSaturating t1 minRelTime === minBound
+  addRelTimeSaturating maxTime maxRelTime === maxTime
+  addRelTimeSaturating minBound minRelTime === minBound
+  addRelTimeSaturating maxTime (hours 0) === maxTime
+  addRelTimeSaturating minBound (hours 0) === minBound
+
+-- | `isLedgerTimeAtMost` is `isLedgerTimeLE`, but holds at `maxTime`, where
+-- `isLedgerTimeLE` fails the transaction.
+testIsLedgerTimeAtMost : Script ()
+testIsLedgerTimeAtMost = do
+  Fixture{..} <- setup
+  let atMost t = submit admin do exerciseCmd harnessCid Harness_IsLedgerTimeAtMost with t
+  atMost t1 >>= (=== True)
+  atMost t2 >>= (=== True)
+  atMost (t1 `addRelTime` negate (microseconds 1)) >>= (=== False)
+  atMost maxTime >>= (=== True)
 
 -- | Event informees are the account parties plus the owner's extra
 -- observers, deduplicated, so listing an account party twice is harmless.
@@ -398,9 +500,12 @@ testEventObserversFor = do
   provider <- allocateParty "provider"
   auditor <- allocateParty "auditor"
   let account = HoldingV2.Account with owner = Some alice; provider = Some provider; id = "custody"
+      ops : HoldingOps ()
       ops = HoldingOps with
-        createHolding = \_ -> fail "unused"
-        consumeHolding = \_ -> fail "unused"
+        createHolding = \_ _ -> fail "unused"
+        fundHolding = \_ _ -> fail "unused"
+        deliverHolding = \_ _ -> fail "unused"
+        returnHolding = \_ _ -> fail "unused"
         withEventLog = \_ -> fail "unused"
         eventObservers = const [auditor, alice]
   eventObserversFor ops admin account === dedupSort (accountParties admin account <> [auditor])
@@ -424,7 +529,7 @@ savingsAccount owner = HoldingV2.Account with owner = Some owner; provider = Non
 
 -- | The default templates need the instrument admin's authority to consume a
 -- holding, so another admin's holding fails authorization first. A consumer
--- whose `consumeHolding` needs less authority relies on this check.
+-- whose `deliverHolding` needs less authority relies on this check.
 testConsumeLockedRefusesOtherAdmin : Script ()
 testConsumeLockedRefusesOtherAdmin = do
   Fixture{..} <- setup
@@ -450,6 +555,32 @@ testConsumeLockedRefusesUnlockedHolding = do
   cid <- unitHolding admin alice (basicAccount alice) None
   mustFailWith "input holding must be locked" (actAs admin) $
     exerciseCmd harnessCid Harness_ConsumeLocked with
+      cid; expectedAccount = basicAccount alice; actors = [admin]
+
+-- | `unlockHoldings` makes the same three checks on the holdings it returns.
+testUnlockHoldingsRefusesOtherAdmin : Script ()
+testUnlockHoldingsRefusesOtherAdmin = do
+  Fixture{..} <- setup
+  otherAdmin <- allocateParty "otherAdmin"
+  cid <- unitHolding otherAdmin alice (basicAccount alice) (Some (lockUntil otherAdmin (Some t2)))
+  mustFailWith "'inputHolding.instrumentId.admin' is not equal to" (actAs [admin, otherAdmin]) $
+    exerciseCmd harnessCid Harness_UnlockHoldings with
+      cid; expectedAccount = basicAccount alice; actors = [admin, otherAdmin]
+
+testUnlockHoldingsRefusesOtherAccount : Script ()
+testUnlockHoldingsRefusesOtherAccount = do
+  Fixture{..} <- setup
+  cid <- unitHolding admin alice (savingsAccount alice) (Some (lockUntil admin (Some t2)))
+  mustFailWith "'inputHolding.account' is not equal to" (actAs admin) $
+    exerciseCmd harnessCid Harness_UnlockHoldings with
+      cid; expectedAccount = basicAccount alice; actors = [admin]
+
+testUnlockHoldingsRefusesUnlockedHolding : Script ()
+testUnlockHoldingsRefusesUnlockedHolding = do
+  Fixture{..} <- setup
+  cid <- unitHolding admin alice (basicAccount alice) None
+  mustFailWith "input holding must be locked" (actAs admin) $
+    exerciseCmd harnessCid Harness_UnlockHoldings with
       cid; expectedAccount = basicAccount alice; actors = [admin]
 
 testConsumeUnlockedRefusesOtherAdmin : Script ()
@@ -483,15 +614,21 @@ testConsumeUnlockedRefusesIndefiniteLock = do
 -- allocation's cancel body, so each refusal below happens before
 -- `UnitAllocation`'s cancel body, which always fails, could run.
 expireUnit : Fixture -> AllocationV2.AllocationView -> [Party] -> Script (Commands ())
-expireUnit Fixture{..} v cancelActors = do
+expireUnit f@Fixture{..} v cancelActors = do
   cid <- submit admin do createCmd UnitAllocation with claimedView = v; admin
-  pure $ exerciseCmd harnessCid Harness_ExpireAllocations with
+  pure (expireOne f (toInterfaceContractId cid) cancelActors [admin])
+
+-- | The harness's expiry batch of one allocation, cancelled by
+-- `cancelActors` and run by `actors`.
+expireOne : Fixture -> ContractId AllocationV2.Allocation -> [Party] -> [Party] -> Commands ()
+expireOne Fixture{..} cid cancelActors actors =
+  exerciseCmd harnessCid Harness_ExpireAllocations with
     cancelArgs =
-      [ ( toInterfaceContractId @AllocationV2.Allocation cid
+      [ ( cid
         , AllocationV2.Allocation_Cancel with
             actors = cancelActors
             extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata ) ]
-    actors = [admin]
+    actors
 
 testExpireAllocationsRefusesOtherCancelActors : Script ()
 testExpireAllocationsRefusesOtherCancelActors = do
@@ -520,3 +657,26 @@ testExpireAllocationsRefusesLiveAllocation = do
   f@Fixture{..} <- setup
   cmd <- expireUnit f (unitAllocationView admin alice) [admin]
   mustFailWith "strictly before deadline 'allocation.expiresAt'" (actAs admin) cmd
+
+-- | Each allocation is pinned before the batch reads its view. A foreign
+-- template whose view names this admin and has expired is refused.
+testExpireAllocationsRefusesForeignAllocation : Script ()
+testExpireAllocationsRefusesForeignAllocation = do
+  f@Fixture{..} <- setup
+  setTime t3
+  foreign <- submit attacker do
+    createCmd ForeignAllocation with claimedView = unitAllocationView admin alice; attacker; observers = []
+  mustFailWith "allocation is not an accepted implementation" (actAs [admin, attacker])
+    (expireOne f (toInterfaceContractId foreign) [admin] [admin, attacker])
+
+-- | The check runs on each pinned allocation. An expired `UnitAllocation`
+-- signed by another admin, whose view names this one, is refused before
+-- its cancel body runs.
+testExpireAllocationsRunsTheCheck : Script ()
+testExpireAllocationsRunsTheCheck = do
+  f@Fixture{..} <- setup
+  setTime t3
+  otherSigned <- submit attacker do
+    createCmd UnitAllocation with claimedView = unitAllocationView admin alice; admin = attacker
+  mustFailWith "allocation is signed by another admin" (actAs [admin, attacker])
+    (expireOne f (toInterfaceContractId otherSigned) [admin] [admin, attacker])
