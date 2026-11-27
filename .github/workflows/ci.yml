@@ -57,7 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [token, authorization, licensing, treasury]
+        suite: [token, authorization, licensing, treasury, vault, vault-permits, vault-fund]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -27,6 +27,11 @@ The library provides the following packages under [`packages/`](packages/):
 | [Token CIP-0112 types](packages/token/token-cip112-types-v1/) | `openzeppelin-token-cip112-types-v1` | `OpenZeppelin.Token.Cip112.TypesV1` |
 | [Token CIP-0112 utils](packages/token/token-cip112-utils/) | `openzeppelin-token-cip112-utils` | `OpenZeppelin.Token.Cip112.Utils` |
 | [Token CIP-0112](packages/token/token-cip112-v1/) | `openzeppelin-token-cip112-v1` | `OpenZeppelin.Token.Cip112.V1` |
+| [Async Vault API](packages/vault/api-async-vault-v1/) | `openzeppelin-api-async-vault-v1` | `OpenZeppelin.Api.AsyncVaultV1` |
+| [Async Vault types](packages/vault/async-vault-types-v1/) | `openzeppelin-async-vault-types-v1` | `OpenZeppelin.AsyncVault.TypesV1` |
+| [Async Vault utils](packages/vault/async-vault-utils/) | `openzeppelin-async-vault-utils` | `OpenZeppelin.AsyncVault.Utils` |
+| [Async Vault](packages/vault/async-vault-v1/) | `openzeppelin-async-vault-v1` | `OpenZeppelin.AsyncVaultV1` |
+| [Async Vault Permits](packages/vault/async-vault-permits-v1/) | `openzeppelin-async-vault-permits-v1` | `OpenZeppelin.AsyncVaultPermitsV1` |
 
 Each component is a separate dependency and release unit. Applications select
 the components they use, and participant operators review and vet the matching
@@ -92,6 +97,7 @@ packages/                 Library components and release candidates
   access/                 Authorization components
   security/               Emergency-stop, delay, and safety components
   token/                  Category for token standard and settlement components
+  vault/                  Asynchronous vault components
 test/                     Isolated library test packages
 dars/
   released/               Immutable OpenZeppelin release baselines

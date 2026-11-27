@@ -1,0 +1,59 @@
+-- | Calling a deposit gate from a vault's request choice.
+--
+-- A vault that restricts who may deposit names a `DepositGate` contract, an
+-- interface of `openzeppelin-api-async-vault-v1`, and asks it from the
+-- policy's `authorizeDeposit`:
+--
+-- ```
+-- let policy = defaultVaultPolicy with
+--       authorizeDeposit = \terms vaultArgs ->
+--         forA_ depositGate $ \gateCid -> checkDepositGate config gateCid terms vaultArgs
+-- requestDepositImpl config registries policy createRequest terms inputHoldingCids requestedAt args
+-- ```
+module OpenZeppelin.AsyncVault.Utils.Gate where
+
+import DA.Action (unless, void)
+import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
+
+import Splice.Api.Token.MetadataV1 (ExtraArgs)
+
+import OpenZeppelin.Api.AsyncVaultV1
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Internal qualified as Internal
+
+-- | Ask a gate whether a deposit request may be opened, and fail when it
+-- refuses. Use it as the policy's `authorizeDeposit`, with the request's
+-- terms and its `vault` extra arguments.
+--
+-- The gate is exercised with the authority of the vault's admin alone. The
+-- function first requires the gate's view to name that admin: a gate that
+-- named another party would be exercised with that party's authority when it
+-- is in scope, and in a request choice the requester's is.
+--
+-- The caller takes the gate's contract id from its own contract and never
+-- from the requester. The choice that calls this must run with the admin's
+-- authority, and whoever submits it must see the gate.
+--
+-- Fails with `eForeignGate` when the gate does not name the vault's admin,
+-- and with whatever the gate fails with when it refuses.
+checkDepositGate
+  : VaultConfig -> ContractId DepositGate -> DepositTerms -> ExtraArgs -> Update ()
+checkDepositGate config gateCid terms extraArgs = do
+  gate <- fetch gateCid
+  unless ((view gate).admin == config.admin) (failWithStatus eForeignGate)
+  void $ exercise gateCid DepositGate_Check with
+    vaultId = config.vaultId
+    requester = terms.requester
+    assets = terms.assets
+    extraArgs
+
+-- Failure statuses. A choice body that fails with one reaches the Ledger API
+-- as a `DAML_FAILURE` error carrying the `errorId` below, so a client matches
+-- on the id.
+
+-- | Raised when a deposit gate's view does not name the vault's admin.
+-- `errorId`: `openzeppelin.com/async-vault-foreign-gate`.
+eForeignGate : FailureStatus
+eForeignGate = Internal.vaultFailure "foreign-gate" InvalidIndependentOfSystemState
+  "AsyncVault: the deposit gate does not answer to the vault's admin"

@@ -1,0 +1,16 @@
+sdk-version: 3.5.8
+name: async-vault-custom-example
+source: daml
+version: 0.1.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  # A consumer that owns its templates depends on the types and utils
+  # packages only, never on the default templates.
+  - ../../../packages/vault/async-vault-types-v1/.daml/dist/openzeppelin-async-vault-types-v1-0.1.0.dar
+  - ../../../packages/vault/async-vault-utils/.daml/dist/openzeppelin-async-vault-utils-0.1.0.dar
+  # Vendored Token Standard V2 (CIP-0112) DARs; see dars/manifest.yaml.
+  - ../../../dars/vendor/splice-api-token-holding-v2-1.0.0.dar
+build-options:
+  - --target=2.1

@@ -1,0 +1,127 @@
+-- | Recorded reserves of an asynchronous vault: the body of the choice that
+-- replaces them with what the custodian is shown to hold.
+--
+-- A batch adds its deposits to the recorded reserves and takes its
+-- redemptions from them. Nothing else moves them, so a gain, a loss, or a
+-- transfer the custodian makes or receives outside a batch leaves the record
+-- behind the pool. This choice brings it back: whoever exercises it names
+-- holdings, the body checks each one on the ledger, and the reserves become
+-- their sum.
+--
+-- ```
+-- choice VaultLedger_RecordReserves : ContractId VaultLedger
+--   with
+--     holdingCids : [ContractId Holding]
+--   controller config.operator
+--   do
+--     recorded <- recordReservesImpl config state holdingCids
+--     create this with state = recorded
+-- ```
+module OpenZeppelin.AsyncVault.Utils.Reserves where
+
+import DA.Action (foldlA, when)
+import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
+import DA.List (dedup)
+import DA.Optional (isSome)
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Internal qualified as Internal
+import OpenZeppelin.AsyncVault.Utils.Math
+import OpenZeppelin.AsyncVault.Utils.Request (requireRight)
+
+-- | The amount a holding adds to the reserves, given the signatories of its
+-- contract. A holding counts when it is the custodian's holding of the
+-- underlying, the underlying's admin signed it, and it carries no lock.
+--
+-- The signature is what makes a holding evidence. Any template can present
+-- the view of a holding, so a view alone proves nothing; a contract the
+-- underlying's admin signed is one its registry created.
+--
+-- Fails with `eForeignHolding` when the holding is of another instrument or
+-- in another account, with `eUnsignedHolding` when the underlying's admin is
+-- not among the signatories, with `eLockedHolding` when the holding carries
+-- a lock, expired or not, with `eNegativeAmount` when its amount is
+-- negative, and with `eTotalsOutOfRange` when its amount is above
+-- `maxOperand`.
+reserveAmount : VaultConfig -> [Party] -> HoldingV2.HoldingView -> Either FailureStatus Decimal
+reserveAmount config signatories holding
+  | holding.instrumentId /= config.underlying || holding.account /= config.custodian =
+      Left eForeignHolding
+  | config.underlying.admin `notElem` signatories = Left eUnsignedHolding
+  | isSome holding.lock = Left eLockedHolding
+  | holding.amount < 0.0 = Left eNegativeAmount
+  | holding.amount > maxOperand = Left eTotalsOutOfRange
+  | otherwise = Right holding.amount
+
+-- | The reserves a list of holdings amounts to: the sum of what
+-- `reserveAmount` gives for each, with each holding's signatories beside its
+-- view. No holdings amount to zero.
+--
+-- Fails with the status of the first holding that does not count, and with
+-- `eTotalsOutOfRange` when the sum is above `maxOperand`.
+sumReserves : VaultConfig -> [([Party], HoldingV2.HoldingView)] -> Either FailureStatus Decimal
+sumReserves config = foldlA add 0.0
+  where
+    add total (signatories, holding) = do
+      amount <- reserveAmount config signatories holding
+      -- Both are within `maxOperand` here, so the sum cannot overflow a
+      -- `Decimal`.
+      let next = total + amount
+      when (next > maxOperand) (Left eTotalsOutOfRange)
+      pure next
+
+-- | Body of the choice that records as the vault's reserves the sum of the
+-- holdings it is given, and returns the state to record. The share total,
+-- the price, and the batch number are unchanged.
+--
+-- It fetches every holding, so the choice must run with the authority of a
+-- stakeholder of each, which the custodian's owner is, and whoever submits
+-- it must see them.
+--
+-- The result is what the custodian held when the choice ran, and no less
+-- than was shown: a holding left out is not counted, so the reserves can be
+-- recorded below what the custodian holds and never above it.
+--
+-- Fails with `eDuplicateHolding` when a holding is named twice, with the
+-- status `sumReserves` returns, and with `eTotalsOutOfRange` when the state
+-- is not valid.
+recordReservesImpl
+  : VaultConfig -> VaultState -> [ContractId HoldingV2.Holding] -> Update VaultState
+recordReservesImpl config state holdingCids = do
+  when (length (dedup holdingCids) /= length holdingCids) (failWithStatus eDuplicateHolding)
+  holdings <- forA holdingCids $ \holdingCid -> do
+    holding <- fetch holdingCid
+    pure (signatory holding, view holding)
+  reserves <- requireRight (sumReserves config holdings)
+  requireRight (stateWithReserves state reserves)
+
+-- Failure statuses. A choice body that fails with one reaches the Ledger API
+-- as a `DAML_FAILURE` error carrying the `errorId` below, so a client matches
+-- on the id.
+
+-- | Raised when a holding is of another instrument than the underlying, or
+-- in another account than the custodian's.
+-- `errorId`: `openzeppelin.com/async-vault-foreign-holding`.
+eForeignHolding : FailureStatus
+eForeignHolding = Internal.vaultFailure "foreign-holding" InvalidIndependentOfSystemState
+  "AsyncVault: a holding is not the custodian's holding of the underlying"
+
+-- | Raised when the underlying's admin is not a signatory of a holding.
+-- `errorId`: `openzeppelin.com/async-vault-unsigned-holding`.
+eUnsignedHolding : FailureStatus
+eUnsignedHolding = Internal.vaultFailure "unsigned-holding" InvalidIndependentOfSystemState
+  "AsyncVault: a holding is not signed by the underlying's admin"
+
+-- | Raised when a holding carries a lock.
+-- `errorId`: `openzeppelin.com/async-vault-locked-holding`.
+eLockedHolding : FailureStatus
+eLockedHolding = Internal.vaultFailure "locked-holding" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: a holding is locked"
+
+-- | Raised when a holding is named twice.
+-- `errorId`: `openzeppelin.com/async-vault-duplicate-holding`.
+eDuplicateHolding : FailureStatus
+eDuplicateHolding = Internal.vaultFailure "duplicate-holding" InvalidIndependentOfSystemState
+  "AsyncVault: a holding is named twice"

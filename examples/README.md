@@ -46,6 +46,17 @@ and `openzeppelin-token-cip112-utils`.
 | [`token-cip112-trading-test`](token/token-cip112-trading-test/) | scripts only | Running the default templates of `openzeppelin-token-cip112-v1`: launching a token from the DAR, allocations funded through the standard factory, exact-cover DvP batch settlement, and the iterated-settlement deposit flow |
 | [`token-cip112-custom`](token/token-cip112-custom/) | [`token-cip112-custom-test`](token/token-cip112-custom-test/) | A compliance-grade consumer that owns its own holding, instruction, allocation, and registry templates and reuses `openzeppelin-token-cip112-types-v1` and `openzeppelin-token-cip112-utils` unchanged: roles, an auditor, a compliance freeze enforced through the spend hook, a pause switch, a fee on transfer built from two workflow calls, and an executor allowlist |
 
+## Async vault
+
+Consumers of `openzeppelin-async-vault-v1`,
+`openzeppelin-async-vault-permits-v1`, `openzeppelin-async-vault-types-v1`,
+and `openzeppelin-async-vault-utils`.
+
+| Example | Tests | Shows |
+|---|---|---|
+| [`async-vault-fund-test`](vault/async-vault-fund-test/) | scripts only | Running the default templates of `openzeppelin-async-vault-v1` end to end with `openzeppelin-async-vault-permits-v1` as the deposit gate and `openzeppelin-token-cip112-v1` as the registry of both instruments: a validator enabling depositors, requests made alone by disclosure, batches at a price within the admin's band, a deposit paying a redemption, and a validator's withdrawal |
+| [`async-vault-custom`](vault/async-vault-custom/) | [`async-vault-custom-test`](vault/async-vault-custom-test/) | A lending pool that owns its rules, ledger, and request templates and reuses `openzeppelin-async-vault-types-v1` and `openzeppelin-async-vault-utils` unchanged: a smallest deposit, a price that never falls and rises by a bounded step per batch, and a limit on what one batch pays out to redemptions |
+
 ## Build and run
 
 From the repository root, using the package path from `multi-package.yaml`:

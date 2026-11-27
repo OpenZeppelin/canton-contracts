@@ -107,6 +107,16 @@ their own ships three production packages:
 <component>-v1         Ready-to-use templates delegating to the utils
 ```
 
+The CIP-0112 token and the async vault both have this shape. The async vault
+also defines one interface, the deposit gate a vault asks before it accepts a
+deposit request, so it adds the frozen `openzeppelin-api-async-vault-v1`
+package. Its ready-made gate, `openzeppelin-async-vault-permits-v1`, is a
+package of its own: a vault that names another gate, or none, does not depend
+on it. The vault takes requests and settles them in batches so that users
+never contend: a request locks only the requester's own holdings and reads no
+price, and one batch choice, which the operator exercises, spends the
+custodian's holdings and fixes one price for every request in it.
+
 Nothing executable is stored on the ledger: a pending contract holds records
 only and rebuilds its operations when its choice runs. A consumer who owns
 their templates depends on the types and utils packages and keeps their own
@@ -134,6 +144,14 @@ fix needed by a `-v1`-only consumer is backported on a `1.x` branch.
 - Shared pure helpers belong in an `openzeppelin-<component>-utils` package
   that defines no templates, interfaces, exceptions, or serializable types.
   A component's templates package may depend on its own utils package.
+- `openzeppelin-async-vault-permits-v1` depends on
+  `openzeppelin-scoped-authorization-grant-v1`, another component's
+  implementation package. A validator's permission to enable depositors is an
+  `AuthorizationGrant`, which the permit rules create and check, and the grant
+  component defines no interface to compose through. The dependency stays for
+  the life of the permits lineage. No other vault package depends on the grant
+  package: a vault reaches the permits only through the `DepositGate`
+  interface.
 - Adding a production dependency requires explicit architecture review because
   an SCU lineage cannot later drop or downgrade a dependency other than a
   utility package.

@@ -1,0 +1,74 @@
+-- | OpenZeppelin Async Vault - the interface of a deposit gate: a contract an
+-- asynchronous vault asks before it accepts a deposit request.
+--
+-- A vault that has a gate exercises `DepositGate_Check` when a requester
+-- opens a deposit request, before anything is locked. The gate refuses the
+-- request by failing. It decides nothing else: it does not see the price, it
+-- moves no funds, and it changes no amount.
+--
+-- The implementing template decides the rule: a list of parties, a
+-- credential the requester presents, a limit on the amount. It implements
+-- one method, `depositGate_checkImpl`, and the choice calls it:
+--
+-- ```
+-- interface instance DepositGate for AllowList where
+--   view = DepositGateView with admin
+--   depositGate_checkImpl _self arg = do
+--     unless (arg.requester.owner `elem` map Some allowed) (failWithStatus eNotListed)
+--     pure DepositGate_CheckResult with meta = emptyMetadata
+-- ```
+--
+-- The choice is controlled by the vault's admin, so the method runs with the
+-- authority of the admin and of the gate's signatories, and with nobody
+-- else's. A gate cannot act for the requester. It can fetch a contract only
+-- when one of those parties is a stakeholder of it, so evidence a requester
+-- presents must be signed by, or visible to, one of them.
+--
+-- A vault calls a gate through the choice and never through the method. A
+-- method called directly runs with the authority of the choice that calls
+-- it, which for a vault's request choice includes the requester's. The
+-- function `checkDepositGate` of `openzeppelin-async-vault-utils` makes the
+-- call and first checks that the gate answers to the vault's admin.
+module OpenZeppelin.Api.AsyncVaultV1 where
+
+import Splice.Api.Token.MetadataV1 (ExtraArgs, Metadata)
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+
+-- | The view of a `DepositGate` contract.
+data DepositGateView = DepositGateView with
+    admin : Party
+      -- ^ The admin of the vaults this gate answers to, and the controller
+      -- of `DepositGate_Check`.
+  deriving (Eq, Show)
+
+-- | What `DepositGate_Check` returns when the gate accepts a request.
+data DepositGate_CheckResult = DepositGate_CheckResult with
+    meta : Metadata
+      -- ^ What the gate reports about its decision, such as who vouched for
+      -- the requester. A vault may ignore it.
+  deriving (Eq, Show)
+
+-- | A gate on deposit requests. Implement it on the template that holds the
+-- rule, with the vault's admin in the view.
+interface DepositGate where
+  viewtype DepositGateView
+
+  depositGate_checkImpl : ContractId DepositGate -> DepositGate_Check -> Update DepositGate_CheckResult
+    -- ^ The body of `DepositGate_Check`. Fail in it to refuse the request.
+
+  nonconsuming choice DepositGate_Check : DepositGate_CheckResult
+    -- ^ Ask the gate whether a deposit request may be opened. It succeeds
+    -- when the gate accepts and fails when it refuses.
+    with
+      vaultId : Text
+        -- ^ The vault the request is for, among the vaults of the gate's
+        -- admin.
+      requester : HoldingV2.Account
+        -- ^ The account that asks to deposit.
+      assets : Decimal
+        -- ^ The amount of the underlying the request asks to deposit.
+      extraArgs : ExtraArgs
+        -- ^ What the requester passes to the gate, such as the contract id
+        -- of a credential.
+    controller (view this).admin
+    do depositGate_checkImpl this self arg

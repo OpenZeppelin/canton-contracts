@@ -71,8 +71,11 @@ for the behavior and security properties these tests check.
 
 Run `scripts/check-sandbox.sh` for the token sandbox gate. Set
 `OZ_SANDBOX_SUITE` to `authorization`, `licensing`, or `treasury` for the grant
-and integration-example Ledger API checks. CI runs all four suites on separate fresh
-static-time ledgers.
+and integration-example Ledger API checks, and to `vault`, `vault-permits`, or
+`vault-fund` for the async vault and its integration example. The
+vault suites run on a sandbox with two participants: one hosts the vault's
+parties and the other hosts the requesters and the validator. CI runs all seven
+suites on separate fresh static-time ledgers.
 
 ## Choosing the right repository
 

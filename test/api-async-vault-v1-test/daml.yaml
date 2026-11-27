@@ -1,0 +1,17 @@
+sdk-version: 3.5.8
+name: openzeppelin-api-async-vault-v1-test
+source: daml
+version: 0.0.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+data-dependencies:
+  # The package under test. Paths are relative to this daml.yaml.
+  - ../../packages/vault/api-async-vault-v1/.daml/dist/openzeppelin-api-async-vault-v1-0.1.0.dar
+  # Vendored Token Standard V2 (CIP-0112) DARs; see dars/manifest.yaml.
+  - ../../dars/vendor/splice-api-token-metadata-v1-1.0.0.dar
+  - ../../dars/vendor/splice-api-token-holding-v2-1.0.0.dar
+build-options:
+  - --target=2.1
+  - -Wno-template-interface-depends-on-daml-script

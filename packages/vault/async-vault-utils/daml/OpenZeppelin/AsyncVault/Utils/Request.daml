@@ -1,0 +1,461 @@
+-- | Request workflow of an asynchronous vault: the bodies of the choices that
+-- open a deposit or a redemption request, cancel one, reject one, and drop
+-- one after its deadline, over the consumer's own templates.
+--
+-- Opening a request locks the requester's funds in an allocation of the
+-- Token Standard and creates the pending request. Nothing is priced, and no
+-- contract of the vault is consumed, so concurrent requests do not contend.
+-- The requester's account parties are the only authority a request needs
+-- beyond the vault's own, so a requester submits alone:
+--
+-- ```
+-- nonconsuming choice Vault_RequestDeposit : ContractId DepositRequest
+--   with
+--     terms : DepositTerms
+--     inputHoldingCids : [ContractId Holding]
+--     requestedAt : Time
+--     args : RequestArgs
+--   controller requesterParties terms.requester
+--   do
+--     requestDepositImpl config registries defaultVaultPolicy
+--       (\state -> create DepositRequest with state)
+--       terms inputHoldingCids requestedAt args
+-- ```
+module OpenZeppelin.AsyncVault.Utils.Request where
+
+import DA.Action (unless, when)
+import DA.Either (isRight)
+import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
+import DA.List (dedup)
+import DA.Optional (optionalToList)
+import DA.Text qualified as T
+import DA.TextMap qualified as TextMap
+import DA.Time (isLedgerTimeGE)
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.TokenStandard.Utils (burnAccount, isRegularAccount, senderSide)
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Internal qualified as Internal
+import OpenZeppelin.AsyncVault.Utils.Math (checkPriceWithin, eNegativeAmount, eOutOfRange, maxOperand)
+
+-- Policy
+-------------------------------------------------------
+
+-- | The decisions a vault leaves to whoever deploys it. Build one inside a
+-- choice body, starting from `defaultVaultPolicy` so that a field added later
+-- needs no change:
+--
+-- ```
+-- let policy = defaultVaultPolicy with
+--       authorizeDeposit = \terms args -> requireListed allowed terms.requester
+--       checkPrice = \_ price -> requireRight (checkPriceWithin reference 0.05 price)
+-- ```
+--
+-- The record holds functions, so it is never stored on the ledger.
+data VaultPolicy = VaultPolicy with
+    authorizeDeposit : DepositTerms -> ExtraArgs -> Update ()
+      -- ^ Runs before a deposit request locks anything, with the request's
+      -- terms and its `vault` extra arguments. Fail in it to refuse the
+      -- request: this is where a vault restricts who may deposit. Redemption
+      -- requests have no such operation, so a holder can always ask to
+      -- redeem.
+    maxBatchSize : Int
+      -- ^ The most requests one batch may settle. Every request adds two
+      -- allocations and two transfer legs to the batch's transaction.
+    checkPrice : VaultState -> SharePrice -> Update ()
+      -- ^ Runs when a batch settles, with the state before the batch and the
+      -- price the batch was submitted with. Fail in it to refuse the price:
+      -- this is how far whoever submits batches is trusted on the price.
+
+-- | The policy of a vault open to every depositor, with batches of up to 25
+-- requests, where a batch can only settle at the price the state already
+-- records. Whoever submits batches then decides no price at all.
+defaultVaultPolicy : VaultPolicy
+defaultVaultPolicy = VaultPolicy with
+  authorizeDeposit = \_ _ -> pure ()
+  maxBatchSize = 25
+  checkPrice = \state price -> requireRight (checkPriceWithin state.price 0.0 price)
+
+-- Settlement, parties, and legs
+-------------------------------------------------------
+
+-- | True when a config's custodian is a regular account and its two
+-- instruments differ. Use it in the `ensure` clause of a template that
+-- stores a `VaultConfig`.
+isValidVaultConfig : VaultConfig -> Bool
+isValidVaultConfig config =
+  isRegularAccount config.custodian && config.underlying /= config.share
+
+-- | The settlement every allocation made for a vault names. The admin and the
+-- operator are both executors, so neither can settle or cancel an allocation
+-- alone. The `vaultId` must be unique among the vaults of the same admin and
+-- operator.
+vaultSettlement : VaultConfig -> AllocationV2.SettlementInfo
+vaultSettlement config = AllocationV2.SettlementInfo with
+  executors = settlementExecutors config.admin config.operator
+  id = config.vaultId
+  cid = None
+  meta = emptyMetadata
+
+-- | The executors of a vault's settlement: its admin and its operator, once
+-- when one party is both.
+settlementExecutors : Party -> Party -> [Party]
+settlementExecutors admin operator = dedup [admin, operator]
+
+-- | The parties that act for a requester: the account's owner and its
+-- provider, if it has one. Use it for the controllers of a request choice and
+-- for the signatories of a request.
+requesterParties : HoldingV2.Account -> [Party]
+requesterParties account =
+  dedup (optionalToList account.owner <> optionalToList account.provider)
+
+-- | The name of a request's leg of the underlying in its transfer-leg id.
+underlyingLeg : Text
+underlyingLeg = "underlying"
+
+-- | The name of a request's leg of the share instrument in its transfer-leg
+-- id.
+shareLeg : Text
+shareLeg = "share"
+
+-- | The id of one of a request's two transfer legs. It is fixed when the
+-- request is made, from the requester's account, the request's label, and
+-- `underlyingLeg` or `shareLeg`, so two requests of one account under the
+-- same label have the same ids. So have two requests of one owner's accounts
+-- when one account's id and label, joined by `/`, read as the other's: the
+-- account `a/b` under the label `c`, and the account `a` under `b/c`.
+requestLegId : HoldingV2.Account -> Text -> Text -> Text
+requestLegId requester label leg =
+  T.intercalate "/" [accountText requester, label, leg]
+
+-- | The transfer leg a deposit's escrow authorizes: the escrowed assets, from
+-- the requester to the vault's custodian.
+depositEscrowLeg : VaultConfig -> DepositTerms -> AllocationV2.TransferLeg
+depositEscrowLeg config terms = AllocationV2.TransferLeg with
+  transferLegId = requestLegId terms.requester terms.label underlyingLeg
+  sender = terms.requester
+  receiver = config.custodian
+  amount = terms.assets
+  instrumentId = config.underlying.id
+  meta = emptyMetadata
+
+-- | The transfer leg a redemption's escrow authorizes: the escrowed shares,
+-- from the requester to the share instrument's burn account.
+redeemEscrowLeg : VaultConfig -> RedeemTerms -> AllocationV2.TransferLeg
+redeemEscrowLeg config terms = AllocationV2.TransferLeg with
+  transferLegId = requestLegId terms.requester terms.label shareLeg
+  sender = terms.requester
+  receiver = burnAccount
+  amount = terms.shares
+  instrumentId = config.share.id
+  meta = emptyMetadata
+
+-- Terms
+-------------------------------------------------------
+
+-- | The longest label a request may carry. A label is part of two
+-- transfer-leg ids in every batch that settles the request.
+maxLabelLength : Int
+maxLabelLength = 64
+
+-- | The first reason a deposit's terms are refused, if any: the requester is
+-- not a regular account, the label is empty or longer than `maxLabelLength`,
+-- the assets are not positive or are above `maxOperand`, or the minimum is
+-- negative or above `maxOperand`.
+checkDepositTerms : DepositTerms -> Either FailureStatus ()
+checkDepositTerms terms = do
+  checkRequester terms.requester
+  checkLabel terms.label
+  checkAmount terms.assets
+  checkMinimum terms.minSharesOut
+
+-- | The first reason a redemption's terms are refused, if any. The rules are
+-- those of `checkDepositTerms`, for the shares and the minimum of the
+-- underlying.
+checkRedeemTerms : RedeemTerms -> Either FailureStatus ()
+checkRedeemTerms terms = do
+  checkRequester terms.requester
+  checkLabel terms.label
+  checkAmount terms.shares
+  checkMinimum terms.minAssetsOut
+
+-- | True when a deposit request's terms pass `checkDepositTerms`. Use it in
+-- the `ensure` clause of a template that stores a `DepositRequestState`.
+isValidDepositRequestState : DepositRequestState -> Bool
+isValidDepositRequestState state = isRight (checkDepositTerms state.terms)
+
+-- | True when a redemption request's terms pass `checkRedeemTerms`. Use it in
+-- the `ensure` clause of a template that stores a `RedeemRequestState`.
+isValidRedeemRequestState : RedeemRequestState -> Bool
+isValidRedeemRequestState state = isRight (checkRedeemTerms state.terms)
+
+-- Choice bodies
+-------------------------------------------------------
+
+-- | Body of a choice that opens a deposit request, controlled by
+-- `requesterParties terms.requester`.
+--
+-- It checks the terms, runs the policy's `authorizeDeposit`, and makes two
+-- allocations for the vault's settlement with the requester's authority. The
+-- escrow locks the assets of the underlying and authorizes one leg only, to
+-- the vault's custodian, so the executors cannot send it anywhere else. The
+-- receipt reserves nothing and lets the executors name the shares the
+-- requester receives. Neither is committed, so the requester can withdraw at
+-- any time. It then creates the request through `createRequest`.
+--
+-- The factories are exercised with the authority of the choice's contract
+-- and of the requester, so they come from `VaultRegistries`, which the
+-- vault's admin sets, and never from the caller.
+--
+-- Fails with the status `checkDepositTerms` returns, with `eInvalidRequester`
+-- when the requester is the vault's custodian, and with
+-- `eAllocationIncomplete` when a registry does not complete an allocation in
+-- the same transaction.
+requestDepositImpl
+  : VaultConfig -> VaultRegistries -> VaultPolicy -> (DepositRequestState -> Update request)
+  -> DepositTerms -> [ContractId HoldingV2.Holding] -> Time -> RequestArgs -> Update request
+requestDepositImpl config registries policy createRequest terms inputHoldingCids requestedAt args = do
+  requireRight (checkDepositTerms terms)
+  when (terms.requester == config.custodian) (failWithStatus eInvalidRequester)
+  policy.authorizeDeposit terms args.vault
+  let settlement = vaultSettlement config
+      actors = requesterParties terms.requester
+  escrowCid <- allocate registries.underlyingAllocationFactory settlement
+    (escrowSpec config.underlying.admin terms.requester (depositEscrowLeg config terms) terms.deadline)
+    inputHoldingCids requestedAt actors args.underlying
+  receiptCid <- allocate registries.shareAllocationFactory settlement
+    (receiptSpec config.share.admin terms.requester terms.deadline)
+    [] requestedAt actors args.share
+  createRequest DepositRequestState with
+    admin = config.admin
+    operator = config.operator
+    vaultId = config.vaultId
+    terms
+    escrowCid
+    receiptCid
+
+-- | Body of a choice that opens a redemption request, controlled by
+-- `requesterParties terms.requester`.
+--
+-- It mirrors `requestDepositImpl`: the escrow locks the shares and authorizes
+-- one leg only, to the share instrument's burn account, and the receipt lets
+-- the executors name the underlying the requester is paid. No policy
+-- operation runs, so a holder can always ask to redeem.
+--
+-- Fails with the status `checkRedeemTerms` returns, with `eInvalidRequester`
+-- when the requester is the vault's custodian, and with
+-- `eAllocationIncomplete` when a registry does not complete an allocation in
+-- the same transaction.
+requestRedeemImpl
+  : VaultConfig -> VaultRegistries -> (RedeemRequestState -> Update request)
+  -> RedeemTerms -> [ContractId HoldingV2.Holding] -> Time -> RequestArgs -> Update request
+requestRedeemImpl config registries createRequest terms inputHoldingCids requestedAt args = do
+  requireRight (checkRedeemTerms terms)
+  when (terms.requester == config.custodian) (failWithStatus eInvalidRequester)
+  let settlement = vaultSettlement config
+      actors = requesterParties terms.requester
+  escrowCid <- allocate registries.shareAllocationFactory settlement
+    (escrowSpec config.share.admin terms.requester (redeemEscrowLeg config terms) terms.deadline)
+    inputHoldingCids requestedAt actors args.share
+  receiptCid <- allocate registries.underlyingAllocationFactory settlement
+    (receiptSpec config.underlying.admin terms.requester terms.deadline)
+    [] requestedAt actors args.underlying
+  createRequest RedeemRequestState with
+    admin = config.admin
+    operator = config.operator
+    vaultId = config.vaultId
+    terms
+    escrowCid
+    receiptCid
+
+-- | Body of a consuming choice that cancels a deposit request, controlled by
+-- `requesterParties state.terms.requester`. It withdraws both allocations
+-- with the requester's authority, which releases the escrowed assets at
+-- once.
+--
+-- It fails when either allocation is no longer active, for example after the
+-- requester withdrew it on the registry directly. Such a request is removed
+-- after its deadline with `expireRequestImpl`.
+cancelDepositImpl : DepositRequestState -> RequestArgs -> Update ()
+cancelDepositImpl state args = do
+  let actors = requesterParties state.terms.requester
+  withdraw state.escrowCid actors args.underlying
+  withdraw state.receiptCid actors args.share
+
+-- | Body of a consuming choice that cancels a redemption request, controlled
+-- by `requesterParties state.terms.requester`. It withdraws both allocations
+-- with the requester's authority, which releases the escrowed shares at
+-- once. It fails as `cancelDepositImpl` does.
+cancelRedeemImpl : RedeemRequestState -> RequestArgs -> Update ()
+cancelRedeemImpl state args = do
+  let actors = requesterParties state.terms.requester
+  withdraw state.escrowCid actors args.share
+  withdraw state.receiptCid actors args.underlying
+
+-- | Body of a consuming choice by which the vault rejects a deposit request
+-- before it settles. It cancels both allocations with the authority of the
+-- settlement's executors, which releases the escrowed assets to the
+-- requester at once.
+--
+-- The choice must run with the authority of the request's `admin` and
+-- `operator`. It fails when either allocation is no longer active, as
+-- `cancelDepositImpl` does.
+rejectDepositImpl : DepositRequestState -> RequestArgs -> Update ()
+rejectDepositImpl state args = do
+  let actors = settlementExecutors state.admin state.operator
+  cancel state.escrowCid actors args.underlying
+  cancel state.receiptCid actors args.share
+
+-- | Body of a consuming choice by which the vault rejects a redemption
+-- request before it settles. It cancels both allocations with the authority
+-- of the settlement's executors, which releases the escrowed shares to the
+-- requester at once. It needs the authority `rejectDepositImpl` does, and
+-- fails as it does.
+rejectRedeemImpl : RedeemRequestState -> RequestArgs -> Update ()
+rejectRedeemImpl state args = do
+  let actors = settlementExecutors state.admin state.operator
+  cancel state.escrowCid actors args.share
+  cancel state.receiptCid actors args.underlying
+
+-- | Body of a consuming choice that drops a request from its deadline on,
+-- when no batch can settle it any more. It exercises nothing, so it succeeds
+-- whatever became of the request's allocations; the requester withdraws
+-- those on their registries. Fails with `eDeadlineNotPassed` before the
+-- deadline.
+expireRequestImpl : Time -> Update ()
+expireRequestImpl deadline = do
+  passed <- isLedgerTimeGE deadline
+  unless passed (failWithStatus eDeadlineNotPassed)
+
+-- Failure statuses. A choice body that fails with one reaches the Ledger API
+-- as a `DAML_FAILURE` error carrying the `errorId` below, so a client matches
+-- on the id.
+
+-- | Raised when a request's amount is zero or negative.
+-- `errorId`: `openzeppelin.com/async-vault-non-positive-amount`.
+eNonPositiveAmount : FailureStatus
+eNonPositiveAmount = Internal.vaultFailure "non-positive-amount" InvalidIndependentOfSystemState
+  "AsyncVault: the amount must be positive"
+
+-- | Raised when a requester is not a regular account, or is the vault's
+-- custodian.
+-- `errorId`: `openzeppelin.com/async-vault-invalid-requester`.
+eInvalidRequester : FailureStatus
+eInvalidRequester = Internal.vaultFailure "invalid-requester" InvalidIndependentOfSystemState
+  "AsyncVault: the requester must be a regular account other than the vault's custodian"
+
+-- | Raised when a request's label is empty or longer than `maxLabelLength`.
+-- `errorId`: `openzeppelin.com/async-vault-invalid-label`.
+eInvalidLabel : FailureStatus
+eInvalidLabel = Internal.vaultFailure "invalid-label" InvalidIndependentOfSystemState
+  "AsyncVault: the label must have between 1 and 64 characters"
+
+-- | Raised when a registry does not finish an allocation, a withdrawal, or a
+-- cancellation in the same transaction, for example because it needs a
+-- further approval.
+-- `errorId`: `openzeppelin.com/async-vault-allocation-incomplete`.
+eAllocationIncomplete : FailureStatus
+eAllocationIncomplete = Internal.vaultFailure "allocation-incomplete" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the registry did not complete the allocation step"
+
+-- | Raised when a request is dropped before its deadline.
+-- `errorId`: `openzeppelin.com/async-vault-deadline-not-passed`.
+eDeadlineNotPassed : FailureStatus
+eDeadlineNotPassed = Internal.vaultFailure "deadline-not-passed" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the request's deadline has not passed"
+
+-- Helpers
+-------------------------------------------------------
+
+-- | An account as text: its owner, its provider, and its id.
+accountText : HoldingV2.Account -> Text
+accountText account = T.intercalate "|"
+  [ optional "" partyToText account.owner
+  , optional "" partyToText account.provider
+  , account.id
+  ]
+
+checkRequester : HoldingV2.Account -> Either FailureStatus ()
+checkRequester requester
+  | isRegularAccount requester = Right ()
+  | otherwise = Left eInvalidRequester
+
+checkLabel : Text -> Either FailureStatus ()
+checkLabel label
+  | T.length label >= 1 && T.length label <= maxLabelLength = Right ()
+  | otherwise = Left eInvalidLabel
+
+checkAmount : Decimal -> Either FailureStatus ()
+checkAmount amount
+  | amount <= 0.0 = Left eNonPositiveAmount
+  | amount > maxOperand = Left eOutOfRange
+  | otherwise = Right ()
+
+checkMinimum : Optional Decimal -> Either FailureStatus ()
+checkMinimum minimum = case minimum of
+  Some amount | amount < 0.0 -> Left eNegativeAmount
+  Some amount | amount > maxOperand -> Left eOutOfRange
+  _ -> Right ()
+
+requireRight : Either FailureStatus a -> Update a
+requireRight = either failWithStatus pure
+
+-- | The allocation that escrows a request's funds: one sender leg, no
+-- iteration, not committed.
+escrowSpec
+  : Party -> HoldingV2.Account -> AllocationV2.TransferLeg -> Time
+  -> AllocationV2.AllocationSpecification
+escrowSpec admin authorizer escrowLeg deadline = AllocationV2.AllocationSpecification with
+  admin
+  authorizer
+  transferLegSides = [senderSide escrowLeg]
+  settlementDeadline = Some deadline
+  nextIterationFunding = None
+  committed = False
+  meta = emptyMetadata
+
+-- | The allocation that authorizes a request's proceeds: no leg and no
+-- reserve, with the legs left for the executors to name.
+receiptSpec : Party -> HoldingV2.Account -> Time -> AllocationV2.AllocationSpecification
+receiptSpec admin authorizer deadline = AllocationV2.AllocationSpecification with
+  admin
+  authorizer
+  transferLegSides = []
+  settlementDeadline = Some deadline
+  nextIterationFunding = Some TextMap.empty
+  committed = False
+  meta = emptyMetadata
+
+allocate
+  : ContractId AllocationInstructionV2.AllocationFactory -> AllocationV2.SettlementInfo
+  -> AllocationV2.AllocationSpecification -> [ContractId HoldingV2.Holding] -> Time -> [Party]
+  -> ExtraArgs -> Update (ContractId AllocationV2.Allocation)
+allocate factory settlement allocation inputHoldingCids requestedAt actors extraArgs = do
+  result <- exercise factory AllocationInstructionV2.AllocationFactory_Allocate with
+    settlement
+    allocation
+    requestedAt
+    inputHoldingCids
+    extraArgs
+    actors
+  case result.output of
+    AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> failWithStatus eAllocationIncomplete
+
+withdraw : ContractId AllocationV2.Allocation -> [Party] -> ExtraArgs -> Update ()
+withdraw allocationCid actors extraArgs = do
+  result <- exercise allocationCid AllocationV2.Allocation_Withdraw with actors; extraArgs
+  case result.output of
+    AllocationV2.AllocationResult_Withdrawn -> pure ()
+    _ -> failWithStatus eAllocationIncomplete
+
+cancel : ContractId AllocationV2.Allocation -> [Party] -> ExtraArgs -> Update ()
+cancel allocationCid actors extraArgs = do
+  result <- exercise allocationCid AllocationV2.Allocation_Cancel with actors; extraArgs
+  case result.output of
+    AllocationV2.AllocationResult_Cancelled -> pure ()
+    _ -> failWithStatus eAllocationIncomplete

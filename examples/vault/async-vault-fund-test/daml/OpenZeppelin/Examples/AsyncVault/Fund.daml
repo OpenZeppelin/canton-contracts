@@ -1,0 +1,557 @@
+-- | Integration demo for the asynchronous vault: a fund whose investors ask
+-- to deposit and to redeem, and whose operator settles their requests in
+-- batches, at one price per batch.
+--
+-- The demo runs the ready-made templates together, as a deployment does:
+--
+-- * `Vault`, `VaultLedger`, `DepositRequest`, and `RedeemRequest` of
+--   `openzeppelin-async-vault-v1`.
+-- * `DepositPermitRules` of `openzeppelin-async-vault-permits-v1` as the
+--   vault's deposit gate, under the same-namespace rule.
+-- * `TokenRules` of `openzeppelin-token-cip112-v1` as the registry of both
+--   instruments: the issuer's for the underlying, and the vault admin's own
+--   for the shares.
+--
+-- Three scripts: `demoPermittedDeposit` opens the fund to the parties a
+-- validator enables and settles a first batch; `demoPriceChangeAndRedemption`
+-- settles a deposit and a redemption together at a new price;
+-- `demoAccessWithdrawn` withdraws the validator and lets its investor leave.
+-- Each includes its failing paths.
+--
+-- The scripts run under `dpm test` on the in-memory ledger, and
+-- `scripts/check-sandbox.sh` runs them over gRPC against a Canton sandbox
+-- with two participants. Each script allocates its own parties and sets the
+-- ledger's clock to the same time, so the scripts share one ledger in any
+-- order.
+module OpenZeppelin.Examples.AsyncVault.Fund where
+
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.Fail (FailureStatus)
+import DA.Optional (isNone, isSome)
+import DA.Stack (HasCallStack)
+import DA.Text qualified as T
+import DA.Time (days, hours, milliseconds, time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount)
+
+import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
+import OpenZeppelin.Token.Cip112.V1.Holding (TokenHolding)
+import OpenZeppelin.Token.Cip112.V1.Registry (TokenRules(..), TokenRules_OfferMint(..))
+
+import OpenZeppelin.ScopedAuthorizationGrantV1 qualified as SAG
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Math (ePriceOutOfBand)
+import OpenZeppelin.AsyncVault.Utils.Settlement (eBelowMinimum)
+import OpenZeppelin.AsyncVaultV1
+import OpenZeppelin.AsyncVaultPermitsV1
+
+-- Scripts
+-------------------------------------------------------
+
+-- | Who may deposit. The validator enables a party of its own participant and
+-- is refused for a party of another. The enabled party asks to deposit
+-- alone, with its permit and the contracts it is shown, and a party without
+-- a permit is refused. The operator settles the batch alone, and the shares
+-- arrive as holdings of the share registry.
+demoPermittedDeposit : Script ()
+demoPermittedDeposit = do
+  f@Fund{..} <- launch "deposit-"
+
+  -- HAPPY: Alice is on the validator's participant, so of its namespace.
+  alicesPermit <- enable f alice
+  -- FAILING: Dave is on the vault's participant.
+  mustFailWith eOtherNamespace (tryEnable f dave)
+
+  -- HAPPY: Alice asks to deposit 100 USDX. The assets stay in her own
+  -- holdings, locked, until the batch.
+  mint f alice 100.0
+  depositCid <- requestDeposit f alice alicesPermit (depositOf alice "deposit-1" 100.0)
+  holds config.underlying alice (0.0, 100.0)
+
+  -- FAILING: Carol holds the assets and no permit.
+  mint f carol 100.0
+  mustFailWith eNoPermit
+    (tryRequestDeposit f carol emptyArgs (depositOf carol "deposit-1" 100.0))
+  holds config.underlying carol (100.0, 0.0)
+
+  -- HAPPY: the operator settles the batch at one share per USDX.
+  result <- settle f openingLedgerCid parity [depositCid] []
+  result.batch.depositFills === [fillOf alice "deposit-1" 100.0 100.0]
+  result.batch.state === VaultState with
+    reserves = 100.0; totalShares = 100.0; price = parity; batch = 1
+  holds config.underlying alice (0.0, 0.0)
+  holds config.share alice (100.0, 0.0)
+  holds config.underlying admin (100.0, 0.0)
+
+-- | A new price. The pool earns outside any batch, the operator records the
+-- reserves, and the next batch settles a deposit and a redemption together
+-- at the price the operator chooses. The admin's band and each requester's
+-- minimum bound that choice, and the batch's deposit pays its redemption.
+demoPriceChangeAndRedemption : Script ()
+demoPriceChangeAndRedemption = do
+  f@Fund{..} <- launch "price-"
+  alicesPermit <- enable f alice
+  bobsPermit <- enable f bob
+  mint f alice 100.0
+  mint f bob 220.0
+  firstCid <- requestDeposit f alice alicesPermit (depositOf alice "deposit-1" 100.0)
+  first <- settle f openingLedgerCid parity [firstCid] []
+  holds config.share alice (100.0, 0.0)
+
+  -- The pool earns 10 USDX. The ledger counts it once the operator records
+  -- the custodian's holdings.
+  mint f admin 10.0
+  recordedCid <- recordReserves f first.ledgerCid
+  ledgerState f recordedCid >>= (=== VaultState with
+    reserves = 110.0; totalShares = 100.0; price = parity; batch = 1)
+
+  -- Alice asks to redeem 40 shares for at least 44 USDX, and Bob to deposit
+  -- 220 USDX for at least 200 shares.
+  redeemCid <- requestRedeem f alice
+    ((redeemOf alice "redeem-1" 40.0) with minAssetsOut = Some 44.0)
+  depositCid <- requestDeposit f bob bobsPermit
+    ((depositOf bob "deposit-1" 220.0) with minSharesOut = Some 200.0)
+  holds config.share alice (60.0, 40.0)
+
+  -- FAILING: a price outside the admin's band of a quarter around one.
+  mustFailWith ePriceOutOfBand
+    (trySettle f recordedCid (priceOf 3.0 2.0) [depositCid] [redeemCid])
+  -- FAILING: a price inside the band that gives Bob fewer shares than his
+  -- minimum. Nothing of the batch settles.
+  mustFailWith eBelowMinimum
+    (trySettle f recordedCid (priceOf 6.0 5.0) [depositCid] [redeemCid])
+
+  -- HAPPY: 110 USDX back 100 shares, so the operator settles at 11 USDX for
+  -- 10 shares.
+  second <- settle f recordedCid (priceOf 11.0 10.0) [depositCid] [redeemCid]
+  second.batch.depositFills === [fillOf bob "deposit-1" 220.0 200.0]
+  second.batch.redeemFills === [fillOf alice "redeem-1" 44.0 40.0]
+  second.batch.state === VaultState with
+    reserves = 286.0; totalShares = 260.0; price = priceOf 11.0 10.0; batch = 2
+  holds config.underlying alice (44.0, 0.0)
+  holds config.share alice (60.0, 0.0)
+  holds config.underlying bob (0.0, 0.0)
+  holds config.share bob (200.0, 0.0)
+  holds config.underlying admin (286.0, 0.0)
+
+-- | Withdrawing a validator. The admin revokes the validator's appointment,
+-- and the party it enabled is refused with its permit still active. Her
+-- redemption asks no gate, so she leaves with her assets.
+demoAccessWithdrawn : Script ()
+demoAccessWithdrawn = do
+  f@Fund{..} <- launch "withdrawn-"
+  alicesPermit <- enable f alice
+  mint f alice 150.0
+  firstCid <- requestDeposit f alice alicesPermit (depositOf alice "deposit-1" 100.0)
+  first <- settle f openingLedgerCid parity [firstCid] []
+  holds config.share alice (100.0, 0.0)
+
+  submit admin do exerciseCmd grantCid SAG.AuthorizationGrant_Revoke
+
+  -- FAILING: Alice shows her permit and the appointment as she received it.
+  -- The appointment is no longer active, so the ledger rejects the request
+  -- and locks nothing.
+  Some _ <- queryContractId alice alicesPermit
+  mustBeArchivedSinceShown
+    (tryRequestDeposit f alice (permitArgs alicesPermit) (depositOf alice "deposit-2" 50.0))
+  holds config.underlying alice (50.0, 0.0)
+
+  -- HAPPY: Alice redeems every share.
+  redeemCid <- requestRedeem f alice (redeemOf alice "redeem-1" 100.0)
+  second <- settle f first.ledgerCid parity [] [redeemCid]
+  second.batch.redeemFills === [fillOf alice "redeem-1" 100.0 100.0]
+  second.batch.state === VaultState with
+    reserves = 0.0; totalShares = 0.0; price = parity; batch = 2
+  holds config.underlying alice (150.0, 0.0)
+  holds config.share alice (0.0, 0.0)
+
+-- Setup
+-------------------------------------------------------
+
+data Fund = Fund with
+    issuer : Party
+      -- ^ Admin of the underlying's registry.
+    admin : Party
+      -- ^ The vault's admin. It is also the admin of the share instrument's
+      -- registry and the owner of the custodian account, so it signs the
+      -- vault's ledger alone.
+    operator : Party
+      -- ^ Settles the batches.
+    dave : Party
+      -- ^ An investor on the vault's participant.
+    validator : Party
+      -- ^ Appointed by the admin to enable depositors. It has a participant
+      -- of its own.
+    alice : Party
+      -- ^ An investor on the validator's participant.
+    bob : Party
+      -- ^ An investor on the validator's participant.
+    carol : Party
+      -- ^ A party on the validator's participant that the validator never
+      -- enables.
+    config : VaultConfig
+    underlyingRules : ContractId TokenRules
+      -- ^ The underlying's registry.
+    permitRules : ContractId DepositPermitRules
+      -- ^ The vault's deposit gate.
+    grantCid : ContractId SAG.AuthorizationGrant
+      -- ^ The validator's appointment.
+    vaultCid : ContractId Vault
+    openingLedgerCid : ContractId VaultLedger
+      -- ^ The vault's ledger before any batch.
+    registriesShown : [Disclosure]
+      -- ^ Both registries, as the operator receives them.
+    vaultShown : [Disclosure]
+      -- ^ The vault and both registries, as every requester receives them.
+    permitRulesShown : Disclosure
+      -- ^ The permit rules, as the validator and every depositor receive
+      -- them.
+    grantShown : Disclosure
+      -- ^ The validator's appointment, as every depositor receives it.
+
+-- | The participant that hosts the registries and the vault's own parties,
+-- and the one that hosts the validator and its investors.
+-- `scripts/check-sandbox.sh` starts a Canton sandbox with both. On the
+-- in-memory ledger every party is allocated on the one ledger there is.
+appNode, validatorNode : ParticipantName
+appNode = ParticipantName "app"
+validatorNode = ParticipantName "validator"
+
+-- | A party a participant allocates. A Canton participant puts every party
+-- it allocates into its own namespace. The in-memory ledger gives a party no
+-- namespace, so there the script names it after the participant.
+partyOn : ParticipantName -> Text -> Script Party
+partyOn node name = do
+  party <- allocatePartyByHintOn (PartyIdHint name) node
+  case partyNamespace party of
+    Some _ -> pure party
+    None -> allocatePartyByHintOn (PartyIdHint (name <> "::" <> node.participantName)) node
+
+-- | Request time, the scenario's clock, and the requests' deadline.
+t0, t1, t2 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+t1 = time (date 2026 Jan 1) 0 10 0
+t2 = time (date 2026 Jan 1) 0 20 0
+
+-- | Launch the fund: two registries, the permit rules, the vault that names
+-- them as its gate, an empty ledger, and a validator's appointment. The
+-- prefix goes on every party's name: a ledger allocates a name once, so
+-- scripts that share one ledger each use their own.
+launch : Text -> Script Fund
+launch prefix = do
+  issuer <- partyOn appNode (prefix <> "issuer")
+  admin <- partyOn appNode (prefix <> "admin")
+  operator <- partyOn appNode (prefix <> "operator")
+  dave <- partyOn appNode (prefix <> "dave")
+  validator <- partyOn validatorNode (prefix <> "validator")
+  alice <- partyOn validatorNode (prefix <> "alice")
+  bob <- partyOn validatorNode (prefix <> "bob")
+  carol <- partyOn validatorNode (prefix <> "carol")
+  setTime t1
+
+  -- A registry is one `TokenRules` contract of its admin. The vault's admin
+  -- runs the share instrument's registry itself.
+  underlyingRules <- newRegistry issuer
+  shareRules <- newRegistry admin
+  let config = VaultConfig with
+        admin
+        operator
+        vaultId = "fund-1"
+        underlying = HoldingV2.InstrumentId with admin = issuer; id = "USDX"
+        share = HoldingV2.InstrumentId with admin; id = "FUND"
+        custodian = basicAccount admin
+      registries = VaultRegistries with
+        underlyingAllocationFactory = toInterfaceContractId underlyingRules
+        underlyingSettlementFactory = toInterfaceContractId underlyingRules
+        shareAllocationFactory = toInterfaceContractId shareRules
+        shareSettlementFactory = toInterfaceContractId shareRules
+
+  -- The gate comes first, because the vault names it.
+  permitRules <- submit admin do
+    createCmd DepositPermitRules with
+      admin; vaultId = config.vaultId; policyEpoch = 0; sameNamespaceOnly = True
+  vaultCid <- submit admin do
+    createCmd Vault with
+      config; registries; depositGate = Some (toInterfaceContractId permitRules)
+  -- The ledger starts empty, at one share per unit of the underlying. The
+  -- operator settles within a quarter of that price.
+  openingLedgerCid <- submit admin do
+    createCmd VaultLedger with
+      config
+      registries
+      state = VaultState with reserves = 0.0; totalShares = 0.0; price = parity; batch = 0
+      referencePrice = parity
+      maxDeviation = 0.25
+      maxBatchSize = 25
+  grantCid <- submit admin do
+    exerciseCmd permitRules DepositPermitRules_Appoint with
+      validator; validFrom = None; validUntil = None
+  _ <- eventually (queryContractId validator grantCid)
+
+  -- What the admin and the issuer hand out. Requesters and the operator are
+  -- stakeholders of none of these contracts.
+  Some underlyingShown <- queryDisclosure @TokenRules issuer underlyingRules
+  Some shareShown <- queryDisclosure @TokenRules admin shareRules
+  Some vaultDisclosure <- queryDisclosure @Vault admin vaultCid
+  Some permitRulesShown <- queryDisclosure @DepositPermitRules admin permitRules
+  Some grantShown <- queryDisclosure @SAG.AuthorizationGrant admin grantCid
+  pure Fund with
+    issuer; admin; operator; dave; validator; alice; bob; carol
+    config; underlyingRules; permitRules; grantCid; vaultCid; openingLedgerCid
+    registriesShown = [underlyingShown, shareShown]
+    vaultShown = [vaultDisclosure, underlyingShown, shareShown]
+    permitRulesShown
+    grantShown
+
+newRegistry : Party -> Script (ContractId TokenRules)
+newRegistry admin = submit admin do
+  createCmd TokenRules with
+    config = RegistryConfig with admin; maxTTL = days 90; lockGrace = hours 1
+
+-- | The registries and the permit rules need no extra arguments.
+emptyArgs : ExtraArgs
+emptyArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- | One share for one unit of the underlying.
+parity : SharePrice
+parity = priceOf 1.0 1.0
+
+priceOf : Decimal -> Decimal -> SharePrice
+priceOf priceAssets priceShares = SharePrice with priceAssets; priceShares
+
+-- Validator and investors
+-------------------------------------------------------
+
+-- | Enable a party to deposit, as the validator, alone, with the permit
+-- rules disclosed.
+tryEnable : Fund -> Party -> Script (Either SubmitError (ContractId DepositPermit))
+tryEnable Fund{..} party =
+  trySubmit (actAs validator <> disclose permitRulesShown) do
+    exerciseCmd permitRules DepositPermitRules_Enable with
+      authorization = SAG.Authorization with actor = validator; grantCid
+      party
+
+enable : Fund -> Party -> Script (ContractId DepositPermit)
+enable f party = succeeded (tryEnable f party)
+
+depositOf : Party -> Text -> Decimal -> DepositTerms
+depositOf requester label assets = DepositTerms with
+  requester = basicAccount requester
+  label
+  assets
+  minSharesOut = None
+  deadline = t2
+
+redeemOf : Party -> Text -> Decimal -> RedeemTerms
+redeemOf requester label shares = RedeemTerms with
+  requester = basicAccount requester
+  label
+  shares
+  minAssetsOut = None
+  deadline = t2
+
+-- | What a request was filled with.
+fillOf : Party -> Text -> Decimal -> Decimal -> Fill
+fillOf requester label assets shares = Fill with
+  requester = basicAccount requester; label; assets; shares
+
+-- | Ask to deposit as the requester, alone, funded from every unlocked
+-- holding of the underlying the requester has. The requester is shown the
+-- vault, both registries, the permit rules, and the validator's appointment,
+-- and passes what it shows the gate as the request's `vault` arguments.
+tryRequestDeposit
+  : Fund -> Party -> ExtraArgs -> DepositTerms
+  -> Script (Either SubmitError (ContractId DepositRequest))
+tryRequestDeposit Fund{..} requester vaultArgs terms = do
+  inputHoldingCids <- unlocked config.underlying requester
+  trySubmit (actAs requester <> discloseMany (permitRulesShown :: grantShown :: vaultShown)) do
+    exerciseCmd vaultCid Vault_RequestDeposit with
+      terms
+      inputHoldingCids
+      requestedAt = t0
+      args = RequestArgs with underlying = emptyArgs; share = emptyArgs; vault = vaultArgs
+
+-- | Ask to deposit, showing a permit.
+requestDeposit
+  : Fund -> Party -> ContractId DepositPermit -> DepositTerms -> Script (ContractId DepositRequest)
+requestDeposit f requester permitCid terms =
+  succeeded (tryRequestDeposit f requester (permitArgs permitCid) terms)
+
+-- | Ask to redeem as the requester, alone, funded from every unlocked
+-- holding of the share instrument the requester has. The requester is shown
+-- the vault and both registries. No gate is asked.
+requestRedeem : Fund -> Party -> RedeemTerms -> Script (ContractId RedeemRequest)
+requestRedeem Fund{..} requester terms = do
+  inputHoldingCids <- unlocked config.share requester
+  submit (actAs requester <> discloseMany vaultShown) do
+    exerciseCmd vaultCid Vault_RequestRedeem with
+      terms
+      inputHoldingCids
+      requestedAt = t0
+      args = RequestArgs with underlying = emptyArgs; share = emptyArgs; vault = emptyArgs
+
+-- Operator
+-------------------------------------------------------
+
+-- | Settle a batch at a price as the operator, alone. Beside the requests,
+-- the operator names the custodian's holdings that fund the payouts, and is
+-- shown both registries, the locked funding of every escrow, and those
+-- holdings. A registry's admin is the only lock holder of an escrow's
+-- funding, so each registry serves the funding of its own instrument.
+trySettle
+  : Fund -> ContractId VaultLedger -> SharePrice -> [ContractId DepositRequest]
+  -> [ContractId RedeemRequest] -> Script (Either SubmitError VaultLedger_SettleBatchResult)
+trySettle Fund{..} ledgerCid price depositCids redeemCids = do
+  deposits <- forA depositCids $ \cid -> eventually (queryContractId operator cid)
+  redeems <- forA redeemCids $ \cid -> eventually (queryContractId operator cid)
+  depositFunding <- lockedFunding config.underlying.admin [request.state.escrowCid | request <- deposits]
+  redeemFunding <- lockedFunding config.share.admin [request.state.escrowCid | request <- redeems]
+  poolHoldingCids <- unlocked config.underlying admin
+  poolShown <- shownBy admin poolHoldingCids
+  trySubmit
+    (actAs operator <> discloseMany (registriesShown <> depositFunding <> redeemFunding <> poolShown)) do
+      exerciseCmd ledgerCid VaultLedger_SettleBatch with
+        price
+        depositCids
+        redeemCids
+        poolHoldingCids
+        requestedAt = t0
+        args = RequestArgs with underlying = emptyArgs; share = emptyArgs; vault = emptyArgs
+
+settle
+  : Fund -> ContractId VaultLedger -> SharePrice -> [ContractId DepositRequest]
+  -> [ContractId RedeemRequest] -> Script VaultLedger_SettleBatchResult
+settle f ledgerCid price depositCids redeemCids =
+  succeeded (trySettle f ledgerCid price depositCids redeemCids)
+
+-- | Record the custodian's unlocked holdings of the underlying as the
+-- vault's reserves, as the operator, alone, with the holdings disclosed.
+recordReserves : Fund -> ContractId VaultLedger -> Script (ContractId VaultLedger)
+recordReserves Fund{..} ledgerCid = do
+  holdingCids <- unlocked config.underlying admin
+  shown <- shownBy admin holdingCids
+  submit (actAs operator <> discloseMany shown) do
+    exerciseCmd ledgerCid VaultLedger_RecordReserves with holdingCids
+
+-- | The state a ledger contract records.
+ledgerState : Fund -> ContractId VaultLedger -> Script VaultState
+ledgerState Fund{..} ledgerCid = do
+  Some ledger <- queryContractId operator ledgerCid
+  pure ledger.state
+
+-- | The locked holdings behind allocations, as their registry's admin
+-- discloses them.
+lockedFunding : Party -> [ContractId AllocationV2.Allocation] -> Script [Disclosure]
+lockedFunding registryAdmin allocationCids = do
+  holdingCids <- forA allocationCids $ \allocationCid -> do
+    allocation <- eventually (queryInterfaceContractId registryAdmin allocationCid)
+    pure allocation.holdingCids
+  shownBy registryAdmin (concat holdingCids)
+
+-- | Holdings as one of their stakeholders discloses them.
+shownBy : Party -> [ContractId HoldingV2.Holding] -> Script [Disclosure]
+shownBy stakeholder holdingCids = forA holdingCids $ \holdingCid ->
+  eventually (queryDisclosure stakeholder (fromInterfaceContractId @TokenHolding holdingCid))
+
+-- Registry
+-------------------------------------------------------
+
+-- | Issue the underlying as its registry does: the issuer offers a mint and
+-- the owner accepts it, each in its own submission.
+mint : Fund -> Party -> Decimal -> Script ()
+mint Fund{..} owner amount = do
+  offerCid <- submit issuer do
+    exerciseCmd underlyingRules TokenRules_OfferMint with
+      receiver = basicAccount owner
+      instrumentId = config.underlying.id
+      amount
+      requestedAt = t0
+      executeBefore = t2
+      reason = "demo mint"
+  _ <- eventually (queryInterfaceContractId owner offerCid)
+  result <- submit owner do
+    exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [owner]
+      extraArgs = emptyArgs
+  case result.output of
+    TransferInstructionV2.TransferInstructionResult_Completed _ -> pure ()
+    other -> abort ("expected a completed mint, got: " <> show other)
+
+-- | An owner's holdings of an instrument, as the owner's participant has
+-- them.
+holdingsOf
+  : HoldingV2.InstrumentId -> Party -> Script [(ContractId HoldingV2.Holding, HoldingV2.HoldingView)]
+holdingsOf instrumentId owner = do
+  holdings <- query @TokenHolding owner
+  pure [ (toInterfaceContractId cid, h.holding) | (cid, h) <- holdings
+       , h.holding.account == basicAccount owner, h.holding.instrumentId == instrumentId ]
+
+unlocked : HoldingV2.InstrumentId -> Party -> Script [ContractId HoldingV2.Holding]
+unlocked instrumentId owner = do
+  holdings <- holdingsOf instrumentId owner
+  pure [cid | (cid, holding) <- holdings, isNone holding.lock]
+
+-- | Require what an owner holds of an instrument, unlocked and locked, once
+-- the owner's participant has learnt of the transactions before.
+holds : HasCallStack => HoldingV2.InstrumentId -> Party -> (Decimal, Decimal) -> Script ()
+holds = holdsWithin 100
+
+holdsWithin
+  : HasCallStack => Int -> HoldingV2.InstrumentId -> Party -> (Decimal, Decimal) -> Script ()
+holdsWithin attempts instrumentId owner expected = do
+  holdings <- map snd <$> holdingsOf instrumentId owner
+  let actual =
+        ( sum [h.amount | h <- holdings, isNone h.lock]
+        , sum [h.amount | h <- holdings, isSome h.lock] )
+  if actual == expected || attempts <= 0
+    then actual === expected
+    else do
+      sleep (milliseconds 100)
+      holdsWithin (attempts - 1) instrumentId owner expected
+
+-- Script helpers
+-------------------------------------------------------
+
+-- | Ask until there is an answer. A participant other than the one a
+-- transaction was submitted on learns of it a moment later.
+eventually : Script (Optional a) -> Script a
+eventually = eventuallyWithin 100
+
+eventuallyWithin : Int -> Script (Optional a) -> Script a
+eventuallyWithin attempts ask = ask >>= \case
+  Some answer -> pure answer
+  None
+    | attempts <= 0 -> fail "the transaction did not reach the party's participant"
+    | otherwise -> do
+        sleep (milliseconds 100)
+        eventuallyWithin (attempts - 1) ask
+
+succeeded : HasCallStack => Script (Either SubmitError a) -> Script a
+succeeded action = action >>= \case
+  Right result -> pure result
+  Left other -> fail ("expected the submission to succeed, got " <> show other)
+
+-- | Require a rejection with exactly this failure status.
+mustFailWith : HasCallStack => FailureStatus -> Script (Either SubmitError a) -> Script ()
+mustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  Left other -> fail ("expected " <> show expected <> ", got " <> show other)
+  Right _ -> fail ("expected " <> show expected <> ", and the submission succeeded")
+
+-- | Require a rejection because a contract the submitter was shown has been
+-- archived since. A Canton participant takes the contract as it was shown,
+-- and the participants that host its signatories refuse the transaction. The
+-- in-memory ledger refuses the contract itself.
+mustBeArchivedSinceShown : HasCallStack => Script (Either SubmitError a) -> Script ()
+mustBeArchivedSinceShown action = action >>= \case
+  Left ContractNotFound{} -> pure ()
+  Left (UnknownError message) | "LOCAL_VERDICT_INACTIVE_CONTRACTS" `T.isInfixOf` message -> pure ()
+  Left other -> fail ("expected an archived contract to be refused, got " <> show other)
+  Right _ -> fail "expected an archived contract to be refused, and the submission succeeded"

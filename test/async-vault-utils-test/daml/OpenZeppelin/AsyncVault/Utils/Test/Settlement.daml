@@ -1,0 +1,677 @@
+-- | Tests for `OpenZeppelin.AsyncVault.Utils.Settlement`: what a batch moves
+-- and records, the price it settles at and who decides it, the batches it
+-- refuses, who can settle and where an escrow can go, and the pricing of a
+-- batch as a pure function. The body runs from the fixture templates of
+-- `OpenZeppelin.AsyncVault.Utils.Test.Fixtures` against a registry built on
+-- the OpenZeppelin CIP-0112 utils.
+module OpenZeppelin.AsyncVault.Utils.Test.Settlement where
+
+import DA.Assert ((===))
+import DA.Fail (FailureCategory (..), FailureStatus (..))
+import DA.Foldable (forA_)
+import DA.TextMap qualified as TextMap
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.TokenStandard.Utils (basicAccount, mintAccount, receiverSide, senderSide)
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Math
+import OpenZeppelin.AsyncVault.Utils.Request
+import OpenZeppelin.AsyncVault.Utils.Settlement
+import OpenZeppelin.AsyncVault.Utils.Test.Fixtures
+
+-- | A vault nobody has used, opened at parity.
+emptyState : VaultState
+emptyState = stateOf 0.0 0.0 parity
+
+-- | 150 shares outstanding and 165 units held, last settled at 166 for 151.
+grownState : VaultState
+grownState = stateOf 165.0 150.0 grownPrice
+
+priceOf : Decimal -> Decimal -> SharePrice
+priceOf priceAssets priceShares = SharePrice with priceAssets; priceShares
+
+fillOf : Party -> Text -> Decimal -> Decimal -> Fill
+fillOf requester label assets shares =
+  Fill with requester = basicAccount requester; label; assets; shares
+
+-- What a batch moves and records
+-------------------------------------------------------
+
+-- | Two deposits into an empty vault settle at one price, in one transaction
+-- the operator submits alone. The custodian holds the assets, each requester
+-- holds the shares, the state counts one batch, and the requests and their
+-- allocations are gone.
+testDepositsSettleAtOnePrice : Script ()
+testDepositsSettleAtOnePrice = script do
+  f@Fixture{..} <- setup
+  state <- newState f emptyState
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.underlying bob 50.0
+  aliceCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  bobCid <- requestDeposit f bob (depositTerms bob "d1" 50.0)
+  Some aliceRequest <- queryContractId operator aliceCid
+
+  (settled, batch) <- settleBatch f state parity [aliceCid, bobCid] []
+  batch === SettledBatch with
+    state = VaultState with reserves = 150.0; totalShares = 150.0; price = parity; batch = 1
+    depositFills = [fillOf alice "d1" 100.0 100.0, fillOf bob "d1" 50.0 50.0]
+    redeemFills = []
+  Some after <- queryContractId operator settled
+  after.state === batch.state
+  queryContractId operator state >>= (=== None)
+
+  balance config.underlying alice >>= (=== (20.0, 0.0))
+  balance config.share alice >>= (=== (100.0, 0.0))
+  balance config.underlying bob >>= (=== (0.0, 0.0))
+  balance config.share bob >>= (=== (50.0, 0.0))
+  balance config.underlying admin >>= (=== (150.0, 0.0))
+
+  queryContractId operator aliceCid >>= (=== None)
+  queryContractId operator bobCid >>= (=== None)
+  forA_ [aliceRequest.state.escrowCid, aliceRequest.state.receiptCid] $ \allocationCid -> do
+    allocation <- queryInterfaceContractId @AllocationV2.Allocation operator allocationCid
+    allocation === None
+
+-- | A redemption and a deposit in one batch settle at the same price, and
+-- the pool pays only the difference. Afterwards the custodian holds exactly
+-- the recorded reserves, and the shares outstanding are the recorded shares.
+testMixedBatchNetsTheFlows : Script ()
+testMixedBatchNetsTheFlows = script do
+  f@Fixture{..} <- setup
+  state <- newState f grownState
+  _ <- giveHolding config.underlying admin 165.0
+  _ <- giveHolding config.share alice 100.0
+  _ <- giveHolding config.share bob 50.0
+  _ <- giveHolding config.underlying bob 44.0
+  redeemCid <- requestRedeem f alice ((redeemTerms alice "r1" 100.0) with minAssetsOut = Some 109.0)
+  depositCid <- requestDeposit f bob (depositTerms bob "d2" 44.0)
+
+  (settled, batch) <- settleBatch f state grownPrice [depositCid] [redeemCid]
+  -- 100 * 166 / 151 = 109.93377483443...
+  -- 44 * 151 / 166 = 40.02409638554...
+  batch === SettledBatch with
+    state = VaultState with
+      reserves = 99.0662251656
+      totalShares = 90.0240963855
+      price = grownPrice
+      batch = 1
+    depositFills = [fillOf bob "d2" 44.0 40.0240963855]
+    redeemFills = [fillOf alice "r1" 109.9337748344 100.0]
+  Some after <- queryContractId operator settled
+  after.state === batch.state
+
+  balance config.underlying alice >>= (=== (109.9337748344, 0.0))
+  balance config.share alice >>= (=== (0.0, 0.0))
+  balance config.underlying bob >>= (=== (0.0, 0.0))
+  balance config.share bob >>= (=== (90.0240963855, 0.0))
+  balance config.underlying admin >>= (=== (99.0662251656, 0.0))
+
+-- | A batch of redemptions alone burns the shares and pays from the pool.
+testRedemptionsSettleFromThePool : Script ()
+testRedemptionsSettleFromThePool = script do
+  f@Fixture{..} <- setup
+  state <- newState f (stateOf 150.0 150.0 parity)
+  _ <- giveHolding config.underlying admin 150.0
+  _ <- giveHolding config.share alice 100.0
+  _ <- giveHolding config.share bob 50.0
+  aliceCid <- requestRedeem f alice (redeemTerms alice "r1" 60.0)
+  bobCid <- requestRedeem f bob (redeemTerms bob "r1" 50.0)
+
+  (_, batch) <- settleBatch f state parity [] [aliceCid, bobCid]
+  batch === SettledBatch with
+    state = VaultState with reserves = 40.0; totalShares = 40.0; price = parity; batch = 1
+    depositFills = []
+    redeemFills = [fillOf alice "r1" 60.0 60.0, fillOf bob "r1" 50.0 50.0]
+  balance config.underlying alice >>= (=== (60.0, 0.0))
+  balance config.share alice >>= (=== (40.0, 0.0))
+  balance config.underlying bob >>= (=== (50.0, 0.0))
+  balance config.share bob >>= (=== (0.0, 0.0))
+  balance config.underlying admin >>= (=== (40.0, 0.0))
+
+-- The price
+-------------------------------------------------------
+
+-- | A batch settles at the price it is submitted with, and the state then
+-- records that price and one batch more. The policy holds the operator to a
+-- band around a reference the operator cannot move, so a price within reach
+-- of the last one is still refused when it is outside the band.
+testBatchSettlesAtThePriceItIsGiven : Script ()
+testBatchSettlesAtThePriceItIsGiven = script do
+  f@Fixture{..} <- setup
+  -- The operator may price within ten percent of parity.
+  state <- newStateWith f (stateOf 150.0 150.0 parity) None (Some (parity, 0.1))
+  _ <- giveHolding config.underlying admin 150.0
+  _ <- giveHolding config.share alice 100.0
+  _ <- giveHolding config.underlying bob 43.0
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 50.0)
+  depositCid <- requestDeposit f bob (depositTerms bob "d1" 22.0)
+
+  forA_ [priceOf 111.0 100.0, priceOf 89.0 100.0] $ \outside ->
+    submitMustFailWith ePriceOutOfBand (trySettleBatch f state outside [depositCid] [redeemCid])
+
+  -- At 1.1 per share, 50 shares pay 55 and 22 units buy 20 shares.
+  let higher = priceOf 11.0 10.0
+  (first, batch) <- settleBatch f state higher [depositCid] [redeemCid]
+  batch === SettledBatch with
+    state = VaultState with reserves = 117.0; totalShares = 120.0; price = higher; batch = 1
+    depositFills = [fillOf bob "d1" 22.0 20.0]
+    redeemFills = [fillOf alice "r1" 55.0 50.0]
+
+  -- 1.2 is within ten percent of the last price, and outside the band.
+  nextCid <- requestDeposit f bob (depositTerms bob "d2" 21.0)
+  submitMustFailWith ePriceOutOfBand (trySettleBatch f first (priceOf 12.0 10.0) [nextCid] [])
+  let lower = priceOf 105.0 100.0
+  (_, next) <- settleBatch f first lower [nextCid] []
+  next.state === VaultState with reserves = 138.0; totalShares = 140.0; price = lower; batch = 2
+  next.depositFills === [fillOf bob "d2" 21.0 20.0]
+
+-- | Under the default policy the operator decides no price: a batch settles
+-- at the price the state records and at no other.
+testDefaultPolicyKeepsThePrice : Script ()
+testDefaultPolicyKeepsThePrice = script do
+  f@Fixture{..} <- setup
+  state <- newState f emptyState
+  _ <- giveHolding config.underlying alice 100.0
+  cid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  forA_ [priceOf 1.0000000001 1.0, priceOf 0.9999999999 1.0, priceOf 11.0 10.0] $ \other ->
+    submitMustFailWith ePriceOutOfBand (trySettleBatch f state other [cid] [])
+  submitMustFailWith eInvalidPrice (trySettleBatch f state (priceOf 0.0 1.0) [cid] [])
+  -- The same price written with other numbers is the same price.
+  let smallest = priceOf ulp ulp
+  (second, batch) <- settleBatch f state smallest [cid] []
+  batch.state === VaultState with
+    reserves = 100.0; totalShares = 100.0; price = smallest; batch = 1
+  -- However the recorded price is written, no other price passes for it.
+  _ <- giveHolding config.underlying alice 19.0
+  nextCid <- requestDeposit f alice (depositTerms alice "d2" 19.0)
+  forA_ [priceOf 1.9 1.0, priceOf 0.0000000002 ulp, priceOf 1.0000000001 1.0] $ \other ->
+    submitMustFailWith ePriceOutOfBand (trySettleBatch f second other [nextCid] [])
+  (_, next) <- settleBatch f second parity [nextCid] []
+  next.state === VaultState with
+    reserves = 119.0; totalShares = 119.0; price = parity; batch = 2
+
+-- Refused batches
+-------------------------------------------------------
+
+-- | Two requests of one requester under one label cannot share a batch,
+-- whether both are deposits or one is a redemption. Each settles in a batch
+-- of its own.
+testBatchRefusesDuplicateRequests : Script ()
+testBatchRefusesDuplicateRequests = script do
+  f@Fixture{..} <- setup
+  state <- newState f emptyState
+  _ <- giveHolding config.underlying alice 200.0
+  _ <- giveHolding config.share alice 80.0
+  first <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  second <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  redeem <- requestRedeem f alice (redeemTerms alice "d1" 50.0)
+  submitMustFailWith eDuplicateRequest (trySettleBatch f state parity [first, second] [])
+  submitMustFailWith eDuplicateRequest (trySettleBatch f state parity [first] [redeem])
+  balance config.underlying alice >>= (=== (0.0, 200.0))
+
+  (afterFirst, _) <- settleBatch f state parity [first] []
+  (_, batch) <- settleBatch f afterFirst parity [second] []
+  batch.state === VaultState with reserves = 200.0; totalShares = 200.0; price = parity; batch = 2
+
+-- | A request made for another vault is refused.
+testBatchRefusesForeignRequests : Script ()
+testBatchRefusesForeignRequests = script do
+  f@Fixture{..} <- setup
+  state <- newState f emptyState
+  _ <- giveHolding config.underlying alice 120.0
+  usd <- unlockedHoldings config.underlying alice
+  otherVault <- submit admin do
+    createCmd TestVault with
+      config = config with vaultId = "vault-2"
+      registries
+      ticket = None
+  Some otherDisclosure <- queryDisclosure @TestVault admin otherVault
+  foreignCid <- submit (actAs alice <> discloseMany (otherDisclosure :: disclosures)) do
+    exerciseCmd otherVault TestVault_RequestDeposit with
+      terms = depositTerms alice "d1" 100.0
+      inputHoldingCids = usd
+      requestedAt = t0
+      args = requestArgs f
+  submitMustFailWith eForeignRequest (trySettleBatch f state parity [foreignCid] [])
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+
+-- | A request is not settled from its deadline on.
+testBatchRefusesExpiredRequests : Script ()
+testBatchRefusesExpiredRequests = script do
+  f@Fixture{..} <- setup
+  state <- newState f emptyState
+  _ <- giveHolding config.underlying alice 120.0
+  cid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  setTime t2
+  submitMustFailWith eRequestExpired (trySettleBatch f state parity [cid] [])
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+
+-- | One request that cannot be filled fails the whole batch, and nothing
+-- moves. The rest settle once it is left out.
+testBatchRefusesUnfillableRequests : Script ()
+testBatchRefusesUnfillableRequests = script do
+  f@Fixture{..} <- setup
+  state <- newState f grownState
+  _ <- giveHolding config.underlying alice 44.0
+  _ <- giveHolding config.underlying bob 44.0
+  -- 44 units convert to 40.0240963855 shares at this price.
+  tooDemanding <- requestDeposit f alice
+    ((depositTerms alice "d1" 44.0) with minSharesOut = Some 40.0240963856)
+  satisfied <- requestDeposit f bob
+    ((depositTerms bob "d1" 44.0) with minSharesOut = Some 40.0240963855)
+  submitMustFailWith eBelowMinimum (trySettleBatch f state grownPrice [satisfied, tooDemanding] [])
+  balance config.underlying bob >>= (=== (0.0, 44.0))
+  balance config.share bob >>= (=== (0.0, 0.0))
+  (_, batch) <- settleBatch f state grownPrice [satisfied] []
+  batch.depositFills === [fillOf bob "d1" 44.0 40.0240963855]
+
+  -- At 10001 units per share, a millionth of a unit buys no share.
+  let expensive = priceOf 10001.0 1.0
+  expensiveState <- newState f (stateOf 0.0 0.0 expensive)
+  _ <- giveHolding config.underlying alice 0.000001
+  dust <- requestDeposit f alice (depositTerms alice "dust" 0.000001)
+  submitMustFailWith eZeroFill (trySettleBatch f expensiveState expensive [dust] [])
+
+-- | An empty batch and a batch above the policy's limit are refused.
+testBatchSizeLimits : Script ()
+testBatchSizeLimits = script do
+  f@Fixture{..} <- setup
+  state <- newStateWith f emptyState (Some 1) None
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.underlying bob 50.0
+  aliceCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  bobCid <- requestDeposit f bob (depositTerms bob "d1" 50.0)
+  submitMustFailWith eEmptyBatch (trySettleBatch f state parity [] [])
+  submitMustFailWith eBatchTooLarge (trySettleBatch f state parity [aliceCid, bobCid] [])
+  (_, batch) <- settleBatch f state parity [aliceCid] []
+  batch.state === VaultState with reserves = 100.0; totalShares = 100.0; price = parity; batch = 1
+
+-- | The default policy settles up to 25 requests in a batch.
+testDefaultBatchSize : Script ()
+testDefaultBatchSize = script do
+  defaultVaultPolicy.maxBatchSize === 25
+
+-- | A deposit that would take the reserves out of range fails the batch.
+testBatchCannotTakeTheStateOutOfRange : Script ()
+testBatchCannotTakeTheStateOutOfRange = script do
+  f@Fixture{..} <- setup
+  state <- newState f (stateOf 999999999999999998.0 0.0 parity)
+  _ <- giveHolding config.underlying alice 5.0
+  cid <- requestDeposit f alice (depositTerms alice "d1" 5.0)
+  submitMustFailWith eTotalsOutOfRange (trySettleBatch f state parity [cid] [])
+  balance config.underlying alice >>= (=== (0.0, 5.0))
+
+-- | A redemption is not owed beyond the recorded reserves. A deposit in the
+-- same batch counts towards them, so it can be what pays the redemption.
+testRedemptionNeedsTheReserves : Script ()
+testRedemptionNeedsTheReserves = script do
+  f@Fixture{..} <- setup
+  -- 150 shares outstanding and only 50 units held: the rest is elsewhere.
+  state <- newState f (stateOf 50.0 150.0 grownPrice)
+  _ <- giveHolding config.underlying admin 50.0
+  _ <- giveHolding config.share alice 100.0
+  _ <- giveHolding config.underlying bob 60.0
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 100.0)
+  submitMustFailWith eInsufficientReserves (trySettleBatch f state grownPrice [] [redeemCid])
+  balance config.share alice >>= (=== (0.0, 100.0))
+
+  -- 60 units come in, 109.9337748344 go out, and the pool covers the rest.
+  depositCid <- requestDeposit f bob (depositTerms bob "d1" 60.0)
+  (_, batch) <- settleBatch f state grownPrice [depositCid] [redeemCid]
+  batch.state.reserves === 0.0662251656
+  balance config.underlying alice >>= (=== (109.9337748344, 0.0))
+  balance config.underlying admin >>= (=== (0.0662251656, 0.0))
+
+-- | A state that records more reserves than the custodian holds cannot pay
+-- them out: the registry refuses, and nothing moves.
+testPayoutNeedsThePool : Script ()
+testPayoutNeedsThePool = script do
+  f@Fixture{..} <- setup
+  state <- newState f grownState
+  _ <- giveHolding config.underlying admin 50.0
+  _ <- giveHolding config.share alice 100.0
+  cid <- requestRedeem f alice (redeemTerms alice "r1" 100.0)
+  (disclosed, cmd) <- settleCmd f state grownPrice [] [cid] (requestArgs f)
+  submitMustFail (actAs operator <> discloseMany disclosed) cmd
+  balance config.share alice >>= (=== (0.0, 100.0))
+  balance config.underlying admin >>= (=== (50.0, 0.0))
+  Some unchanged <- queryContractId operator state
+  unchanged.state === grownState
+
+-- | A cancelled request fails the batch that still names it.
+testCancelledRequestCannotBeSettled : Script ()
+testCancelledRequestCannotBeSettled = script do
+  f@Fixture{..} <- setup
+  state <- newState f emptyState
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.underlying bob 50.0
+  aliceCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  bobCid <- requestDeposit f bob (depositTerms bob "d1" 50.0)
+  (disclosed, _) <- settleCmd f state parity [aliceCid, bobCid] [] (requestArgs f)
+  submit alice do exerciseCmd aliceCid TestDepositRequest_Cancel with args = requestArgs f
+  submitMustFail (actAs operator <> discloseMany disclosed) do
+    exerciseCmd state TestVaultState_SettleBatch with
+      price = parity
+      depositCids = [aliceCid, bobCid]
+      redeemCids = []
+      poolHoldingCids = []
+      requestedAt = t0
+      args = requestArgs f
+  (_, batch) <- settleBatch f state parity [bobCid] []
+  batch.state === VaultState with reserves = 50.0; totalShares = 50.0; price = parity; batch = 1
+
+-- | A rejected request fails the batch that still names it.
+testRejectedRequestCannotBeSettled : Script ()
+testRejectedRequestCannotBeSettled = script do
+  f@Fixture{..} <- setup
+  state <- newState f emptyState
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.underlying bob 50.0
+  aliceCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  bobCid <- requestDeposit f bob (depositTerms bob "d1" 50.0)
+  (disclosed, _) <- settleCmd f state parity [aliceCid, bobCid] [] (requestArgs f)
+  submit (actAs operator <> discloseMany disclosed) do
+    exerciseCmd aliceCid TestDepositRequest_Reject with args = requestArgs f
+  balance config.underlying alice >>= (=== (100.0, 0.0))
+  submitMustFail (actAs operator <> discloseMany disclosed) do
+    exerciseCmd state TestVaultState_SettleBatch with
+      price = parity
+      depositCids = [aliceCid, bobCid]
+      redeemCids = []
+      poolHoldingCids = []
+      requestedAt = t0
+      args = requestArgs f
+  (_, batch) <- settleBatch f state parity [bobCid] []
+  batch.state === VaultState with reserves = 50.0; totalShares = 50.0; price = parity; batch = 1
+
+-- | A registry that leaves an allocation pending, or does not answer for
+-- every allocation, fails the batch: the vault records nothing it cannot see
+-- settled. What the other registry settled in the same transaction is undone
+-- with it.
+testUnsettledAllocationFailsTheBatch : Script ()
+testUnsettledAllocationFailsTheBatch = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 100.0
+  cid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  forA_ [True, False] $ \reportsPending -> do
+    stallingUnderlying <- submit issuer do createCmd StallingSettlement with admin = issuer; reportsPending
+    stallingShare <- submit admin do createCmd StallingSettlement with admin; reportsPending
+    Some underlyingDisclosure <- queryDisclosure @StallingSettlement issuer stallingUnderlying
+    Some shareDisclosure <- queryDisclosure @StallingSettlement admin stallingShare
+    forA_
+      [ (registries with underlyingSettlementFactory = toInterfaceContractId stallingUnderlying)
+      , (registries with shareSettlementFactory = toInterfaceContractId stallingShare)
+      ] $ \stalling -> do
+        state <- submit admin do
+          createCmd TestVaultState with
+            config; registries = stalling; state = emptyState; batchLimit = None; band = None
+        (disclosed, cmd) <- settleCmd f state parity [cid] [] (requestArgs f)
+        submitMustFailWith eAllocationIncomplete $
+          trySubmit (actAs operator <> discloseMany (underlyingDisclosure :: shareDisclosure :: disclosed)) cmd
+  balance config.underlying alice >>= (=== (0.0, 100.0))
+  balance config.share alice >>= (=== (0.0, 0.0))
+  balance config.underlying admin >>= (=== (0.0, 0.0))
+
+-- Authority
+-------------------------------------------------------
+
+-- | Only the operator settles a batch.
+testOnlyTheOperatorSettles : Script ()
+testOnlyTheOperatorSettles = script do
+  f@Fixture{..} <- setup
+  state <- newState f emptyState
+  _ <- giveHolding config.underlying alice 100.0
+  cid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  (disclosed, cmd) <- settleCmd f state parity [cid] [] (requestArgs f)
+  submitMustFailAuthorization (trySubmit (actAs admin <> discloseMany disclosed) cmd)
+  submitMustFail (actAs alice <> discloseMany disclosed) cmd
+  submitMustFail (actAs bob <> discloseMany disclosed) cmd
+  balance config.underlying alice >>= (=== (0.0, 100.0))
+
+-- | Outside the vault's choice, one executor alone settles nothing, and both
+-- together cannot send an escrow anywhere but to the custodian. Both
+-- together can settle it to the custodian without issuing shares: a
+-- requester trusts the pair not to.
+testEscrowOutsideTheBatch : Script ()
+testEscrowOutsideTheBatch = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 100.0
+  let terms = depositTerms alice "d1" 100.0
+      settlement = vaultSettlement config
+      underlyingArgs = registryArgs issuer
+      receive authorizer transferLegSides nextIterationFunding = do
+        result <- submit (actAs authorizer <> discloseMany disclosures) do
+          exerciseCmd registries.underlyingAllocationFactory
+            AllocationInstructionV2.AllocationFactory_Allocate with
+              settlement
+              allocation = AllocationV2.AllocationSpecification with
+                admin = issuer
+                authorizer = basicAccount authorizer
+                transferLegSides
+                settlementDeadline = Some t2
+                nextIterationFunding
+                committed = False
+                meta = emptyMetadata
+              requestedAt = t0
+              inputHoldingCids = []
+              extraArgs = underlyingArgs
+              actors = [authorizer]
+        case result.output of
+          AllocationInstructionV2.AllocationInstructionResult_Completed allocationCid -> pure allocationCid
+          other -> abort ("allocation did not complete: " <> show other)
+      settleAt actors transferLegs allocations =
+        exerciseCmd registries.underlyingSettlementFactory AllocationV2.SettlementFactory_SettleBatch with
+          settlement; transferLegs; allocations; actors; extraArgs = underlyingArgs
+      own = depositEscrowLeg config terms
+      redirected = own with transferLegId = "redirected"; receiver = basicAccount operator
+  cid <- requestDeposit f alice terms
+  Some request <- queryContractId operator cid
+  funding <- fundingDisclosures issuer [request.state.escrowCid]
+  let disclosed = disclosures <> funding
+      escrowCid = request.state.escrowCid
+
+  -- To the operator: refused for one executor and for both.
+  operatorReceipt <- receive operator [] (Some TextMap.empty)
+  let redirect =
+        [ finalized escrowCid [senderSide redirected]
+        , finalized operatorReceipt [receiverSide redirected] ]
+  submitMustFail (actAs operator <> discloseMany disclosed) (settleAt [operator] [redirected] redirect)
+  submitMustFailAuthorization $ trySubmit (actAs operator <> discloseMany disclosed)
+    (settleAt [admin, operator] [redirected] redirect)
+  submitMustFailAuthorization $ trySubmit (actAs admin <> discloseMany disclosed)
+    (settleAt [admin, operator] [redirected] redirect)
+  submitMustFail (actAs [admin, operator] <> discloseMany disclosed)
+    (settleAt [admin, operator] [redirected] redirect)
+  balance config.underlying alice >>= (=== (0.0, 100.0))
+
+  -- To the custodian: refused for one executor, settled by both.
+  custodianReceipt <- receive admin [receiverSide own] None
+  let direct = [finalized escrowCid [], finalized custodianReceipt []]
+  submitMustFailAuthorization $ trySubmit (actAs operator <> discloseMany disclosed)
+    (settleAt [admin, operator] [own] direct)
+  submitMustFailAuthorization $ trySubmit (actAs admin <> discloseMany disclosed)
+    (settleAt [admin, operator] [own] direct)
+  _ <- submit (actAs [admin, operator] <> discloseMany disclosed) (settleAt [admin, operator] [own] direct)
+  balance config.underlying alice >>= (=== (0.0, 0.0))
+  balance config.underlying admin >>= (=== (100.0, 0.0))
+  balance config.share alice >>= (=== (0.0, 0.0))
+
+-- | Each registry receives its own extra arguments when a batch settles.
+testEachRegistryReceivesItsOwnArgumentsAtSettlement : Script ()
+testEachRegistryReceivesItsOwnArgumentsAtSettlement = script do
+  f@Fixture{..} <- setup
+  state <- newState f grownState
+  _ <- giveHolding config.underlying admin 165.0
+  _ <- giveHolding config.underlying alice 44.0
+  _ <- giveHolding config.share bob 50.0
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 44.0)
+  redeemCid <- requestRedeem f bob (redeemTerms bob "r1" 50.0)
+  let args = requestArgs f
+      swapped = args with underlying = args.share; share = args.underlying
+      underlyingOnly = args with share = emptyArgs
+      shareOnly = args with underlying = emptyArgs
+  forA_ [swapped, underlyingOnly, shareOnly] $ \wrong -> do
+    (disclosed, cmd) <- settleCmd f state grownPrice [depositCid] [redeemCid] wrong
+    submitMustFailWith eWrongRegistryArgs (trySubmit (actAs operator <> discloseMany disclosed) cmd)
+  _ <- settleBatch f state grownPrice [depositCid] [redeemCid]
+  pure ()
+
+-- Pure parts
+-------------------------------------------------------
+
+-- | Every request of a batch is priced at the batch's one price, so the
+-- order of the requests changes nobody's fill and not the state after. The
+-- state after records the price and counts the batch.
+testPriceBatch : Script ()
+testPriceBatch = script do
+  Fixture{..} <- setup
+  let deposits = [depositTerms alice "d1" 44.0, depositTerms bob "d1" 88.0]
+      redeems = [redeemTerms alice "r1" 100.0]
+      before = grownState with batch = 7
+  Right batch <- pure (priceBatch before grownPrice deposits redeems)
+  -- 88 * 151 / 166 = 80.04819277108...
+  batch === SettledBatch with
+    state = VaultState with
+      reserves = 187.0662251656
+      totalShares = 170.0722891565
+      price = grownPrice
+      batch = 8
+    depositFills = [fillOf alice "d1" 44.0 40.0240963855, fillOf bob "d1" 88.0 80.0481927710]
+    redeemFills = [fillOf alice "r1" 109.9337748344 100.0]
+  Right reordered <- pure (priceBatch before grownPrice (reverse deposits) redeems)
+  reordered.depositFills === reverse batch.depositFills
+  reordered.state === batch.state
+
+  -- Another price for the same requests changes every fill, and is recorded.
+  Right atParity <- pure (priceBatch before parity deposits redeems)
+  atParity.depositFills === [fillOf alice "d1" 44.0 44.0, fillOf bob "d1" 88.0 88.0]
+  atParity.redeemFills === [fillOf alice "r1" 100.0 100.0]
+  atParity.state === VaultState with
+    reserves = 197.0; totalShares = 182.0; price = parity; batch = 8
+
+-- | What fails the pricing of a batch: a request that cannot be filled,
+-- reserves that do not cover the redemptions, more shares burned than are
+-- outstanding, and a price or a state that is not valid.
+testPriceBatchFailures : Script ()
+testPriceBatchFailures = script do
+  Fixture{..} <- setup
+  let deposit = depositTerms alice "d1" 44.0
+  priceBatch grownState grownPrice [depositTerms alice "d2" ulp, deposit] [] === Left eZeroFill
+  -- 151 shares are owed 166 units, one more than the vault holds.
+  priceBatch grownState grownPrice [] [redeemTerms bob "r1" 151.0] === Left eInsufficientReserves
+  priceBatch (grownState with reserves = 1000.0) grownPrice [] [redeemTerms bob "r1" 151.0]
+    === Left eExceedsTotals
+  priceBatch grownState (priceOf 0.0 1.0) [deposit] [] === Left eInvalidPrice
+  priceBatch (grownState with reserves = -1.0) grownPrice [deposit] [] === Left eTotalsOutOfRange
+  priceBatch emptyState parity [] [] === Right SettledBatch with
+    state = (emptyState with batch = 1)
+    depositFills = []
+    redeemFills = []
+
+-- | A fill is refused when it is nothing, or less than the minimum, and
+-- accepted at exactly the minimum.
+testFillRules : Script ()
+testFillRules = script do
+  Fixture{..} <- setup
+  let deposit = depositTerms alice "d1" 44.0
+      redeem = redeemTerms alice "r1" 100.0
+  depositFill grownPrice deposit === Right 40.0240963855
+  depositFill grownPrice (deposit with minSharesOut = Some 40.0240963855) === Right 40.0240963855
+  depositFill grownPrice (deposit with minSharesOut = Some 40.0240963856) === Left eBelowMinimum
+  depositFill grownPrice (deposit with assets = ulp) === Left eZeroFill
+  depositFill grownPrice (deposit with assets = ulp; minSharesOut = Some 0.0) === Left eZeroFill
+  redeemFill grownPrice redeem === Right 109.9337748344
+  redeemFill grownPrice (redeem with minAssetsOut = Some 109.9337748344) === Right 109.9337748344
+  redeemFill grownPrice (redeem with minAssetsOut = Some 109.9337748345) === Left eBelowMinimum
+  redeemFill (priceOf ulp 1.0) (redeem with shares = 0.5) === Left eZeroFill
+
+-- | The checks a batch passes before it is priced.
+testCheckBatch : Script ()
+testCheckBatch = script do
+  Fixture{..} <- setup
+  let deposit requester label = DepositRequestState with
+        admin
+        operator
+        vaultId = "vault-1"
+        terms = depositTerms requester label 1.0
+        escrowCid = coerceContractId vault
+        receiptCid = coerceContractId vault
+      redeem requester label = RedeemRequestState with
+        admin
+        operator
+        vaultId = "vault-1"
+        terms = redeemTerms requester label 1.0
+        escrowCid = coerceContractId vault
+        receiptCid = coerceContractId vault
+      one = deposit alice "a"
+  checkBatch 2 config [] [] === Left eEmptyBatch
+  checkBatch 2 config [one] [] === Right ()
+  checkBatch 2 config [one] [redeem alice "b"] === Right ()
+  checkBatch 2 config [one, deposit bob "a"] [redeem alice "b"] === Left eBatchTooLarge
+  checkBatch 3 config [one, deposit bob "a"] [redeem alice "b"] === Right ()
+  checkBatch 3 config [one, deposit alice "a"] [] === Left eDuplicateRequest
+  checkBatch 3 config [one] [redeem alice "a"] === Left eDuplicateRequest
+  checkBatch 3 config [] [redeem alice "a", redeem alice "a"] === Left eDuplicateRequest
+  -- Two accounts of one owner whose ids and labels join to the same text.
+  let account id = (basicAccount alice) with id
+      depositIn id label = (deposit alice label) with
+        terms = (depositTerms alice label 1.0) with requester = account id
+      redeemIn id label = (redeem alice label) with
+        terms = (redeemTerms alice label 1.0) with requester = account id
+  checkBatch 3 config [depositIn "x/y" "z", depositIn "x" "y/z"] [] === Left eDuplicateRequest
+  checkBatch 3 config [depositIn "x/y" "z"] [redeemIn "x" "y/z"] === Left eDuplicateRequest
+  checkBatch 3 config [depositIn "x/y" "z", depositIn "x" "y"] [] === Right ()
+  forA_
+    [ (one with admin = bob)
+    , (one with operator = bob)
+    , (one with vaultId = "vault-2")
+    ] $ \foreign -> do
+      checkBatch 3 config [foreign] [] === Left eForeignRequest
+      checkBatch 3 config [one, foreign] [] === Left eForeignRequest
+  checkBatch 3 config [] [(redeem alice "b") with vaultId = "vault-2"] === Left eForeignRequest
+
+-- | The legs a batch adds to a request's own.
+testSettlementLegs : Script ()
+testSettlementLegs = script do
+  Fixture{..} <- setup
+  depositShareLeg config (depositTerms alice "d1" 44.0) 40.0 === AllocationV2.TransferLeg with
+    transferLegId = partyToText alice <> "||/d1/share"
+    sender = mintAccount
+    receiver = basicAccount alice
+    amount = 40.0
+    instrumentId = "VSHARE"
+    meta = emptyMetadata
+  redeemPayoutLeg config (redeemTerms alice "r1" 100.0) 109.9337748344 === AllocationV2.TransferLeg with
+    transferLegId = partyToText alice <> "||/r1/underlying"
+    sender = basicAccount admin
+    receiver = basicAccount alice
+    amount = 109.9337748344
+    instrumentId = "USD"
+    meta = emptyMetadata
+
+-- | Each status in full: the id clients match on, the category, and the
+-- message.
+testSettlementFailureStatuses : Script ()
+testSettlementFailureStatuses = script do
+  let status errorId category message = FailureStatus with
+        errorId; category; message; meta = TextMap.empty
+  eEmptyBatch === status "openzeppelin.com/async-vault-empty-batch"
+    InvalidIndependentOfSystemState "AsyncVault: the batch holds no request"
+  eBatchTooLarge === status "openzeppelin.com/async-vault-batch-too-large"
+    InvalidIndependentOfSystemState "AsyncVault: the batch holds more requests than the vault allows"
+  eForeignRequest === status "openzeppelin.com/async-vault-foreign-request"
+    InvalidIndependentOfSystemState "AsyncVault: the batch holds a request made for another vault"
+  eDuplicateRequest === status "openzeppelin.com/async-vault-duplicate-request"
+    InvalidIndependentOfSystemState
+    "AsyncVault: the batch holds two requests with the same transfer-leg ids"
+  eRequestExpired === status "openzeppelin.com/async-vault-request-expired"
+    InvalidGivenCurrentSystemStateOther "AsyncVault: the batch holds a request whose deadline has passed"
+  eZeroFill === status "openzeppelin.com/async-vault-zero-fill"
+    InvalidGivenCurrentSystemStateOther "AsyncVault: a request converts to nothing at the batch's price"
+  eBelowMinimum === status "openzeppelin.com/async-vault-below-minimum"
+    InvalidGivenCurrentSystemStateOther
+    "AsyncVault: a request converts to less than its requester's minimum"

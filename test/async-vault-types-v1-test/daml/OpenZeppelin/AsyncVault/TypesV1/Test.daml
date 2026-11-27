@@ -1,0 +1,104 @@
+-- | Tests for the types package on its own: a template stores every record,
+-- and the ledger returns each one unchanged. The functions that read and
+-- return the records run under `test/async-vault-utils-test`.
+module OpenZeppelin.AsyncVault.TypesV1.Test where
+
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.TextMap qualified as TextMap
+import DA.Time (time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+
+import OpenZeppelin.AsyncVault.TypesV1
+
+-- | Stores every record, as a vault's templates and choices do.
+template Stored with
+    admin : Party
+    config : VaultConfig
+    registries : VaultRegistries
+    state : VaultState
+    batch : SettledBatch
+    deposit : DepositRequestState
+    redeem : RedeemRequestState
+    args : RequestArgs
+  where
+    signatory admin
+
+-- | Stands in for a registry contract or an allocation, so the records carry
+-- real contract ids.
+template Placeholder with
+    admin : Party
+  where
+    signatory admin
+
+testRecordsRoundTripThroughAPayload : Script ()
+testRecordsRoundTripThroughAPayload = do
+  admin <- allocateParty "admin"
+  operator <- allocateParty "operator"
+  issuer <- allocateParty "issuer"
+  alice <- allocateParty "alice"
+  validator <- allocateParty "validator"
+  underlyingRegistry <- submit admin do createCmd Placeholder with admin
+  shareRegistry <- submit admin do createCmd Placeholder with admin
+  escrow <- submit admin do createCmd Placeholder with admin
+  receipt <- submit admin do createCmd Placeholder with admin
+  let closesAt = time (date 2026 Jan 1) 0 20 0
+      account = HoldingV2.Account with owner = Some alice; provider = Some validator; id = ""
+      config = VaultConfig with
+        admin
+        operator
+        vaultId = "vault-1"
+        underlying = HoldingV2.InstrumentId with admin = issuer; id = "USD"
+        share = HoldingV2.InstrumentId with admin; id = "VSHARE"
+        custodian = HoldingV2.Account with owner = Some admin; provider = None; id = "vault-1"
+      registries = VaultRegistries with
+        underlyingAllocationFactory = coerceContractId underlyingRegistry
+        underlyingSettlementFactory = coerceContractId underlyingRegistry
+        shareAllocationFactory = coerceContractId shareRegistry
+        shareSettlementFactory = coerceContractId shareRegistry
+      state = VaultState with
+        reserves = 165.0
+        totalShares = 150.0
+        price = SharePrice with priceAssets = 166.0; priceShares = 151.0
+        batch = 3
+      batch = SettledBatch with
+        state = state with reserves = 209.0; totalShares = 190.0240963855; batch = 4
+        depositFills = [Fill with requester = account; label = "d1"; assets = 44.0; shares = 40.0240963855]
+        redeemFills = []
+      deposit = DepositRequestState with
+        admin
+        operator
+        vaultId = "vault-1"
+        terms = DepositTerms with
+          requester = account
+          label = "d1"
+          assets = 44.0
+          minSharesOut = Some 40.0
+          deadline = closesAt
+        escrowCid = coerceContractId escrow
+        receiptCid = coerceContractId receipt
+      redeem = RedeemRequestState with
+        admin
+        operator
+        vaultId = "vault-1"
+        terms = RedeemTerms with
+          requester = account
+          label = "r1"
+          shares = 100.0
+          minAssetsOut = None
+          deadline = closesAt
+        escrowCid = coerceContractId escrow
+        receiptCid = coerceContractId receipt
+      extraArgs key = ExtraArgs with
+        context = emptyChoiceContext
+        meta = Metadata with values = TextMap.fromList [(key, "value")]
+      args = RequestArgs with
+        underlying = extraArgs "underlying"
+        share = extraArgs "share"
+        vault = extraArgs "vault"
+      stored = Stored with admin; config; registries; state; batch; deposit; redeem; args
+  cid <- submit admin do createCmd stored
+  queryContractId admin cid >>= (=== Some stored)

@@ -1,0 +1,297 @@
+-- | A lending pool that owns every template it deploys and reuses the choice
+-- bodies of `openzeppelin-async-vault-utils` unchanged. It depends on that
+-- package and on `openzeppelin-async-vault-types-v1` only, never on the
+-- default templates.
+--
+-- Lenders ask to deposit and to redeem, and the operator settles their
+-- requests in batches at one price per batch. The pool adds three rules of
+-- its own, each marked `ADDITION` where it lives:
+--
+-- * A smallest deposit, through the policy's `authorizeDeposit`.
+-- * A price that never falls and rises by a bounded step per batch, through
+--   the policy's `checkPrice`.
+-- * A limit on what one batch pays out to redemptions, checked on the fills
+--   `settleBatchImpl` returns.
+module OpenZeppelin.Examples.AsyncVault.Custom where
+
+import DA.Action (unless, when)
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import DA.Foldable (forA_)
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Math
+import OpenZeppelin.AsyncVault.Utils.Request
+import OpenZeppelin.AsyncVault.Utils.Reserves
+import OpenZeppelin.AsyncVault.Utils.Settlement
+
+-- Rules
+-------------------------------------------------------
+
+-- | The pool's rules: its identity, the registries its requests are made on,
+-- and the smallest deposit it takes. The admin signs alone and the operator
+-- observes. Lenders receive the contract by explicit disclosure, together
+-- with the allocation factories it names.
+--
+-- Both request choices are nonconsuming and read no price, so lenders never
+-- contend with each other or with a batch.
+template Pool with
+    config : VaultConfig
+    registries : VaultRegistries
+    minDeposit : Decimal
+      -- ^ The smallest deposit a request may ask for, in units of the
+      -- underlying.
+  where
+    signatory config.admin
+    observer config.operator
+    ensure isValidVaultConfig config && minDeposit >= 0.0
+
+    nonconsuming choice Pool_RequestDeposit : ContractId PoolDepositRequest
+      -- ^ Open a deposit request, as the lender, alone. Fails with
+      -- `eDepositTooSmall` below `minDeposit`, and otherwise as
+      -- `requestDepositImpl` does.
+      with
+        terms : DepositTerms
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+        requestedAt : Time
+        args : RequestArgs
+      controller requesterParties terms.requester
+      do
+        -- ADDITION: a rule of the pool's own decides which deposits it
+        -- takes. It runs before anything is locked.
+        let policy = defaultVaultPolicy with
+              authorizeDeposit = \requested _ ->
+                when (requested.assets < minDeposit) (failWithStatus eDepositTooSmall)
+        requestDepositImpl config registries policy
+          (\state -> create PoolDepositRequest with state)
+          terms inputHoldingCids requestedAt args
+
+    nonconsuming choice Pool_RequestRedeem : ContractId PoolRedeemRequest
+      -- ^ Open a redemption request, as the lender, alone. No rule of the
+      -- pool is asked, so a lender can always ask to redeem.
+      with
+        terms : RedeemTerms
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+        requestedAt : Time
+        args : RequestArgs
+      controller requesterParties terms.requester
+      do
+        requestRedeemImpl config registries
+          (\state -> create PoolRedeemRequest with state)
+          terms inputHoldingCids requestedAt args
+
+-- Ledger
+-------------------------------------------------------
+
+-- | What the pool records, and the one place where requests are settled.
+--
+-- Signatories: the pool's admin, the share instrument's admin, and the
+-- custodian's account parties, because a batch moves the pool and issues and
+-- burns shares. The operator observes and settles alone.
+--
+-- The operator chooses the price of each batch. The price is never below the
+-- price of the last batch, and at most `maxPriceStep` above it. The bound
+-- follows the price, so over many batches the operator can raise the price
+-- by any amount.
+--
+-- A batch pays out at most `redeemLimit` to its redemptions. The operator
+-- settles the redemptions that fit and leaves the others for a later batch.
+template PoolLedger with
+    config : VaultConfig
+    registries : VaultRegistries
+    state : VaultState
+    maxPriceStep : Decimal
+      -- ^ How far above the price of the last batch a batch's price may be,
+      -- as a fraction of it, within zero and one.
+    redeemLimit : Decimal
+      -- ^ The most of the underlying one batch pays out to redemptions.
+  where
+    signatory config.admin, config.share.admin, requesterParties config.custodian
+    observer config.operator
+    ensure
+      isValidVaultConfig config
+        && isValidVaultState state
+        && maxPriceStep >= 0.0 && maxPriceStep <= 1.0
+        && redeemLimit >= 0.0
+
+    choice PoolLedger_SettleBatch : (ContractId PoolLedger, SettledBatch)
+      -- ^ Settle a batch of requests at one price and record the result.
+      -- Fails with the status `checkPriceStep` returns, with `eRedeemLimit`
+      -- when the batch's redemptions are paid more than `redeemLimit`, and
+      -- otherwise as `settleBatchImpl` does.
+      with
+        price : SharePrice
+        depositCids : [ContractId PoolDepositRequest]
+        redeemCids : [ContractId PoolRedeemRequest]
+        poolHoldingCids : [ContractId HoldingV2.Holding]
+        requestedAt : Time
+        args : RequestArgs
+      controller config.operator
+      do
+        deposits <- forA depositCids fetch
+        redeems <- forA redeemCids fetch
+        -- ADDITION: the pool's own price rule, against the price the ledger
+        -- records.
+        let policy = defaultVaultPolicy with
+              checkPrice = \recorded chosen ->
+                requireRight (checkPriceStep recorded.price maxPriceStep chosen)
+        batch <- settleBatchImpl config registries policy state price
+          (map (.state) deposits) (map (.state) redeems) poolHoldingCids requestedAt args
+        -- ADDITION: a rule on the outcome of the batch. Failing here undoes
+        -- the settlement above with the rest of the transaction.
+        let paidOut = sum (map (.assets) batch.redeemFills)
+        when (paidOut > redeemLimit) (failWithStatus eRedeemLimit)
+        forA_ (zip depositCids batch.depositFills) $ \(requestCid, fill) ->
+          exercise requestCid PoolDepositRequest_Fill with fill
+        forA_ (zip redeemCids batch.redeemFills) $ \(requestCid, fill) ->
+          exercise requestCid PoolRedeemRequest_Fill with fill
+        ledgerCid <- create this with state = batch.state
+        pure (ledgerCid, batch)
+
+    choice PoolLedger_RecordReserves : ContractId PoolLedger
+      -- ^ Replace the recorded reserves with the sum of the custodian's
+      -- holdings named here. Fails as `recordReservesImpl` does.
+      with
+        holdingCids : [ContractId HoldingV2.Holding]
+      controller config.operator
+      do
+        recorded <- recordReservesImpl config state holdingCids
+        create this with state = recorded
+
+    choice PoolLedger_SetLimits : ContractId PoolLedger
+      -- ^ Change the price step and the redemption limit. The recorded state
+      -- is unchanged.
+      with
+        newMaxPriceStep : Decimal
+        newRedeemLimit : Decimal
+      controller config.admin
+      do
+        create this with
+          maxPriceStep = newMaxPriceStep
+          redeemLimit = newRedeemLimit
+
+-- | The first reason the pool refuses a batch's price, if any: it is below
+-- the price of the last batch, or above it by more than `maxStep`, a
+-- fraction of the last price. Prices are compared exactly, as ratios.
+--
+-- Fails with `eInvalidPrice` when a price is not valid, with `ePriceFell`
+-- when the price is below the last one, and as `checkPriceWithin` does
+-- otherwise.
+checkPriceStep : SharePrice -> Decimal -> SharePrice -> Either FailureStatus ()
+checkPriceStep last maxStep price = do
+  checkSharePrice last
+  checkSharePrice price
+  unless (isAtLeast price.priceAssets last.priceShares price.priceShares last.priceAssets)
+    (Left ePriceFell)
+  checkPriceWithin last maxStep price
+
+-- Requests
+-------------------------------------------------------
+
+-- | A pending deposit request. The pool's admin and the lender's account
+-- parties sign, and the operator observes so that it can settle or reject
+-- it. The assets are locked in the lender's own holdings by the escrow
+-- allocation the request names.
+template PoolDepositRequest with
+    state : DepositRequestState
+  where
+    signatory state.admin, requesterParties state.terms.requester
+    observer state.operator
+    ensure isValidDepositRequestState state
+
+    choice PoolDepositRequest_Cancel : ()
+      -- ^ Cancel the request and release the escrowed assets at once.
+      with
+        args : RequestArgs
+      controller requesterParties state.terms.requester
+      do cancelDepositImpl state args
+
+    choice PoolDepositRequest_Reject : ()
+      -- ^ Reject the request and release the escrowed assets to the lender
+      -- at once.
+      with
+        args : RequestArgs
+      controller state.operator
+      do rejectDepositImpl state args
+
+    choice PoolDepositRequest_Expire : ()
+      -- ^ Drop the request from its deadline on. The lender withdraws the
+      -- allocations on their registries.
+      controller state.operator
+      do expireRequestImpl state.terms.deadline
+
+    choice PoolDepositRequest_Fill : ()
+      -- ^ Consume the request with what it received. `PoolLedger_SettleBatch`
+      -- exercises it for every request it settles.
+      with
+        fill : Fill
+      controller state.admin, state.operator
+      do pure ()
+
+-- | A pending redemption request. Its signatories, its observer, and what it
+-- holds are those of `PoolDepositRequest`, for shares escrowed towards the
+-- share instrument's burn account.
+template PoolRedeemRequest with
+    state : RedeemRequestState
+  where
+    signatory state.admin, requesterParties state.terms.requester
+    observer state.operator
+    ensure isValidRedeemRequestState state
+
+    choice PoolRedeemRequest_Cancel : ()
+      -- ^ Cancel the request and release the escrowed shares at once.
+      with
+        args : RequestArgs
+      controller requesterParties state.terms.requester
+      do cancelRedeemImpl state args
+
+    choice PoolRedeemRequest_Reject : ()
+      -- ^ Reject the request and release the escrowed shares to the lender
+      -- at once.
+      with
+        args : RequestArgs
+      controller state.operator
+      do rejectRedeemImpl state args
+
+    choice PoolRedeemRequest_Expire : ()
+      -- ^ Drop the request from its deadline on. The lender withdraws the
+      -- allocations on their registries.
+      controller state.operator
+      do expireRequestImpl state.terms.deadline
+
+    choice PoolRedeemRequest_Fill : ()
+      -- ^ Consume the request with what it received, as
+      -- `PoolDepositRequest_Fill` does.
+      with
+        fill : Fill
+      controller state.admin, state.operator
+      do pure ()
+
+-- Failure statuses. A choice body that fails with one reaches the Ledger API
+-- as a `DAML_FAILURE` error carrying the `errorId` below, so a client matches
+-- on the id.
+
+-- | Raised when a deposit request asks for less than the pool's smallest
+-- deposit.
+eDepositTooSmall : FailureStatus
+eDepositTooSmall = poolFailure "deposit-too-small" InvalidGivenCurrentSystemStateOther
+  "Pool: the deposit is below the pool's smallest deposit"
+
+-- | Raised when a batch's price is below the price of the last batch.
+ePriceFell : FailureStatus
+ePriceFell = poolFailure "price-fell" InvalidGivenCurrentSystemStateOther
+  "Pool: the price is below the price of the last batch"
+
+-- | Raised when a batch pays its redemptions more than the pool's limit.
+eRedeemLimit : FailureStatus
+eRedeemLimit = poolFailure "redeem-limit" InvalidGivenCurrentSystemStateOther
+  "Pool: the batch pays its redemptions more than the pool's limit"
+
+poolFailure : Text -> FailureCategory -> Text -> FailureStatus
+poolFailure name category message = FailureStatus with
+  errorId = "myapp.example/pool-" <> name
+  category
+  message
+  meta = TextMap.empty

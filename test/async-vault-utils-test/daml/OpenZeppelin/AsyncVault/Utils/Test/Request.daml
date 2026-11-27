@@ -1,0 +1,639 @@
+-- | Tests for `OpenZeppelin.AsyncVault.Utils.Request`: what a request locks
+-- and records, who may open, cancel, reject, and drop one, what the policy
+-- and each registry receive, and the terms and statuses that refuse a
+-- request. The
+-- bodies run from the fixture templates of
+-- `OpenZeppelin.AsyncVault.Utils.Test.Fixtures` against a registry built on
+-- the OpenZeppelin CIP-0112 utils.
+module OpenZeppelin.AsyncVault.Utils.Test.Request where
+
+import DA.Assert ((===))
+import DA.Fail (FailureCategory (..), FailureStatus (..))
+import DA.Foldable (forA_)
+import DA.Text qualified as T
+import DA.TextMap qualified as TextMap
+import DA.Time (addRelTime, seconds)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.TokenStandard.Utils (basicAccount, burnAccount, senderSide)
+
+import OpenZeppelin.AsyncVault.Utils.Math (eNegativeAmount, eOutOfRange, maxOperand)
+import OpenZeppelin.AsyncVault.Utils.Request
+import OpenZeppelin.AsyncVault.Utils.Test.Fixtures
+
+-- | A label of the given number of characters.
+labelOfLength : Int -> Text
+labelOfLength n = T.implode (replicate n "x")
+
+-- Opening a request
+-------------------------------------------------------
+
+-- | A deposit request locks the assets in the requester's own holdings and
+-- records the terms. The requester submits alone. The escrow authorizes one
+-- leg, to the custodian, and the receipt authorizes nothing yet.
+testDepositRequestEscrowsTheAssets : Script ()
+testDepositRequestEscrowsTheAssets = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  let terms = (depositTerms alice "d1" 100.0) with minSharesOut = Some 99.0
+  requestCid <- requestDeposit f alice terms
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+
+  Some request <- queryContractId operator requestCid
+  request.state.admin === admin
+  request.state.operator === operator
+  request.state.vaultId === "vault-1"
+  request.state.terms === terms
+
+  Some escrow <- queryInterfaceContractId @AllocationV2.Allocation operator request.state.escrowCid
+  escrow.settlement === vaultSettlement config
+  escrow.allocation === AllocationV2.AllocationSpecification with
+    admin = issuer
+    authorizer = basicAccount alice
+    transferLegSides = [senderSide (depositEscrowLeg config terms)]
+    settlementDeadline = Some t2
+    nextIterationFunding = None
+    committed = False
+    meta = emptyMetadata
+  depositEscrowLeg config terms === AllocationV2.TransferLeg with
+    transferLegId = partyToText alice <> "||/d1/underlying"
+    sender = basicAccount alice
+    receiver = basicAccount admin
+    amount = 100.0
+    instrumentId = "USD"
+    meta = emptyMetadata
+
+  Some receipt <- queryInterfaceContractId @AllocationV2.Allocation operator request.state.receiptCid
+  receipt.settlement === vaultSettlement config
+  receipt.allocation === AllocationV2.AllocationSpecification with
+    admin
+    authorizer = basicAccount alice
+    transferLegSides = []
+    settlementDeadline = Some t2
+    nextIterationFunding = Some TextMap.empty
+    committed = False
+    meta = emptyMetadata
+  receipt.holdingCids === []
+
+-- | A redemption request mirrors a deposit: it locks the shares, with one
+-- leg to the burn account, and authorizes the receipt on the underlying's
+-- registry.
+testRedeemRequestEscrowsTheShares : Script ()
+testRedeemRequestEscrowsTheShares = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.share alice 80.0
+  let terms = (redeemTerms alice "r1" 50.0) with minAssetsOut = Some 49.0
+  requestCid <- requestRedeem f alice terms
+  balance config.share alice >>= (=== (30.0, 50.0))
+
+  Some request <- queryContractId operator requestCid
+  request.state.admin === admin
+  request.state.operator === operator
+  request.state.vaultId === "vault-1"
+  request.state.terms === terms
+
+  Some escrow <- queryInterfaceContractId @AllocationV2.Allocation operator request.state.escrowCid
+  escrow.settlement === vaultSettlement config
+  escrow.allocation === AllocationV2.AllocationSpecification with
+    admin
+    authorizer = basicAccount alice
+    transferLegSides = [senderSide (redeemEscrowLeg config terms)]
+    settlementDeadline = Some t2
+    nextIterationFunding = None
+    committed = False
+    meta = emptyMetadata
+  redeemEscrowLeg config terms === AllocationV2.TransferLeg with
+    transferLegId = partyToText alice <> "||/r1/share"
+    sender = basicAccount alice
+    receiver = burnAccount
+    amount = 50.0
+    instrumentId = "VSHARE"
+    meta = emptyMetadata
+
+  Some receipt <- queryInterfaceContractId @AllocationV2.Allocation operator request.state.receiptCid
+  receipt.settlement === vaultSettlement config
+  receipt.allocation === AllocationV2.AllocationSpecification with
+    admin = issuer
+    authorizer = basicAccount alice
+    transferLegSides = []
+    settlementDeadline = Some t2
+    nextIterationFunding = Some TextMap.empty
+    committed = False
+    meta = emptyMetadata
+  receipt.holdingCids === []
+
+-- | Nobody opens a request for another party: not a stranger, not the
+-- operator, and not the admin.
+testOnlyTheRequesterOpensARequest : Script ()
+testOnlyTheRequesterOpensARequest = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.share alice 80.0
+  usd <- unlockedHoldings config.underlying alice
+  shares <- unlockedHoldings config.share alice
+  forA_ [bob, operator, admin] $ \other -> do
+    submitMustFailAuthorization $ trySubmit (actAs other <> discloseMany disclosures)
+      (requestDepositCmd f (depositTerms alice "d1" 100.0) usd (requestArgs f))
+    submitMustFailAuthorization $ trySubmit (actAs other <> discloseMany disclosures)
+      (requestRedeemCmd f (redeemTerms alice "r1" 50.0) shares (requestArgs f))
+  balance config.underlying alice >>= (=== (120.0, 0.0))
+  balance config.share alice >>= (=== (80.0, 0.0))
+
+-- | A request for more than the requester holds locks nothing and creates
+-- nothing.
+testRequestNeedsTheFunds : Script ()
+testRequestNeedsTheFunds = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 50.0
+  usd <- unlockedHoldings config.underlying alice
+  submitMustFail (actAs alice <> discloseMany disclosures)
+    (requestDepositCmd f (depositTerms alice "d1" 100.0) usd (requestArgs f))
+  balance config.underlying alice >>= (=== (50.0, 0.0))
+  query @TestDepositRequest operator >>= \requests -> length requests === 0
+
+-- | Only a holder opens a redemption request, and only for shares it holds.
+-- A party with no shares opens none, another party's shares do not fund it,
+-- and a holder cannot ask for more than it has. Nothing is locked and no
+-- request is created.
+testRedemptionNeedsTheRequestersOwnShares : Script ()
+testRedemptionNeedsTheRequestersOwnShares = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.share alice 80.0
+  alices <- unlockedHoldings config.share alice
+  alicesDisclosed <- holdingDisclosures admin alices
+
+  -- Bob holds no shares.
+  submitMustFail (actAs bob <> discloseMany disclosures)
+    (requestRedeemCmd f (redeemTerms bob "r1" 50.0) [] (requestArgs f))
+  -- Bob can see Alice's shares, and locking them still takes her authority.
+  submitMustFailAuthorization $ trySubmit (actAs bob <> discloseMany (disclosures <> alicesDisclosed))
+    (requestRedeemCmd f (redeemTerms bob "r1" 50.0) alices (requestArgs f))
+  -- Alice holds 80.
+  submitMustFail (actAs alice <> discloseMany disclosures)
+    (requestRedeemCmd f (redeemTerms alice "r1" 80.0000000001) alices (requestArgs f))
+  balance config.share alice >>= (=== (80.0, 0.0))
+  balance config.share bob >>= (=== (0.0, 0.0))
+  query @TestRedeemRequest operator >>= \requests -> length requests === 0
+
+  _ <- requestRedeem f alice (redeemTerms alice "r1" 80.0)
+  balance config.share alice >>= (=== (0.0, 80.0))
+  -- With everything in escrow, Alice has nothing left to open another with.
+  remaining <- unlockedHoldings config.share alice
+  submitMustFail (actAs alice <> discloseMany disclosures)
+    (requestRedeemCmd f (redeemTerms alice "r2" 1.0) remaining (requestArgs f))
+  query @TestRedeemRequest operator >>= \requests -> length requests === 1
+
+-- Cancelling and dropping
+-------------------------------------------------------
+
+-- | The requester alone cancels, and the escrow is free again in the same
+-- transaction. Both allocations and the request are gone.
+testCancelReleasesTheEscrowAtOnce : Script ()
+testCancelReleasesTheEscrowAtOnce = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.share alice 80.0
+
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  Some deposit <- queryContractId operator depositCid
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+  submit alice do exerciseCmd depositCid TestDepositRequest_Cancel with args = requestArgs f
+  balance config.underlying alice >>= (=== (120.0, 0.0))
+  queryContractId operator depositCid >>= (=== None)
+  forA_ [deposit.state.escrowCid, deposit.state.receiptCid] $ \allocationCid -> do
+    allocation <- queryInterfaceContractId @AllocationV2.Allocation operator allocationCid
+    allocation === None
+
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 50.0)
+  Some redeem <- queryContractId operator redeemCid
+  balance config.share alice >>= (=== (30.0, 50.0))
+  submit alice do exerciseCmd redeemCid TestRedeemRequest_Cancel with args = requestArgs f
+  balance config.share alice >>= (=== (80.0, 0.0))
+  queryContractId operator redeemCid >>= (=== None)
+  forA_ [redeem.state.escrowCid, redeem.state.receiptCid] $ \allocationCid -> do
+    allocation <- queryInterfaceContractId @AllocationV2.Allocation operator allocationCid
+    allocation === None
+
+-- | Neither the operator nor the admin cancels a request, and a stranger
+-- cannot reach it.
+testOnlyTheRequesterCancels : Script ()
+testOnlyTheRequesterCancels = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  requestCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  forA_ [operator, admin] $ \other ->
+    submitMustFailAuthorization $ trySubmit other do
+      exerciseCmd requestCid TestDepositRequest_Cancel with args = requestArgs f
+  submitMustFail bob do
+    exerciseCmd requestCid TestDepositRequest_Cancel with args = requestArgs f
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+
+-- | The operator rejects a request before it settles, alone. Both
+-- allocations are cancelled, the escrow is back with the requester in the
+-- same transaction, and the request is gone.
+testRejectReleasesTheEscrowAtOnce : Script ()
+testRejectReleasesTheEscrowAtOnce = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.share alice 80.0
+
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  Some deposit <- queryContractId operator depositCid
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+  depositFunding <- fundingDisclosures issuer [deposit.state.escrowCid]
+  submit (actAs operator <> discloseMany depositFunding) do
+    exerciseCmd depositCid TestDepositRequest_Reject with args = requestArgs f
+  balance config.underlying alice >>= (=== (120.0, 0.0))
+  queryContractId operator depositCid >>= (=== None)
+  forA_ [deposit.state.escrowCid, deposit.state.receiptCid] $ \allocationCid -> do
+    allocation <- queryInterfaceContractId @AllocationV2.Allocation operator allocationCid
+    allocation === None
+
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 50.0)
+  Some redeem <- queryContractId operator redeemCid
+  balance config.share alice >>= (=== (30.0, 50.0))
+  redeemFunding <- fundingDisclosures admin [redeem.state.escrowCid]
+  submit (actAs operator <> discloseMany redeemFunding) do
+    exerciseCmd redeemCid TestRedeemRequest_Reject with args = requestArgs f
+  balance config.share alice >>= (=== (80.0, 0.0))
+  queryContractId operator redeemCid >>= (=== None)
+  forA_ [redeem.state.escrowCid, redeem.state.receiptCid] $ \allocationCid -> do
+    allocation <- queryInterfaceContractId @AllocationV2.Allocation operator allocationCid
+    allocation === None
+
+-- | Neither the requester nor the admin rejects a request, and a stranger
+-- cannot reach it.
+testOnlyTheOperatorRejects : Script ()
+testOnlyTheOperatorRejects = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  requestCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  Some request <- queryContractId operator requestCid
+  funding <- fundingDisclosures issuer [request.state.escrowCid]
+  forA_ [alice, admin] $ \other ->
+    submitMustFailAuthorization $ trySubmit (actAs other <> discloseMany funding) do
+      exerciseCmd requestCid TestDepositRequest_Reject with args = requestArgs f
+  submitMustFail (actAs bob <> discloseMany funding) do
+    exerciseCmd requestCid TestDepositRequest_Reject with args = requestArgs f
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+
+-- | A request the operator rejected can no longer be cancelled, and one the
+-- requester cancelled can no longer be rejected.
+testCancelAndRejectExcludeEachOther : Script ()
+testCancelAndRejectExcludeEachOther = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.underlying bob 50.0
+  rejectedCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  cancelledCid <- requestDeposit f bob (depositTerms bob "d1" 50.0)
+  Some rejected <- queryContractId operator rejectedCid
+  Some cancelled <- queryContractId operator cancelledCid
+  funding <- fundingDisclosures issuer [rejected.state.escrowCid, cancelled.state.escrowCid]
+  submit (actAs operator <> discloseMany funding) do
+    exerciseCmd rejectedCid TestDepositRequest_Reject with args = requestArgs f
+  submit bob do exerciseCmd cancelledCid TestDepositRequest_Cancel with args = requestArgs f
+  submitMustFail alice do
+    exerciseCmd rejectedCid TestDepositRequest_Cancel with args = requestArgs f
+  submitMustFail (actAs operator <> discloseMany funding) do
+    exerciseCmd cancelledCid TestDepositRequest_Reject with args = requestArgs f
+  balance config.underlying alice >>= (=== (120.0, 0.0))
+  balance config.underlying bob >>= (=== (50.0, 0.0))
+
+-- | A request is dropped from its deadline on and not a second earlier.
+-- Dropping it releases nothing: the requester withdraws the escrow on its
+-- registry.
+testExpireOnlyFromTheDeadline : Script ()
+testExpireOnlyFromTheDeadline = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  requestCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  Some request <- queryContractId operator requestCid
+  submitMustFailWith eDeadlineNotPassed $ trySubmit operator do
+    exerciseCmd requestCid TestDepositRequest_Expire
+  setTime (addRelTime t2 (seconds (-1)))
+  submitMustFailWith eDeadlineNotPassed $ trySubmit operator do
+    exerciseCmd requestCid TestDepositRequest_Expire
+  setTime t2
+  submit operator do exerciseCmd requestCid TestDepositRequest_Expire
+  queryContractId operator requestCid >>= (=== None)
+
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+  _ <- submit alice do
+    exerciseCmd request.state.escrowCid AllocationV2.Allocation_Withdraw with
+      actors = [alice]
+      extraArgs = registryArgs issuer
+  balance config.underlying alice >>= (=== (120.0, 0.0))
+
+-- | A requester who withdraws the escrow on the registry directly can no
+-- longer cancel the request. It stays until the deadline, when it is dropped.
+testDirectWithdrawalLeavesTheRequestUntilItsDeadline : Script ()
+testDirectWithdrawalLeavesTheRequestUntilItsDeadline = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  requestCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  Some request <- queryContractId operator requestCid
+  _ <- submit alice do
+    exerciseCmd request.state.escrowCid AllocationV2.Allocation_Withdraw with
+      actors = [alice]
+      extraArgs = registryArgs issuer
+  balance config.underlying alice >>= (=== (120.0, 0.0))
+  submitMustFail alice do
+    exerciseCmd requestCid TestDepositRequest_Cancel with args = requestArgs f
+  setTime t2
+  submit operator do exerciseCmd requestCid TestDepositRequest_Expire
+  queryContractId operator requestCid >>= (=== None)
+
+-- Policy and extra arguments
+-------------------------------------------------------
+
+-- | The policy sees a deposit's `vault` arguments and nothing else, and it
+-- runs before anything is locked. Redemption requests do not pass through
+-- it.
+testPolicyGatesDepositsOnly : Script ()
+testPolicyGatesDepositsOnly = script do
+  f@Fixture{..} <- setupWith (Some "golden")
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.share alice 80.0
+  usd <- unlockedHoldings config.underlying alice
+  let terms = depositTerms alice "d1" 100.0
+      deposit args = trySubmit (actAs alice <> discloseMany disclosures)
+        (requestDepositCmd f terms usd args)
+      args = requestArgs f
+  submitMustFailWith eNoTicket (deposit args)
+  submitMustFailWith eNoTicket (deposit (args with vault = ticketArgs "forged"))
+  -- A ticket handed to a registry is not a ticket handed to the vault.
+  submitMustFailWith eNoTicket (deposit (args with underlying = ticketArgs "golden"))
+  submitMustFailWith eNoTicket (deposit (args with share = ticketArgs "golden"))
+  balance config.underlying alice >>= (=== (120.0, 0.0))
+
+  Right _ <- deposit (args with vault = ticketArgs "golden")
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+
+  _ <- requestRedeem f alice (redeemTerms alice "r1" 50.0)
+  balance config.share alice >>= (=== (30.0, 50.0))
+
+-- | Each registry receives its own extra arguments, on a request and on a
+-- cancellation. The test registries refuse any other.
+testEachRegistryReceivesItsOwnArguments : Script ()
+testEachRegistryReceivesItsOwnArguments = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.share alice 80.0
+  usd <- unlockedHoldings config.underlying alice
+  shares <- unlockedHoldings config.share alice
+  let args = requestArgs f
+      swapped = args with underlying = args.share; share = args.underlying
+      underlyingOnly = args with share = emptyArgs
+      shareOnly = args with underlying = emptyArgs
+  forA_ [swapped, underlyingOnly, shareOnly] $ \wrong -> do
+    submitMustFailWith eWrongRegistryArgs $ trySubmit (actAs alice <> discloseMany disclosures)
+      (requestDepositCmd f (depositTerms alice "d1" 100.0) usd wrong)
+    submitMustFailWith eWrongRegistryArgs $ trySubmit (actAs alice <> discloseMany disclosures)
+      (requestRedeemCmd f (redeemTerms alice "r1" 50.0) shares wrong)
+
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 50.0)
+  forA_ [swapped, underlyingOnly, shareOnly] $ \wrong -> do
+    submitMustFailWith eWrongRegistryArgs $ trySubmit alice do
+      exerciseCmd depositCid TestDepositRequest_Cancel with args = wrong
+    submitMustFailWith eWrongRegistryArgs $ trySubmit alice do
+      exerciseCmd redeemCid TestRedeemRequest_Cancel with args = wrong
+  submit alice do exerciseCmd depositCid TestDepositRequest_Cancel with args
+  submit alice do exerciseCmd redeemCid TestRedeemRequest_Cancel with args
+
+-- | Each registry receives its own extra arguments when the operator rejects
+-- a request.
+testEachRegistryReceivesItsOwnArgumentsOnReject : Script ()
+testEachRegistryReceivesItsOwnArgumentsOnReject = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.share alice 80.0
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 50.0)
+  Some deposit <- queryContractId operator depositCid
+  Some redeem <- queryContractId operator redeemCid
+  depositFunding <- fundingDisclosures issuer [deposit.state.escrowCid]
+  redeemFunding <- fundingDisclosures admin [redeem.state.escrowCid]
+  let args = requestArgs f
+      swapped = args with underlying = args.share; share = args.underlying
+      underlyingOnly = args with share = emptyArgs
+      shareOnly = args with underlying = emptyArgs
+      funding = depositFunding <> redeemFunding
+  forA_ [swapped, underlyingOnly, shareOnly] $ \wrong -> do
+    submitMustFailWith eWrongRegistryArgs $ trySubmit (actAs operator <> discloseMany funding) do
+      exerciseCmd depositCid TestDepositRequest_Reject with args = wrong
+    submitMustFailWith eWrongRegistryArgs $ trySubmit (actAs operator <> discloseMany funding) do
+      exerciseCmd redeemCid TestRedeemRequest_Reject with args = wrong
+  submit (actAs operator <> discloseMany depositFunding) do
+    exerciseCmd depositCid TestDepositRequest_Reject with args
+  submit (actAs operator <> discloseMany redeemFunding) do
+    exerciseCmd redeemCid TestRedeemRequest_Reject with args
+
+-- Refused requests
+-------------------------------------------------------
+
+-- | Terms outside the rules are refused with the matching status, and
+-- nothing is locked.
+testRequestRefusesInvalidTerms : Script ()
+testRequestRefusesInvalidTerms = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.share alice 80.0
+  usd <- unlockedHoldings config.underlying alice
+  shares <- unlockedHoldings config.share alice
+  let deposit = depositTerms alice "d1" 100.0
+      redeem = redeemTerms alice "r1" 50.0
+      tooLong = labelOfLength (maxLabelLength + 1)
+      providerOnly = HoldingV2.Account with owner = None; provider = Some alice; id = ""
+      above = maxOperand + ulp
+  forA_
+    [ ((deposit with assets = 0.0), eNonPositiveAmount)
+    , ((deposit with assets = -1.0), eNonPositiveAmount)
+    , ((deposit with assets = above), eOutOfRange)
+    , ((deposit with label = ""), eInvalidLabel)
+    , ((deposit with label = tooLong), eInvalidLabel)
+    , ((deposit with minSharesOut = Some (-ulp)), eNegativeAmount)
+    , ((deposit with minSharesOut = Some above), eOutOfRange)
+    , ((deposit with requester = providerOnly), eInvalidRequester)
+    ] $ \(terms, status) ->
+      submitMustFailWith status $ trySubmit (actAs alice <> discloseMany disclosures)
+        (requestDepositCmd f terms usd (requestArgs f))
+  forA_
+    [ ((redeem with shares = 0.0), eNonPositiveAmount)
+    , ((redeem with shares = -1.0), eNonPositiveAmount)
+    , ((redeem with shares = above), eOutOfRange)
+    , ((redeem with label = ""), eInvalidLabel)
+    , ((redeem with label = tooLong), eInvalidLabel)
+    , ((redeem with minAssetsOut = Some (-ulp)), eNegativeAmount)
+    , ((redeem with minAssetsOut = Some above), eOutOfRange)
+    , ((redeem with requester = providerOnly), eInvalidRequester)
+    ] $ \(terms, status) ->
+      submitMustFailWith status $ trySubmit (actAs alice <> discloseMany disclosures)
+        (requestRedeemCmd f terms shares (requestArgs f))
+  balance config.underlying alice >>= (=== (120.0, 0.0))
+  balance config.share alice >>= (=== (80.0, 0.0))
+
+  -- The longest label, a zero minimum and the largest amount of terms pass.
+  _ <- requestDeposit f alice
+    (deposit with label = labelOfLength maxLabelLength; minSharesOut = Some 0.0)
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+
+-- | The vault's custodian cannot be a requester.
+testCustodianCannotRequest : Script ()
+testCustodianCannotRequest = script do
+  f@Fixture{..} <- setup
+  submitMustFailWith eInvalidRequester $ trySubmit (actAs admin <> discloseMany disclosures)
+    (requestDepositCmd f (depositTerms admin "d1" 1.0) [] (requestArgs f))
+  submitMustFailWith eInvalidRequester $ trySubmit (actAs admin <> discloseMany disclosures)
+    (requestRedeemCmd f (redeemTerms admin "r1" 1.0) [] (requestArgs f))
+
+-- | A registry that does not complete the allocation in the same transaction
+-- fails the request.
+testIncompleteAllocationFailsTheRequest : Script ()
+testIncompleteAllocationFailsTheRequest = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  usd <- unlockedHoldings config.underlying alice
+  refusing <- submit issuer do createCmd RefusingRegistry with admin = issuer
+  Some refusingDisclosure <- queryDisclosure @RefusingRegistry issuer refusing
+  stuckVault <- submit admin do
+    createCmd TestVault with
+      config
+      registries = registries with underlyingAllocationFactory = toInterfaceContractId refusing
+      ticket = None
+  Some stuckDisclosure <- queryDisclosure @TestVault admin stuckVault
+  submitMustFailWith eAllocationIncomplete $
+    trySubmit (actAs alice <> discloseMany (stuckDisclosure :: refusingDisclosure :: disclosures)) do
+      exerciseCmd stuckVault TestVault_RequestDeposit with
+        terms = depositTerms alice "d1" 100.0
+        inputHoldingCids = usd
+        requestedAt = t0
+        args = requestArgs f
+  balance config.underlying alice >>= (=== (120.0, 0.0))
+
+-- | A registry that does not finish a withdrawal or a cancellation in the
+-- same transaction fails the cancel and the reject, whichever of the
+-- request's two allocations it is. Nothing is released.
+testUnfinishedReleaseFailsCancelAndReject : Script ()
+testUnfinishedReleaseFailsCancelAndReject = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  requestCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  Some request <- queryContractId operator requestCid
+  Some escrow <- queryContractId issuer (fromInterfaceContractId @TestAllocation request.state.escrowCid)
+  Some receipt <- queryContractId admin (fromInterfaceContractId @TestAllocation request.state.receiptCid)
+  stallingEscrow <- submit (actAs [issuer, alice]) do
+    createCmd StallingAllocation with state = escrow.state
+  stallingReceipt <- submit (actAs [admin, alice]) do
+    createCmd StallingAllocation with state = receipt.state
+  funding <- fundingDisclosures issuer [request.state.escrowCid]
+  forA_
+    [ (request.state with escrowCid = toInterfaceContractId stallingEscrow)
+    , (request.state with receiptCid = toInterfaceContractId stallingReceipt)
+    ] $ \state -> do
+      stuckCid <- submit (actAs [admin, alice]) do createCmd TestDepositRequest with state
+      submitMustFailWith eAllocationIncomplete $ trySubmit alice do
+        exerciseCmd stuckCid TestDepositRequest_Cancel with args = requestArgs f
+      submitMustFailWith eAllocationIncomplete $ trySubmit (actAs operator <> discloseMany funding) do
+        exerciseCmd stuckCid TestDepositRequest_Reject with args = requestArgs f
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+
+-- Pure parts
+-------------------------------------------------------
+
+-- | The settlement names both executors once each, under the vault's id.
+testVaultSettlement : Script ()
+testVaultSettlement = script do
+  Fixture{..} <- setup
+  vaultSettlement config === AllocationV2.SettlementInfo with
+    executors = [admin, operator]
+    id = "vault-1"
+    cid = None
+    meta = emptyMetadata
+  (vaultSettlement (config with operator = admin)).executors === [admin]
+  settlementExecutors admin operator === [admin, operator]
+  settlementExecutors admin admin === [admin]
+
+-- | A config is valid when its custodian is a regular account and its two
+-- instruments differ, in the admin or in the id.
+testIsValidVaultConfig : Script ()
+testIsValidVaultConfig = script do
+  Fixture{..} <- setup
+  isValidVaultConfig config === True
+  isValidVaultConfig (config with custodian = (basicAccount admin) with provider = Some operator) === True
+  isValidVaultConfig (config with custodian = burnAccount) === False
+  isValidVaultConfig (config with custodian = (basicAccount admin) with owner = None) === False
+  isValidVaultConfig (config with share = config.underlying) === False
+  isValidVaultConfig (config with share = config.underlying with id = "VSHARE") === True
+  isValidVaultConfig (config with share = config.underlying with admin = admin) === True
+
+-- | The parties that act for an account: its owner, then its provider when
+-- it is another party.
+testRequesterParties : Script ()
+testRequesterParties = script do
+  Fixture{..} <- setup
+  let account owner provider = HoldingV2.Account with owner; provider; id = ""
+  requesterParties (basicAccount alice) === [alice]
+  requesterParties (account (Some alice) (Some bob)) === [alice, bob]
+  requesterParties (account (Some alice) (Some alice)) === [alice]
+  requesterParties (account None (Some bob)) === [bob]
+  requesterParties (account None None) === []
+
+-- | A leg id names the account in full, the label and the leg, so it differs
+-- whenever one of them does.
+testRequestLegIds : Script ()
+testRequestLegIds = script do
+  Fixture{..} <- setup
+  let sub = HoldingV2.Account with owner = Some alice; provider = Some bob; id = "sub"
+  requestLegId (basicAccount alice) "d1" underlyingLeg === partyToText alice <> "||/d1/underlying"
+  requestLegId (basicAccount alice) "d1" shareLeg === partyToText alice <> "||/d1/share"
+  requestLegId sub "r1" shareLeg
+    === partyToText alice <> "|" <> partyToText bob <> "|sub/r1/share"
+  let ids =
+        [ requestLegId account label leg
+        | account <- [basicAccount alice, basicAccount bob, sub]
+        , label <- ["d1", "d2"]
+        , leg <- [underlyingLeg, shareLeg] ]
+  forA_ ids $ \legId -> length (filter (== legId) ids) === 1
+
+-- | The terms checks on their own, at each boundary.
+testTermsChecks : Script ()
+testTermsChecks = script do
+  Fixture{..} <- setup
+  let deposit = depositTerms alice "d1" 100.0
+      redeem = redeemTerms alice "r1" 50.0
+  checkDepositTerms deposit === Right ()
+  checkRedeemTerms redeem === Right ()
+  checkDepositTerms (deposit with label = labelOfLength maxLabelLength) === Right ()
+  checkDepositTerms (deposit with label = labelOfLength (maxLabelLength + 1)) === Left eInvalidLabel
+  checkDepositTerms (deposit with assets = ulp) === Right ()
+  checkDepositTerms (deposit with assets = maxOperand) === Right ()
+  checkDepositTerms (deposit with assets = maxOperand + ulp) === Left eOutOfRange
+  checkDepositTerms (deposit with minSharesOut = Some 0.0) === Right ()
+  checkDepositTerms (deposit with minSharesOut = Some maxOperand) === Right ()
+  checkRedeemTerms (redeem with shares = ulp) === Right ()
+  checkRedeemTerms (redeem with shares = maxOperand) === Right ()
+  checkRedeemTerms (redeem with shares = 0.0) === Left eNonPositiveAmount
+  checkRedeemTerms (redeem with minAssetsOut = Some maxOperand) === Right ()
+  checkRedeemTerms (redeem with minAssetsOut = Some (maxOperand + ulp)) === Left eOutOfRange
+
+-- | Each status in full: the id clients match on, the category, and the
+-- message.
+testRequestFailureStatuses : Script ()
+testRequestFailureStatuses = script do
+  let status errorId category message = FailureStatus with
+        errorId; category; message; meta = TextMap.empty
+  eNonPositiveAmount === status "openzeppelin.com/async-vault-non-positive-amount"
+    InvalidIndependentOfSystemState "AsyncVault: the amount must be positive"
+  eInvalidRequester === status "openzeppelin.com/async-vault-invalid-requester"
+    InvalidIndependentOfSystemState
+    "AsyncVault: the requester must be a regular account other than the vault's custodian"
+  eInvalidLabel === status "openzeppelin.com/async-vault-invalid-label"
+    InvalidIndependentOfSystemState "AsyncVault: the label must have between 1 and 64 characters"
+  eAllocationIncomplete === status "openzeppelin.com/async-vault-allocation-incomplete"
+    InvalidGivenCurrentSystemStateOther "AsyncVault: the registry did not complete the allocation step"
+  eDeadlineNotPassed === status "openzeppelin.com/async-vault-deadline-not-passed"
+    InvalidGivenCurrentSystemStateOther "AsyncVault: the request's deadline has not passed"
