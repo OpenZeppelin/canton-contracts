@@ -156,7 +156,7 @@ requireAuthorityOrGrant
 requireAuthorityOrGrant actor presentedGrant requirement = case presentedGrant of
   None -> do
     Internal.requireSuccess $ Internal.checkCondition
-      (Internal.grantRequired requirement.expectedAuthority actor)
+      (Internal.grantRequiredFailure requirement.expectedAuthority actor)
       (actor == requirement.expectedAuthority)
     pure None
   Some grantCid ->
@@ -166,13 +166,13 @@ checkGrantMatches
   : Party -> AuthorizationRequirement -> AuthorizationGrant -> Either Fail.FailureStatus ()
 checkGrantMatches actor requirement grant = do
   Internal.checkCondition
-    (Internal.authorityMismatch requirement.expectedAuthority grant.authority)
+    (Internal.authorityMismatchFailure requirement.expectedAuthority grant.authority)
     (grant.authority == requirement.expectedAuthority)
   Internal.checkCondition
-    (Internal.granteeMismatch actor grant.grantee)
+    (Internal.granteeMismatchFailure actor grant.grantee)
     (grant.grantee == actor)
   Internal.checkCondition
-    (Internal.scopeMismatch
+    (Internal.scopeMismatchFailure
       [ ("namespace", grant.scope.namespace == requirement.expectedScope.namespace)
       , ("resourceType", grant.scope.resourceType == requirement.expectedScope.resourceType)
       , ("resourceId", grant.scope.resourceId == requirement.expectedScope.resourceId)

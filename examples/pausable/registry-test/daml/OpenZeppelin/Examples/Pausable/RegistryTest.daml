@@ -68,7 +68,7 @@ test_registerAddsEntry = script do
 test_registerRefusesEmptyEntry : Script ()
 test_registerRefusesEmptyEntry = script do
   Fixture{..} <- setup
-  submitMustFailWith eEmptyEntry $ trySubmit admin do
+  submitMustFailWith emptyEntryFailure $ trySubmit admin do
     exerciseCmd registry Registry_Register with entry = ""
 
 -- | One transaction sets the flag and the metadata that reports it.
@@ -89,12 +89,12 @@ test_auditorReadsTheView = script do
   Some v <- queryInterfaceContractId auditor (readOf registry)
   v === PausableView with paused = True
 
--- | While paused, a registration fails with `eEnforcedPause`.
+-- | While paused, a registration fails with `enforcedPauseFailure`.
 test_registerRefusedWhilePaused : Script ()
 test_registerRefusedWhilePaused = script do
   f@Fixture{..} <- setup
   registry <- pauseWithReason f
-  submitMustFailWith Pausable.eEnforcedPause $ trySubmit admin do
+  submitMustFailWith Pausable.enforcedPauseFailure $ trySubmit admin do
     exerciseCmd registry Registry_Register with entry = "second"
   Some r <- queryContractId admin registry
   r.entries === ["first"]
@@ -104,7 +104,7 @@ test_registerRefusedWhilePaused = script do
 test_updatePauseInfoWhilePaused : Script ()
 test_updatePauseInfoWhilePaused = script do
   f@Fixture{..} <- setup
-  submitMustFailWith Pausable.eExpectedPause $ trySubmit admin do
+  submitMustFailWith Pausable.expectedPauseFailure $ trySubmit admin do
     exerciseCmd registry Registry_UpdatePauseInfo with reason = Some "early", until = None
   registry <- pauseWithReason f
   let later = addRelTime until (hours 6)
@@ -154,22 +154,22 @@ test_archiveRequiresAdmin = script do
   queryContractId admin registry >>= (=== None)
   queryContractId auditor registry >>= (=== None)
 
--- | While paused, an empty entry fails with `eEnforcedPause`, because the
+-- | While paused, an empty entry fails with `enforcedPauseFailure`, because the
 -- guard runs before the registry's own check.
 test_pausedEmptyEntryReportsThePause : Script ()
 test_pausedEmptyEntryReportsThePause = script do
   f@Fixture{..} <- setup
   registry <- pauseWithReason f
-  submitMustFailWith Pausable.eEnforcedPause $ trySubmit admin do
+  submitMustFailWith Pausable.enforcedPauseFailure $ trySubmit admin do
     exerciseCmd registry Registry_Register with entry = ""
 
--- | A second pause fails with `eEnforcedPause`, and an unpause while
--- unpaused fails with `eExpectedPause`.
+-- | A second pause fails with `enforcedPauseFailure`, and an unpause while
+-- unpaused fails with `expectedPauseFailure`.
 test_repeatedFlipsFail : Script ()
 test_repeatedFlipsFail = script do
   f@Fixture{..} <- setup
-  submitMustFailWith Pausable.eExpectedPause $ trySubmit admin do
+  submitMustFailWith Pausable.expectedPauseFailure $ trySubmit admin do
     exerciseCmd registry Registry_Unpause
   registry <- pauseWithReason f
-  submitMustFailWith Pausable.eEnforcedPause $ trySubmit admin do
+  submitMustFailWith Pausable.enforcedPauseFailure $ trySubmit admin do
     exerciseCmd registry Registry_Pause with reason = None, until = None

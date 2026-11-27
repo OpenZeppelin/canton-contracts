@@ -57,8 +57,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 - Added the function package `openzeppelin-pausable-utils` with public module
   `OpenZeppelin.Pausable.Utils`, holding the guards `whenNotPaused` and
-  `whenPaused`, `isPaused`, and the failure statuses `eEnforcedPause` and
-  `eExpectedPause`. It depends on `openzeppelin-api-pausable-v1`.
+  `whenPaused`, `isPaused`, and the failure statuses `enforcedPauseFailure` and
+  `expectedPauseFailure`. It depends on `openzeppelin-api-pausable-v1`.
 
 ### `openzeppelin-token-cip112-types-v1`
 

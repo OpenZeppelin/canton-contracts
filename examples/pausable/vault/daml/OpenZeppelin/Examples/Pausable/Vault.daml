@@ -47,8 +47,8 @@ template Vault
       controller owner
       do
         Pausable.whenNotPaused this
-        unless (amount > 0.0) (failWithStatus eNonPositiveAmount)
-        unless (amount <= balance) (failWithStatus eInsufficientBalance)
+        unless (amount > 0.0) (failWithStatus nonPositiveAmountFailure)
+        unless (amount <= balance) (failWithStatus insufficientBalanceFailure)
         payout <- create Payout with payer = admin, recipient = owner, amount
         vault <- create this with balance = balance - amount
         pure (vault, payout)
@@ -87,16 +87,16 @@ template Vault
         create this with paused = False
 
 -- | Raised when a withdrawal names a non-positive amount.
-eNonPositiveAmount : FailureStatus
-eNonPositiveAmount = FailureStatus with
+nonPositiveAmountFailure : FailureStatus
+nonPositiveAmountFailure = FailureStatus with
   errorId = "myapp.com/vault-non-positive-amount"
   category = InvalidIndependentOfSystemState
   message = "Vault: amount must be positive"
   meta = TextMap.empty
 
 -- | Raised when a withdrawal names more than the balance.
-eInsufficientBalance : FailureStatus
-eInsufficientBalance = FailureStatus with
+insufficientBalanceFailure : FailureStatus
+insufficientBalanceFailure = FailureStatus with
   errorId = "myapp.com/vault-insufficient-balance"
   category = InvalidGivenCurrentSystemStateOther
   message = "Vault: amount exceeds balance"

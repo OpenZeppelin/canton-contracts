@@ -81,7 +81,7 @@ template Treasury
             toInterfaceContractId <$> create this with limit = lc.newLimit, pending = pending'
         | Some cc <- fromInterface @ConfigChange op =
             toInterfaceContractId <$> create this with config = cc.newConfig, pending = pending'
-        | otherwise = failWithStatus eUnknownOperation
+        | otherwise = failWithStatus unknownOperationFailure
 
       unschedule pending' = toInterfaceContractId <$> create this with pending = pending'
 
@@ -197,7 +197,7 @@ template ConfigChange
       view = OperationView with executors, cancellers
 
 -- | A timelock whose `apply` and `unschedule` keep the operation in the
--- pending list, which the library refuses with `ePendingMismatch`.
+-- pending list, which the library refuses with `pendingMismatchFailure`.
 template LeakyTreasury
   with
     admin : Party
@@ -213,7 +213,7 @@ template LeakyTreasury
       view = TimelockView with authority = admin; config; pending = queue
       apply op _ = case fromInterface @LimitChange op of
         Some lc -> toInterfaceContractId <$> create this with limit = lc.newLimit
-        None -> failWithStatus eUnknownOperation
+        None -> failWithStatus unknownOperationFailure
       unschedule _ = toInterfaceContractId <$> create this
 
       applyImpl self arg = applyOperation (toInterface @Timelock this) self arg
@@ -233,7 +233,7 @@ template LeakyTreasury
         pure (t, op)
 
 -- | A timelock whose `apply` and `unschedule` clear the whole pending list,
--- which the library refuses with `ePendingMismatch`.
+-- which the library refuses with `pendingMismatchFailure`.
 template ClearingTreasury
   with
     admin : Party
@@ -249,7 +249,7 @@ template ClearingTreasury
       view = TimelockView with authority = admin; config; pending = queue
       apply op _ = case fromInterface @LimitChange op of
         Some lc -> toInterfaceContractId <$> create this with limit = lc.newLimit, queue = []
-        None -> failWithStatus eUnknownOperation
+        None -> failWithStatus unknownOperationFailure
       unschedule _ = toInterfaceContractId <$> create this with queue = []
 
       applyImpl self arg = applyOperation (toInterface @Timelock this) self arg
@@ -270,8 +270,8 @@ template ClearingTreasury
 
 -- | Raised by the fixtures when `apply` receives an operation of a template
 -- the treasury does not handle.
-eUnknownOperation : FailureStatus
-eUnknownOperation = FailureStatus with
+unknownOperationFailure : FailureStatus
+unknownOperationFailure = FailureStatus with
   errorId = "example.com/treasury-unknown-operation"
   category = InvalidIndependentOfSystemState
   message = "Treasury: unknown operation template"

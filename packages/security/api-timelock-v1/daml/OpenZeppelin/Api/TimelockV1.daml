@@ -114,12 +114,12 @@ data DropReason
 -- * `applyImpl` and `dropImpl` call `applyOperation` and `dropOperation`;
 --   the checks run only through that wiring.
 -- * `authority` signs the timelock and every operation. The lifecycle
---   functions fail with `eInvalidAuthority` otherwise.
+--   functions fail with `invalidAuthorityFailure` otherwise.
 -- * Every signatory of the operation is a signatory of the timelock. The
---   lifecycle functions fail with `eInvalidAuthority` otherwise.
+--   lifecycle functions fail with `invalidAuthorityFailure` otherwise.
 -- * The successor that a method creates holds the given pending list. The
---   lifecycle functions fail with `ePendingMismatch` when it holds any other
---   list.
+--   lifecycle functions fail with `pendingMismatchFailure` when it holds any
+--   other list.
 -- * Executors and cancellers can see the timelock, as stakeholders or by
 --   explicit disclosure.
 interface Timelock where

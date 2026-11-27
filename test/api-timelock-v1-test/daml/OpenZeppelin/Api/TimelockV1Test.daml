@@ -125,7 +125,7 @@ test_noGracePeriodNeverExpires = script do
   v.expiresAt === None
   passTime (days 400)
   r <- tryCleanup admin t1 op
-  expectFailure eNotExpired r
+  expectFailure notExpiredFailure r
   t2 <- execute executor t1 op
   Some t <- queryContractId admin t2
   t.limit === 20.0
@@ -149,16 +149,16 @@ test_executeAfterDelay = script do
   old <- queryContractId admin t1
   old === None
 
--- | Executing before `readyAt` fails with `eNotReady`.
+-- | Executing before `readyAt` fails with `notReadyFailure`.
 test_executeBeforeReadyFails : Script ()
 test_executeBeforeReadyFails = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   r0 <- tryExecute executor t1 op
-  expectFailure eNotReady r0
+  expectFailure notReadyFailure r0
   passTime (days 2 - minutes 1)
   r1 <- tryExecute executor t1 op
-  expectFailure eNotReady r1
+  expectFailure notReadyFailure r1
 
 -- | `readyAt` itself is ready: the lower bound is inclusive.
 test_executeAtReadyAtSucceeds : Script ()
@@ -169,14 +169,14 @@ test_executeAtReadyAtSucceeds = script do
   _ <- execute executor t1 op
   pure ()
 
--- | Executing at or after `expiresAt` fails with `eExpired`.
+-- | Executing at or after `expiresAt` fails with `expiredFailure`.
 test_executeAfterExpiryFails : Script ()
 test_executeAfterExpiryFails = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 9)
   r <- tryExecute executor t1 op
-  expectFailure eExpired r
+  expectFailure expiredFailure r
 
 -- | The instant before `expiresAt` is still executable: the upper bound is
 -- exclusive.
@@ -206,9 +206,9 @@ test_onlyNamedExecutorsMayExecute = script do
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
   r <- tryExecute proposer t1 op
-  expectFailure eNotExecutor r
+  expectFailure notExecutorFailure r
   r2 <- tryExecute admin t1 op
-  expectFailure eNotExecutor r2
+  expectFailure notExecutorFailure r2
 
 -- | With `executors = None`, any party that holds the contracts may execute:
 -- the open executor.
@@ -244,7 +244,7 @@ test_onlyTheConsumersProposerMaySchedule = script do
 -------------------------------------------------------
 
 -- | An operation that the admin creates directly, ready at once, is absent
--- from the pending list and is refused with `eNotPending`.
+-- from the pending list and is refused with `notPendingFailure`.
 test_directlyCreatedOperationRefused : Script ()
 test_directlyCreatedOperationRefused = script do
   Fixture{..} <- setup
@@ -253,9 +253,9 @@ test_directlyCreatedOperationRefused = script do
       admin; proposer; executors = Some [executor]; cancellers = [admin]
       newLimit = 1000.0; readyAt = t0; expiresAt = None
   r <- tryExecute executor treasury forged
-  expectFailure eNotPending r
+  expectFailure notPendingFailure r
   r2 <- tryCancel admin treasury forged
-  expectFailure eNotPending r2
+  expectFailure notPendingFailure r2
 
 -- | Two treasuries of the same admin with the same policy are told apart by
 -- their pending lists alone: an operation scheduled on one is absent from the
@@ -270,7 +270,7 @@ test_operationBoundToItsTarget = script do
   (_, op) <- scheduleLimit f 20.0 (days 2)
   passTime (days 2)
   r <- tryExecute executor other op
-  expectFailure eNotPending r
+  expectFailure notPendingFailure r
 
 -- | The binding holds across the lineage: after other operations reshape the
 -- treasury, the pending operation still applies on the latest successor and
@@ -358,11 +358,11 @@ test_operationSignatoryOutsideTheTimelockRejected = script do
     exerciseCmd treasury Treasury_ScheduleCosigned with newLimit = 20.0, readyAt = addRelTime t0 (days 2)
   passTime (days 2)
   r <- tryExecute executor t1 op
-  expectFailure eInvalidAuthority r
+  expectFailure invalidAuthorityFailure r
   r2 <- tryExecute proposer t1 op
-  expectFailure eInvalidAuthority r2
+  expectFailure invalidAuthorityFailure r2
   r3 <- tryCancel proposer t1 op
-  expectFailure eInvalidAuthority r3
+  expectFailure invalidAuthorityFailure r3
 
 -- | An `apply` or `unschedule` that keeps the operation in the pending list is
 -- refused. The check detects a miswired method; the archive before `apply`
@@ -380,10 +380,10 @@ test_applyRetainingTheOperationFails = script do
   passTime (days 2)
   r <- trySubmit proposer do
     exerciseCmd (opOf op) Operation_Execute with actor = proposer, target = targetOf l1
-  expectFailure ePendingMismatch r
+  expectFailure pendingMismatchFailure r
   r2 <- trySubmit proposer do
     exerciseCmd (opOf op) Operation_Cancel with actor = proposer, target = targetOf l1
-  expectFailure ePendingMismatch r2
+  expectFailure pendingMismatchFailure r2
 
 -- | An `apply` or `unschedule` that removes another operation's entry is
 -- refused, so a miswired method cannot strand a pending operation.
@@ -402,10 +402,10 @@ test_methodDroppingAnotherEntryFails = script do
   passTime (days 2)
   r <- trySubmit proposer do
     exerciseCmd (opOf a) Operation_Execute with actor = proposer, target = targetOf c2
-  expectFailure ePendingMismatch r
+  expectFailure pendingMismatchFailure r
   r2 <- trySubmit proposer do
     exerciseCmd (opOf a) Operation_Cancel with actor = proposer, target = targetOf c2
-  expectFailure ePendingMismatch r2
+  expectFailure pendingMismatchFailure r2
 
 -- Cancelling and cleaning up
 -------------------------------------------------------
@@ -431,7 +431,7 @@ test_onlyNamedCancellersMayCancel = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   r <- tryCancel executor t1 op
-  expectFailure eNotCanceller r
+  expectFailure notCancellerFailure r
   _ <- cancel proposer t1 op
   pure ()
 
@@ -442,10 +442,10 @@ test_cleanupOnlyAfterExpiry = script do
   f@Fixture{..} <- setup
   (t1, op) <- scheduleLimit f 20.0 (days 2)
   r0 <- tryCleanup admin t1 op
-  expectFailure eNotExpired r0
+  expectFailure notExpiredFailure r0
   passTime (days 5)
   r1 <- tryCleanup admin t1 op
-  expectFailure eNotExpired r1
+  expectFailure notExpiredFailure r1
   passTime (days 4)
   t2 <- cleanup admin t1 op
   Some t <- queryContractId admin t2
@@ -480,12 +480,12 @@ test_configChangeIsTimelocked = script do
   r <- trySubmit proposer do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig, readyAt = addRelTime t0 (hours 1)
-  expectFailure eDelayTooShort r
+  expectFailure delayTooShortFailure r
   (t1, op) <- submit proposer do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig, readyAt = addRelTime t0 (days 1)
   r2 <- tryExecute executor t1 op
-  expectFailure eNotReady r2
+  expectFailure notReadyFailure r2
   passTime (days 1)
   t2 <- execute executor t1 op
   Some t <- queryContractId admin t2
@@ -553,10 +553,10 @@ test_configChangeCleanupAfterExpiry = script do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig = oneDayWeekGrace, readyAt = addRelTime t0 (days 1)
   r <- tryCleanup admin t1 op
-  expectFailure eNotExpired r
+  expectFailure notExpiredFailure r
   passTime (days 8)
   r2 <- tryExecute executor t1 op
-  expectFailure eExpired r2
+  expectFailure expiredFailure r2
   _ <- cleanup admin t1 op
   gone <- queryContractId admin op
   gone === None
@@ -585,7 +585,7 @@ test_configChangeToInvalidPolicyIsRefused = script do
   r <- trySubmit proposer do
     exerciseCmd treasury Treasury_ScheduleConfig with
       newConfig = broken, readyAt = addRelTime t0 (days 1)
-  expectFailure eInvalidConfig r
+  expectFailure invalidConfigFailure r
 
 -- Reading
 -------------------------------------------------------
@@ -606,14 +606,14 @@ test_viewVisibilityFollowsTheTemplate = script do
 -- | The failure statuses are distinct and carry stable ids.
 test_failureStatusesAreDistinct : Script ()
 test_failureStatusesAreDistinct = script do
-  eNotReady.errorId === "openzeppelin.com/timelock-not-ready"
-  eExpired.errorId === "openzeppelin.com/timelock-expired"
-  eNotExpired.errorId === "openzeppelin.com/timelock-not-expired"
-  eNotPending.errorId === "openzeppelin.com/timelock-not-pending"
-  eNotExecutor.errorId === "openzeppelin.com/timelock-not-executor"
-  eNotCanceller.errorId === "openzeppelin.com/timelock-not-canceller"
-  ePendingMismatch.errorId === "openzeppelin.com/timelock-pending-mismatch"
-  eInvalidAuthority.errorId === "openzeppelin.com/timelock-invalid-authority"
+  notReadyFailure.errorId === "openzeppelin.com/timelock-not-ready"
+  expiredFailure.errorId === "openzeppelin.com/timelock-expired"
+  notExpiredFailure.errorId === "openzeppelin.com/timelock-not-expired"
+  notPendingFailure.errorId === "openzeppelin.com/timelock-not-pending"
+  notExecutorFailure.errorId === "openzeppelin.com/timelock-not-executor"
+  notCancellerFailure.errorId === "openzeppelin.com/timelock-not-canceller"
+  pendingMismatchFailure.errorId === "openzeppelin.com/timelock-pending-mismatch"
+  invalidAuthorityFailure.errorId === "openzeppelin.com/timelock-invalid-authority"
 
 -- Direct calls enforce the same lifecycle as calls through Operation.
 -------------------------------------------------------
@@ -626,7 +626,7 @@ test_directApplyRequiresExecutor = script do
   passTime (days 2)
   r <- trySubmit admin do
     exerciseCmd (targetOf t1) Timelock_Apply with actor = admin, op = opOf op
-  expectFailure eNotExecutor r
+  expectFailure notExecutorFailure r
   Some t <- queryContractId admin t1
   t.limit === 10.0
   Some _ <- queryContractId admin op
@@ -651,7 +651,7 @@ test_directApplyRequiresReady = script do
   (t1, op) <- scheduleLimit (f with treasury = withAdminExecutor) 999.0 (days 2)
   r <- trySubmit admin do
     exerciseCmd (targetOf t1) Timelock_Apply with actor = admin, op = opOf op
-  expectFailure eNotReady r
+  expectFailure notReadyFailure r
   Some unchanged <- queryContractId admin t1
   unchanged.limit === 10.0
   Some _ <- queryContractId admin op
@@ -665,7 +665,7 @@ test_directApplyRefusesExpired = script do
   passTime (days 9)
   r <- trySubmit executor do
     exerciseCmd (targetOf t1) Timelock_Apply with actor = executor, op = opOf op
-  expectFailure eExpired r
+  expectFailure expiredFailure r
 
 -- | Direct application archives the operation and consumes its pending entry.
 test_directApplyCompletesLifecycle : Script ()
@@ -707,7 +707,7 @@ test_directConfigChangeRequiresReady = script do
       newConfig = immediate, readyAt = addRelTime t0 (days 1)
   r <- trySubmit executor do
     exerciseCmd (targetOf t1) Timelock_Apply with actor = executor, op = opOf op
-  expectFailure eNotReady r
+  expectFailure notReadyFailure r
   Some t <- queryContractId admin t1
   t.config === oneDayWeekGrace
 
@@ -721,7 +721,7 @@ test_directDropRequiresCanceller = script do
   r <- trySubmit admin do
     exerciseCmd (targetOf t1) Timelock_Drop with
       actor = admin, op = opOf op, reason = CancelOperation
-  expectFailure eNotCanceller r
+  expectFailure notCancellerFailure r
   submitMustFail admin do
     exerciseCmd (targetOf t1) Timelock_Drop with
       actor = proposer, op = opOf op, reason = CancelOperation
@@ -734,7 +734,7 @@ test_directDropRequiresExpiry = script do
   r <- trySubmit executor do
     exerciseCmd (targetOf t1) Timelock_Drop with
       actor = executor, op = opOf op, reason = CleanupOperation
-  expectFailure eNotExpired r
+  expectFailure notExpiredFailure r
   Some _ <- queryContractId admin op
   pure ()
 
@@ -747,7 +747,7 @@ test_directDropRequiresAnExpiry = script do
   r <- trySubmit executor do
     exerciseCmd (targetOf t1) Timelock_Drop with
       actor = executor, op = opOf op, reason = CleanupOperation
-  expectFailure eNotExpired r
+  expectFailure notExpiredFailure r
 
 -- | Direct cancellation archives the operation and removes its pending entry.
 test_directCancellationCompletesLifecycle : Script ()
@@ -788,14 +788,14 @@ test_falseTargetCannotUseOperationAuthority = script do
       attacker = executor, reader = proposer, claimedAuthority = admin, pending = [asOp op]
   passTime (days 2)
   r <- tryExecute executor falseTarget op
-  expectFailure eInvalidAuthority r
+  expectFailure invalidAuthorityFailure r
   r2 <- trySubmit proposer do
     exerciseCmd (opOf op) Operation_Cancel with actor = proposer, target = targetOf falseTarget
-  expectFailure eInvalidAuthority r2
+  expectFailure invalidAuthorityFailure r2
   passTime (days 7)
   r3 <- trySubmit executor do
     exerciseCmd (opOf op) Operation_Cleanup with actor = executor, target = targetOf falseTarget
-  expectFailure eInvalidAuthority r3
+  expectFailure invalidAuthorityFailure r3
   effects <- query @UnauthorizedEffect admin
   effects === []
   Some t <- queryContractId admin t1
@@ -814,4 +814,4 @@ test_falseTargetMustShareOperationAuthority = script do
       attacker = executor, reader = proposer, claimedAuthority = executor, pending = [asOp op]
   passTime (days 2)
   r <- tryExecute executor falseTarget op
-  expectFailure eInvalidAuthority r
+  expectFailure invalidAuthorityFailure r

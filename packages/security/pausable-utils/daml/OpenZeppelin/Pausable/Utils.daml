@@ -13,19 +13,20 @@
 --   controller caller
 --   do
 --     cred <- fetch credCid
---     unless (cred.admin == admin) (failWithStatus eWrongCredentialIssuer)
---     unless (cred.account == caller) (failWithStatus eCredentialNotCallers)
+--     unless (cred.admin == admin) (failWithStatus wrongCredentialIssuerFailure)
+--     unless (cred.account == caller) (failWithStatus credentialNotCallersFailure)
 --     whenNotPaused this
 --     create this with paused = True
 -- ```
 module OpenZeppelin.Pausable.Utils where
 
 import DA.Action (unless, when)
-import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
-import OpenZeppelin.Api.PausableV1 (Pausable)
-import qualified OpenZeppelin.Pausable.Utils.Internal as Internal
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import qualified DA.TextMap as TextMap
 
--- | Fail with `eEnforcedPause` unless the contract is unpaused. Call it
+import OpenZeppelin.Api.PausableV1 (Pausable)
+
+-- | Fail with `enforcedPauseFailure` unless the contract is unpaused. Call it
 -- before the state change in every gated choice, and in the choice that
 -- pauses:
 --
@@ -44,9 +45,9 @@ import qualified OpenZeppelin.Pausable.Utils.Internal as Internal
 --     create this with paused = True
 -- ```
 whenNotPaused : HasToInterface t Pausable => t -> Update ()
-whenNotPaused x = when (isPaused x) (failWithStatus eEnforcedPause)
+whenNotPaused x = when (isPaused x) (failWithStatus enforcedPauseFailure)
 
--- | Fail with `eExpectedPause` unless the contract is paused. Use it on
+-- | Fail with `expectedPauseFailure` unless the contract is paused. Use it on
 -- recovery choices that run only during an incident, and in the choice that
 -- unpauses:
 --
@@ -58,7 +59,7 @@ whenNotPaused x = when (isPaused x) (failWithStatus eEnforcedPause)
 --     create this with paused = False
 -- ```
 whenPaused : HasToInterface t Pausable => t -> Update ()
-whenPaused x = unless (isPaused x) (failWithStatus eExpectedPause)
+whenPaused x = unless (isPaused x) (failWithStatus expectedPauseFailure)
 
 -- | Read the flag as a pure function.
 isPaused : HasToInterface t Pausable => t -> Bool
@@ -69,12 +70,18 @@ isPaused x = (view (toInterface @Pausable x)).paused
 
 -- | Raised when an operation requires the contract to be unpaused.
 -- `errorId`: `openzeppelin.com/pausable-enforced-pause`.
-eEnforcedPause : FailureStatus
-eEnforcedPause = Internal.pausableFailure "enforced-pause" InvalidGivenCurrentSystemStateOther
-  "Pausable: the contract is paused"
+enforcedPauseFailure : FailureStatus
+enforcedPauseFailure = FailureStatus with
+  errorId = "openzeppelin.com/pausable-enforced-pause"
+  category = InvalidGivenCurrentSystemStateOther
+  message = "Pausable: the contract is paused"
+  meta = TextMap.empty
 
 -- | Raised when an operation requires the contract to be paused.
 -- `errorId`: `openzeppelin.com/pausable-expected-pause`.
-eExpectedPause : FailureStatus
-eExpectedPause = Internal.pausableFailure "expected-pause" InvalidGivenCurrentSystemStateOther
-  "Pausable: the contract is not paused"
+expectedPauseFailure : FailureStatus
+expectedPauseFailure = FailureStatus with
+  errorId = "openzeppelin.com/pausable-expected-pause"
+  category = InvalidGivenCurrentSystemStateOther
+  message = "Pausable: the contract is not paused"
+  meta = TextMap.empty

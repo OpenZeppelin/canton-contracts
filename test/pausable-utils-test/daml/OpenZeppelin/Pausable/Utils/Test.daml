@@ -67,14 +67,14 @@ test_whenNotPausedGuardsOperation = script do
   Fixture{..} <- setup
   vault' <- submit holder do exerciseCmd vault Vault_Withdraw with amount = 10
   paused <- submit admin do exerciseCmd vault' Vault_Pause
-  submitMustFailWith eEnforcedPause $ trySubmit holder do
+  submitMustFailWith enforcedPauseFailure $ trySubmit holder do
     exerciseCmd paused Vault_Withdraw with amount = 10
 
 -- | whenPaused is the mirror: the recovery path runs only during an incident.
 test_whenPausedGuardsRecovery : Script ()
 test_whenPausedGuardsRecovery = script do
   Fixture{..} <- setup
-  submitMustFailWith eExpectedPause $ trySubmit admin do
+  submitMustFailWith expectedPauseFailure $ trySubmit admin do
     exerciseCmd vault Vault_EmergencyDrain
   paused <- submit admin do exerciseCmd vault Vault_Pause
   drained <- submit admin do exerciseCmd paused Vault_EmergencyDrain
@@ -131,7 +131,7 @@ test_nonconsumingFlipWithArchiveLeavesOneContract = script do
   gone === None
   active <- query @ArchivingVault admin
   map fst active === [paused]
-  submitMustFailWith eEnforcedPause $ trySubmit admin do
+  submitMustFailWith enforcedPauseFailure $ trySubmit admin do
     exerciseCmd paused ArchivingVault_Read
 
 -- | The guards accept an interface value, so a choice that holds a `Pausable`
@@ -145,21 +145,21 @@ test_guardsAcceptAnInterfaceValue = script do
   Some p <- queryContractId admin paused
   isPaused (toInterface @Pausable p) === True
 
--- | Pausing while paused fails with `eEnforcedPause`: the flip choice runs
--- `whenNotPaused` before its create.
+-- | Pausing while paused fails with `enforcedPauseFailure`: the flip choice
+-- runs `whenNotPaused` before its create.
 test_pauseWhenPausedFails : Script ()
 test_pauseWhenPausedFails = script do
   Fixture{..} <- setup
   paused <- submit admin do exerciseCmd vault Vault_Pause
-  submitMustFailWith eEnforcedPause $ trySubmit admin do
+  submitMustFailWith enforcedPauseFailure $ trySubmit admin do
     exerciseCmd paused Vault_Pause
 
--- | Unpausing while unpaused fails with `eExpectedPause`: the flip choice
+-- | Unpausing while unpaused fails with `expectedPauseFailure`: the flip choice
 -- runs `whenPaused` before its create.
 test_unpauseWhenUnpausedFails : Script ()
 test_unpauseWhenUnpausedFails = script do
   Fixture{..} <- setup
-  submitMustFailWith eExpectedPause $ trySubmit admin do
+  submitMustFailWith expectedPauseFailure $ trySubmit admin do
     exerciseCmd vault Vault_Unpause
 
 -- | The interface names no pause authority, so the consumer's controller is the
@@ -174,10 +174,10 @@ test_onlyTheConsumersControllerMayPause = script do
 test_pauseErrorsAreDistinct : Script ()
 test_pauseErrorsAreDistinct = script do
   Fixture{..} <- setup
-  submitMustFailWith eExpectedPause $ trySubmit admin do
+  submitMustFailWith expectedPauseFailure $ trySubmit admin do
     exerciseCmd vault Vault_Unpause
   paused <- submit admin do exerciseCmd vault Vault_Pause
-  submitMustFailWith eEnforcedPause $ trySubmit admin do
+  submitMustFailWith enforcedPauseFailure $ trySubmit admin do
     exerciseCmd paused Vault_Pause
 
 -- | The protected contract is destroyed only by its signatory.
@@ -254,13 +254,13 @@ test_customAuthorityGatesTheFlip = script do
   Some d <- queryDisclosure @RoleVault admin rv1
 
   -- a credential from the wrong issuer does not authorize the pause
-  submitMustFailWith eWrongCredentialIssuer $
+  submitMustFailWith wrongCredentialIssuerFailure $
     trySubmit (actAs stranger <> disclose d) do
       exerciseCmd rv1 RoleVault_Pause with caller = stranger, credCid = rogueCred
 
   -- nor does someone else's credential from the right issuer
   Some credDisclosure <- queryDisclosure @PauseCredential admin cred
-  submitMustFailWith eCredentialNotCallers $
+  submitMustFailWith credentialNotCallersFailure $
     trySubmit (actAs stranger <> disclose d <> disclose credDisclosure) do
       exerciseCmd rv1 RoleVault_Pause with caller = stranger, credCid = cred
 
@@ -269,7 +269,7 @@ test_customAuthorityGatesTheFlip = script do
     exerciseCmd rv1 RoleVault_Pause with caller = guardian, credCid = cred
 
   -- and the shared guard now blocks the operation
-  submitMustFailWith eEnforcedPause $ trySubmit holder do
+  submitMustFailWith enforcedPauseFailure $ trySubmit holder do
     exerciseCmd paused RoleVault_Transfer
 
   -- the uniform read reports it
@@ -279,7 +279,7 @@ test_customAuthorityGatesTheFlip = script do
   -- the flip checks the credential before the guard, so on the paused
   -- contract a wrong credential reports the credential error first
   Some pd <- queryDisclosure @RoleVault admin paused
-  submitMustFailWith eWrongCredentialIssuer $
+  submitMustFailWith wrongCredentialIssuerFailure $
     trySubmit (actAs stranger <> disclose pd) do
       exerciseCmd paused RoleVault_Pause with caller = stranger, credCid = rogueCred
 
@@ -290,18 +290,18 @@ test_customAuthorityGatesTheFlip = script do
 -- and stays fixed across versions of this package.
 test_errorIdsAreStable : Script ()
 test_errorIdsAreStable = script do
-  eEnforcedPause.errorId === "openzeppelin.com/pausable-enforced-pause"
-  eExpectedPause.errorId === "openzeppelin.com/pausable-expected-pause"
-  eEnforcedPause.category === InvalidGivenCurrentSystemStateOther
-  eExpectedPause.category === InvalidGivenCurrentSystemStateOther
+  enforcedPauseFailure.errorId === "openzeppelin.com/pausable-enforced-pause"
+  expectedPauseFailure.errorId === "openzeppelin.com/pausable-expected-pause"
+  enforcedPauseFailure.category === InvalidGivenCurrentSystemStateOther
+  expectedPauseFailure.category === InvalidGivenCurrentSystemStateOther
 
--- | A refused choice writes nothing: after `eEnforcedPause` the contract is
--- still active with every field as it was.
+-- | A refused choice writes nothing: after `enforcedPauseFailure` the contract
+-- is still active with every field as it was.
 test_refusedChoiceWritesNothing : Script ()
 test_refusedChoiceWritesNothing = script do
   Fixture{..} <- setup
   paused <- submit admin do exerciseCmd vault Vault_Pause
-  submitMustFailWith eEnforcedPause $ trySubmit holder do
+  submitMustFailWith enforcedPauseFailure $ trySubmit holder do
     exerciseCmd paused Vault_Withdraw with amount = 10
   Some v <- queryContractId admin paused
   v.balance === 100
@@ -309,14 +309,14 @@ test_refusedChoiceWritesNothing = script do
 
 -- | The fixture's `Vault_Withdraw` calls `whenNotPaused` before its own
 -- checks, so while paused a request that is also invalid on its own terms
--- fails with `eEnforcedPause`. The statement order sets the error.
+-- fails with `enforcedPauseFailure`. The statement order sets the error.
 test_guardRunsBeforeConsumerChecks : Script ()
 test_guardRunsBeforeConsumerChecks = script do
   Fixture{..} <- setup
-  submitMustFailWith eAmountNotPositive $ trySubmit holder do
+  submitMustFailWith amountNotPositiveFailure $ trySubmit holder do
     exerciseCmd vault Vault_Withdraw with amount = 0
   paused <- submit admin do exerciseCmd vault Vault_Pause
-  submitMustFailWith eEnforcedPause $ trySubmit holder do
+  submitMustFailWith enforcedPauseFailure $ trySubmit holder do
     exerciseCmd paused Vault_Withdraw with amount = 0
 
 -- The flag is read from the contract being exercised
@@ -330,7 +330,7 @@ test_contractCreatedPausedIsPaused = script do
   holder <- allocateParty "holder"
   vault <- submit admin do
     createCmd Vault with admin, holder, paused = True, balance = 100
-  submitMustFailWith eEnforcedPause $ trySubmit holder do
+  submitMustFailWith enforcedPauseFailure $ trySubmit holder do
     exerciseCmd vault Vault_Withdraw with amount = 10
   unpaused <- submit admin do exerciseCmd vault Vault_Unpause
   _ <- submit holder do exerciseCmd unpaused Vault_Withdraw with amount = 10
@@ -355,7 +355,7 @@ test_pauseIsPerContract = script do
   sibling <- submit admin do
     createCmd Vault with admin, holder, paused = False, balance = 100
   paused <- submit admin do exerciseCmd vault Vault_Pause
-  submitMustFailWith eEnforcedPause $ trySubmit holder $
+  submitMustFailWith enforcedPauseFailure $ trySubmit holder $
     exerciseCmd sibling (Vault_Withdraw with amount = 10)
       *> exerciseCmd paused (Vault_Withdraw with amount = 10)
   Some s <- queryContractId holder sibling
