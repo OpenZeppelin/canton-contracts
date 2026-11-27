@@ -158,7 +158,7 @@ template PolicyInstruction with
     choice PolicyInstruction_Expire : TransferInstructionV2.TransferInstructionResult
       with extraArgs : ExtraArgs
       controller state.transfer.instrumentId.admin
-      do transferExpireImpl (policyOps policy) extraArgs.context state
+      do transferExpireImpl (policyOps policy) state extraArgs
 
 template PolicyAllocation with
     state : AllocationState
