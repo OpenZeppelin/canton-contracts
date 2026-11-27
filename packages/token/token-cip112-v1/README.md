@@ -274,12 +274,11 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
 
 ## Sandbox validation
 
-`dpm test` runs the test suite on an in-memory ledger. The sandbox gate runs
-mint offers, transfers, querying, burn requests, and merges and splits
-against a real static-time Canton sandbox over the Ledger API. It also runs
-batched admin expiry and reads each executor's and receiver's transactions
-from the JSON Ledger API, to check that each one witnesses only its own
-items in the batch. From the repository root:
+`dpm test` runs the test suite on an in-memory ledger.
+`scripts/check-sandbox.sh` runs the scripts in
+`OpenZeppelin.Token.Cip112.V1.Test.Sandbox` against a static-time Canton
+sandbox, and reads each party's transactions from the JSON Ledger API to
+check what it witnesses. From the repository root:
 
 ```sh
 scripts/check-sandbox.sh
