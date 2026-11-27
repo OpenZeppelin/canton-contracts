@@ -45,6 +45,15 @@ template TokenHolding with
       do holdingOwnerUnlockImpl (defaultHoldingOps holding.instrumentId.admin)
            (toInterfaceContractId self) holding
 
+    choice TokenHolding_AdminUnlock : ContractId HoldingV2.Holding
+      -- ^ Return a holding whose lock has expired to its account, unlocked,
+      -- with the admin's authority alone. Fails while the lock is live or
+      -- indefinite. It moves no value: once the lock has expired, the
+      -- account parties can already spend this holding as unlocked.
+      controller holding.instrumentId.admin
+      do holdingAdminUnlockImpl (defaultHoldingOps holding.instrumentId.admin)
+           (toInterfaceContractId self) holding
+
     interface instance HoldingV2.Holding for TokenHolding where
       view = holding
 

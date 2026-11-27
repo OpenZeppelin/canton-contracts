@@ -139,7 +139,6 @@ expireCmd Scenario{..} cids =
     cancelArgs =
       [ (cid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = emptyExtraArgs)
       | cid <- cids ]
-    observers = []
 
 -- | The message `pinAllocationTo` fails with.
 notTokenAllocation : Text
