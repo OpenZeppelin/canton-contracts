@@ -7,8 +7,9 @@ module OpenZeppelin.Token.Cip112.V1.Test.Fixtures where
 import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
 import DA.List (sort)
-import DA.Optional (isNone, optionalToList)
-import DA.Time (days, hours, time)
+import DA.Optional (isNone, isSome, optionalToList)
+import DA.TextMap qualified as TextMap
+import DA.Time (RelTime, convertMicrosecondsToRelTime, days, hours, time)
 import Daml.Script
 
 import Splice.Api.Token.MetadataV1
@@ -22,6 +23,7 @@ import Splice.TokenStandard.Utils (basicAccount, burnAccount, nonIteratedAllocat
 import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
 import OpenZeppelin.Token.Cip112.V1.Holding
 import OpenZeppelin.Token.Cip112.V1.Registry
+import OpenZeppelin.Token.Cip112.V1.Transfer
 
 t0, t1, t2, t3, t4 : Time
 t0 = time (date 2026 Jan 1) 0 0 0
@@ -43,6 +45,37 @@ data Scenario = Scenario with
 
 emptyExtraArgs : ExtraArgs
 emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- | `ExtraArgs` whose choice context holds `value` under the `expire-lock`
+-- key. The key is spelled out, not taken from the utils package, so the
+-- tests pin Splice's key.
+expireLockEntry : AnyValue -> ExtraArgs
+expireLockEntry value = ExtraArgs with
+  context = ChoiceContext with values = TextMap.fromList [("expire-lock", value)]
+  meta = emptyMetadata
+
+-- | The `expire-lock` flag of an admin expiry: `False` clears it, so the
+-- expiry leaves the funding untouched.
+expireLockArgs : Bool -> ExtraArgs
+expireLockArgs = expireLockEntry . AV_Bool
+
+expireInstructionCmd
+  : ContractId TransferInstructionV2.TransferInstruction -> ExtraArgs
+  -> Commands TransferInstructionV2.TransferInstructionResult
+expireInstructionCmd instrCid extraArgs =
+  exerciseCmd (fromInterfaceContractId @TokenTransferInstruction instrCid)
+    TokenTransferInstruction_Expire with extraArgs
+
+cancelCmd
+  : ContractId AllocationV2.Allocation -> [Party] -> ExtraArgs
+  -> Commands AllocationV2.AllocationResult
+cancelCmd allocCid actors extraArgs =
+  exerciseCmd allocCid AllocationV2.Allocation_Cancel with actors; extraArgs
+
+lockedHoldingsOf : Party -> Script [ContractId TokenHolding]
+lockedHoldingsOf owner = do
+  holdings <- query @TokenHolding owner
+  pure [cid | (cid, h) <- holdings, isSome h.holding.lock]
 
 mkTransferLeg : Text -> Party -> Party -> Decimal -> AllocationV2.TransferLeg
 mkTransferLeg legId sender receiver amount = AllocationV2.TransferLeg with
@@ -152,7 +185,17 @@ holdingAmounts owner = do
 -- script that shares a ledger needs its own prefix; the in-memory `dpm test`
 -- ledger is fresh per script and never collides.
 setupPrefixed : Text -> Script Scenario
-setupPrefixed prefix = do
+setupPrefixed prefix = setupWithConfig prefix (days 90) (hours 1)
+
+-- | The largest `RelTime`, about 292,000 years: as a `maxTTL` or a
+-- `lockGrace`, every time a workflow derives from it saturates at the bounds
+-- of `Time`.
+maxRelTime : RelTime
+maxRelTime = convertMicrosecondsToRelTime maxBound
+
+-- | As `setupPrefixed`, with the registry's `maxTTL` and `lockGrace`.
+setupWithConfig : Text -> RelTime -> RelTime -> Script Scenario
+setupWithConfig prefix maxTTL lockGrace = do
   admin <- allocateParty (prefix <> "admin")
   app <- allocateParty (prefix <> "app")
   alice <- allocateParty (prefix <> "alice")
@@ -162,8 +205,8 @@ setupPrefixed prefix = do
     createCmd TokenRules with
       config = RegistryConfig with
         admin
-        maxTTL = days 90
-        lockGrace = hours 1
+        maxTTL
+        lockGrace
   Some rulesDisclosure <- queryDisclosure @TokenRules admin rulesCid
   let settlement = AllocationV2.SettlementInfo with
         executors = [app]

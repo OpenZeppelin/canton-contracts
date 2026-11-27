@@ -126,6 +126,22 @@ bridges them in functions. The cost is that a consumer who takes a utils
 release adding `-v2` support also depends on and vets the `-v2` package; a
 fix needed by a `-v1`-only consumer is backported on a `1.x` branch.
 
+## Token account authority
+
+A CIP-0112 account names an owner and an optional provider, and the
+standard
+[leaves the split of authority between them to the implementation](https://github.com/canton-network/splice/blob/8460154135f39019b8bb370c9c1321ff13c9bb10/token-standard/splice-api-token-holding-v2/daml/Splice/Api/Token/HoldingV2.daml#L34-L41).
+The token packages treat the owner and a provider distinct from it as one
+joint authority: both sign every holding of the account, and both are
+controllers of every choice the owner takes for the account. A provider
+that operates accounts for others, such as a custodian, then authorizes
+every movement the owner requests.
+
+The cost is that the owner cannot act without the provider, even on funds
+that other parties return to the account. The security caveats in
+`packages/token/token-cip112-v1/README.md` list the affected choices, the
+release paths, and what a deployment needs from the provider.
+
 ## Dependency policy
 
 - Implementation packages do not depend on other implementation packages,

@@ -7,7 +7,8 @@
 -- The scripts follow a tag through every path that re-creates a holding: a
 -- transfer's change, locked funding, and payout, an accept's surplus, every
 -- return of locked funding, an allocation's locked funding, change, reserve,
--- and payout, and an owner unlock. A mint, and a settlement payout funded
+-- and payout, an owner or admin unlock, a merge, and a split. A mint, and a
+-- settlement payout funded
 -- only by net credit, have no sources, so their holdings take the closure's
 -- default.
 module OpenZeppelin.Token.Cip112.Utils.Test.Sources where
@@ -51,8 +52,9 @@ lockExpired = time (date 2026 Jan 2) 4 0 0
 -- Local templates
 ------------------
 
--- | A holding with a consumer field outside the standard view. Its owner
--- unlock runs the shared body, so the replacement goes through `taggedOps`.
+-- | A holding with a consumer field outside the standard view. Its unlock,
+-- merge, and split choices run the shared bodies, so every holding they
+-- create goes through `taggedOps`.
 template TaggedHolding with
     holding : HoldingV2.HoldingView
     tag : Text
@@ -64,6 +66,20 @@ template TaggedHolding with
     choice TaggedHolding_OwnerUnlock : ContractId HoldingV2.Holding
       controller accountParties holding.instrumentId.admin holding.account
       do holdingOwnerUnlockImpl taggedOps (toInterfaceContractId self) holding this
+
+    choice TaggedHolding_AdminUnlock : ContractId HoldingV2.Holding
+      controller holding.instrumentId.admin
+      do holdingAdminUnlockImpl taggedOps (toInterfaceContractId self) holding this
+
+    choice TaggedHolding_Merge : ContractId HoldingV2.Holding
+      with inputHoldingCids : [ContractId HoldingV2.Holding]
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingMergeImpl taggedOps emptyChoiceContext (toInterfaceContractId self) holding this inputHoldingCids
+
+    choice TaggedHolding_Split : [ContractId HoldingV2.Holding]
+      with amounts : [Decimal]
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingSplitImpl taggedOps (toInterfaceContractId self) holding this amounts
 
     interface instance HoldingV2.Holding for TaggedHolding where
       view = holding
@@ -101,7 +117,7 @@ template TaggedInstruction with
 
     choice TaggedInstruction_Expire : TransferInstructionV2.TransferInstructionResult
       controller state.transfer.instrumentId.admin
-      do transferExpireImpl taggedOps emptyChoiceContext state
+      do transferExpireImpl taggedOps state (ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata)
 
 template TaggedAllocation with
     state : AllocationState
@@ -142,7 +158,7 @@ template TaggedRules with
       settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
       settlementFactory_settleBatchExtraObservers _ = []
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @TaggedAllocation) config.admin self arg
+        settleBatchImpl (pinAllocationTo @TaggedAllocation) (\_ _ -> emptyChoiceContext) config.admin self arg
 
     nonconsuming choice TaggedRules_OfferMint : ContractId TransferInstructionV2.TransferInstruction
       with receiver : HoldingV2.Account; amount : Decimal
@@ -442,6 +458,38 @@ testOwnerUnlockPassesLockedHolding = do
     exerciseCmd (fromInterfaceContractId @TaggedHolding locked) TaggedHolding_OwnerUnlock
   tagOf alice unlocked >>= (=== "o")
   holdingsOf alice >>= (=== [(1.0, "o", True), (4.0, "o", True)])
+
+-- | The admin unlock passes the locked holding to its replacement, as the
+-- owner unlock does.
+testAdminUnlockPassesLockedHolding : Script ()
+testAdminUnlockPassesLockedHolding = do
+  w@World{..} <- setup
+  o <- aliceTok w 5.0 "o"
+  setTime fundedAt
+  instruction <- pendingTransfer w [o] "o"
+  Some pending <- queryContractId alice (fromInterfaceContractId @TaggedInstruction instruction)
+  [locked] <- pure pending.state.lockedHoldingCids
+  setTime lockExpired
+  unlocked <- submit admin do
+    exerciseCmd (fromInterfaceContractId @TaggedHolding locked) TaggedHolding_AdminUnlock
+  tagOf alice unlocked >>= (=== "o")
+  holdingsOf alice >>= (=== [(1.0, "o", True), (4.0, "o", True)])
+
+-- | A merge passes the exercised holding, then its inputs in the order given,
+-- and a split passes the exercised holding to every part.
+testMergeAndSplitPassTheExercisedHoldingFirst : Script ()
+testMergeAndSplitPassTheExercisedHoldingFirst = do
+  w@World{..} <- setup
+  a <- aliceTok w 1.0 "a"
+  b <- aliceTok w 2.0 "b"
+  c <- aliceTok w 3.0 "c"
+  merged <- submit alice do
+    exerciseCmd (fromInterfaceContractId @TaggedHolding b) TaggedHolding_Merge with inputHoldingCids = [c, a]
+  tagOf alice merged >>= (=== "b+c+a")
+  parts <- submit alice do
+    exerciseCmd (fromInterfaceContractId @TaggedHolding merged) TaggedHolding_Split with amounts = [2.5, 3.5]
+  tagsOf alice parts >>= (=== ["b+c+a", "b+c+a"])
+  holdingsOf alice >>= (=== [(2.5, "b+c+a", True), (3.5, "b+c+a", True)])
 
 -- Allocations
 --------------

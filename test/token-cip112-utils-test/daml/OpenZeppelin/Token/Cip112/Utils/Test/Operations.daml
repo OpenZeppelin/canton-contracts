@@ -8,8 +8,10 @@
 -- The scripts check that a rule on new spending leaves locked funding free
 -- to move, that a refusing payout or return blocks only its own paths, that
 -- every operation receives the context its submitter passed, and the two
--- limits of that delivery: batch settlement passes an empty context, and one
--- refusal fails a whole expiry batch.
+-- limits of that delivery: batch settlement passes each allocation only what
+-- the factory's selector picks for its authorizer, and one refusal fails a
+-- whole expiry batch. A merge funds its inputs through `fundHolding`, while
+-- the holding a merge or split is exercised on runs no operation at all.
 module OpenZeppelin.Token.Cip112.Utils.Test.Operations where
 
 import DA.Action (replicateA, unless)
@@ -111,6 +113,20 @@ template PolicyHolding with
       controller accountParties holding.instrumentId.admin holding.account
       do holdingOwnerUnlockImpl (policyOps policy) (toInterfaceContractId self) holding this
 
+    -- | A merge taking the context its operations read, as a consumer whose
+    -- spend rule needs one would.
+    choice PolicyHolding_Merge : ContractId HoldingV2.Holding
+      with
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+        context : ChoiceContext
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingMergeImpl (policyOps policy) context (toInterfaceContractId self) holding this inputHoldingCids
+
+    choice PolicyHolding_Split : [ContractId HoldingV2.Holding]
+      with amounts : [Decimal]
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingSplitImpl (policyOps policy) (toInterfaceContractId self) holding this amounts
+
     interface instance HoldingV2.Holding for PolicyHolding where
       view = holding
 
@@ -159,7 +175,7 @@ template PolicyInstruction with
     choice PolicyInstruction_Expire : TransferInstructionV2.TransferInstructionResult
       with extraArgs : ExtraArgs
       controller state.transfer.instrumentId.admin
-      do transferExpireImpl (policyOps policy) extraArgs.context state
+      do transferExpireImpl (policyOps policy) state extraArgs
 
 template PolicyAllocation with
     state : AllocationState
@@ -205,12 +221,24 @@ template PolicyRules with
       settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
       settlementFactory_settleBatchExtraObservers _ = []
       settlementFactory_settleBatchImpl self arg =
-        settleBatchImpl (pinAllocationTo @PolicyAllocation) config.admin self arg
+        settleBatchImpl (pinAllocationTo @PolicyAllocation) authorizerPath config.admin self arg
 
     nonconsuming choice PolicyRules_ExpireAllocations : ()
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
       controller config.admin
       do expireAllocationsImpl (pinAllocationTo @PolicyAllocation) config.admin cancelArgs
+
+-- | The batch-settlement selector: each allocation receives the batch's
+-- entry for its authorizer, under `test/path`, and nothing else.
+authorizerPath : AllocationV2.AllocationView -> ChoiceContext -> ChoiceContext
+authorizerPath v batch = ChoiceContext with
+  values = TextMap.fromList
+    [ ("test/path", value)
+    | value <- optionalToList (TextMap.lookup (pathKeyFor v.allocation.authorizer) batch.values) ]
+
+-- | The batch-context key of an authorizer's entry.
+pathKeyFor : HoldingV2.Account -> Text
+pathKeyFor account = "test/path/" <> optional "" partyToText account.owner
 
 createPolicyInstruction : Policy -> CreateTransferInstruction
 createPolicyInstruction policy s =
@@ -583,7 +611,8 @@ testRefusingReturnRuleBlocksOnlyReturns = do
 -- for every input it funds, and each accept, reject, withdraw, expiry,
 -- direct settle, allocation withdraw, and cancel its own, including a
 -- cancel run from the admin's expiry batch. Batch settlement passes
--- `deliverHolding` an empty context whatever the batch carried.
+-- `deliverHolding` only the batch's entry for the authorizer: neither the
+-- other authorizer's entry nor the batch's own `test/path`.
 testOperationsReceiveTheSubmittersContext : Script ()
 testOperationsReceiveTheSubmittersContext = do
   w@World{..} <- setupWith allowAll
@@ -631,8 +660,14 @@ testOperationsReceiveTheSubmittersContext = do
 
   trade@(tradeAlloc, tradeBobAlloc) <- allocateTrade w [i9]
   settleAs <- asExecutor w [tradeAlloc, tradeBobAlloc]
-  tree <- submitTree settleAs (settleBatchCmd w (ctx "batch") trade)
-  opCalls tree === [OpCall "deliver" emptyChoiceContext]
+  let batch = ChoiceContext $ TextMap.fromList
+        [ (pathKeyFor (basicAccount alice), AV_Text "batch for alice")
+        , (pathKeyFor (basicAccount bob), AV_Text "batch for bob")
+        , ("test/path", AV_Text "batch") ]
+  tree <- submitTree settleAs (settleBatchCmd w batch trade)
+  -- Bob's receiving allocation locks nothing, so only alice's funding is
+  -- delivered.
+  opCalls tree === [OpCall "deliver" (ctx "batch for alice")]
 
   (expiringAlloc, _) <- allocateTrade w [i10]
   setTime expiredAt
@@ -666,3 +701,30 @@ testOneRefusingReturnFailsTheExpiryBatch = do
   submit (actAs admin) (expireCmdFor [allowed])
   [(_, stillLocked)] <- queryFilter @PolicyHolding alice (\h -> isSome h.holding.lock)
   stillLocked.policy === refusing.policy
+
+-- | A merge consumes each input through `fundHolding`, with the context its
+-- submitter passed, and runs no operation on the exercised holding; a split
+-- runs none at all. So a refusing fund rule refuses a merge of the same
+-- holdings it lets a split through, and a rule meant to cover the exercised
+-- holding, such as a freeze, belongs in the holding's own choice.
+testMergeFundsOnlyItsInputs : Script ()
+testMergeFundsOnlyItsInputs = do
+  w@World{..} <- setupWith allowAll
+  [i1, i2, i3] <- replicateA 3 (mint w alice)
+  let exercised = fromInterfaceContractId @PolicyHolding i1
+  (mergedCid, tree) <- submitResultAndTree (actAs alice) do
+    exerciseCmd exercised PolicyHolding_Merge with inputHoldingCids = [i2, i3]; context = ctx "merge"
+  opCalls tree === [OpCall "fund" (ctx "merge"), OpCall "fund" (ctx "merge")]
+  balanceOf alice >>= (=== [30.0])
+  tree <- submitTree (actAs alice) do
+    exerciseCmd (fromInterfaceContractId @PolicyHolding mergedCid) PolicyHolding_Split with amounts = [10.0, 20.0]
+  opCalls tree === []
+
+  refusing <- withRules w (allowAll with fundRule = Refuse)
+  [j1, j2] <- replicateA 2 (mint refusing alice)
+  mustFailWith "fund rule refuses" (actAs alice) do
+    exerciseCmd (fromInterfaceContractId @PolicyHolding j1) PolicyHolding_Merge with
+      inputHoldingCids = [j2]; context = emptyChoiceContext
+  _ <- submit (actAs alice) do
+    exerciseCmd (fromInterfaceContractId @PolicyHolding j1) PolicyHolding_Split with amounts = [4.0, 6.0]
+  balanceOf alice >>= (=== [4.0, 6.0, 10.0, 10.0, 20.0])

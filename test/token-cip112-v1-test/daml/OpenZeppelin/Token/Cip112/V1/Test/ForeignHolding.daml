@@ -20,6 +20,7 @@ import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructi
 import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
 import Splice.TokenStandard.Utils (basicAccount, senderSide)
 
+import OpenZeppelin.Token.Cip112.V1.Holding (TokenHolding_Merge(..))
 import OpenZeppelin.Token.Cip112.V1.Test.Fixtures
 import OpenZeppelin.Token.Cip112.V1.Test.ForeignAllocation (mustFailWith)
 
@@ -84,3 +85,19 @@ testForeignHoldingAsAllocationInput = do
         actors = [attacker]
   after <- holdingAmounts attacker
   after === []
+
+-- | A forged holding as a merge input. Unguarded, the merge would archive
+-- the forgery and recreate the attacker's genuine holding with the forged
+-- amount added: a mint outside the registry.
+testForeignHoldingAsMergeInput : Script ()
+testForeignHoldingAsMergeInput = do
+  Scenario{..} <- setup
+  attacker <- allocateParty "attacker"
+  genuine <- mint admin attacker 1.0
+  forgedCid <- submit attacker do
+    createCmd ForeignHolding with attacker; claimedView = forgedHolding admin attacker 1000000.0
+  mustFailWith notAcceptedHolding (actAs attacker) $
+    exerciseCmd genuine TokenHolding_Merge with
+      inputHoldingCids = [toInterfaceContractId @HoldingV2.Holding forgedCid]
+  after <- holdingAmounts attacker
+  after === [1.0]

@@ -22,8 +22,10 @@ data RegistryConfig = RegistryConfig with
       -- ^ The instrument admin: signs every holding and every pending
       -- workflow contract, and controls supply and cleanup.
     maxTTL : RelTime
-      -- ^ Upper bound on how long an allocation or transfer instruction may
-      -- occupy storage. Workflow deadlines beyond it are rejected outright.
+      -- ^ Upper bound on a pending workflow's storage time. A transfer's
+      -- `executeBefore` lies at most this far past ledger time. An
+      -- allocation's `expiresAt` lies at most this far past its `requestedAt`,
+      -- or past the previous `expiresAt` for a successor.
     lockGrace : RelTime
       -- ^ How long a funding lock outlives its workflow contract's
       -- `expiresAt`: the window in which the admin's expiry path is
@@ -44,7 +46,8 @@ data TransferInstructionState = TransferInstructionState with
     expiresAt : Time
       -- ^ Storage bound; the admin may expire the instruction after it.
     lockExpiresAt : Time
-      -- ^ When the funding lock expires. Strictly after `expiresAt`.
+      -- ^ When the funding lock expires: `expiresAt + lockGrace`, saturating
+      -- at `maxTime`. Strictly after `expiresAt` unless both are `maxTime`.
   deriving (Eq, Show)
 
 -- | Payload of an allocation. A template stores this record plus its own
@@ -61,13 +64,15 @@ data AllocationState = AllocationState with
     requestedAt : Time
       -- ^ The wallet-supplied request time.
     createdAt : Time
-      -- ^ When the original allocation was created; carried onto successors.
+      -- ^ The original allocation's `requestedAt`; carried onto successors.
     numIterations : Int
       -- ^ Settlement iterations executed so far; zero for the original.
     expiresAt : Time
-      -- ^ Storage bound; the admin may cancel the allocation after it.
+      -- ^ Storage bound; settle fails and the admin may cancel the
+      -- allocation from it on.
     lockExpiresAt : Time
-      -- ^ When the funding lock expires. Strictly after `expiresAt`.
+      -- ^ When the funding lock expires: `expiresAt + lockGrace`, saturating
+      -- at `maxTime`. Strictly after `expiresAt` unless both are `maxTime`.
     maxTTL : RelTime
       -- ^ The registry's storage bound, snapshotted at allocation time.
     lockGrace : RelTime

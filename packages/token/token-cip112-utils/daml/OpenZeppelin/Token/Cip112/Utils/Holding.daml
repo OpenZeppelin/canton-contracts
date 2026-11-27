@@ -25,10 +25,10 @@ module OpenZeppelin.Token.Cip112.Utils.Holding where
 
 import DA.Assert (assertDeadlineExceeded)
 import DA.Foldable (forA_)
-import DA.List (dedupSort)
+import DA.List (dedupSort, unique)
 import DA.Optional (fromOptional, isNone, isSome)
 import DA.TextMap qualified as TextMap
-import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime)
+import DA.Time (RelTime, addRelTime, subTime, convertMicrosecondsToRelTime, isLedgerTimeLE)
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
@@ -74,14 +74,24 @@ isValidRegistryConfig c =
 -- spend: a context cannot show that a contract is absent. The submitter
 -- also chooses which contract to pass, so the registry keeps one live
 -- policy contract for each admin and account.
+--
+-- The operations cannot tell which rules contract a holding came from. Any
+-- check they make compares fields, and the admin can copy those fields into
+-- a contract it signs alone, such as a second rules contract without the
+-- first one's roles. Roles and policy on a rules contract therefore restrict
+-- wallets only. A control that must bind the admin has to be held by a party
+-- that signs the holdings and the pending contracts. The operations must
+-- refuse a holding, and the `PinAllocation` an allocation, that names a
+-- different such party.
 data HoldingOps h = HoldingOps with
     createHolding : [h] -> HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
       -- ^ Create a holding from its sources and its standard view. The
       -- sources are the states of the holdings consumed in the same step
       -- whose value funds the new one, all in the view's instrument, in the
       -- order they were consumed. Receives each source as `fundHolding`,
-      -- `deliverHolding`, or `returnHolding` returned it, or as the
-      -- owner-unlock choice passed it, then creates a contract whose
+      -- `deliverHolding`, or `returnHolding` returned it, or as the holding
+      -- choice that runs an unlock, merge, or split body passed it, then
+      -- creates a contract whose
       -- `Holding` view equals the view argument and whose signatories
       -- include `view.instrumentId.admin` and the account parties. A
       -- transfer's inputs fund the sender's change, the locked funding of a
@@ -91,8 +101,10 @@ data HoldingOps h = HoldingOps with
       -- funding and the change. A settlement passes only its locked funding
       -- to the next-iteration reserve and the authorizer's payout, so state
       -- follows value through a transfer but not through a settlement. A
-      -- reject, withdraw, expiry, cancel, or owner unlock passes only the
-      -- locked holding the new holding replaces. A minted holding, and a
+      -- reject, withdraw, expiry, cancel, or unlock passes only the locked
+      -- holding the new holding replaces. A merge passes the exercised
+      -- holding and then its inputs, and a split passes the exercised
+      -- holding to every part. A minted holding, and a
       -- settlement's reserve or payout in an instrument without locked
       -- funding, have no sources. A template field outside the view survives
       -- re-creation only if this operation derives it from the sources.
@@ -106,9 +118,10 @@ data HoldingOps h = HoldingOps with
       -- between accounts.
     fundHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h)
       -- ^ Consume a caller-supplied input holding that funds a new transfer
-      -- or allocation, through `consumeUnlockedHolding`: the inputs of
-      -- `transferFactoryImpl` and `executeTransfer`, including a one-step
-      -- transfer and a burn, and of `allocationFactoryImpl`. Fails unless the
+      -- or allocation or is merged into another holding, through
+      -- `consumeUnlockedHolding`: the inputs of `transferFactoryImpl` and
+      -- `executeTransfer`, including a one-step transfer and a burn, of
+      -- `allocationFactoryImpl`, and of `holdingMergeImpl`. Fails unless the
       -- contract is an accepted implementation, then removes the holding from
       -- the ledger and returns the view and state it had. An input may be a
       -- holding whose lock has expired, such as the funding of an instruction
@@ -123,10 +136,9 @@ data HoldingOps h = HoldingOps with
       -- its owner: an accept's surplus, a settlement's payout to the
       -- authorizer, and a reserve rolled into the next iteration. Fails
       -- unless the contract is an accepted implementation, then removes the
-      -- holding from the ledger and returns the view and state it had.
-      -- `settleBatchImpl` passes each `Allocation_Settle` an empty context,
-      -- so a rule that requires a context entry refuses every batch
-      -- settlement.
+      -- holding from the ledger and returns the view and state it had. In a
+      -- batch settlement, the context is what the `select` argument of
+      -- `settleBatchImpl` returns for the allocation.
     returnHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h)
       -- ^ Consume locked funding to return it to its owner, through
       -- `unlockHoldings`: `transferRejectImpl`, `transferWithdrawImpl`,
@@ -227,17 +239,134 @@ newHolding ops sources admin account instrumentId amount lock =
 holdingOwnerUnlockImpl
   : HoldingOps h -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> h
   -> Update (ContractId HoldingV2.Holding)
-holdingOwnerUnlockImpl ops self holding state = do
+holdingOwnerUnlockImpl ops self holding state =
+  releaseExpiredLock ops self holding state "its owner" "expired lock released by owner"
+
+-- | Body of a consuming admin-unlock choice on a holding template, controlled
+-- by the admin alone. It does what `holdingOwnerUnlockImpl` does, with its
+-- own event reason. It moves no value: the holding returns unlocked to the
+-- same account, and only once its lock has expired.
+holdingAdminUnlockImpl
+  : HoldingOps h -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> h
+  -> Update (ContractId HoldingV2.Holding)
+holdingAdminUnlockImpl ops self holding state =
+  releaseExpiredLock ops self holding state "the admin" "expired lock released by admin"
+
+-- | Recreate a holding whose lock has expired without its lock, with `state`
+-- as its only source, and log the change with `reason`. `releaser` names who
+-- unlocks, for the failure on an indefinite lock.
+releaseExpiredLock
+  : HoldingOps h -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> h -> Text -> Text
+  -> Update (ContractId HoldingV2.Holding)
+releaseExpiredLock ops self holding state releaser reason = do
   lock <- case holding.lock of
     None -> fail "holding is not locked"
     Some l -> pure l
   case lock.expiresAt of
-    None -> fail "holding is locked indefinitely and cannot be unlocked by its owner"
+    None -> fail ("holding is locked indefinitely and cannot be unlocked by " <> releaser)
     Some expiresAt -> assertDeadlineExceeded "lock expiresAt" expiresAt
   newCid <- ops.createHolding [state] (holding with lock = None)
-  emitHoldingsChange ops holding.instrumentId.admin holding.account [] [self] [newCid] []
-    "expired lock released by owner"
+  emitHoldingsChange ops holding.instrumentId.admin holding.account [] [self] [newCid] [] reason
   pure newCid
+
+-- Admin expiry
+---------------
+
+-- | The choice-context key an admin expiry reads to decide whether to release
+-- the funding of the contract it ends. It is Splice's key:
+--
+-- https://github.com/canton-network/splice/blob/8460154135f39019b8bb370c9c1321ff13c9bb10/daml/splice-amulet/daml/Splice/Amulet/TokenApiUtils.daml#L180-L181
+expireLockKey : Text
+expireLockKey = "expire-lock"
+
+-- | Reads the `expire-lock` flag from the choice context of an admin expiry.
+-- A missing entry reads as `True`, and any value other than a Bool fails. On
+-- `True` the expiry returns the locked holdings to their account, and on
+-- `False` it ends the contract without touching them. Check that the funding
+-- lock has expired before acting on `False`. Otherwise the contract ends
+-- while its holdings stay locked.
+expireLockFromContext : ChoiceContext -> Update Bool
+expireLockFromContext context = case TextMap.lookup expireLockKey context.values of
+  None -> pure True
+  Some (AV_Bool expireLock) -> pure expireLock
+  Some _ -> fail ("choice context entry '" <> expireLockKey <> "' must be a Bool")
+
+-- | Body of a consuming merge choice on a holding template, controlled by
+-- the account parties. It consumes `inputHoldingCids` through
+-- `fundHolding`, recreates the exercised holding with their amounts added,
+-- and emits an account-local `EventLog_HoldingsChange` with no transfer
+-- legs, naming the exercised holding and the inputs as inputs. The merged
+-- holding keeps the exercised holding's `meta` and drops the inputs'.
+-- `self` is the holding being exercised and `state` its state. The merged
+-- holding's sources are `state`, then the inputs' states in the order
+-- given. `context` reaches `fundHolding` for every input.
+--
+-- Fails unless `inputHoldingCids` holds at least one holding. Fails unless
+-- each input is a different holding of the same admin, account, and
+-- instrument. Fails on an input whose lock is live or indefinite, and
+-- accepts one whose lock has expired. Fails while the exercised holding
+-- carries a lock, even an expired one. A pending instruction or allocation
+-- that names a merged expired-lock input fails to return its funding, and
+-- only an admin expiry through `transferExpireImpl` or `allocationCancelImpl`
+-- with the `expire-lock` flag cleared removes it.
+--
+-- Check a rule that must block a merge, such as a freeze, in the holding's
+-- choice before it calls this body. Otherwise the account parties can merge
+-- a frozen holding into an unfrozen one. `fundHolding` applies the rule to
+-- the inputs. No registry contract takes part, so no factory policy, such
+-- as a pause or a fee, applies to a merge.
+holdingMergeImpl
+  : HoldingOps h -> ChoiceContext -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> h
+  -> [ContractId HoldingV2.Holding]
+  -> Update (ContractId HoldingV2.Holding)
+holdingMergeImpl ops context self holding state inputHoldingCids = do
+  requireNoLock holding
+  require "merge requires at least one input holding" (not (null inputHoldingCids))
+  require "merge inputs must be distinct and must not include the exercised holding"
+    (unique (self :: inputHoldingCids))
+  let admin = holding.instrumentId.admin
+  inputs <- forA inputHoldingCids $ \cid -> do
+    consumed@(h, _) <- consumeUnlockedHolding ops context admin holding.account cid
+    require' ("inputHolding.instrumentId.id", h.instrumentId.id)
+      isEqualR ("holding.instrumentId.id", holding.instrumentId.id)
+    pure consumed
+  newCid <- ops.createHolding (state :: map snd inputs)
+    (holding with amount = holding.amount + sum (map ((.amount) . fst) inputs))
+  emitHoldingsChange ops admin holding.account [] (self :: inputHoldingCids) [newCid] []
+    "holdings merged"
+  pure newCid
+
+-- | Body of a consuming split choice on a holding template, controlled by
+-- the account parties. It recreates the exercised holding as one holding
+-- per entry of `amounts`, returned in the same order, each with the
+-- exercised holding's `meta`, and emits an account-local
+-- `EventLog_HoldingsChange` with no transfer legs. `self` is the holding
+-- being exercised and `state` its state, every part's only source.
+--
+-- Fails unless `amounts` holds at least two entries. Fails unless each
+-- entry is positive. Fails unless the entries sum to the holding's amount.
+-- Fails while the holding carries a lock, even an expired one.
+--
+-- Check a rule that must block a split, such as a freeze, in the holding's
+-- choice before it calls this body. Otherwise the account parties can split
+-- a frozen holding into unfrozen parts. No registry contract takes part, so
+-- no factory policy applies to a split.
+holdingSplitImpl
+  : HoldingOps h -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView -> h -> [Decimal]
+  -> Update [ContractId HoldingV2.Holding]
+holdingSplitImpl ops self holding state amounts = do
+  requireNoLock holding
+  require "split requires at least two amounts" (length amounts >= 2)
+  require "split amounts must be positive" (all (> 0.0) amounts)
+  require' ("sum of split amounts", sum amounts) isEqualR ("holding.amount", holding.amount)
+  newCids <- forA amounts $ \amount -> ops.createHolding [state] (holding with amount)
+  emitHoldingsChange ops holding.instrumentId.admin holding.account [] [self] newCids []
+    "holding split"
+  pure newCids
+
+-- | Fail when the holding carries a lock, even an expired one.
+requireNoLock : HoldingV2.HoldingView -> Update ()
+requireNoLock holding = require "holding is locked" (isNone holding.lock)
 
 -- Consumption
 --------------
@@ -340,12 +469,29 @@ eventObserversFor : HoldingOps h -> Party -> HoldingV2.Account -> [Party]
 eventObserversFor ops admin account =
   dedupSort (accountParties admin account <> ops.eventObservers account)
 
--- | Storage bound for a pending contract: at most `maxTTL` from now, capped
--- by the workflow deadline, saturating at `maxTime` instead of overflowing.
+-- | Storage bound for a pending contract: at most `maxTTL` after `base`,
+-- capped by the workflow deadline, saturating at `maxTime`.
 computeStorageExpiry : RelTime -> Time -> Optional Time -> Time
-computeStorageExpiry maxTTL now deadline =
-    optional identity min deadline candidate
-  where
-    candidate
-      | maxTime `subTime` now <= maxTTL = maxTime
-      | otherwise = now `addRelTime` maxTTL
+computeStorageExpiry maxTTL base deadline =
+  optional identity min deadline (base `addRelTimeSaturating` maxTTL)
+
+-- | `t` shifted by `delta`, saturating at `maxTime` or `minBound` where
+-- `addRelTime` raises an `ArithmeticError`.
+addRelTimeSaturating : Time -> RelTime -> Time
+addRelTimeSaturating t delta
+  | delta >= maxTime `subTime` t = maxTime
+  | delta <= minBound `subTime` t = minBound
+  | otherwise = t `addRelTime` delta
+
+-- | Whether ledger time is at or before `t`. Holds at `maxTime`, where
+-- `isLedgerTimeLE` raises an error.
+isLedgerTimeAtMost : Time -> Update Bool
+isLedgerTimeAtMost t
+  | t == maxTime = pure True
+  | otherwise = isLedgerTimeLE t
+
+-- | Whether `lockExpiresAt`, the second argument, is strictly after
+-- `expiresAt`, the first, or both are `maxTime`.
+lockOutlivesExpiry : Time -> Time -> Bool
+lockOutlivesExpiry expiresAt lockExpiresAt =
+  expiresAt < lockExpiresAt || lockExpiresAt == maxTime
