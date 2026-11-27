@@ -86,15 +86,14 @@ isValidRegistryConfig c =
 data HoldingOps h = HoldingOps with
     createHolding : [h] -> HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
       -- ^ Create a holding from its sources and its standard view. The
-      -- sources are the states of the holdings consumed in the same step
-      -- whose value funds the new one, all in the view's instrument, in the
-      -- order they were consumed. Receives each source as `fundHolding`,
-      -- `deliverHolding`, or `returnHolding` returned it, or as the holding
-      -- choice that runs an unlock, merge, or split body passed it, then
-      -- creates a contract whose
-      -- `Holding` view equals the view argument and whose signatories
-      -- include `view.instrumentId.admin` and the account parties. A
-      -- transfer's inputs fund the sender's change, the locked funding of a
+      -- created contract's `Holding` view equals the view argument, and its
+      -- signatories include `view.instrumentId.admin` and the account
+      -- parties. The sources are the states of the holdings consumed in the
+      -- same step whose value funds the new one, all in the view's
+      -- instrument, in the order they were consumed. Each is the state that
+      -- `fundHolding`, `deliverHolding`, or `returnHolding` returned, or that
+      -- the holding choice running an unlock, merge, or split body passed in.
+      -- A transfer's inputs fund the sender's change, the locked funding of a
       -- pending transfer, and the receiver's holding of a one-step transfer.
       -- An accept's locked funding funds the surplus returned to the sender
       -- and the receiver's holding. An allocation's inputs fund its locked
@@ -104,18 +103,17 @@ data HoldingOps h = HoldingOps with
       -- reject, withdraw, expiry, cancel, or unlock passes only the locked
       -- holding the new holding replaces. A merge passes the exercised
       -- holding and then its inputs, and a split passes the exercised
-      -- holding to every part. A minted holding, and a
-      -- settlement's reserve or payout in an instrument without locked
-      -- funding, have no sources. A template field outside the view survives
-      -- re-creation only if this operation derives it from the sources.
-      -- Every other field resets to the closure's value. The holdings a
-      -- factory, accept, or settlement creates in one instrument all get the
-      -- same sources, whatever their amounts, and the submitter orders a
-      -- factory's inputs. Derive a field as the sources' most restrictive
-      -- value, such as the latest issue date, not the first source's or a
-      -- sum. A transfer receiver's sources belong to the sender, so compare
-      -- each source's account with the view's before carrying a field
-      -- between accounts.
+      -- holding to every part. A minted holding, and a settlement's reserve
+      -- or payout in an instrument without locked funding, have no sources.
+      -- A template field outside the view survives re-creation only if this
+      -- operation derives it from the sources. Every other field resets to
+      -- the closure's value. The holdings a factory, accept, or settlement
+      -- creates in one instrument all get the same sources, whatever their
+      -- amounts, and the submitter orders a factory's inputs. Derive a field
+      -- as the sources' most restrictive value, such as the latest issue
+      -- date, not the first source's or a sum. A transfer receiver's sources
+      -- belong to the sender, so compare each source's account with the
+      -- view's before carrying a field between accounts.
     fundHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update (HoldingV2.HoldingView, h)
       -- ^ Consume a caller-supplied input holding that funds a new transfer
       -- or allocation or is merged into another holding, through
