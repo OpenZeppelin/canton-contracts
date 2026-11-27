@@ -1384,7 +1384,7 @@ testIteratedSuccessorBoundedByOwnExpiresAt = do
   bobAfter === [4.0]
 
 -- | The funding lock outlives the instruction's own expiry, so the
--- admin's expiry path always has a window in which it is guaranteed to work.
+-- admin can expire the instruction before the funding unlocks.
 -- Once the lock expires the sender's account parties unlock the funding, and
 -- the admin ends the instruction with the `expire-lock` flag cleared.
 testLockGraceAndOwnerUnlock : Script ()

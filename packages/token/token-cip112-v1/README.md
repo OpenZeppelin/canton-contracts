@@ -212,8 +212,9 @@ DAML_PACKAGE=packages/token/token-cip112-v1 dpm build
   are checked against ledger time, which may differ from the
   synchronizer's record time by up to its ledger-time tolerance. By record
   time, an accept or a settle can commit up to one tolerance after its
-  deadline. The owner's unlock can commit up to one tolerance before
-  `lockExpiresAt`, which shortens the admin's expiry window by as much.
+  deadline. An unlock or a spend of the funding can commit up to one
+  tolerance before `lockExpiresAt`, which shortens the admin's expiry
+  window by as much.
   Keep `lockGrace` above twice that tolerance, so that the owner cannot unlock
   the funding while an accept or settle can still commit.
   A time computed from an oversized value saturates at the bounds of `Time`.
