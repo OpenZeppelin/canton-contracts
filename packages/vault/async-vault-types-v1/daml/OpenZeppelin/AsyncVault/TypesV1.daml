@@ -1,0 +1,191 @@
+-- | The records an asynchronous vault's templates store and its choices take:
+-- the vault's configuration, the registry contracts it uses, its recorded
+-- state, a share price, the terms and payloads of deposit and redemption
+-- requests, and the outcome of a batch. The functions in `openzeppelin-async-vault-utils` read
+-- and return them.
+--
+-- Storing one of these records in a template binds that template to this
+-- package's upgrade lineage. A template that stores the fields itself and
+-- builds the record per call keeps its payload independent of this package.
+module OpenZeppelin.AsyncVault.TypesV1 where
+
+import Splice.Api.Token.MetadataV1 (ExtraArgs)
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+
+-- | Identity of a vault. A rules contract stores it or builds it in a choice
+-- body from its own fields.
+data VaultConfig = VaultConfig with
+    admin : Party
+      -- ^ The vault authority: signs the vault's contracts and every request,
+      -- and is one of the two executors of the vault's settlement.
+    operator : Party
+      -- ^ The venue: selects the requests a batch settles and submits the
+      -- batch. The other executor of the vault's settlement.
+    vaultId : Text
+      -- ^ Identifies the vault among those of the same admin. Also the `id`
+      -- of the settlement every allocation made for the vault names.
+    underlying : HoldingV2.InstrumentId
+      -- ^ The instrument deposited into the vault and paid out of it.
+    share : HoldingV2.InstrumentId
+      -- ^ The instrument that represents a claim on the vault's assets.
+    custodian : HoldingV2.Account
+      -- ^ The account that holds the vault's pool of the underlying.
+  deriving (Eq, Show)
+
+-- | A share price as a ratio: `priceShares` shares are worth `priceAssets`
+-- units of the underlying. Both are strictly positive. A ratio states a
+-- price such as two thirds exactly, which one decimal number cannot.
+data SharePrice = SharePrice with
+    priceAssets : Decimal
+      -- ^ Units of the underlying.
+    priceShares : Decimal
+      -- ^ The shares those units are the price of.
+  deriving (Eq, Show)
+
+-- | What a vault records, rewritten once per batch and whenever its reserves
+-- are recorded again. Requests neither read nor write it.
+data VaultState = VaultState with
+    reserves : Decimal
+      -- ^ Units of the underlying the vault counts as held by its custodian,
+      -- and the most a batch pays out beyond what it takes in. A batch adds
+      -- its deposits and takes its redemptions. A transfer the custodian
+      -- makes or receives outside a batch is not in it until the reserves
+      -- are recorded again.
+    totalShares : Decimal
+      -- ^ Shares outstanding: every share issued, less every share burned.
+    price : SharePrice
+      -- ^ The price the last batch settled at, or the price the vault was
+      -- opened with.
+    batch : Int
+      -- ^ How many batches have settled.
+  deriving (Eq, Show)
+
+-- | The registry contracts a vault allocates and settles through. The vault's
+-- admin chooses them, because the vault exercises them with its own
+-- authority and with the requester's.
+data VaultRegistries = VaultRegistries with
+    underlyingAllocationFactory : ContractId AllocationInstructionV2.AllocationFactory
+      -- ^ Where allocations of the underlying are made.
+    underlyingSettlementFactory : ContractId AllocationV2.SettlementFactory
+      -- ^ Where a batch settles its legs of the underlying.
+    shareAllocationFactory : ContractId AllocationInstructionV2.AllocationFactory
+      -- ^ Where allocations of the share instrument are made.
+    shareSettlementFactory : ContractId AllocationV2.SettlementFactory
+      -- ^ Where a batch settles its legs of the share instrument.
+  deriving (Eq, Show)
+
+-- | The extra arguments a request passes along: one set for each registry,
+-- because each defines its own, and one for the vault's policy.
+data RequestArgs = RequestArgs with
+    underlying : ExtraArgs
+      -- ^ For choices on the underlying's registry.
+    share : ExtraArgs
+      -- ^ For choices on the share instrument's registry.
+    vault : ExtraArgs
+      -- ^ For the vault's own policy, such as evidence that the requester
+      -- may deposit.
+  deriving (Eq, Show)
+
+-- | What a requester asks for in a deposit.
+data DepositTerms = DepositTerms with
+    requester : HoldingV2.Account
+      -- ^ The account that funds the escrow and receives the shares.
+    label : Text
+      -- ^ The requester's name for the request. Together with the requester
+      -- it fixes the ids of the request's transfer legs, so a batch cannot
+      -- hold two requests of one requester under the same label.
+    assets : Decimal
+      -- ^ Units of the underlying to escrow.
+    minSharesOut : Optional Decimal
+      -- ^ The fewest shares the requester accepts, or `None` for any price.
+    deadline : Time
+      -- ^ The settlement deadline of the request's allocations. A batch
+      -- cannot settle the request from this time on.
+  deriving (Eq, Show)
+
+-- | What a requester asks for in a redemption.
+data RedeemTerms = RedeemTerms with
+    requester : HoldingV2.Account
+      -- ^ The account that funds the escrow and receives the underlying.
+    label : Text
+      -- ^ The requester's name for the request. Together with the requester
+      -- it fixes the ids of the request's transfer legs, so a batch cannot
+      -- hold two requests of one requester under the same label.
+    shares : Decimal
+      -- ^ Shares to escrow.
+    minAssetsOut : Optional Decimal
+      -- ^ The least of the underlying the requester accepts, or `None` for
+      -- any price.
+    deadline : Time
+      -- ^ The settlement deadline of the request's allocations. A batch
+      -- cannot settle the request from this time on.
+  deriving (Eq, Show)
+
+-- | Payload of a pending deposit request. A template stores this record plus
+-- its own fields, or stores the fields separately and builds the record per
+-- call.
+data DepositRequestState = DepositRequestState with
+    admin : Party
+      -- ^ The admin of the vault the request is for.
+    operator : Party
+      -- ^ The operator of the vault the request is for.
+    vaultId : Text
+      -- ^ The vault the request is for.
+    terms : DepositTerms
+      -- ^ What the requester asked for.
+    escrowCid : ContractId AllocationV2.Allocation
+      -- ^ The allocation that locks the assets of the underlying. It
+      -- authorizes one transfer leg only, from the requester to the vault's
+      -- custodian.
+    receiptCid : ContractId AllocationV2.Allocation
+      -- ^ The allocation on the share instrument's registry that authorizes
+      -- the requester to receive shares. It reserves nothing, and the amount
+      -- is named when the batch settles.
+  deriving (Eq, Show)
+
+-- | Payload of a pending redemption request. A template stores this record
+-- plus its own fields, or stores the fields separately and builds the record
+-- per call.
+data RedeemRequestState = RedeemRequestState with
+    admin : Party
+      -- ^ The admin of the vault the request is for.
+    operator : Party
+      -- ^ The operator of the vault the request is for.
+    vaultId : Text
+      -- ^ The vault the request is for.
+    terms : RedeemTerms
+      -- ^ What the requester asked for.
+    escrowCid : ContractId AllocationV2.Allocation
+      -- ^ The allocation that locks the shares. It authorizes one transfer
+      -- leg only, from the requester to the share instrument's burn account.
+    receiptCid : ContractId AllocationV2.Allocation
+      -- ^ The allocation on the underlying's registry that authorizes the
+      -- requester to receive the payout. It reserves nothing, and the amount
+      -- is named when the batch settles.
+  deriving (Eq, Show)
+
+-- | What one request received when its batch settled.
+data Fill = Fill with
+    requester : HoldingV2.Account
+      -- ^ The account the request was made for.
+    label : Text
+      -- ^ The request's label.
+    assets : Decimal
+      -- ^ Units of the underlying: taken from a deposit's escrow, or paid to
+      -- a redemption.
+    shares : Decimal
+      -- ^ Shares: issued to a deposit, or burned from a redemption's escrow.
+  deriving (Eq, Show)
+
+-- | The outcome of a batch: the state to record after it and what each
+-- request received, in the order the requests were given.
+data SettledBatch = SettledBatch with
+    state : VaultState
+      -- ^ The state after the batch, with the batch's price and number.
+    depositFills : [Fill]
+      -- ^ One fill per deposit request.
+    redeemFills : [Fill]
+      -- ^ One fill per redemption request.
+  deriving (Eq, Show)

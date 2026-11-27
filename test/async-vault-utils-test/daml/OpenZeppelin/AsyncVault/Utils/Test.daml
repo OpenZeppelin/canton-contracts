@@ -1,0 +1,403 @@
+-- | Tests for `OpenZeppelin.AsyncVault.Utils.Math`: the rounding of
+-- `mulDivDown` against reference values, the conversions at a price, the
+-- band a price is held to, the state a fill leaves behind, the range each
+-- accepts, and the failure statuses.
+module OpenZeppelin.AsyncVault.Utils.Test where
+
+import DA.Assert ((===))
+import DA.Fail (FailureCategory (..), FailureStatus (..))
+import DA.Foldable (forA_)
+import DA.Numeric qualified as N
+import DA.TextMap qualified as TextMap
+import Daml.Script
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Internal qualified as Internal
+import OpenZeppelin.AsyncVault.Utils.Math
+import OpenZeppelin.AsyncVault.Utils.Test.Vectors
+
+-- | The smallest positive `Decimal`.
+ulp : Decimal
+ulp = 0.0000000001
+
+priceOf : Decimal -> Decimal -> SharePrice
+priceOf priceAssets priceShares = SharePrice with priceAssets; priceShares
+
+-- | One share for one unit of the underlying.
+parity : SharePrice
+parity = priceOf 1.0 1.0
+
+-- | 166 units of the underlying for 151 shares, a price that does not divide
+-- evenly.
+uneven : SharePrice
+uneven = priceOf 166.0 151.0
+
+-- mulDivDown
+-------------------------------------------------------
+
+-- | Every reference value is reproduced exactly.
+testMulDivDownMatchesReference : Script ()
+testMulDivDownMatchesReference = script do
+  forA_ mulDivDownVectors $ \(x, num, den, expected) ->
+    mulDivDown x num den === Right expected
+
+-- | The result is the floor: it does not exceed the exact quotient, and one
+-- unit more would. Checked in whole units of the tenth decimal place, where
+-- these small operands multiply without rounding.
+testMulDivDownIsTheFloor : Script ()
+testMulDivDownIsTheFloor = script do
+  let amounts = [0.0000000001, 0.0000000007, 0.3, 1.0, 2.9999999999, 17.0, 123456.789, 99999.9999999999]
+  forA_ amounts $ \x -> forA_ amounts $ \num -> forA_ amounts $ \den -> do
+    Right result <- pure (mulDivDown x num den)
+    let wide v = (N.shift v : Internal.Wide)
+        exactProduct = wide x * wide num
+    assertMsg ("above the exact quotient: " <> show (x, num, den, result))
+      (wide result * wide den <= exactProduct)
+    assertMsg ("more than one unit below the exact quotient: " <> show (x, num, den, result))
+      ((wide result + 1.0) * wide den > exactProduct)
+
+-- | Operands of exactly `maxOperand` are accepted, and anything above is
+-- refused before any arithmetic.
+testMulDivDownOperandRange : Script ()
+testMulDivDownOperandRange = script do
+  mulDivDown maxOperand maxOperand maxOperand === Right maxOperand
+  let above = maxOperand + ulp
+  mulDivDown above 1.0 1.0 === Left eOutOfRange
+  mulDivDown 1.0 above 1.0 === Left eOutOfRange
+  mulDivDown 1.0 1.0 above === Left eOutOfRange
+
+-- | A result that does not fit a `Decimal` is refused, not an arithmetic
+-- error. The largest result that fits is returned.
+testMulDivDownResultRange : Script ()
+testMulDivDownResultRange = script do
+  -- 10^18 * 10^18 / 10^8 is 10^28, one unit past the largest `Decimal`.
+  mulDivDown maxOperand maxOperand 100000000.0 === Left eOutOfRange
+  mulDivDown maxOperand maxOperand ulp === Left eOutOfRange
+  mulDivDown 5.0 maxOperand ulp === Left eOutOfRange
+  -- One unit less in an operand lands just inside.
+  mulDivDown maxOperand (maxOperand - ulp) 100000000.0
+    === Right 9999999999999999999999999999.0
+  -- (10^19 - 1) * (10^19 + 1) units is 10^38 - 1: exactly the largest
+  -- `Decimal`, and one unit more in the product is out of range.
+  mulDivDown 999999999.9999999999 1000000000.0000000001 ulp
+    === Right 9999999999999999999999999999.9999999999
+  mulDivDown 1000000000.0 1000000000.0 ulp === Left eOutOfRange
+
+-- | Negative operands and a divisor that is not positive are refused.
+testMulDivDownRejectsInvalidOperands : Script ()
+testMulDivDownRejectsInvalidOperands = script do
+  mulDivDown (-1.0) 1.0 1.0 === Left eNegativeAmount
+  mulDivDown 1.0 (-1.0) 1.0 === Left eNegativeAmount
+  mulDivDown 1.0 1.0 0.0 === Left eInvalidPrice
+  mulDivDown 1.0 1.0 (-1.0) === Left eInvalidPrice
+
+-- Conversions
+-------------------------------------------------------
+
+-- | At parity an amount converts to itself, exactly.
+testConversionsAtParity : Script ()
+testConversionsAtParity = script do
+  convertToShares parity 100.0 === Right 100.0
+  convertToAssets parity 100.0 === Right 100.0
+  convertToShares parity 0.0 === Right 0.0
+  convertToAssets parity 0.0 === Right 0.0
+
+-- | Both directions round down at a price that does not divide evenly, and a
+-- price is a ratio: writing it with other numbers changes nothing.
+testConversionsRoundDown : Script ()
+testConversionsRoundDown = script do
+  -- 100 * 166 / 151 = 109.93377483443708...
+  convertToAssets uneven 100.0 === Right 109.9337748344
+  -- 44 * 151 / 166 = 40.02409638554216...
+  convertToShares uneven 44.0 === Right 40.0240963855
+  let doubled = priceOf 332.0 302.0
+  convertToAssets doubled 100.0 === Right 109.9337748344
+  convertToShares doubled 44.0 === Right 40.0240963855
+
+-- | Converting one way and back never returns more than went in.
+testRoundTripNeverGains : Script ()
+testRoundTripNeverGains = script do
+  let prices =
+        [ parity, uneven, priceOf 151.0 166.0
+        , priceOf 1000000.0000000007 3.0, priceOf 3.0 1000000.0000000007 ]
+      amounts = [ulp, 0.0000000009, 1.0, 44.0, 99.9999999999, 123456789.123456789]
+  forA_ prices $ \price -> forA_ amounts $ \amount -> do
+    Right shares <- pure (convertToShares price amount)
+    Right assetsBack <- pure (convertToAssets price shares)
+    assertMsg ("deposit then redeem gained: " <> show (price, amount, assetsBack)) (assetsBack <= amount)
+    Right assets <- pure (convertToAssets price amount)
+    Right sharesBack <- pure (convertToShares price assets)
+    assertMsg ("redeem then deposit gained: " <> show (price, amount, sharesBack)) (sharesBack <= amount)
+
+-- | A larger amount never converts to less.
+testConversionsAreMonotonic : Script ()
+testConversionsAreMonotonic = script do
+  let price = priceOf 1000000.0000000007 3.0
+      amounts = [0.0, ulp, 0.0000000002, 333333.3333333335, 333333.3333333336, 1000000.0, 1000000.0000000001]
+  forA_ (zip amounts (drop 1 amounts)) $ \(smaller, larger) -> do
+    Right fewer <- pure (convertToShares price smaller)
+    Right more <- pure (convertToShares price larger)
+    assertMsg ("more assets gave fewer shares: " <> show (smaller, larger)) (fewer <= more)
+
+-- | A deposit too small for the price converts to zero shares, and the
+-- smallest amount that buys one unit of a share converts to exactly that.
+testDustConvertsToZeroShares : Script ()
+testDustConvertsToZeroShares = script do
+  let price = priceOf 10001.0 1.0
+  convertToShares price 0.0000010001 === Right ulp
+  convertToShares price 0.0000010000 === Right 0.0
+  convertToShares price ulp === Right 0.0
+
+-- | A price is two positive amounts within `maxOperand`; anything else
+-- converts nothing.
+testConversionsRejectInvalidPrice : Script ()
+testConversionsRejectInvalidPrice = script do
+  let above = maxOperand + ulp
+  forA_ [0.0, -1.0, above] $ \invalid ->
+    forA_ [priceOf invalid 1.0, priceOf 1.0 invalid] $ \price -> do
+      isValidSharePrice price === False
+      checkSharePrice price === Left eInvalidPrice
+      convertToShares price 1.0 === Left eInvalidPrice
+      convertToAssets price 1.0 === Left eInvalidPrice
+  forA_ [priceOf ulp maxOperand, priceOf maxOperand ulp] $ \price -> do
+    isValidSharePrice price === True
+    checkSharePrice price === Right ()
+
+-- | A negative amount is refused in both directions.
+testConversionsRejectNegativeAmount : Script ()
+testConversionsRejectNegativeAmount = script do
+  convertToShares uneven (-1.0) === Left eNegativeAmount
+  convertToAssets uneven (-1.0) === Left eNegativeAmount
+
+-- | An amount above `maxOperand`, or one that converts to more than a
+-- `Decimal` holds, is refused.
+testConversionsRejectOutOfRange : Script ()
+testConversionsRejectOutOfRange = script do
+  let above = maxOperand + ulp
+      largest = 9999999999999999999999999999.9999999999
+  forA_ [above, largest] $ \huge -> do
+    convertToShares uneven huge === Left eOutOfRange
+    convertToAssets uneven huge === Left eOutOfRange
+  convertToShares (priceOf ulp maxOperand) maxOperand === Left eOutOfRange
+  convertToAssets (priceOf maxOperand ulp) maxOperand === Left eOutOfRange
+
+-- The band
+-------------------------------------------------------
+
+-- | A price is within a band when it is at most the deviation away from the
+-- reference, on either side, however the ratio is written.
+testPriceBand : Script ()
+testPriceBand = script do
+  -- Five percent of 166 is 8.3.
+  checkPriceWithin uneven 0.05 uneven === Right ()
+  checkPriceWithin uneven 0.05 (priceOf 332.0 302.0) === Right ()
+  checkPriceWithin uneven 0.05 (priceOf 174.3 151.0) === Right ()
+  checkPriceWithin uneven 0.05 (priceOf 174.3000000001 151.0) === Left ePriceOutOfBand
+  checkPriceWithin uneven 0.05 (priceOf 157.7 151.0) === Right ()
+  checkPriceWithin uneven 0.05 (priceOf 157.6999999999 151.0) === Left ePriceOutOfBand
+  -- A band of zero admits the reference only.
+  checkPriceWithin uneven 0.0 uneven === Right ()
+  checkPriceWithin uneven 0.0 (priceOf 332.0 302.0) === Right ()
+  checkPriceWithin uneven 0.0 (priceOf 166.0000000001 151.0) === Left ePriceOutOfBand
+  checkPriceWithin uneven 0.0 (priceOf 165.9999999999 151.0) === Left ePriceOutOfBand
+  -- A band of one admits anything up to twice the reference.
+  checkPriceWithin uneven 1.0 (priceOf 332.0 151.0) === Right ()
+  checkPriceWithin uneven 1.0 (priceOf 332.0000000001 151.0) === Left ePriceOutOfBand
+  checkPriceWithin uneven 1.0 (priceOf ulp 151.0) === Right ()
+
+-- | A price is compared with the band's ends exactly, however either price
+-- is written. A difference smaller than the tenth decimal place of the
+-- reference still puts a price outside.
+testPriceBandComparesExactly : Script ()
+testPriceBandComparesExactly = script do
+  -- Parity written with the smallest numbers and with the largest.
+  let tiny = priceOf ulp ulp
+      huge = priceOf maxOperand maxOperand
+  forA_ [parity, tiny, huge] $ \reference -> do
+    forA_ [parity, tiny, huge, priceOf 7.0 7.0] $ \same ->
+      checkPriceWithin reference 0.0 same === Right ()
+    forA_
+      [ priceOf 1.9 1.0, priceOf 1.0000000001 1.0, priceOf 0.9999999999 1.0
+      , priceOf 100000000000.0000000001 100000000000.0
+      , priceOf 99999999999.9999999999 100000000000.0
+      , priceOf 0.0000000002 ulp, priceOf ulp 0.0000000002
+      ] $ \other ->
+        checkPriceWithin reference 0.0 other === Left ePriceOutOfBand
+  -- Ten percent around parity, and prices a hundred-billionth outside it.
+  checkPriceWithin parity 0.1 (priceOf 11000000000.0 10000000000.0) === Right ()
+  checkPriceWithin parity 0.1 (priceOf 11000000000.1 10000000000.0) === Left ePriceOutOfBand
+  checkPriceWithin parity 0.1 (priceOf 9000000000.0 10000000000.0) === Right ()
+  checkPriceWithin parity 0.1 (priceOf 8999999999.9 10000000000.0) === Left ePriceOutOfBand
+  -- The deviation is rounded down to the tenth decimal place of the
+  -- reference's assets: a tenth of the smallest amount is nothing.
+  checkPriceWithin tiny 0.1 (priceOf 1.05 1.0) === Left ePriceOutOfBand
+  checkPriceWithin tiny 1.0 (priceOf 1.05 1.0) === Right ()
+
+-- | A price far outside the band is refused as outside it, and a price
+-- inside a wide band is accepted, even when the comparison's own quotient
+-- does not fit a `Decimal`. A band whose upper end is above `maxOperand` is
+-- refused.
+testPriceBandAtTheEdgesOfTheRange : Script ()
+testPriceBandAtTheEdgesOfTheRange = script do
+  let half = 500000000000000000.0
+  checkPriceWithin (priceOf 1.0 maxOperand) 0.5 (priceOf maxOperand ulp) === Left ePriceOutOfBand
+  checkPriceWithin (priceOf half ulp) 0.5 (priceOf 1.0 maxOperand) === Left ePriceOutOfBand
+  checkPriceWithin (priceOf 1.0 ulp) 1.0 (priceOf 1.0 maxOperand) === Right ()
+  checkPriceWithin (priceOf half 1.0) 1.0 (priceOf maxOperand 1.0) === Right ()
+  checkPriceWithin (priceOf half 1.0) 1.0 (priceOf maxOperand 0.5) === Left ePriceOutOfBand
+  checkPriceWithin (priceOf (half + ulp) 1.0) 1.0 (priceOf maxOperand 0.5) === Left eOutOfRange
+  checkPriceWithin (priceOf maxOperand 1.0) 0.0 (priceOf maxOperand 1.0) === Right ()
+  checkPriceWithin (priceOf maxOperand 1.0) ulp (priceOf maxOperand 1.0) === Left eOutOfRange
+
+-- | The band is measured from the reference, so a price cannot be walked out
+-- of it in steps that are each within the deviation.
+testPriceBandDoesNotFollowThePrice : Script ()
+testPriceBandDoesNotFollowThePrice = script do
+  let step = priceOf 174.3 151.0
+      nextStep = priceOf 183.015 151.0
+  checkPriceWithin uneven 0.05 step === Right ()
+  checkPriceWithin step 0.05 nextStep === Right ()
+  checkPriceWithin uneven 0.05 nextStep === Left ePriceOutOfBand
+
+-- | A band needs two valid prices and a deviation within zero and one.
+testPriceBandRejectsInvalidInput : Script ()
+testPriceBandRejectsInvalidInput = script do
+  forA_ [-0.0000000001, 1.0000000001] $ \invalid ->
+    checkPriceWithin uneven invalid uneven === Left eInvalidPrice
+  checkPriceWithin (priceOf 0.0 1.0) 0.05 uneven === Left eInvalidPrice
+  checkPriceWithin uneven 0.05 (priceOf 1.0 0.0) === Left eInvalidPrice
+
+-- State
+-------------------------------------------------------
+
+-- | 150 shares outstanding and 165 units held, after three batches.
+recorded : VaultState
+recorded = VaultState with reserves = 165.0; totalShares = 150.0; price = uneven; batch = 3
+
+-- | A deposit adds to the reserves and the shares, a redemption takes from
+-- both, and neither touches the price or the batch number.
+testStateFollowsFills : Script ()
+testStateFollowsFills = script do
+  stateAfterDeposit recorded 44.0 40.0240963855
+    === Right (recorded with reserves = 209.0; totalShares = 190.0240963855)
+  stateAfterRedeem recorded 109.9337748344 100.0
+    === Right (recorded with reserves = 55.0662251656; totalShares = 50.0)
+  stateAfterRedeem recorded 165.0 150.0
+    === Right (recorded with reserves = 0.0; totalShares = 0.0)
+
+-- | A redemption is not paid beyond the reserves, and burns no more shares
+-- than are outstanding.
+testRedeemNeedsReservesAndShares : Script ()
+testRedeemNeedsReservesAndShares = script do
+  stateAfterRedeem recorded 165.0000000001 1.0 === Left eInsufficientReserves
+  stateAfterRedeem recorded 1.0 150.0000000001 === Left eExceedsTotals
+  stateAfterRedeem recorded 165.0000000001 150.0000000001 === Left eInsufficientReserves
+
+-- | Recording the reserves replaces them and touches nothing else. The new
+-- reserves are within zero and `maxOperand`, and the state is valid.
+testStateWithReserves : Script ()
+testStateWithReserves = script do
+  stateWithReserves recorded 180.5 === Right (recorded with reserves = 180.5)
+  stateWithReserves recorded 0.0 === Right (recorded with reserves = 0.0)
+  stateWithReserves recorded maxOperand === Right (recorded with reserves = maxOperand)
+  stateWithReserves recorded (maxOperand + ulp) === Left eTotalsOutOfRange
+  stateWithReserves recorded (-ulp) === Left eNegativeAmount
+  stateWithReserves (recorded with totalShares = -1.0) 180.5 === Left eTotalsOutOfRange
+  stateWithReserves (recorded with reserves = -1.0) 180.5 === Left eTotalsOutOfRange
+
+-- | A deposit cannot take the reserves or the share total past `maxOperand`.
+testStateCannotLeaveItsRange : Script ()
+testStateCannotLeaveItsRange = script do
+  let nearLimit = recorded with reserves = 999999999999999998.0
+  stateAfterDeposit nearLimit 2.0 0.0 === Right (nearLimit with reserves = maxOperand)
+  stateAfterDeposit nearLimit 2.0000000001 0.0 === Left eTotalsOutOfRange
+  let manyShares = recorded with totalShares = 999999999999999998.0
+  stateAfterDeposit manyShares 0.0 2.0 === Right (manyShares with totalShares = maxOperand)
+  stateAfterDeposit manyShares 0.0 2.0000000001 === Left eTotalsOutOfRange
+
+-- | Negative and oversized amounts are refused before any arithmetic, and so
+-- is a state that is not valid to begin with.
+testStateRejectsInvalidInput : Script ()
+testStateRejectsInvalidInput = script do
+  let above = maxOperand + ulp
+      largest = 9999999999999999999999999999.9999999999
+  forA_ [stateAfterDeposit, stateAfterRedeem] $ \stateAfter -> do
+    stateAfter recorded (-1.0) 1.0 === Left eNegativeAmount
+    stateAfter recorded 1.0 (-1.0) === Left eNegativeAmount
+    forA_ [above, largest] $ \huge -> do
+      stateAfter recorded huge 1.0 === Left eOutOfRange
+      stateAfter recorded 1.0 huge === Left eOutOfRange
+      stateAfter (recorded with reserves = huge) 1.0 1.0 === Left eTotalsOutOfRange
+      stateAfter (recorded with totalShares = huge) 1.0 1.0 === Left eTotalsOutOfRange
+    stateAfter (recorded with reserves = -1.0) 1.0 1.0 === Left eTotalsOutOfRange
+    stateAfter (recorded with price = priceOf 0.0 1.0) 1.0 1.0 === Left eTotalsOutOfRange
+
+-- | A state is valid when its amounts are within zero and `maxOperand`, its
+-- price is valid, and its batch number is not negative.
+testIsValidVaultState : Script ()
+testIsValidVaultState = script do
+  isValidVaultState recorded === True
+  isValidVaultState (recorded with reserves = 0.0; totalShares = 0.0; batch = 0) === True
+  isValidVaultState (recorded with reserves = maxOperand; totalShares = maxOperand) === True
+  forA_
+    [ (recorded with reserves = -ulp)
+    , (recorded with reserves = maxOperand + ulp)
+    , (recorded with totalShares = -ulp)
+    , (recorded with totalShares = maxOperand + ulp)
+    , (recorded with price = priceOf 0.0 1.0)
+    , (recorded with price = priceOf 1.0 0.0)
+    , (recorded with batch = -1)
+    ] $ \invalid -> isValidVaultState invalid === False
+
+-- Failure statuses
+-------------------------------------------------------
+
+-- | Each status in full: the id clients match on, the category that tells
+-- them whether a retry can help, and the message.
+testFailureStatuses : Script ()
+testFailureStatuses = script do
+  let status errorId category message = FailureStatus with
+        errorId; category; message; meta = TextMap.empty
+  eNegativeAmount === status "openzeppelin.com/async-vault-negative-amount"
+    InvalidIndependentOfSystemState "AsyncVault: the amount is negative"
+  eInvalidPrice === status "openzeppelin.com/async-vault-invalid-price"
+    InvalidIndependentOfSystemState "AsyncVault: the price is not valid"
+  ePriceOutOfBand === status "openzeppelin.com/async-vault-price-out-of-band"
+    InvalidGivenCurrentSystemStateOther "AsyncVault: the price is outside the band it is held to"
+  eOutOfRange === status "openzeppelin.com/async-vault-out-of-range"
+    InvalidGivenCurrentSystemStateOther "AsyncVault: the amount is outside the supported range"
+  eTotalsOutOfRange === status "openzeppelin.com/async-vault-totals-out-of-range"
+    InvalidGivenCurrentSystemStateOther "AsyncVault: the vault's totals are outside the supported range"
+  eInsufficientReserves === status "openzeppelin.com/async-vault-insufficient-reserves"
+    InvalidGivenCurrentSystemStateOther "AsyncVault: the vault's reserves do not cover the redemption"
+  eExceedsTotals === status "openzeppelin.com/async-vault-exceeds-totals"
+    InvalidGivenCurrentSystemStateOther "AsyncVault: the redemption burns more shares than are outstanding"
+
+-- Internal helpers
+-------------------------------------------------------
+
+-- | Quotient and remainder agree with the dividend, on both sides of the
+-- points where rounding to nearest goes up.
+testFloorDivWide : Script ()
+testFloorDivWide = script do
+  Internal.floorDivWide 0.0 7.0 === (0.0, 0.0)
+  Internal.floorDivWide 6.0 7.0 === (0.0, 6.0)
+  Internal.floorDivWide 7.0 7.0 === (1.0, 0.0)
+  Internal.floorDivWide 13.0 7.0 === (1.0, 6.0)
+  Internal.floorDivWide 3.0 2.0 === (1.0, 1.0)
+  Internal.floorDivWide 5.0 2.0 === (2.0, 1.0)
+  Internal.floorDivWide 19999999999999999999999999999999999999.0 10000000000000000000000000000.0
+    === (1999999999.0, 9999999999999999999999999999.0)
+
+-- | Limbs come most significant first. Zero has none, and a negative value
+-- returns none instead of recursing without end.
+testWideLimbs : Script ()
+testWideLimbs = script do
+  Internal.wideLimbs 0.0 === []
+  Internal.wideLimbs (-1.0) === []
+  Internal.wideLimbs (-1000000000.0) === []
+  Internal.wideLimbs 7.0 === [7.0]
+  Internal.wideLimbs 999999999.0 === [999999999.0]
+  Internal.wideLimbs 1000000000.0 === [1.0, 0.0]
+  Internal.wideLimbs 1000000000000000005.0 === [1.0, 0.0, 5.0]
+  Internal.wideLimbs 10000000000000000000000000000.0 === [10.0, 0.0, 0.0, 0.0]

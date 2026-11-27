@@ -1,0 +1,253 @@
+-- | Tests for `OpenZeppelin.AsyncVault.Utils.Reserves`: the recorded reserves
+-- follow what the custodian is shown to hold, only the custodian's own
+-- unlocked holdings of the underlying count, and a contract the underlying's
+-- admin did not sign counts for nothing. The body runs from the fixture
+-- templates of `OpenZeppelin.AsyncVault.Utils.Test.Fixtures`.
+module OpenZeppelin.AsyncVault.Utils.Test.Reserves where
+
+import DA.Assert ((===))
+import DA.Fail (FailureCategory (..), FailureStatus (..))
+import DA.Foldable (forA_)
+import DA.TextMap qualified as TextMap
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.TokenStandard.Utils (basicAccount)
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Math
+import OpenZeppelin.AsyncVault.Utils.Reserves
+import OpenZeppelin.AsyncVault.Utils.Test.Fixtures
+
+-- | A holding of the fixture's registry, with any view.
+newHolding : HoldingV2.HoldingView -> Script (ContractId HoldingV2.Holding)
+newHolding holding =
+  toInterfaceContractId <$>
+    submit (actAs (holding.instrumentId.admin :: custodians)) do createCmd TestHolding with holding
+  where
+    custodians = case holding.account.owner of
+      Some owner -> [owner]
+      None -> []
+
+-- | The view of a holding of `amount` in the custodian's account.
+custodianHolding : VaultConfig -> Decimal -> HoldingV2.HoldingView
+custodianHolding config amount = HoldingV2.HoldingView with
+  account = config.custodian
+  instrumentId = config.underlying
+  amount
+  lock = None
+  meta = emptyMetadata
+
+locked : Party -> HoldingV2.Lock
+locked holder = HoldingV2.Lock with
+  holders = [holder]
+  expiresAt = None
+  expiresAfter = None
+  context = None
+
+-- On the ledger
+-------------------------------------------------------
+
+-- | A gain that reaches the custodian outside a batch is not in the recorded
+-- reserves, so a redemption at the higher price is refused. Recording the
+-- custodian's holdings brings the reserves up to what it holds, changes
+-- nothing else, and the redemption then settles.
+testReservesFollowAGain : Script ()
+testReservesFollowAGain = script do
+  f@Fixture{..} <- setup
+  let before = stateOf 100.0 100.0 parity
+      higher = SharePrice with priceAssets = 11.0; priceShares = 10.0
+  state <- newStateWith f before None (Some (parity, 0.1))
+  _ <- giveHolding config.underlying admin 100.0
+  _ <- giveHolding config.underlying admin 10.0
+  _ <- giveHolding config.share alice 100.0
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 100.0)
+  submitMustFailWith eInsufficientReserves (trySettleBatch f state higher [] [redeemCid])
+
+  recorded <- recordReserves f state
+  Some after <- queryContractId operator recorded
+  after.state === before with reserves = 110.0
+  queryContractId operator state >>= (=== None)
+  balance config.underlying admin >>= (=== (110.0, 0.0))
+
+  (_, batch) <- settleBatch f recorded higher [] [redeemCid]
+  batch.state === VaultState with reserves = 0.0; totalShares = 0.0; price = higher; batch = 1
+  balance config.underlying alice >>= (=== (110.0, 0.0))
+  balance config.underlying admin >>= (=== (0.0, 0.0))
+
+-- | The reserves fall to what is shown when the custodian holds less than
+-- was recorded, and to zero when it is shown nothing. A holding left out is
+-- not counted.
+testReservesFollowWhatIsShown : Script ()
+testReservesFollowWhatIsShown = script do
+  f@Fixture{..} <- setup
+  let before = (stateOf 150.0 150.0 grownPrice) with batch = 4
+  state <- newState f before
+  first <- giveHolding config.underlying admin 30.0
+  second <- giveHolding config.underlying admin 20.0
+  disclosed <- holdingDisclosures issuer [first, second]
+
+  Right both <- tryRecordReserves f state [first, second] disclosed
+  Some afterBoth <- queryContractId operator both
+  afterBoth.state === before with reserves = 50.0
+
+  Right one <- tryRecordReserves f both [second] disclosed
+  Some afterOne <- queryContractId operator one
+  afterOne.state === before with reserves = 20.0
+
+  Right none <- tryRecordReserves f one [] []
+  Some afterNone <- queryContractId operator none
+  afterNone.state === before with reserves = 0.0
+  balance config.underlying admin >>= (=== (50.0, 0.0))
+
+-- | Only the custodian's own unlocked holdings of the underlying count, and
+-- each counts once. One holding that does not count refuses the record, and
+-- the state stays as it was.
+testReservesCountOnlyTheCustodiansHoldings : Script ()
+testReservesCountOnlyTheCustodiansHoldings = script do
+  f@Fixture{..} <- setup
+  let before = stateOf 40.0 40.0 parity
+  state <- newState f before
+  good <- giveHolding config.underlying admin 30.0
+  otherAccount <- newHolding ((custodianHolding config 5.0) with
+    account = (basicAccount admin) with id = "other")
+  otherInstrument <- newHolding ((custodianHolding config 5.0) with
+    instrumentId = config.underlying with id = "EUR")
+  lockedHolding <- newHolding ((custodianHolding config 5.0) with lock = Some (locked issuer))
+  disclosed <- holdingDisclosures issuer [good, otherAccount, otherInstrument, lockedHolding]
+
+  submitMustFailWith eForeignHolding (tryRecordReserves f state [good, otherAccount] disclosed)
+  submitMustFailWith eForeignHolding (tryRecordReserves f state [otherInstrument, good] disclosed)
+  submitMustFailWith eLockedHolding (tryRecordReserves f state [good, lockedHolding] disclosed)
+  submitMustFailWith eDuplicateHolding (tryRecordReserves f state [good, good] disclosed)
+
+  -- The custodian's holding of the share instrument is not the underlying.
+  shares <- giveHolding config.share admin 7.0
+  shareDisclosed <- holdingDisclosures admin [shares]
+  submitMustFailWith eForeignHolding (tryRecordReserves f state [shares] shareDisclosed)
+
+  -- A holding of another owner cannot even be read by the choice.
+  alices <- giveHolding config.underlying alice 9.0
+  alicesDisclosed <- holdingDisclosures issuer [alices]
+  submitMustFailAuthorization
+    (tryRecordReserves f state [good, alices] (disclosed <> alicesDisclosed))
+
+  Some unchanged <- queryContractId operator state
+  unchanged.state === before
+  Right recorded <- tryRecordReserves f state [good] disclosed
+  Some after <- queryContractId operator recorded
+  after.state === before with reserves = 30.0
+
+-- | A contract that shows the view of the custodian's holding and is not
+-- signed by the underlying's admin counts for nothing, whoever made it.
+testReservesRefuseForgedHoldings : Script ()
+testReservesRefuseForgedHoldings = script do
+  f@Fixture{..} <- setup
+  let before = stateOf 40.0 40.0 parity
+  state <- newState f before
+  good <- giveHolding config.underlying admin 30.0
+  disclosed <- holdingDisclosures issuer [good]
+  forA_ [operator, admin] $ \forger -> do
+    forged <- submit forger do
+      createCmd ForgedHolding with forger; holding = custodianHolding config 1000000.0
+    Some forgedDisclosure <- queryDisclosure @ForgedHolding forger forged
+    forA_ [[toInterfaceContractId forged], [good, toInterfaceContractId forged]] $ \shown ->
+      submitMustFailWith eUnsignedHolding
+        (tryRecordReserves f state shown (forgedDisclosure :: disclosed))
+  Some unchanged <- queryContractId operator state
+  unchanged.state === before
+
+-- | The recorded reserves stay within `maxOperand`, whether one holding or
+-- their sum is above it.
+testReservesStayInRange : Script ()
+testReservesStayInRange = script do
+  f@Fixture{..} <- setup
+  state <- newState f (stateOf 40.0 40.0 parity)
+  half <- giveHolding config.underlying admin 500000000000000000.0
+  otherHalf <- giveHolding config.underlying admin 500000000000000000.0
+  smallest <- giveHolding config.underlying admin ulp
+  tooLarge <- giveHolding config.underlying admin (maxOperand + ulp)
+  disclosed <- holdingDisclosures issuer [half, otherHalf, smallest, tooLarge]
+  submitMustFailWith eTotalsOutOfRange (tryRecordReserves f state [tooLarge] disclosed)
+  submitMustFailWith eTotalsOutOfRange (tryRecordReserves f state [half, otherHalf, smallest] disclosed)
+  Right recorded <- tryRecordReserves f state [half, otherHalf] disclosed
+  Some after <- queryContractId operator recorded
+  after.state.reserves === maxOperand
+
+-- | Only the operator records the reserves.
+testOnlyTheOperatorRecordsReserves : Script ()
+testOnlyTheOperatorRecordsReserves = script do
+  f@Fixture{..} <- setup
+  state <- newState f (stateOf 40.0 40.0 parity)
+  good <- giveHolding config.underlying admin 30.0
+  disclosed <- holdingDisclosures issuer [good]
+  forA_ [admin, alice] $ \other ->
+    submitMustFail (actAs other <> discloseMany (disclosed <> f.disclosures)) do
+      exerciseCmd state TestVaultState_RecordReserves with holdingCids = [good]
+
+-- Pure parts
+-------------------------------------------------------
+
+-- | What one holding adds to the reserves, and each reason it adds nothing.
+testReserveAmount : Script ()
+testReserveAmount = script do
+  Fixture{..} <- setup
+  let holding = custodianHolding config 30.0
+      signed = [issuer, admin]
+  reserveAmount config signed holding === Right 30.0
+  reserveAmount config [issuer] holding === Right 30.0
+  reserveAmount config signed (holding with amount = 0.0) === Right 0.0
+  reserveAmount config signed (holding with amount = maxOperand) === Right maxOperand
+  reserveAmount config signed (holding with amount = maxOperand + ulp) === Left eTotalsOutOfRange
+  reserveAmount config signed (holding with amount = -ulp) === Left eNegativeAmount
+  reserveAmount config signed (holding with lock = Some (locked issuer)) === Left eLockedHolding
+  forA_ [[], [admin], [operator, alice]] $ \unsigned ->
+    reserveAmount config unsigned holding === Left eUnsignedHolding
+  forA_
+    [ (holding with account = basicAccount alice)
+    , (holding with account = (basicAccount admin) with id = "other")
+    , (holding with account = (basicAccount admin) with provider = Some operator)
+    , (holding with instrumentId = config.share)
+    , (holding with instrumentId = config.underlying with id = "EUR")
+    , (holding with instrumentId = config.underlying with admin = alice)
+    ] $ \foreign -> do
+      reserveAmount config signed foreign === Left eForeignHolding
+      -- A foreign holding is refused as foreign, whatever else is wrong.
+      reserveAmount config [] (foreign with lock = Some (locked issuer)) === Left eForeignHolding
+  reserveAmount config [] (holding with lock = Some (locked issuer)) === Left eUnsignedHolding
+
+-- | Holdings add up, and the first one that does not count, or the sum
+-- leaving its range, fails the whole.
+testSumReserves : Script ()
+testSumReserves = script do
+  Fixture{..} <- setup
+  let shown amount = ([issuer, admin], custodianHolding config amount)
+      half = 500000000000000000.0
+  sumReserves config [] === Right 0.0
+  sumReserves config [shown 30.0] === Right 30.0
+  sumReserves config [shown 30.0, shown 20.0, shown ulp] === Right 50.0000000001
+  sumReserves config [shown half, shown half] === Right maxOperand
+  sumReserves config [shown half, shown half, shown ulp] === Left eTotalsOutOfRange
+  sumReserves config [shown 30.0, ([admin], custodianHolding config 20.0)] === Left eUnsignedHolding
+  sumReserves config
+    [ shown 30.0
+    , ([issuer], (custodianHolding config 20.0) with lock = Some (locked issuer))
+    , ([admin], custodianHolding config 20.0)
+    ] === Left eLockedHolding
+
+-- | Each status in full: the id clients match on, the category, and the
+-- message.
+testReservesFailureStatuses : Script ()
+testReservesFailureStatuses = script do
+  let status errorId category message = FailureStatus with
+        errorId; category; message; meta = TextMap.empty
+  eForeignHolding === status "openzeppelin.com/async-vault-foreign-holding"
+    InvalidIndependentOfSystemState
+    "AsyncVault: a holding is not the custodian's holding of the underlying"
+  eUnsignedHolding === status "openzeppelin.com/async-vault-unsigned-holding"
+    InvalidIndependentOfSystemState "AsyncVault: a holding is not signed by the underlying's admin"
+  eLockedHolding === status "openzeppelin.com/async-vault-locked-holding"
+    InvalidGivenCurrentSystemStateOther "AsyncVault: a holding is locked"
+  eDuplicateHolding === status "openzeppelin.com/async-vault-duplicate-holding"
+    InvalidIndependentOfSystemState "AsyncVault: a holding is named twice"

@@ -9,16 +9,21 @@ and provenance, compatibility or migration evidence, and operator guidance.
 A DAR has no place for license files, so each GitHub Release attaches them as
 release assets next to the DAR. Every release attaches `LICENSE`.
 
-The token packages also contain Apache-2.0 code. Each of their DARs bundles the
-Splice token standard packages from `dars/vendor/` as compiled DALFs, and two of
-them contain source derived from the Splice TestTokenV2 example and the Splice
-`splice-token-standard-utils` package:
+The token and async vault packages also contain Apache-2.0 code. Each of their
+DARs bundles Splice token standard packages from `dars/vendor/` as compiled
+DALFs, and two of the token packages contain source derived from the Splice
+TestTokenV2 example and the Splice `splice-token-standard-utils` package:
 
 | Package | Apache-2.0 content in the DAR |
 |---|---|
 | `openzeppelin-token-cip112-types-v1` | Splice DALFs |
 | `openzeppelin-token-cip112-utils` | Splice DALFs; `OpenZeppelin.Token.Cip112.Utils.Holding`, `.Transfer`, and `.Allocation` |
 | `openzeppelin-token-cip112-v1` | Splice DALFs; `OpenZeppelin.Token.Cip112.V1.Holding` and `.Registry` |
+| `openzeppelin-api-async-vault-v1` | Splice DALFs |
+| `openzeppelin-async-vault-types-v1` | Splice DALFs |
+| `openzeppelin-async-vault-utils` | Splice DALFs |
+| `openzeppelin-async-vault-v1` | Splice DALFs |
+| `openzeppelin-async-vault-permits-v1` | Splice DALFs |
 
 A release of one of these packages:
 

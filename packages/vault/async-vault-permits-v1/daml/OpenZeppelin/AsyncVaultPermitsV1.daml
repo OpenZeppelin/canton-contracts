@@ -1,0 +1,276 @@
+-- | Deposit permits for an asynchronous vault: a deposit gate that admits a
+-- party only when a validator the vault's admin appointed has enabled it.
+--
+-- The chain has two links:
+--
+-- * The admin appoints a validator with `DepositPermitRules_Appoint`. The
+--   validator receives an `AuthorizationGrant` of
+--   `openzeppelin-scoped-authorization-grant-v1`, scoped to one vault.
+-- * The validator enables one party at a time with
+--   `DepositPermitRules_Enable`, which uses that grant. The party receives a
+--   `DepositPermit`, signed by the admin and the validator.
+--
+-- `DepositPermitRules` implements the `DepositGate` interface of
+-- `openzeppelin-api-async-vault-v1`. A vault that names it as its gate
+-- accepts a deposit request only when the requester shows its permit and the
+-- validator's grant is still valid.
+module OpenZeppelin.AsyncVaultPermitsV1 where
+
+import DA.Action (unless, when)
+import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
+import DA.Text qualified as T
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+
+import OpenZeppelin.Api.AsyncVaultV1
+import OpenZeppelin.ScopedAuthorizationGrantV1 qualified as SAG
+
+import OpenZeppelin.AsyncVaultPermitsV1.Internal qualified as Internal
+
+-- Rules
+-------------------------------------------------------
+
+-- | The permit rules of one vault, and its deposit gate. The admin signs
+-- alone. Validators and requesters receive the contract by explicit
+-- disclosure.
+--
+-- Every choice is nonconsuming, so appointing, enabling, and checking never
+-- contend. The contract has no choice that changes it: the admin replaces it
+-- by archiving it and creating another, and names the new contract as the
+-- vault's gate. Grants and permits made under the old contract stay valid
+-- under a new one with the same admin, vault id, and policy epoch.
+--
+-- With `sameNamespaceOnly`, a validator enables only parties of its own
+-- namespace: the part of a Canton party id after `::`, which identifies the
+-- key the party was created under. The rule is checked when a party is
+-- enabled and again at every deposit request, so it also holds for permits
+-- made before it was switched on. A party with external signing has a
+-- namespace of its own and cannot be enabled under the rule. A shared
+-- namespace shows who created a party; it does not show where the party is
+-- hosted.
+template DepositPermitRules with
+    admin : Party
+      -- ^ The admin of the vault these rules are for.
+    vaultId : Text
+      -- ^ The vault, among the vaults of the admin.
+    policyEpoch : Int
+      -- ^ The epoch a validator's grant must carry, zero or greater. Rules
+      -- with a higher epoch accept none of the grants and permits made
+      -- before.
+    sameNamespaceOnly : Bool
+      -- ^ Whether a validator enables only parties of its own namespace.
+  where
+    signatory admin
+    ensure policyEpoch >= 0
+
+    nonconsuming choice DepositPermitRules_Appoint : ContractId SAG.AuthorizationGrant
+      -- ^ Appoint a validator: give it the grant that lets it enable
+      -- depositors for this vault, within an optional validity window. The
+      -- admin withdraws the appointment with the grant's own
+      -- `AuthorizationGrant_Revoke`.
+      with
+        validator : Party
+        validFrom : Optional Time
+        validUntil : Optional Time
+      controller admin
+      do
+        create SAG.AuthorizationGrant with
+          authority = admin
+          grantee = validator
+          scope = enableScope vaultId policyEpoch
+          validFrom
+          validUntil
+
+    nonconsuming choice DepositPermitRules_Enable : ContractId DepositPermit
+      -- ^ Enable one party to deposit. The validator presents its grant, and
+      -- the party receives a permit signed by the admin and the validator.
+      --
+      -- Fails with the grant package's status when the grant is not the
+      -- validator's valid grant for this vault and epoch, and with
+      -- `eOtherNamespace` when the rules ask for the validator's namespace
+      -- and the party is of another.
+      with
+        authorization : SAG.Authorization
+          -- ^ The validator and its grant.
+        party : Party
+      controller authorization.actor
+      do
+        _ <- SAG.requireAuthorization authorization (enableRequirement admin vaultId policyEpoch)
+        when sameNamespaceOnly $
+          unless (sameNamespace authorization.actor party) (failWithStatus eOtherNamespace)
+        create DepositPermit with
+          admin
+          validator = authorization.actor
+          party
+          vaultId
+          grantCid = authorization.grantCid
+
+    interface instance DepositGate for DepositPermitRules where
+      view = DepositGateView with admin
+      depositGate_checkImpl _self arg = checkPermit this arg
+
+-- | A validator's statement that a party may deposit into one vault. The
+-- admin and the validator sign, because a permit is made only through
+-- `DepositPermitRules_Enable`, and the party observes.
+--
+-- The admin is a signatory so that the vault's gate, which runs with the
+-- admin's authority alone, can read the permit. The admin therefore sees
+-- every party a validator enables.
+--
+-- A permit is tied to the grant it was made under. It admits nobody once
+-- that grant is revoked, renounced, or expired, so withdrawing a validator's
+-- appointment withdraws every party it enabled.
+template DepositPermit with
+    admin : Party
+    validator : Party
+    party : Party
+      -- ^ The party enabled to deposit. A request is admitted when this
+      -- party owns the requesting account.
+    vaultId : Text
+    grantCid : ContractId SAG.AuthorizationGrant
+      -- ^ The validator's grant, checked again at every deposit request.
+  where
+    signatory admin, validator
+    observer party
+
+    choice DepositPermit_Remove : ()
+      -- ^ Withdraw the permit, as the validator that made it.
+      controller validator
+      do pure ()
+
+    choice DepositPermit_Revoke : ()
+      -- ^ Withdraw the permit, as the vault's admin.
+      controller admin
+      do pure ()
+
+-- Gate
+-------------------------------------------------------
+
+-- | The body of the gate's check. It runs with the admin's authority.
+--
+-- The requester passes its permit in the extra arguments, as `permitArgs`
+-- builds them. The check admits the request when the permit is the
+-- requesting account owner's permit for this vault, the validator's grant is
+-- still its valid grant for this vault and epoch, and the namespace rule
+-- holds if the rules ask for it. It returns the validator in the result's
+-- metadata, under `validatorMetaKey`.
+--
+-- Whoever submits the request must see the permit and the validator's grant.
+-- The party observes its permit, and receives the grant by explicit
+-- disclosure.
+--
+-- Fails with `eWrongVault` when the request is for another vault, with
+-- `eNoPermit` when the arguments carry no permit, with `ePermitMismatch`
+-- when the permit is another party's or another vault's, with the grant
+-- package's status when the grant no longer matches, and with
+-- `eOtherNamespace` under the namespace rule. A permit or a grant that is no
+-- longer active fails the transaction.
+checkPermit : DepositPermitRules -> DepositGate_Check -> Update DepositGate_CheckResult
+checkPermit rules arg = do
+  unless (arg.vaultId == rules.vaultId) (failWithStatus eWrongVault)
+  permitCid <- case TextMap.lookup permitContextKey arg.extraArgs.context.values of
+    Some (AV_ContractId cid) -> pure (coerceContractId cid : ContractId DepositPermit)
+    _ -> failWithStatus eNoPermit
+  permit <- fetch permitCid
+  unless (isPermitFor rules arg.requester permit) (failWithStatus ePermitMismatch)
+  granted <- SAG.checkAuthorization
+    (SAG.Authorization with actor = permit.validator; grantCid = permit.grantCid)
+    (enableRequirement rules.admin rules.vaultId rules.policyEpoch)
+  _ <- either failWithStatus pure granted
+  when rules.sameNamespaceOnly $
+    unless (sameNamespace permit.validator permit.party) (failWithStatus eOtherNamespace)
+  pure DepositGate_CheckResult with
+    meta = Metadata with
+      values = TextMap.fromList [(validatorMetaKey, partyToText permit.validator)]
+
+-- | True when a permit is for these rules' admin and vault, and for the
+-- party that owns the requesting account.
+isPermitFor : DepositPermitRules -> HoldingV2.Account -> DepositPermit -> Bool
+isPermitFor rules requester permit =
+  permit.admin == rules.admin
+    && permit.vaultId == rules.vaultId
+    && requester.owner == Some permit.party
+
+-- | The extra arguments a requester passes to a vault whose gate is a
+-- `DepositPermitRules`: its permit, under `permitContextKey`.
+permitArgs : ContractId DepositPermit -> ExtraArgs
+permitArgs permitCid = ExtraArgs with
+  context = ChoiceContext with
+    values = TextMap.fromList [(permitContextKey, AV_ContractId (coerceContractId permitCid))]
+  meta = emptyMetadata
+
+-- | The context key a requester's permit travels under.
+permitContextKey : Text
+permitContextKey = "openzeppelin.com/async-vault-permits/permit"
+
+-- | The metadata key the gate reports the validator's party id under.
+validatorMetaKey : Text
+validatorMetaKey = "openzeppelin.com/async-vault-permits/validator"
+
+-- Grant scope
+-------------------------------------------------------
+
+-- | The scope of the grant that lets a validator enable depositors for a
+-- vault.
+enableScope : Text -> Int -> SAG.AuthorizationScope
+enableScope vaultId policyEpoch = SAG.AuthorizationScope with
+  namespace = "openzeppelin.com/async-vault-permits"
+  resourceType = "vault"
+  resourceId = vaultId
+  permission = "enable-depositors"
+  policyEpoch
+  resourceInstanceCid = None
+
+-- | What a validator's grant must match: issued by the vault's admin, with
+-- `enableScope`.
+enableRequirement : Party -> Text -> Int -> SAG.AuthorizationRequirement
+enableRequirement admin vaultId policyEpoch = SAG.AuthorizationRequirement with
+  expectedAuthority = admin
+  expectedScope = enableScope vaultId policyEpoch
+
+-- Namespaces
+-------------------------------------------------------
+
+-- | The namespace of a party: the part of its id after the last `::`. `None`
+-- when the id has no such part.
+partyNamespace : Party -> Optional Text
+partyNamespace party = case reverse (T.splitOn "::" (partyToText party)) of
+  namespace :: _ :: _ | namespace /= "" -> Some namespace
+  _ -> None
+
+-- | True when both parties have a namespace and it is the same one.
+sameNamespace : Party -> Party -> Bool
+sameNamespace one other = case (partyNamespace one, partyNamespace other) of
+  (Some namespace, Some otherNamespace) -> namespace == otherNamespace
+  _ -> False
+
+-- Failure statuses. A choice body that fails with one reaches the Ledger API
+-- as a `DAML_FAILURE` error carrying the `errorId` below, so a client matches
+-- on the id.
+
+-- | Raised when a request is for another vault than the rules are for.
+-- `errorId`: `openzeppelin.com/async-vault-permits-wrong-vault`.
+eWrongVault : FailureStatus
+eWrongVault = Internal.permitFailure "wrong-vault" InvalidIndependentOfSystemState
+  "AsyncVaultPermits: the request is for another vault"
+
+-- | Raised when a request's extra arguments carry no permit.
+-- `errorId`: `openzeppelin.com/async-vault-permits-no-permit`.
+eNoPermit : FailureStatus
+eNoPermit = Internal.permitFailure "no-permit" InvalidIndependentOfSystemState
+  "AsyncVaultPermits: the request shows no permit"
+
+-- | Raised when a permit is another party's, or for another vault or admin.
+-- `errorId`: `openzeppelin.com/async-vault-permits-permit-mismatch`.
+ePermitMismatch : FailureStatus
+ePermitMismatch = Internal.permitFailure "permit-mismatch" InvalidIndependentOfSystemState
+  "AsyncVaultPermits: the permit is not the requester's permit for this vault"
+
+-- | Raised when the rules ask for the validator's namespace and a party is
+-- of another, or has none.
+-- `errorId`: `openzeppelin.com/async-vault-permits-other-namespace`.
+eOtherNamespace : FailureStatus
+eOtherNamespace = Internal.permitFailure "other-namespace" InvalidGivenCurrentSystemStateOther
+  "AsyncVaultPermits: the party is not of the validator's namespace"

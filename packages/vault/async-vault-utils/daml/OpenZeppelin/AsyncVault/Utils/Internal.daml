@@ -1,0 +1,56 @@
+-- | Internal helpers for the `OpenZeppelin.AsyncVault.Utils` modules.
+module OpenZeppelin.AsyncVault.Utils.Internal where
+
+import DA.Fail (FailureCategory, FailureStatus (..))
+import DA.Numeric qualified as N
+import DA.TextMap qualified as TextMap
+
+-- | Build a `FailureStatus` under the `openzeppelin.com/async-vault-` error
+-- id prefix.
+vaultFailure : Text -> FailureCategory -> Text -> FailureStatus
+vaultFailure name category message = FailureStatus with
+  errorId = "openzeppelin.com/async-vault-" <> name
+  category
+  message
+  meta = TextMap.empty
+
+-- | A non-negative integer of up to 38 digits. A `Decimal` moved to this
+-- type with `N.shift` is the same amount counted in units of its tenth
+-- decimal place.
+type Wide = Numeric 0
+
+-- | The base of the limbs a `Wide` is split into: 10^9.
+wideBase : Wide
+wideBase = 1000000000.0
+
+-- | The largest `Wide`: 10^38 - 1.
+wideMax : Wide
+wideMax = 99999999999999999999999999999999999999.0
+
+-- | The smallest quotient that `wideBase` multiplies out of range: 10^29.
+wideQuotientLimit : Wide
+wideQuotientLimit = 100000000000000000000000000000.0
+
+-- | Quotient and remainder of two `Wide` values, the quotient rounded down.
+-- Requires `x >= 0`, `y > 0`, and `x + y / 2 <= wideMax`.
+floorDivWide : Wide -> Wide -> (Wide, Wide)
+floorDivWide x y =
+  let nearest = (N.div x y : Wide)
+      -- `N.div` rounds to the nearest integer, which is the floor or one
+      -- above it.
+      quotient = if nearest * y > x then nearest - 1.0 else nearest
+  in (quotient, x - quotient * y)
+
+-- | The limbs of a `Wide` in base `wideBase`, most significant first. Zero
+-- and negative values have no limbs. Requires `x + wideBase / 2 <= wideMax`.
+wideLimbs : Wide -> [Wide]
+wideLimbs x = prependLimbs x []
+
+-- | Put the limbs of `value` in front of `limbs`.
+prependLimbs : Wide -> [Wide] -> [Wide]
+prependLimbs value limbs
+  -- A negative value never divides down to zero, so it stops here too.
+  | value <= 0.0 = limbs
+  | otherwise =
+      let (rest, limb) = floorDivWide value wideBase
+      in prependLimbs rest (limb :: limbs)

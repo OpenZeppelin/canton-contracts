@@ -1,0 +1,260 @@
+-- | Share maths of an asynchronous vault: the conversions between the
+-- underlying and shares at a price, the band a price may be held to, and the
+-- state a deposit, a redemption, or a record of the reserves leaves behind.
+--
+-- Every conversion rounds down, so a deposit is issued no more shares and a
+-- redemption is paid no more of the underlying than the price allows. The
+-- functions are pure and return a `FailureStatus` instead of aborting:
+--
+-- ```
+-- shares <- either failWithStatus pure (convertToShares price request.assets)
+-- ```
+module OpenZeppelin.AsyncVault.Utils.Math where
+
+import DA.Action (unless, when)
+import DA.Fail (FailureCategory (..), FailureStatus)
+import DA.Numeric qualified as N
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Internal qualified as Internal
+
+-- | The largest operand `mulDivDown` accepts, and the largest a vault's
+-- reserves or share total may be: 10^18.
+maxOperand : Decimal
+maxOperand = 1000000000000000000.0
+
+-- Prices
+-------------------------------------------------------
+
+-- | True when both parts of a price are strictly positive and at most
+-- `maxOperand`.
+isValidSharePrice : SharePrice -> Bool
+isValidSharePrice price =
+  price.priceAssets > 0.0 && price.priceAssets <= maxOperand
+    && price.priceShares > 0.0 && price.priceShares <= maxOperand
+
+-- | `eInvalidPrice` unless the price is valid.
+checkSharePrice : SharePrice -> Either FailureStatus ()
+checkSharePrice price = unless (isValidSharePrice price) (Left eInvalidPrice)
+
+-- | Shares issued for a deposit of `assets` at a price, rounded down. A
+-- deposit too small for the price converts to zero shares.
+convertToShares : SharePrice -> Decimal -> Either FailureStatus Decimal
+convertToShares price assets = do
+  checkSharePrice price
+  mulDivDown assets price.priceShares price.priceAssets
+
+-- | Units of the underlying paid for redeeming `shares` at a price, rounded
+-- down.
+convertToAssets : SharePrice -> Decimal -> Either FailureStatus Decimal
+convertToAssets price shares = do
+  checkSharePrice price
+  mulDivDown shares price.priceAssets price.priceShares
+
+-- | The first reason a price is not within a band around a reference price,
+-- if any. `maxDeviation` is a fraction of the reference: `0.05` lets the
+-- price be up to five percent above or below it, and `0.0` only lets it be
+-- the reference itself.
+--
+-- The band is measured from a reference that does not follow the price, so
+-- a party held to it cannot walk the price away in many small steps.
+--
+-- The band's two ends are `reference.priceAssets` less and plus the
+-- deviation, per `reference.priceShares` shares. The deviation is rounded
+-- down to the tenth decimal place of `reference.priceAssets`, so the band is
+-- never wider than stated, and a reference written with very small numbers
+-- narrows it. The price is compared with each end exactly, as a ratio:
+-- two prices that differ by any amount are never taken for the same price,
+-- and one price written with other numbers is.
+--
+-- Fails with `eInvalidPrice` when a price is not valid or `maxDeviation` is
+-- not within zero and one, with `eOutOfRange` when the band's upper end is
+-- above `maxOperand`, and with `ePriceOutOfBand` when the price is outside
+-- the band.
+checkPriceWithin : SharePrice -> Decimal -> SharePrice -> Either FailureStatus ()
+checkPriceWithin reference maxDeviation price = do
+  checkSharePrice reference
+  checkSharePrice price
+  unless (maxDeviation >= 0.0 && maxDeviation <= 1.0) (Left eInvalidPrice)
+  allowed <- mulDivDown reference.priceAssets maxDeviation 1.0
+  let lowest = reference.priceAssets - allowed
+      highest = reference.priceAssets + allowed
+  when (highest > maxOperand) (Left eOutOfRange)
+  -- The price is at least `lowest / reference.priceShares`, and at most
+  -- `highest / reference.priceShares`. Each side is cross-multiplied, so
+  -- neither price is rounded before the comparison.
+  unless
+    (isAtLeast price.priceAssets reference.priceShares price.priceShares lowest
+      && isAtLeast highest price.priceShares reference.priceShares price.priceAssets)
+    (Left ePriceOutOfBand)
+
+-- | True when `x * num / den` is at least `bound`, compared exactly. The
+-- operands are within zero and `maxOperand`, and `den` is positive.
+--
+-- `bound` has ten decimal places, so the quotient is at least `bound` exactly
+-- when its floor to ten decimal places is.
+isAtLeast : Decimal -> Decimal -> Decimal -> Decimal -> Bool
+isAtLeast x num den bound = case mulDivDown x num den of
+  Right quotient -> quotient >= bound
+  -- With the operands in range, `mulDivDown` fails only when the quotient is
+  -- too large for a `Decimal`, and so above any bound.
+  Left _ -> True
+
+-- State
+-------------------------------------------------------
+
+-- | True when a state's reserves and share total are within zero and
+-- `maxOperand`, its price is valid, and its batch number is not negative.
+-- Use it in the `ensure` clause of a template that stores a `VaultState`.
+isValidVaultState : VaultState -> Bool
+isValidVaultState state =
+  state.reserves >= 0.0 && state.reserves <= maxOperand
+    && state.totalShares >= 0.0 && state.totalShares <= maxOperand
+    && isValidSharePrice state.price
+    && state.batch >= 0
+
+-- | The state after a deposit adds `assets` to the reserves and issues
+-- `shares`. Its price and batch number are unchanged.
+--
+-- Fails with `eNegativeAmount` or `eOutOfRange` for an amount that is
+-- negative or above `maxOperand`, and with `eTotalsOutOfRange` when the
+-- state is not valid or would not be after the deposit.
+stateAfterDeposit : VaultState -> Decimal -> Decimal -> Either FailureStatus VaultState
+stateAfterDeposit state assets shares = do
+  unless (isValidVaultState state) (Left eTotalsOutOfRange)
+  requireAmounts assets shares
+  -- The state's amounts and the deposit's are within `maxOperand` here, so
+  -- the sums cannot overflow a `Decimal`.
+  let after = state with
+        reserves = state.reserves + assets
+        totalShares = state.totalShares + shares
+  unless (isValidVaultState after) (Left eTotalsOutOfRange)
+  pure after
+
+-- | The state after a redemption pays `assets` out of the reserves and burns
+-- `shares`. Its price and batch number are unchanged.
+--
+-- Fails with `eInsufficientReserves` when the reserves do not cover the
+-- payout, and with `eExceedsTotals` when more shares are burned than are
+-- outstanding. It fails with `eNegativeAmount` or `eOutOfRange` for an
+-- amount that is negative or above `maxOperand`, and with
+-- `eTotalsOutOfRange` when the state is not valid.
+stateAfterRedeem : VaultState -> Decimal -> Decimal -> Either FailureStatus VaultState
+stateAfterRedeem state assets shares = do
+  unless (isValidVaultState state) (Left eTotalsOutOfRange)
+  requireAmounts assets shares
+  unless (assets <= state.reserves) (Left eInsufficientReserves)
+  unless (shares <= state.totalShares) (Left eExceedsTotals)
+  pure state with
+    reserves = state.reserves - assets
+    totalShares = state.totalShares - shares
+
+-- | The state with its reserves replaced by `reserves`. Its share total, its
+-- price, and its batch number are unchanged.
+--
+-- Fails with `eNegativeAmount` when `reserves` is negative, and with
+-- `eTotalsOutOfRange` when it is above `maxOperand` or the state is not
+-- valid.
+stateWithReserves : VaultState -> Decimal -> Either FailureStatus VaultState
+stateWithReserves state reserves = do
+  unless (isValidVaultState state) (Left eTotalsOutOfRange)
+  when (reserves < 0.0) (Left eNegativeAmount)
+  when (reserves > maxOperand) (Left eTotalsOutOfRange)
+  pure state with reserves
+
+-- | Both amounts are within zero and `maxOperand`.
+requireAmounts : Decimal -> Decimal -> Either FailureStatus ()
+requireAmounts assets shares
+  | assets < 0.0 || shares < 0.0 = Left eNegativeAmount
+  | assets > maxOperand || shares > maxOperand = Left eOutOfRange
+  | otherwise = Right ()
+
+-- Rounding
+-------------------------------------------------------
+
+-- | `x * num / den` rounded down to the tenth decimal place, with no
+-- intermediate rounding: the product is never rounded before the division.
+--
+-- Fails with `eNegativeAmount` when `x` or `num` is negative, with
+-- `eInvalidPrice` when `den` is not positive, and with `eOutOfRange` when an
+-- operand is above `maxOperand` or the result does not fit a `Decimal`.
+mulDivDown : Decimal -> Decimal -> Decimal -> Either FailureStatus Decimal
+mulDivDown x num den
+  | x < 0.0 || num < 0.0 = Left eNegativeAmount
+  | den <= 0.0 = Left eInvalidPrice
+  | x > maxOperand || num > maxOperand || den > maxOperand = Left eOutOfRange
+  | otherwise =
+      -- The operands as integers, in units of the tenth decimal place. With
+      -- every operand at most 10^28 units, each step below stays under
+      -- 10^38.
+      let a = (N.shift x : Internal.Wide)
+          b = (N.shift num : Internal.Wide)
+          c = (N.shift den : Internal.Wide)
+          -- Long division of `a * b` by `c`, one limb of `b` at a time. After
+          -- each step `a * (the limbs of b read so far)` equals
+          -- `quotient * c + remainder` with `remainder < c`.
+          step state limb = do
+            (quotient, remainder) <- state
+            let (digit, remainder') =
+                  Internal.floorDivWide (remainder * Internal.wideBase + a * limb) c
+            if quotient >= Internal.wideQuotientLimit
+              then Left eOutOfRange
+              else do
+                let shifted = quotient * Internal.wideBase
+                if shifted > Internal.wideMax - digit
+                  then Left eOutOfRange
+                  else Right (shifted + digit, remainder')
+      in fmap (\(quotient, _) -> N.shift quotient)
+           (foldl step (Right (0.0, 0.0)) (Internal.wideLimbs b))
+
+-- Failure statuses. A choice body that fails with one reaches the Ledger API
+-- as a `DAML_FAILURE` error carrying the `errorId` below, so a client matches
+-- on the id.
+
+-- | Raised when an amount is negative.
+-- `errorId`: `openzeppelin.com/async-vault-negative-amount`.
+eNegativeAmount : FailureStatus
+eNegativeAmount = Internal.vaultFailure "negative-amount" InvalidIndependentOfSystemState
+  "AsyncVault: the amount is negative"
+
+-- | Raised when a price is not a ratio of two positive amounts within
+-- `maxOperand`, when a band's deviation is not within zero and one, or when a
+-- divisor is not positive.
+-- `errorId`: `openzeppelin.com/async-vault-invalid-price`.
+eInvalidPrice : FailureStatus
+eInvalidPrice = Internal.vaultFailure "invalid-price" InvalidIndependentOfSystemState
+  "AsyncVault: the price is not valid"
+
+-- | Raised when a price is outside the band it is held to.
+-- `errorId`: `openzeppelin.com/async-vault-price-out-of-band`.
+ePriceOutOfBand : FailureStatus
+ePriceOutOfBand = Internal.vaultFailure "price-out-of-band" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the price is outside the band it is held to"
+
+-- | Raised when an amount is above `maxOperand` or a result does not fit a
+-- `Decimal`. A smaller amount can succeed against the same vault.
+-- `errorId`: `openzeppelin.com/async-vault-out-of-range`.
+eOutOfRange : FailureStatus
+eOutOfRange = Internal.vaultFailure "out-of-range" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the amount is outside the supported range"
+
+-- | Raised when a vault's state is not valid, or would not be after a
+-- deposit or a record of the reserves: its reserves or its share total would
+-- be above `maxOperand`.
+-- `errorId`: `openzeppelin.com/async-vault-totals-out-of-range`.
+eTotalsOutOfRange : FailureStatus
+eTotalsOutOfRange = Internal.vaultFailure "totals-out-of-range" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the vault's totals are outside the supported range"
+
+-- | Raised when a redemption is owed more of the underlying than the vault's
+-- reserves hold.
+-- `errorId`: `openzeppelin.com/async-vault-insufficient-reserves`.
+eInsufficientReserves : FailureStatus
+eInsufficientReserves = Internal.vaultFailure "insufficient-reserves" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the vault's reserves do not cover the redemption"
+
+-- | Raised when a redemption burns more shares than are outstanding.
+-- `errorId`: `openzeppelin.com/async-vault-exceeds-totals`.
+eExceedsTotals : FailureStatus
+eExceedsTotals = Internal.vaultFailure "exceeds-totals" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the redemption burns more shares than are outstanding"

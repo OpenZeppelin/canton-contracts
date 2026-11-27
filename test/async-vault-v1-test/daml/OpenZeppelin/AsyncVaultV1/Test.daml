@@ -1,0 +1,564 @@
+-- | Tests for `OpenZeppelin.AsyncVaultV1`: a deposit and a redemption through
+-- the templates, who signs each contract and who controls each choice, the
+-- deposit gate, the price band and the batch size the ledger holds the
+-- operator to, the contents each template refuses, and what a requester
+-- sees. The choice
+-- bodies have their own tests under
+-- `test/async-vault-utils-test`; these cover what the templates
+-- add. They run against a registry built on the OpenZeppelin CIP-0112 utils.
+module OpenZeppelin.AsyncVaultV1.Test where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.TokenStandard.Utils (burnAccount)
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Gate (eForeignGate)
+import OpenZeppelin.AsyncVault.Utils.Math
+import OpenZeppelin.AsyncVault.Utils.Request
+import OpenZeppelin.AsyncVault.Utils.Settlement
+import OpenZeppelin.AsyncVaultV1
+import OpenZeppelin.AsyncVaultV1.Test.Fixtures
+
+-- Through the vault
+-------------------------------------------------------
+
+-- | A deposit and then a redemption go through the vault. The requester
+-- opens each request alone, the operator settles each batch alone, and each
+-- batch replaces the ledger with one that records it and keeps its band and
+-- its batch size.
+testDepositThenRedeem : Script ()
+testDepositThenRedeem = script do
+  f@Fixture{..} <- setup
+  ledger <- newEmptyLedger f
+  _ <- giveHolding config.underlying alice 120.0
+
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  balance config.underlying alice >>= (=== (20.0, 100.0))
+  first <- settleBatch f ledger parity [depositCid] []
+  first.batch === SettledBatch with
+    state = VaultState with reserves = 100.0; totalShares = 100.0; price = parity; batch = 1
+    depositFills = [fillOf alice "d1" 100.0 100.0]
+    redeemFills = []
+  ledgerState f first.ledgerCid >>= (=== first.batch.state)
+  queryContractId operator ledger >>= (=== None)
+  queryContractId operator depositCid >>= (=== None)
+  balance config.underlying alice >>= (=== (20.0, 0.0))
+  balance config.share alice >>= (=== (100.0, 0.0))
+  balance config.underlying treasury >>= (=== (100.0, 0.0))
+
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 40.0)
+  balance config.share alice >>= (=== (60.0, 40.0))
+  second <- settleBatch f first.ledgerCid parity [] [redeemCid]
+  second.batch === SettledBatch with
+    state = VaultState with reserves = 60.0; totalShares = 60.0; price = parity; batch = 2
+    depositFills = []
+    redeemFills = [fillOf alice "r1" 40.0 40.0]
+  queryContractId operator redeemCid >>= (=== None)
+  balance config.underlying alice >>= (=== (60.0, 0.0))
+  balance config.share alice >>= (=== (60.0, 0.0))
+  balance config.underlying treasury >>= (=== (60.0, 0.0))
+  Some after <- queryContractId operator second.ledgerCid
+  after === ledgerOf f second.batch.state parity 0.0
+
+-- | The ledger's signatories are the vault's admin, the share instrument's
+-- admin, and the custodian's owner, and it cannot be created or archived
+-- without each of them. With all three behind the ledger, the operator
+-- settles a batch that moves the pool and issues and burns shares, alone.
+testLedgerTakesEverySignatory : Script ()
+testLedgerTakesEverySignatory = script do
+  f@Fixture{..} <- setupSeparate
+  let ledger = ledgerOf f (stateOf 0.0 0.0 parity) parity 0.0
+  ledgerSignatories config === [admin, shareAdmin, treasury]
+  forA_
+    [[admin], [shareAdmin], [treasury], [admin, shareAdmin], [admin, treasury]
+    , [shareAdmin, treasury], [admin, operator]] $ \some ->
+      submitMustFail (actAs some) do createCmd ledger
+  ledgerCid <- submit (actAs [admin, shareAdmin, treasury]) do createCmd ledger
+
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.underlying bob 40.0
+  aliceDeposit <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  first <- settleBatch f ledgerCid parity [aliceDeposit] []
+  balance config.underlying treasury >>= (=== (100.0, 0.0))
+  balance config.share alice >>= (=== (100.0, 0.0))
+
+  -- A deposit and a redemption of the same size: the pool pays nothing net.
+  bobDeposit <- requestDeposit f bob (depositTerms bob "d1" 40.0)
+  aliceRedeem <- requestRedeem f alice (redeemTerms alice "r1" 40.0)
+  second <- settleBatch f first.ledgerCid parity [bobDeposit] [aliceRedeem]
+  second.batch.state === VaultState with
+    reserves = 100.0; totalShares = 100.0; price = parity; batch = 2
+  balance config.underlying treasury >>= (=== (100.0, 0.0))
+  balance config.underlying alice >>= (=== (40.0, 0.0))
+  balance config.share alice >>= (=== (60.0, 0.0))
+  balance config.share bob >>= (=== (40.0, 0.0))
+
+  forA_ [[admin], [shareAdmin], [treasury], [operator], [admin, shareAdmin]] $ \some ->
+    submitMustFail (actAs some) do archiveCmd second.ledgerCid
+  submit (actAs [admin, shareAdmin, treasury]) do archiveCmd second.ledgerCid
+
+-- | The recorded reserves follow the custodian's holdings when the operator
+-- records them: a gain paid to the custodian outside a batch is refused as
+-- reserves until then.
+testOperatorRecordsTheReserves : Script ()
+testOperatorRecordsTheReserves = script do
+  f@Fixture{..} <- setup
+  let higher = priceOf 11.0 10.0
+  ledger <- newLedger f (stateOf 100.0 100.0 parity) parity 0.1
+  _ <- giveHolding config.underlying treasury 100.0
+  _ <- giveHolding config.underlying treasury 10.0
+  _ <- giveHolding config.share alice 100.0
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 100.0)
+  submitMustFailWith eInsufficientReserves (trySettleBatch f ledger higher [] [redeemCid])
+
+  pool <- unlockedHoldings config.underlying treasury
+  poolDisclosed <- holdingDisclosures issuer pool
+  recorded <- submit (actAs operator <> discloseMany poolDisclosed) do
+    exerciseCmd ledger VaultLedger_RecordReserves with holdingCids = pool
+  Some after <- queryContractId operator recorded
+  after === ledgerOf f (stateOf 110.0 100.0 parity) parity 0.1
+  queryContractId operator ledger >>= (=== None)
+
+  result <- settleBatch f recorded higher [] [redeemCid]
+  result.batch.state === VaultState with reserves = 0.0; totalShares = 0.0; price = higher; batch = 1
+  balance config.underlying alice >>= (=== (110.0, 0.0))
+
+-- Who controls what
+-------------------------------------------------------
+
+-- | Nobody opens a request for another party: not a stranger, not the
+-- operator, and not the admin.
+testOnlyTheRequesterOpensARequest : Script ()
+testOnlyTheRequesterOpensARequest = script do
+  Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.share alice 80.0
+  usd <- unlockedHoldings config.underlying alice
+  shares <- unlockedHoldings config.share alice
+  forA_ [bob, operator, admin] $ \other -> do
+    submitMustFailAuthorization $ trySubmit (actAs other <> discloseMany disclosures)
+      (requestDepositCmd vault (depositTerms alice "d1" 100.0) usd)
+    submitMustFailAuthorization $ trySubmit (actAs other <> discloseMany disclosures)
+      (requestRedeemCmd vault (redeemTerms alice "r1" 50.0) shares)
+  balance config.underlying alice >>= (=== (120.0, 0.0))
+  balance config.share alice >>= (=== (80.0, 0.0))
+
+-- | Only the operator settles a batch and records the reserves.
+testOnlyTheOperatorWritesTheLedger : Script ()
+testOnlyTheOperatorWritesTheLedger = script do
+  f@Fixture{..} <- setup
+  ledger <- newEmptyLedger f
+  _ <- giveHolding config.underlying alice 100.0
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  (disclosed, settle) <- settleCmd f ledger parity [depositCid] []
+  pool <- giveHolding config.underlying treasury 30.0
+  poolDisclosed <- holdingDisclosures issuer [pool]
+  let record = exerciseCmd ledger VaultLedger_RecordReserves with holdingCids = [pool]
+  submitMustFailAuthorization (trySubmit (actAs admin <> discloseMany disclosed) settle)
+  submitMustFailAuthorization (trySubmit (actAs admin <> discloseMany poolDisclosed) record)
+  forA_ [alice, bob] $ \other -> do
+    submitMustFail (actAs other <> discloseMany disclosed) settle
+    submitMustFail (actAs other <> discloseMany poolDisclosed) record
+  ledgerState f ledger >>= (=== stateOf 0.0 0.0 parity)
+  balance config.underlying alice >>= (=== (0.0, 100.0))
+
+-- | Only the admin moves the price band and changes the batch size. Each
+-- replaces the ledger and leaves the recorded state as it was.
+testOnlyTheAdminSetsTheBandAndTheBatchSize : Script ()
+testOnlyTheAdminSetsTheBandAndTheBatchSize = script do
+  f@Fixture{..} <- setupSeparate
+  let recorded = stateOf 50.0 40.0 parity
+      moved = priceOf 6.0 5.0
+  ledger <- newLedger f recorded parity 0.0
+  let band = exerciseCmd ledger VaultLedger_SetPriceBand with
+        newReferencePrice = moved; newMaxDeviation = 0.05
+      size = exerciseCmd ledger VaultLedger_SetMaxBatchSize with newMaxBatchSize = 3
+  forA_ [operator, shareAdmin, treasury] $ \other -> do
+    submitMustFailAuthorization (trySubmit other band)
+    submitMustFailAuthorization (trySubmit other size)
+  submitMustFail alice band
+  submitMustFail alice size
+
+  banded <- submit admin band
+  Some afterBand <- queryContractId operator banded
+  afterBand === ledgerOf f recorded moved 0.05
+  queryContractId operator ledger >>= (=== None)
+  sized <- submit admin do
+    exerciseCmd banded VaultLedger_SetMaxBatchSize with newMaxBatchSize = 3
+  Some afterSize <- queryContractId operator sized
+  afterSize === (ledgerOf f recorded moved 0.05) with maxBatchSize = 3
+  queryContractId operator banded >>= (=== None)
+
+-- | The requester cancels, the operator rejects, and the operator drops a
+-- request from its deadline on. A cancelled or rejected request has its
+-- escrow back at once; a dropped one keeps it locked until the requester
+-- withdraws it.
+testCancelRejectAndExpire : Script ()
+testCancelRejectAndExpire = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 300.0
+  _ <- giveHolding config.share alice 90.0
+
+  -- Cancel: the requester, and not the operator or the admin.
+  cancelledDeposit <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  cancelledRedeem <- requestRedeem f alice (redeemTerms alice "r1" 30.0)
+  forA_ [operator, admin] $ \other -> do
+    submitMustFailAuthorization $ trySubmit other do
+      exerciseCmd cancelledDeposit DepositRequest_Cancel with args = noArgs
+    submitMustFailAuthorization $ trySubmit other do
+      exerciseCmd cancelledRedeem RedeemRequest_Cancel with args = noArgs
+  submit alice do exerciseCmd cancelledDeposit DepositRequest_Cancel with args = noArgs
+  submit alice do exerciseCmd cancelledRedeem RedeemRequest_Cancel with args = noArgs
+  balance config.underlying alice >>= (=== (300.0, 0.0))
+  balance config.share alice >>= (=== (90.0, 0.0))
+
+  -- Reject: the operator, and not the requester or the admin.
+  rejectedDeposit <- requestDeposit f alice (depositTerms alice "d2" 100.0)
+  rejectedRedeem <- requestRedeem f alice (redeemTerms alice "r2" 30.0)
+  Some deposit <- queryContractId operator rejectedDeposit
+  Some redeem <- queryContractId operator rejectedRedeem
+  depositFunding <- fundingDisclosures issuer [deposit.state.escrowCid]
+  redeemFunding <- fundingDisclosures shareAdmin [redeem.state.escrowCid]
+  forA_ [alice, admin] $ \other -> do
+    submitMustFailAuthorization $ trySubmit (actAs other <> discloseMany depositFunding) do
+      exerciseCmd rejectedDeposit DepositRequest_Reject with args = noArgs
+    submitMustFailAuthorization $ trySubmit (actAs other <> discloseMany redeemFunding) do
+      exerciseCmd rejectedRedeem RedeemRequest_Reject with args = noArgs
+  submit (actAs operator <> discloseMany depositFunding) do
+    exerciseCmd rejectedDeposit DepositRequest_Reject with args = noArgs
+  submit (actAs operator <> discloseMany redeemFunding) do
+    exerciseCmd rejectedRedeem RedeemRequest_Reject with args = noArgs
+  queryContractId operator rejectedDeposit >>= (=== None)
+  queryContractId operator rejectedRedeem >>= (=== None)
+  balance config.underlying alice >>= (=== (300.0, 0.0))
+  balance config.share alice >>= (=== (90.0, 0.0))
+
+  -- Expire: the operator, from the deadline on.
+  expiredDeposit <- requestDeposit f alice (depositTerms alice "d3" 100.0)
+  expiredRedeem <- requestRedeem f alice (redeemTerms alice "r3" 30.0)
+  submitMustFailWith eDeadlineNotPassed $ trySubmit operator do
+    exerciseCmd expiredDeposit DepositRequest_Expire
+  submitMustFailWith eDeadlineNotPassed $ trySubmit operator do
+    exerciseCmd expiredRedeem RedeemRequest_Expire
+  setTime t2
+  forA_ [alice, admin] $ \other -> do
+    submitMustFailAuthorization $ trySubmit other do exerciseCmd expiredDeposit DepositRequest_Expire
+    submitMustFailAuthorization $ trySubmit other do exerciseCmd expiredRedeem RedeemRequest_Expire
+  submit operator do exerciseCmd expiredDeposit DepositRequest_Expire
+  submit operator do exerciseCmd expiredRedeem RedeemRequest_Expire
+  queryContractId operator expiredDeposit >>= (=== None)
+  queryContractId operator expiredRedeem >>= (=== None)
+  balance config.underlying alice >>= (=== (200.0, 100.0))
+  balance config.share alice >>= (=== (60.0, 30.0))
+
+-- | Neither the admin nor the requester removes a request alone, and the
+-- operator removes none outside its own choices. A request is consumed with
+-- a fill only by the admin and the operator together. Done outside a batch,
+-- that moves nothing: the escrow stays the requester's to withdraw.
+testNoPartyRemovesARequestAlone : Script ()
+testNoPartyRemovesARequestAlone = script do
+  f@Fixture{..} <- setupSeparate
+  _ <- giveHolding config.underlying alice 150.0
+  _ <- giveHolding config.share alice 30.0
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 30.0)
+  let depositFill = fillOf alice "d1" 100.0 100.0
+      redeemFill = fillOf alice "r1" 30.0 30.0
+  forA_ [admin, alice, operator] $ \one -> do
+    submitMustFail one do archiveCmd depositCid
+    submitMustFail one do archiveCmd redeemCid
+  forA_ [[admin], [operator], [alice], [admin, alice], [operator, alice]] $ \some -> do
+    submitMustFail (actAs some) do exerciseCmd depositCid DepositRequest_Fill with fill = depositFill
+    submitMustFail (actAs some) do exerciseCmd redeemCid RedeemRequest_Fill with fill = redeemFill
+
+  Some deposit <- queryContractId operator depositCid
+  submit (actAs [admin, operator]) do
+    exerciseCmd depositCid DepositRequest_Fill with fill = depositFill
+  submit (actAs [admin, operator]) do
+    exerciseCmd redeemCid RedeemRequest_Fill with fill = redeemFill
+  queryContractId operator depositCid >>= (=== None)
+  queryContractId operator redeemCid >>= (=== None)
+  balance config.underlying alice >>= (=== (50.0, 100.0))
+  balance config.share alice >>= (=== (0.0, 30.0))
+  balance config.underlying treasury >>= (=== (0.0, 0.0))
+  _ <- submit alice do
+    exerciseCmd deposit.state.escrowCid AllocationV2.Allocation_Withdraw with
+      actors = [alice]
+      extraArgs = emptyArgs
+  balance config.underlying alice >>= (=== (150.0, 0.0))
+
+-- The deposit gate
+-------------------------------------------------------
+
+-- | A vault with a gate opens a deposit request only for a requester the
+-- gate admits. The gate is asked about deposits and not about redemptions: a
+-- holder it does not admit still asks to redeem. A request the gate admitted
+-- settles like any other.
+testGateDecidesWhoDeposits : Script ()
+testGateDecidesWhoDeposits = script do
+  f@Fixture{..} <- setup
+  ledger <- newEmptyLedger f
+  gate <- submit admin do createCmd AllowList with admin; claimedAdmin = admin; listed = [alice]
+  gated <- submit admin do
+    createCmd Vault with config; registries; depositGate = Some (toInterfaceContractId gate)
+  Some gateDisclosure <- queryDisclosure @AllowList admin gate
+  Some gatedDisclosure <- queryDisclosure @Vault admin gated
+  let disclosed = gatedDisclosure :: gateDisclosure :: registryDisclosures
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.underlying bob 50.0
+  _ <- giveHolding config.share bob 30.0
+  alices <- unlockedHoldings config.underlying alice
+  bobs <- unlockedHoldings config.underlying bob
+  bobsShares <- unlockedHoldings config.share bob
+
+  submitMustFailWith eNotListed $ trySubmit (actAs bob <> discloseMany disclosed)
+    (requestDepositCmd gated (depositTerms bob "d1" 50.0) bobs)
+  balance config.underlying bob >>= (=== (50.0, 0.0))
+  -- Without the gate disclosed, the requester it would admit opens nothing.
+  submitMustFail (actAs alice <> discloseMany (gatedDisclosure :: registryDisclosures))
+    (requestDepositCmd gated (depositTerms alice "d1" 100.0) alices)
+
+  depositCid <- submit (actAs alice <> discloseMany disclosed)
+    (requestDepositCmd gated (depositTerms alice "d1" 100.0) alices)
+  redeemCid <- submit (actAs bob <> discloseMany disclosed)
+    (requestRedeemCmd gated (redeemTerms bob "r1" 30.0) bobsShares)
+  result <- settleBatch f ledger parity [depositCid] []
+  result.batch.state === VaultState with
+    reserves = 100.0; totalShares = 100.0; price = parity; batch = 1
+  balance config.share alice >>= (=== (100.0, 0.0))
+  Some _ <- queryContractId operator redeemCid
+  pure ()
+
+-- | A vault refuses a gate that does not answer to its admin, whoever the
+-- gate would admit.
+testVaultRefusesAForeignGate : Script ()
+testVaultRefusesAForeignGate = script do
+  Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 100.0
+  alices <- unlockedHoldings config.underlying alice
+  forA_ [bob, alice] $ \claimed -> do
+    gate <- submit admin do createCmd AllowList with admin; claimedAdmin = claimed; listed = [alice]
+    gated <- submit admin do
+      createCmd Vault with config; registries; depositGate = Some (toInterfaceContractId gate)
+    Some gateDisclosure <- queryDisclosure @AllowList admin gate
+    Some gatedDisclosure <- queryDisclosure @Vault admin gated
+    submitMustFailWith eForeignGate $
+      trySubmit (actAs alice <> discloseMany (gatedDisclosure :: gateDisclosure :: registryDisclosures))
+        (requestDepositCmd gated (depositTerms alice "d1" 100.0) alices)
+  balance config.underlying alice >>= (=== (100.0, 0.0))
+
+-- The band and the batch size
+-------------------------------------------------------
+
+-- | The operator settles at any price within the admin's band and at none
+-- outside it. The band stays where the admin put it, so a price within reach
+-- of the last one is still refused. When the admin moves the band and leaves
+-- no deviation, the operator settles at the reference price only.
+testOperatorPricesWithinTheAdminsBand : Script ()
+testOperatorPricesWithinTheAdminsBand = script do
+  f@Fixture{..} <- setup
+  ledger <- newLedger f (stateOf 0.0 0.0 parity) parity 0.1
+  _ <- giveHolding config.underlying alice 230.0
+  first <- requestDeposit f alice (depositTerms alice "d1" 110.0)
+  forA_ [priceOf 12.0 10.0, priceOf 8.0 10.0, priceOf 1.1000000001 1.0] $ \outside ->
+    submitMustFailWith ePriceOutOfBand (trySettleBatch f ledger outside [first] [])
+  -- 110 units at 1.1 a share are 100 shares.
+  let higher = priceOf 11.0 10.0
+  settled <- settleBatch f ledger higher [first] []
+  settled.batch.state === VaultState with
+    reserves = 110.0; totalShares = 100.0; price = higher; batch = 1
+
+  -- 1.2 is within ten percent of the last price, and outside the band.
+  second <- requestDeposit f alice (depositTerms alice "d2" 120.0)
+  submitMustFailWith ePriceOutOfBand
+    (trySettleBatch f settled.ledgerCid (priceOf 12.0 10.0) [second] [])
+
+  moved <- submit admin do
+    exerciseCmd settled.ledgerCid VaultLedger_SetPriceBand with
+      newReferencePrice = priceOf 12.0 10.0
+      newMaxDeviation = 0.0
+  ledgerState f moved >>= (=== settled.batch.state)
+  forA_ [higher, priceOf 12.0000000001 10.0, priceOf 11.9999999999 10.0] $ \other ->
+    submitMustFailWith ePriceOutOfBand (trySettleBatch f moved other [second] [])
+  -- Six for five is the reference price written with other numbers.
+  final <- settleBatch f moved (priceOf 6.0 5.0) [second] []
+  final.batch.state === VaultState with
+    reserves = 230.0; totalShares = 200.0; price = priceOf 6.0 5.0; batch = 2
+
+-- | A batch settles as many requests as the ledger allows, and the admin
+-- changes how many.
+testBatchSizeComesFromTheLedger : Script ()
+testBatchSizeComesFromTheLedger = script do
+  f@Fixture{..} <- setup
+  open <- newEmptyLedger f
+  ledger <- submit admin do exerciseCmd open VaultLedger_SetMaxBatchSize with newMaxBatchSize = 1
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.underlying bob 50.0
+  aliceCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  bobCid <- requestDeposit f bob (depositTerms bob "d1" 50.0)
+  submitMustFailWith eBatchTooLarge (trySettleBatch f ledger parity [aliceCid, bobCid] [])
+  widened <- submit admin do exerciseCmd ledger VaultLedger_SetMaxBatchSize with newMaxBatchSize = 2
+  result <- settleBatch f widened parity [aliceCid, bobCid] []
+  result.batch.state === VaultState with
+    reserves = 150.0; totalShares = 150.0; price = parity; batch = 1
+
+-- | A ledger settles only the requests of its own vault: not one opened on
+-- another vault of the same admin, and not one opened on a vault another
+-- party set up under the same id.
+testLedgerRefusesForeignRequests : Script ()
+testLedgerRefusesForeignRequests = script do
+  f@Fixture{..} <- setup
+  ledger <- newEmptyLedger f
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.underlying bob 100.0
+  mallory <- allocateParty "mallory"
+  otherVault <- submit admin do
+    createCmd Vault with config = (config with vaultId = "vault-2"); registries; depositGate = None
+  impostorVault <- submit mallory do
+    createCmd Vault with config = (config with admin = mallory); registries; depositGate = None
+  Some otherDisclosure <- queryDisclosure @Vault admin otherVault
+  Some impostorDisclosure <- queryDisclosure @Vault mallory impostorVault
+  alices <- unlockedHoldings config.underlying alice
+  bobs <- unlockedHoldings config.underlying bob
+  otherRequest <- submit (actAs alice <> discloseMany (otherDisclosure :: registryDisclosures))
+    (requestDepositCmd otherVault (depositTerms alice "d1" 100.0) alices)
+  impostorRequest <- submit (actAs bob <> discloseMany (impostorDisclosure :: registryDisclosures))
+    (requestDepositCmd impostorVault (depositTerms bob "d1" 100.0) bobs)
+  submitMustFailWith eForeignRequest (trySettleBatch f ledger parity [otherRequest] [])
+  submitMustFailWith eForeignRequest (trySettleBatch f ledger parity [impostorRequest] [])
+  ledgerState f ledger >>= (=== stateOf 0.0 0.0 parity)
+
+-- Refused contents
+-------------------------------------------------------
+
+-- | A vault's custodian is a regular account, and its two instruments
+-- differ.
+testVaultRefusesAnInvalidConfig : Script ()
+testVaultRefusesAnInvalidConfig = script do
+  Fixture{..} <- setup
+  forA_
+    [ (config with custodian = burnAccount)
+    , (config with share = config.underlying)
+    ] $ \invalid ->
+      submitMustFail admin do createCmd Vault with config = invalid; registries; depositGate = None
+
+-- | A ledger holds a valid config, a valid state, a valid reference price, a
+-- deviation within zero and one, and a batch size of at least one, when it
+-- is created and when the admin changes it.
+testLedgerRefusesInvalidContents : Script ()
+testLedgerRefusesInvalidContents = script do
+  f@Fixture{..} <- setup
+  let good = ledgerOf f (stateOf 10.0 10.0 parity) parity 0.1
+      createLedger ledger = submit (actAs (ledgerSignatories ledger.config)) do createCmd ledger
+      refuseLedger ledger = submitMustFail (actAs (ledgerSignatories ledger.config)) do createCmd ledger
+  forA_
+    [ (good with state = stateOf (-1.0) 10.0 parity)
+    , (good with state = stateOf 10.0 10.0 (priceOf 0.0 1.0))
+    , (good with referencePrice = priceOf 1.0 0.0)
+    , (good with maxDeviation = -ulp)
+    , (good with maxDeviation = 1.0 + ulp)
+    , (good with maxBatchSize = 0)
+    , (good with config = (config with share = config.underlying))
+    , (good with config = (config with custodian = burnAccount))
+    ] refuseLedger
+  forA_
+    [ (good with maxDeviation = 0.0)
+    , (good with maxDeviation = 1.0)
+    , (good with maxBatchSize = 1)
+    ] createLedger
+
+  ledger <- createLedger good
+  forA_ [(priceOf 0.0 1.0, 0.1), (parity, -ulp), (parity, 1.0 + ulp)] $ \(reference, deviation) ->
+    submitMustFail admin do
+      exerciseCmd ledger VaultLedger_SetPriceBand with
+        newReferencePrice = reference; newMaxDeviation = deviation
+  forA_ [0, -1] $ \size ->
+    submitMustFail admin do exerciseCmd ledger VaultLedger_SetMaxBatchSize with newMaxBatchSize = size
+  Some unchanged <- queryContractId operator ledger
+  unchanged === good
+
+-- | A request holds terms the vault accepts, even when the admin and the
+-- requester create it together.
+testRequestRefusesInvalidTerms : Script ()
+testRequestRefusesInvalidTerms = script do
+  f@Fixture{..} <- setup
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.share alice 30.0
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  redeemCid <- requestRedeem f alice (redeemTerms alice "r1" 30.0)
+  Some deposit <- queryContractId operator depositCid
+  Some redeem <- queryContractId operator redeemCid
+  submitMustFail (actAs [admin, alice]) do
+    createCmd DepositRequest with state = (deposit.state with terms = depositTerms alice "d1" 0.0)
+  submitMustFail (actAs [admin, alice]) do
+    createCmd DepositRequest with state = (deposit.state with terms = depositTerms alice "" 100.0)
+  submitMustFail (actAs [admin, alice]) do
+    createCmd RedeemRequest with state = (redeem.state with terms = redeemTerms alice "r1" 0.0)
+  submitMustFail (actAs [admin, alice]) do
+    createCmd RedeemRequest with state = (redeem.state with terms = redeemTerms alice "" 30.0)
+  -- Neither side creates one alone.
+  submitMustFail admin do createCmd DepositRequest with state = deposit.state
+  submitMustFail alice do createCmd DepositRequest with state = deposit.state
+  submitMustFail admin do createCmd RedeemRequest with state = redeem.state
+  submitMustFail alice do createCmd RedeemRequest with state = redeem.state
+  -- Together they archive one.
+  submit (actAs [admin, alice]) do archiveCmd depositCid
+  submit (actAs [admin, alice]) do archiveCmd redeemCid
+
+-- What each party sees
+-------------------------------------------------------
+
+-- | A requester sees its own request and nothing of another's, and does not
+-- see the ledger. The operator sees the rules, every request, and the
+-- ledger.
+testRequestersSeeOnlyTheirOwn : Script ()
+testRequestersSeeOnlyTheirOwn = script do
+  f@Fixture{..} <- setup
+  ledger <- newEmptyLedger f
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.underlying bob 50.0
+  aliceCid <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  bobCid <- requestDeposit f bob (depositTerms bob "d1" 50.0)
+  -- The operator observes the rules; a requester only has them disclosed.
+  Some _ <- queryContractId operator vault
+  queryContractId alice vault >>= (=== None)
+  queryContractId alice bobCid >>= (=== None)
+  queryContractId bob aliceCid >>= (=== None)
+  query @DepositRequest alice >>= \requests -> map fst requests === [aliceCid]
+  query @DepositRequest bob >>= \requests -> map fst requests === [bobCid]
+  query @DepositRequest operator >>= \requests -> length requests === 2
+  forA_ [alice, bob] $ \requester ->
+    query @VaultLedger requester >>= \ledgers -> length ledgers === 0
+
+  result <- settleBatch f ledger parity [aliceCid, bobCid] []
+  forA_ [alice, bob] $ \requester -> do
+    queryContractId requester result.ledgerCid >>= (=== None)
+    query @VaultLedger requester >>= \ledgers -> length ledgers === 0
+  query @VaultLedger operator >>= \ledgers -> map fst ledgers === [result.ledgerCid]
+  balance config.share alice >>= (=== (100.0, 0.0))
+  balance config.share bob >>= (=== (50.0, 0.0))
+
+-- Replacing the rules
+-------------------------------------------------------
+
+-- | Only the admin archives the vault's rules. No request is opened on them
+-- afterwards, and a request already open still settles.
+testAdminArchivesTheRules : Script ()
+testAdminArchivesTheRules = script do
+  f@Fixture{..} <- setup
+  ledger <- newEmptyLedger f
+  _ <- giveHolding config.underlying alice 150.0
+  open <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  submitMustFail operator do archiveCmd vault
+  submitMustFail alice do archiveCmd vault
+  submit admin do archiveCmd vault
+  rest <- unlockedHoldings config.underlying alice
+  submitMustFail (actAs alice <> discloseMany registryDisclosures)
+    (requestDepositCmd vault (depositTerms alice "d2" 50.0) rest)
+  result <- settleBatch f ledger parity [open] []
+  result.batch.state === VaultState with
+    reserves = 100.0; totalShares = 100.0; price = parity; batch = 1

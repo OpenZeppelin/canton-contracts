@@ -1,0 +1,131 @@
+-- | Tests for `OpenZeppelin.Api.AsyncVaultV1`: a gate accepts and refuses
+-- through its method, only the admin its view names asks it, asking does not
+-- consume it, and its method runs with the authority of the admin and of the
+-- gate's signatories and with nobody else's.
+module OpenZeppelin.Api.AsyncVaultV1.Test where
+
+import DA.Action (unless)
+import DA.Assert ((===))
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import DA.Foldable (forA_)
+import DA.TextMap qualified as TextMap
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+
+import OpenZeppelin.Api.AsyncVaultV1
+
+eNotListed : FailureStatus
+eNotListed = FailureStatus with
+  errorId = "test/not-listed"
+  category = InvalidIndependentOfSystemState
+  message = "the requester is not on the list"
+  meta = TextMap.empty
+
+-- | A gate that admits the parties on a list, up to an amount.
+template AllowList with
+    admin : Party
+    listed : [Party]
+    maxAssets : Decimal
+  where
+    signatory admin
+    observer listed
+
+    interface instance DepositGate for AllowList where
+      view = DepositGateView with admin
+      depositGate_checkImpl _self arg = do
+        unless (arg.requester.owner `elem` map Some listed && arg.assets <= maxAssets)
+          (failWithStatus eNotListed)
+        pure DepositGate_CheckResult with
+          meta = Metadata with values = TextMap.fromList [("test/vault", arg.vaultId)]
+
+-- | A contract only its `party` can create.
+template SignedNote with
+    party : Party
+    witness : Party
+  where
+    signatory party
+    observer witness
+
+-- | A gate whose method creates a contract in the name of a party it
+-- chooses.
+template Grasping with
+    admin : Party
+    target : Party
+  where
+    signatory admin
+    observer target
+
+    interface instance DepositGate for Grasping where
+      view = DepositGateView with admin
+      depositGate_checkImpl _self _arg = do
+        _ <- create SignedNote with party = target; witness = admin
+        pure DepositGate_CheckResult with meta = emptyMetadata
+
+accountOf : Party -> HoldingV2.Account
+accountOf owner = HoldingV2.Account with owner = Some owner; provider = None; id = ""
+
+checkCmd : ContractId DepositGate -> Party -> Decimal -> Commands DepositGate_CheckResult
+checkCmd gateCid requester assets = exerciseCmd gateCid DepositGate_Check with
+  vaultId = "vault-1"
+  requester = accountOf requester
+  assets
+  extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+mustFailWith : FailureStatus -> Script (Either SubmitError a) -> Script ()
+mustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  Left other -> fail ("expected " <> show expected <> ", got " <> show other)
+  Right _ -> fail ("expected " <> show expected <> ", and the submission succeeded")
+
+-- | The gate's method decides. It sees the vault, the requester, and the
+-- amount, and what it returns reaches the caller. Asking does not consume
+-- the gate.
+testGateAcceptsAndRefuses : Script ()
+testGateAcceptsAndRefuses = script do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  gate <- toInterfaceContractId @DepositGate <$> submit admin do
+    createCmd AllowList with admin; listed = [alice]; maxAssets = 100.0
+  result <- submit admin (checkCmd gate alice 100.0)
+  result === DepositGate_CheckResult with
+    meta = Metadata with values = TextMap.fromList [("test/vault", "vault-1")]
+  mustFailWith eNotListed (trySubmit admin (checkCmd gate bob 100.0))
+  mustFailWith eNotListed (trySubmit admin (checkCmd gate alice 100.0000000001))
+  _ <- submit admin (checkCmd gate alice 1.0)
+  pure ()
+
+-- | Only the admin the gate's view names asks it: not a party it lists, and
+-- not a stranger.
+testOnlyTheGatesAdminAsks : Script ()
+testOnlyTheGatesAdminAsks = script do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  gate <- toInterfaceContractId @DepositGate <$> submit admin do
+    createCmd AllowList with admin; listed = [alice]; maxAssets = 100.0
+  forA_ [alice, bob] $ \other ->
+    submitMustFail other (checkCmd gate alice 1.0)
+  _ <- submit admin (checkCmd gate alice 1.0)
+  pure ()
+
+-- | The method runs with the authority of the admin and of the gate's
+-- signatories. It can act for them and for nobody else, whoever the request
+-- is for.
+testGateActsOnlyForItsAdmin : Script ()
+testGateActsOnlyForItsAdmin = script do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  forOthers <- toInterfaceContractId @DepositGate <$> submit admin do
+    createCmd Grasping with admin; target = alice
+  trySubmit admin (checkCmd forOthers alice 1.0) >>= \case
+    Left (AuthorizationError _) -> pure ()
+    other -> fail ("expected an authorization failure, got " <> show (() <$ other))
+  query @SignedNote alice >>= \signed -> length signed === 0
+
+  forItself <- toInterfaceContractId @DepositGate <$> submit admin do
+    createCmd Grasping with admin; target = admin
+  _ <- submit admin (checkCmd forItself alice 1.0)
+  query @SignedNote admin >>= \signed -> map ((.party) . snd) signed === [admin]

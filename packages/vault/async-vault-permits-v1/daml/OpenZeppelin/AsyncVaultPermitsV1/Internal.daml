@@ -1,0 +1,15 @@
+-- | Implementation details of `OpenZeppelin.AsyncVaultPermitsV1`. Nothing
+-- here is part of the package's public surface.
+module OpenZeppelin.AsyncVaultPermitsV1.Internal where
+
+import DA.Fail (FailureCategory, FailureStatus (..))
+import DA.TextMap qualified as TextMap
+
+-- | A failure status of this package. Every `errorId` is
+-- `openzeppelin.com/async-vault-permits-<name>`.
+permitFailure : Text -> FailureCategory -> Text -> FailureStatus
+permitFailure name category message = FailureStatus with
+  errorId = "openzeppelin.com/async-vault-permits-" <> name
+  category
+  message
+  meta = TextMap.empty

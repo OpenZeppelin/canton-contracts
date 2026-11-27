@@ -1,0 +1,697 @@
+-- | Fixtures for the request and settlement tests: a minimal Token Standard
+-- registry built on the OpenZeppelin CIP-0112 utils, vault, state, and
+-- request templates that delegate to the bodies under test, and the script
+-- helpers that drive them.
+module OpenZeppelin.AsyncVault.Utils.Test.Fixtures where
+
+import DA.Action (unless)
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import DA.Foldable (forA_)
+import DA.Optional (isNone, isSome)
+import DA.Stack (HasCallStack)
+import DA.TextMap qualified as TextMap
+import DA.Time (days, hours, time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.TokenStandard.Utils (accountParties, basicAccount, eventLog_holdingsChangeDefaultImpl, publicFetchDefaultImpl)
+
+import OpenZeppelin.Token.Cip112.TypesV1
+import OpenZeppelin.Token.Cip112.Utils.Holding
+import OpenZeppelin.Token.Cip112.Utils.Allocation
+import OpenZeppelin.Token.Cip112.Utils.Registry qualified as TokenRegistry
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Math (checkPriceWithin, isValidVaultState)
+import OpenZeppelin.AsyncVault.Utils.Request
+import OpenZeppelin.AsyncVault.Utils.Reserves
+import OpenZeppelin.AsyncVault.Utils.Settlement
+
+-- Registry
+-------------------------------------------------------
+
+-- | The metadata key every call on a test registry must carry, with the
+-- registry admin's party id as its value. It lets a test tell which of a
+-- request's extra arguments reached which registry.
+registryKey : Text
+registryKey = "test/registry"
+
+requireRegistryArgs : Party -> ExtraArgs -> Update ()
+requireRegistryArgs admin extraArgs =
+  unless (TextMap.lookup registryKey extraArgs.meta.values == Some (partyToText admin))
+    (failWithStatus eWrongRegistryArgs)
+
+eWrongRegistryArgs : FailureStatus
+eWrongRegistryArgs = FailureStatus with
+  errorId = "test/wrong-registry-args"
+  category = InvalidIndependentOfSystemState
+  message = "the extra arguments are not this registry's"
+  meta = TextMap.empty
+
+template TestHolding with
+    holding : HoldingV2.HoldingView
+  where
+    signatory holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+    observer lockHolders holding.lock
+    ensure isValidHoldingView holding
+
+    interface instance HoldingV2.Holding for TestHolding where
+      view = holding
+
+-- | A contract that presents the view of a holding of any instrument in any
+-- account. Whoever creates it signs it, and the instrument's admin does not.
+template ForgedHolding with
+    forger : Party
+    holding : HoldingV2.HoldingView
+  where
+    signatory forger
+
+    interface instance HoldingV2.Holding for ForgedHolding where
+      view = holding
+
+-- | Event-log host, created and archived within the emitting transaction.
+template TestEventLog with
+    admin : Party
+  where
+    signatory admin
+
+    interface instance TransferEventsV2.EventLog for TestEventLog where
+      view = TransferEventsV2.EventLogView with admin; meta = emptyMetadata
+      eventLog_holdingsChangeImpl = eventLog_holdingsChangeDefaultImpl admin
+
+holdingOps : Party -> HoldingOps TestHolding
+holdingOps admin = holdingOpsFor @TestHolding
+  (\_ holding -> toInterfaceContractId <$> create TestHolding with holding)
+  (\emit -> do
+    logCid <- create TestEventLog with admin
+    emit (toInterfaceContractId logCid)
+    archive logCid)
+  (const [])
+
+template TestAllocation with
+    state : AllocationState
+  where
+    signatory state.allocation.admin, accountParties state.allocation.admin state.allocation.authorizer
+    observer state.settlement.executors
+    ensure isValidAllocationState state
+
+    interface instance AllocationV2.Allocation for TestAllocation where
+      view = allocationView state
+      allocation_settleExtraObservers _ = observer this
+      allocation_cancelExtraObservers _ = observer this
+      allocation_withdrawExtraObservers _ = observer this
+      allocation_settleImpl self arg =
+        allocationSettleImpl (holdingOps state.allocation.admin)
+          (\s -> toInterfaceContractId <$> create this with state = s) self state arg
+      allocation_withdrawImpl self arg = do
+        requireRegistryArgs state.allocation.admin arg.extraArgs
+        allocationWithdrawImpl (holdingOps state.allocation.admin) self state arg
+      allocation_cancelImpl self arg = do
+        requireRegistryArgs state.allocation.admin arg.extraArgs
+        allocationCancelImpl (holdingOps state.allocation.admin) self state arg
+
+-- | An allocation whose registry never finishes a withdrawal or a
+-- cancellation: it answers that the allocation is still pending.
+template StallingAllocation with
+    state : AllocationState
+  where
+    signatory state.allocation.admin, accountParties state.allocation.admin state.allocation.authorizer
+    observer state.settlement.executors
+    ensure isValidAllocationState state
+
+    interface instance AllocationV2.Allocation for StallingAllocation where
+      view = allocationView state
+      allocation_settleExtraObservers _ = observer this
+      allocation_cancelExtraObservers _ = observer this
+      allocation_withdrawExtraObservers _ = observer this
+      allocation_settleImpl self _ = pure (stillPending self)
+      allocation_withdrawImpl self _ = pure (stillPending self)
+      allocation_cancelImpl self _ = pure (stillPending self)
+
+stillPending : ContractId AllocationV2.Allocation -> AllocationV2.AllocationResult
+stillPending allocationCid = AllocationV2.AllocationResult with
+  output = AllocationV2.AllocationResult_Pending allocationCid
+  authorizerHoldingCids = TextMap.empty
+  meta = emptyMetadata
+
+-- | A registry's rules contract: allocation factory and settlement factory.
+template TestRegistry with
+    config : RegistryConfig
+  where
+    signatory config.admin
+    ensure isValidRegistryConfig config
+
+    interface instance AllocationInstructionV2.AllocationFactory for TestRegistry where
+      view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
+      allocationFactory_publicFetchImpl = publicFetchDefaultImpl this
+      allocationFactory_allocateExtraObservers = privateAssetAllocateExtraObservers
+      allocationFactory_allocateImpl _self arg = do
+        requireRegistryArgs config.admin arg.extraArgs
+        allocationFactoryImpl config (holdingOps config.admin)
+          (\s -> toInterfaceContractId <$> create TestAllocation with state = s) arg
+
+    interface instance AllocationV2.SettlementFactory for TestRegistry where
+      view = AllocationV2.SettlementFactoryView with admin = config.admin; meta = emptyMetadata
+      settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
+      settlementFactory_settleBatchExtraObservers _ = []
+      settlementFactory_settleBatchImpl self arg = do
+        requireRegistryArgs config.admin arg.extraArgs
+        TokenRegistry.settleBatchImpl @TestAllocation
+          (\_ -> pure ()) (\_ _ -> emptyChoiceContext) config.admin self arg
+
+-- | A registry that never completes an allocation.
+template RefusingRegistry with
+    admin : Party
+  where
+    signatory admin
+
+    interface instance AllocationInstructionV2.AllocationFactory for RefusingRegistry where
+      view = AllocationInstructionV2.AllocationFactoryView with admin; meta = emptyMetadata
+      allocationFactory_publicFetchImpl = publicFetchDefaultImpl this
+      allocationFactory_allocateExtraObservers _ = []
+      allocationFactory_allocateImpl _self _arg = pure AllocationInstructionV2.AllocationInstructionResult with
+        output = AllocationInstructionV2.AllocationInstructionResult_Failed
+        authorizerChangeCids = TextMap.empty
+        meta = emptyMetadata
+
+-- | A settlement factory that settles nothing. With `reportsPending` it
+-- answers that every allocation is still pending, and without it gives no
+-- answer for any.
+template StallingSettlement with
+    admin : Party
+    reportsPending : Bool
+  where
+    signatory admin
+
+    interface instance AllocationV2.SettlementFactory for StallingSettlement where
+      view = AllocationV2.SettlementFactoryView with admin; meta = emptyMetadata
+      settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
+      settlementFactory_settleBatchExtraObservers _ = []
+      settlementFactory_settleBatchImpl _self arg = pure AllocationV2.SettlementFactory_SettleBatchResult with
+        allocationSettleResults =
+          if reportsPending
+            then map (\finalizedAllocation -> AllocationV2.AllocationResult with
+              output = AllocationV2.AllocationResult_Pending finalizedAllocation.allocationCid
+              authorizerHoldingCids = TextMap.empty
+              meta = emptyMetadata) arg.allocations
+            else []
+        meta = emptyMetadata
+
+-- Vault
+-------------------------------------------------------
+
+-- | The metadata key a deposit's `vault` extra arguments must carry when the
+-- test vault asks for a ticket.
+ticketKey : Text
+ticketKey = "test/ticket"
+
+eNoTicket : FailureStatus
+eNoTicket = FailureStatus with
+  errorId = "test/no-ticket"
+  category = InvalidIndependentOfSystemState
+  message = "the deposit carries no valid ticket"
+  meta = TextMap.empty
+
+-- | Stands in for a vault's rules contract. With a `ticket`, its policy
+-- admits a deposit only when the request's `vault` extra arguments carry it.
+template TestVault with
+    config : VaultConfig
+    registries : VaultRegistries
+    ticket : Optional Text
+  where
+    signatory config.admin
+    observer config.operator
+
+    nonconsuming choice TestVault_RequestDeposit : ContractId TestDepositRequest
+      with
+        terms : DepositTerms
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+        requestedAt : Time
+        args : RequestArgs
+      controller requesterParties terms.requester
+      do
+        let policy = case ticket of
+              None -> defaultVaultPolicy
+              Some expected -> defaultVaultPolicy with
+                authorizeDeposit = \_ vaultArgs ->
+                  unless (TextMap.lookup ticketKey vaultArgs.meta.values == Some expected)
+                    (failWithStatus eNoTicket)
+        requestDepositImpl config registries policy
+          (\state -> create TestDepositRequest with state)
+          terms inputHoldingCids requestedAt args
+
+    nonconsuming choice TestVault_RequestRedeem : ContractId TestRedeemRequest
+      with
+        terms : RedeemTerms
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+        requestedAt : Time
+        args : RequestArgs
+      controller requesterParties terms.requester
+      do
+        requestRedeemImpl config registries
+          (\state -> create TestRedeemRequest with state)
+          terms inputHoldingCids requestedAt args
+
+template TestDepositRequest with
+    state : DepositRequestState
+  where
+    signatory state.admin, requesterParties state.terms.requester
+    observer state.operator
+    ensure isValidDepositRequestState state
+
+    choice TestDepositRequest_Cancel : ()
+      with
+        args : RequestArgs
+      controller requesterParties state.terms.requester
+      do cancelDepositImpl state args
+
+    choice TestDepositRequest_Reject : ()
+      with
+        args : RequestArgs
+      controller state.operator
+      do rejectDepositImpl state args
+
+    choice TestDepositRequest_Expire : ()
+      controller state.operator
+      do expireRequestImpl state.terms.deadline
+
+    -- Consumes the request when its batch settles. The fill is an argument,
+    -- so the requester sees what the request received.
+    choice TestDepositRequest_Fill : ()
+      with
+        fill : Fill
+      controller state.admin, state.operator
+      do pure ()
+
+template TestRedeemRequest with
+    state : RedeemRequestState
+  where
+    signatory state.admin, requesterParties state.terms.requester
+    observer state.operator
+    ensure isValidRedeemRequestState state
+
+    choice TestRedeemRequest_Cancel : ()
+      with
+        args : RequestArgs
+      controller requesterParties state.terms.requester
+      do cancelRedeemImpl state args
+
+    choice TestRedeemRequest_Reject : ()
+      with
+        args : RequestArgs
+      controller state.operator
+      do rejectRedeemImpl state args
+
+    choice TestRedeemRequest_Expire : ()
+      controller state.operator
+      do expireRequestImpl state.terms.deadline
+
+    choice TestRedeemRequest_Fill : ()
+      with
+        fill : Fill
+      controller state.admin, state.operator
+      do pure ()
+
+-- | Stands in for a vault's state contract, rewritten by the operator once
+-- per batch and whenever it records the reserves again. With a `batchLimit`, its policy settles that many requests at
+-- most. With a `band`, which is a reference price and a deviation, its
+-- policy lets the operator choose any price within it; without one, a batch
+-- settles only at the price the state already records.
+template TestVaultState with
+    config : VaultConfig
+    registries : VaultRegistries
+    state : VaultState
+    batchLimit : Optional Int
+    band : Optional (SharePrice, Decimal)
+  where
+    signatory config.admin
+    observer config.operator
+    ensure isValidVaultState state
+
+    choice TestVaultState_SettleBatch : (ContractId TestVaultState, SettledBatch)
+      with
+        price : SharePrice
+        depositCids : [ContractId TestDepositRequest]
+        redeemCids : [ContractId TestRedeemRequest]
+        poolHoldingCids : [ContractId HoldingV2.Holding]
+        requestedAt : Time
+        args : RequestArgs
+      controller config.operator
+      do
+        deposits <- forA depositCids fetch
+        redeems <- forA redeemCids fetch
+        let sized = case batchLimit of
+              None -> defaultVaultPolicy
+              Some limit -> defaultVaultPolicy with maxBatchSize = limit
+            policy = case band of
+              None -> sized
+              Some (reference, maxDeviation) -> sized with
+                checkPrice = \_ chosen ->
+                  either failWithStatus pure (checkPriceWithin reference maxDeviation chosen)
+        batch <- settleBatchImpl config registries policy state price
+          (map (.state) deposits) (map (.state) redeems) poolHoldingCids requestedAt args
+        forA_ (zip depositCids batch.depositFills) $ \(cid, fill) ->
+          exercise cid TestDepositRequest_Fill with fill
+        forA_ (zip redeemCids batch.redeemFills) $ \(cid, fill) ->
+          exercise cid TestRedeemRequest_Fill with fill
+        stateCid <- create this with state = batch.state
+        pure (stateCid, batch)
+
+    choice TestVaultState_SettleTracked
+        : (ContractId TestVaultState, SettledBatch, [ContractId HoldingV2.Holding])
+      -- ^ Settle a batch as a vault that tracks its pool does: funded from
+      -- `trackedPool` alone, at the price the state records.
+      with
+        depositCids : [ContractId TestDepositRequest]
+        redeemCids : [ContractId TestRedeemRequest]
+        trackedPool : [ContractId HoldingV2.Holding]
+        requestedAt : Time
+        args : RequestArgs
+      controller config.operator
+      do
+        deposits <- forA depositCids fetch
+        redeems <- forA redeemCids fetch
+        (batch, pool) <- settleTrackedBatchImpl config registries defaultVaultPolicy state state.price
+          (map (.state) deposits) (map (.state) redeems) trackedPool requestedAt args
+        forA_ (zip depositCids batch.depositFills) $ \(cid, fill) ->
+          exercise cid TestDepositRequest_Fill with fill
+        forA_ (zip redeemCids batch.redeemFills) $ \(cid, fill) ->
+          exercise cid TestRedeemRequest_Fill with fill
+        stateCid <- create this with state = batch.state
+        pure (stateCid, batch, pool)
+
+    choice TestVaultState_RecordReserves : ContractId TestVaultState
+      with
+        holdingCids : [ContractId HoldingV2.Holding]
+      controller config.operator
+      do
+        recorded <- recordReservesImpl config state holdingCids
+        create this with state = recorded
+
+-- Scenario
+-------------------------------------------------------
+
+-- | Request time, the scenario's clock, and the requests' deadline.
+t0, t1, t2 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+t1 = time (date 2026 Jan 1) 0 10 0
+t2 = time (date 2026 Jan 1) 0 20 0
+
+-- | The smallest positive `Decimal`.
+ulp : Decimal
+ulp = 0.0000000001
+
+data Fixture = Fixture with
+    admin : Party
+    operator : Party
+    issuer : Party
+    alice : Party
+    bob : Party
+    config : VaultConfig
+    registries : VaultRegistries
+    vault : ContractId TestVault
+    disclosures : [Disclosure]
+      -- ^ The vault and both registries, as a requester receives them.
+
+-- | A vault open to every depositor over two registries: the issuer's for
+-- the underlying and the vault admin's for the shares.
+setup : Script Fixture
+setup = setupWith None
+
+setupWith : Optional Text -> Script Fixture
+setupWith ticket = do
+  admin <- allocateParty "admin"
+  operator <- allocateParty "operator"
+  issuer <- allocateParty "issuer"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  setTime t1
+  underlyingRegistry <- newRegistry issuer
+  shareRegistry <- newRegistry admin
+  let config = VaultConfig with
+        admin
+        operator
+        vaultId = "vault-1"
+        underlying = HoldingV2.InstrumentId with admin = issuer; id = "USD"
+        share = HoldingV2.InstrumentId with admin; id = "VSHARE"
+        custodian = basicAccount admin
+      registries = VaultRegistries with
+        underlyingAllocationFactory = toInterfaceContractId underlyingRegistry
+        underlyingSettlementFactory = toInterfaceContractId underlyingRegistry
+        shareAllocationFactory = toInterfaceContractId shareRegistry
+        shareSettlementFactory = toInterfaceContractId shareRegistry
+  vault <- submit admin do createCmd TestVault with config; registries; ticket
+  Some vaultDisclosure <- queryDisclosure @TestVault admin vault
+  Some underlyingDisclosure <- queryDisclosure @TestRegistry issuer underlyingRegistry
+  Some shareDisclosure <- queryDisclosure @TestRegistry admin shareRegistry
+  pure Fixture with
+    admin; operator; issuer; alice; bob; config; registries; vault
+    disclosures = [vaultDisclosure, underlyingDisclosure, shareDisclosure]
+
+newRegistry : Party -> Script (ContractId TestRegistry)
+newRegistry admin = submit admin do
+  createCmd TestRegistry with
+    config = RegistryConfig with admin; maxTTL = days 90; lockGrace = hours 1
+
+-- | Extra arguments a test registry accepts.
+registryArgs : Party -> ExtraArgs
+registryArgs admin = ExtraArgs with
+  context = emptyChoiceContext
+  meta = Metadata with values = TextMap.fromList [(registryKey, partyToText admin)]
+
+emptyArgs : ExtraArgs
+emptyArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- | Each registry's own arguments, and nothing for the vault's policy.
+requestArgs : Fixture -> RequestArgs
+requestArgs Fixture{..} = RequestArgs with
+  underlying = registryArgs config.underlying.admin
+  share = registryArgs config.share.admin
+  vault = emptyArgs
+
+ticketArgs : Text -> ExtraArgs
+ticketArgs ticket = ExtraArgs with
+  context = emptyChoiceContext
+  meta = Metadata with values = TextMap.fromList [(ticketKey, ticket)]
+
+-- | Put a holding into an owner's basic account.
+giveHolding : HoldingV2.InstrumentId -> Party -> Decimal -> Script (ContractId HoldingV2.Holding)
+giveHolding instrumentId owner amount =
+  toInterfaceContractId <$> submit (actAs [instrumentId.admin, owner]) do
+    createCmd TestHolding with
+      holding = HoldingV2.HoldingView with
+        account = basicAccount owner
+        instrumentId
+        amount
+        lock = None
+        meta = emptyMetadata
+
+-- | What an owner holds of an instrument: unlocked and locked.
+balance : HoldingV2.InstrumentId -> Party -> Script (Decimal, Decimal)
+balance instrumentId owner = do
+  holdings <- query @TestHolding owner
+  let mine = [ h.holding | (_, h) <- holdings
+             , h.holding.account == basicAccount owner, h.holding.instrumentId == instrumentId ]
+  pure (sum [v.amount | v <- mine, isNone v.lock], sum [v.amount | v <- mine, isSome v.lock])
+
+unlockedHoldings : HoldingV2.InstrumentId -> Party -> Script [ContractId HoldingV2.Holding]
+unlockedHoldings instrumentId owner = do
+  holdings <- query @TestHolding owner
+  pure [ toInterfaceContractId cid | (cid, h) <- holdings
+       , h.holding.account == basicAccount owner, h.holding.instrumentId == instrumentId
+       , isNone h.holding.lock ]
+
+depositTerms : Party -> Text -> Decimal -> DepositTerms
+depositTerms requester label assets = DepositTerms with
+  requester = basicAccount requester
+  label
+  assets
+  minSharesOut = None
+  deadline = t2
+
+redeemTerms : Party -> Text -> Decimal -> RedeemTerms
+redeemTerms requester label shares = RedeemTerms with
+  requester = basicAccount requester
+  label
+  shares
+  minAssetsOut = None
+  deadline = t2
+
+-- | The command a requester submits to open a deposit request, funded from
+-- every unlocked holding of the underlying the requester has.
+requestDepositCmd
+  : Fixture -> DepositTerms -> [ContractId HoldingV2.Holding] -> RequestArgs
+  -> Commands (ContractId TestDepositRequest)
+requestDepositCmd Fixture{..} terms inputHoldingCids args =
+  exerciseCmd vault TestVault_RequestDeposit with terms; inputHoldingCids; requestedAt = t0; args
+
+requestRedeemCmd
+  : Fixture -> RedeemTerms -> [ContractId HoldingV2.Holding] -> RequestArgs
+  -> Commands (ContractId TestRedeemRequest)
+requestRedeemCmd Fixture{..} terms inputHoldingCids args =
+  exerciseCmd vault TestVault_RequestRedeem with terms; inputHoldingCids; requestedAt = t0; args
+
+-- | Open a deposit request as its requester, alone.
+requestDeposit : Fixture -> Party -> DepositTerms -> Script (ContractId TestDepositRequest)
+requestDeposit f requester terms = do
+  inputs <- unlockedHoldings f.config.underlying requester
+  submit (actAs requester <> discloseMany f.disclosures)
+    (requestDepositCmd f terms inputs (requestArgs f))
+
+-- | Open a redemption request as its requester, alone.
+requestRedeem : Fixture -> Party -> RedeemTerms -> Script (ContractId TestRedeemRequest)
+requestRedeem f requester terms = do
+  inputs <- unlockedHoldings f.config.share requester
+  submit (actAs requester <> discloseMany f.disclosures)
+    (requestRedeemCmd f terms inputs (requestArgs f))
+
+-- | Run a submission and require the ledger to reject it with exactly this
+-- status. Any other outcome fails with what arrived instead.
+submitMustFailWith
+  : (HasCallStack, Show a)
+  => FailureStatus -> Script (Either SubmitError a) -> Script ()
+submitMustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  other -> fail ("expected " <> show expected <> ", got " <> show other)
+
+-- | Run a submission and require the ledger to reject it for missing
+-- authority, before any choice body runs. Any other outcome fails with what
+-- arrived instead.
+submitMustFailAuthorization
+  : (HasCallStack, Show a) => Script (Either SubmitError a) -> Script ()
+submitMustFailAuthorization action = action >>= \case
+  Left (AuthorizationError _) -> pure ()
+  other -> fail ("expected an authorization failure, got " <> show other)
+
+-- Settlement
+-------------------------------------------------------
+
+-- | One share for one unit of the underlying.
+parity : SharePrice
+parity = SharePrice with priceAssets = 1.0; priceShares = 1.0
+
+-- | 166 units of the underlying for 151 shares.
+grownPrice : SharePrice
+grownPrice = SharePrice with priceAssets = 166.0; priceShares = 151.0
+
+-- | A state before any batch.
+stateOf : Decimal -> Decimal -> SharePrice -> VaultState
+stateOf reserves totalShares price = VaultState with reserves; totalShares; price; batch = 0
+
+-- | A state contract for the fixture's vault whose policy keeps the price.
+newState : Fixture -> VaultState -> Script (ContractId TestVaultState)
+newState f state = newStateWith f state None None
+
+newStateWith
+  : Fixture -> VaultState -> Optional Int -> Optional (SharePrice, Decimal)
+  -> Script (ContractId TestVaultState)
+newStateWith Fixture{..} state batchLimit band = submit admin do
+  createCmd TestVaultState with config; registries; state; batchLimit; band
+
+-- | What a registry serves a settlement's executor: the locked funding of
+-- the allocations.
+fundingDisclosures : Party -> [ContractId AllocationV2.Allocation] -> Script [Disclosure]
+fundingDisclosures registryAdmin allocationCids = do
+  holdingCids <- forA allocationCids $ \allocationCid -> do
+    Some allocation <- queryInterfaceContractId registryAdmin allocationCid
+    pure allocation.holdingCids
+  holdingDisclosures registryAdmin (concat holdingCids)
+
+holdingDisclosures : Party -> [ContractId HoldingV2.Holding] -> Script [Disclosure]
+holdingDisclosures registryAdmin holdingCids = forA holdingCids $ \holdingCid -> do
+  Some disclosure <- queryDisclosure registryAdmin (fromInterfaceContractId @TestHolding holdingCid)
+  pure disclosure
+
+-- | The command the operator submits to settle a batch at a price, and the
+-- disclosures it needs: the registries, the escrows' locked funding, and the
+-- pool.
+settleCmd
+  : Fixture -> ContractId TestVaultState -> SharePrice -> [ContractId TestDepositRequest]
+  -> [ContractId TestRedeemRequest] -> RequestArgs
+  -> Script ([Disclosure], Commands (ContractId TestVaultState, SettledBatch))
+settleCmd f@Fixture{..} stateCid price depositCids redeemCids args = do
+  deposits <- forA depositCids $ \cid -> do
+    Some request <- queryContractId admin cid
+    pure request.state.escrowCid
+  redeems <- forA redeemCids $ \cid -> do
+    Some request <- queryContractId admin cid
+    pure request.state.escrowCid
+  underlyingFunding <- fundingDisclosures config.underlying.admin deposits
+  shareFunding <- fundingDisclosures config.share.admin redeems
+  pool <- unlockedHoldings config.underlying admin
+  poolDisclosures <- holdingDisclosures config.underlying.admin pool
+  pure
+    ( f.disclosures <> underlyingFunding <> shareFunding <> poolDisclosures
+    , exerciseCmd stateCid TestVaultState_SettleBatch with
+        price; depositCids; redeemCids; poolHoldingCids = pool; requestedAt = t0; args )
+
+-- | Settle a batch at a price as the operator, alone.
+settleBatch
+  : Fixture -> ContractId TestVaultState -> SharePrice -> [ContractId TestDepositRequest]
+  -> [ContractId TestRedeemRequest] -> Script (ContractId TestVaultState, SettledBatch)
+settleBatch f stateCid price depositCids redeemCids = do
+  (disclosed, cmd) <- settleCmd f stateCid price depositCids redeemCids (requestArgs f)
+  submit (actAs f.operator <> discloseMany disclosed) cmd
+
+-- | Try to settle a batch at a price as the operator, alone.
+trySettleBatch
+  : Fixture -> ContractId TestVaultState -> SharePrice -> [ContractId TestDepositRequest]
+  -> [ContractId TestRedeemRequest]
+  -> Script (Either SubmitError (ContractId TestVaultState, SettledBatch))
+trySettleBatch f stateCid price depositCids redeemCids = do
+  (disclosed, cmd) <- settleCmd f stateCid price depositCids redeemCids (requestArgs f)
+  trySubmit (actAs f.operator <> discloseMany disclosed) cmd
+
+-- | Try to settle a batch as the operator, alone, funded from a tracked pool:
+-- the holdings named, and no other.
+trySettleTracked
+  : Fixture -> ContractId TestVaultState -> [ContractId TestDepositRequest]
+  -> [ContractId TestRedeemRequest] -> [ContractId HoldingV2.Holding]
+  -> Script (Either SubmitError (ContractId TestVaultState, SettledBatch, [ContractId HoldingV2.Holding]))
+trySettleTracked f@Fixture{..} stateCid depositCids redeemCids trackedPool = do
+  deposits <- forA depositCids $ \cid -> do
+    Some request <- queryContractId admin cid
+    pure request.state.escrowCid
+  redeems <- forA redeemCids $ \cid -> do
+    Some request <- queryContractId admin cid
+    pure request.state.escrowCid
+  underlyingFunding <- fundingDisclosures config.underlying.admin deposits
+  shareFunding <- fundingDisclosures config.share.admin redeems
+  poolDisclosures <- holdingDisclosures config.underlying.admin trackedPool
+  trySubmit
+    (actAs operator <> discloseMany (f.disclosures <> underlyingFunding <> shareFunding <> poolDisclosures))
+    do
+      exerciseCmd stateCid TestVaultState_SettleTracked with
+        depositCids; redeemCids; trackedPool; requestedAt = t0; args = requestArgs f
+
+-- | The amount of each of the custodian's holdings named.
+amountsOf : Fixture -> [ContractId HoldingV2.Holding] -> Script [Decimal]
+amountsOf Fixture{..} holdingCids = forA holdingCids $ \holdingCid -> do
+  Some held <- queryContractId config.underlying.admin (fromInterfaceContractId @TestHolding holdingCid)
+  pure held.holding.amount
+
+-- Reserves
+-------------------------------------------------------
+
+-- | Record the given holdings as the vault's reserves, as the operator,
+-- alone. The underlying's registry serves the operator the holdings.
+tryRecordReserves
+  : Fixture -> ContractId TestVaultState -> [ContractId HoldingV2.Holding] -> [Disclosure]
+  -> Script (Either SubmitError (ContractId TestVaultState))
+tryRecordReserves Fixture{..} stateCid holdingCids disclosed =
+  trySubmit (actAs operator <> discloseMany disclosed) do
+    exerciseCmd stateCid TestVaultState_RecordReserves with holdingCids
+
+-- | Record every unlocked holding of the underlying the custodian has.
+recordReserves : Fixture -> ContractId TestVaultState -> Script (ContractId TestVaultState)
+recordReserves f@Fixture{..} stateCid = do
+  pool <- unlockedHoldings config.underlying admin
+  disclosed <- holdingDisclosures config.underlying.admin pool
+  Right recorded <- tryRecordReserves f stateCid pool disclosed
+  pure recorded

@@ -1,0 +1,396 @@
+-- | Ready-to-use templates for an asynchronous vault. They store the records
+-- of `openzeppelin-async-vault-types-v1` and delegate their choice bodies to
+-- `openzeppelin-async-vault-utils`.
+--
+-- A vault is two long-lived contracts and one contract per request:
+--
+-- * `Vault` holds the rules. Requesters open requests on it with
+--   nonconsuming choices, so requests never contend with each other or with
+--   a batch.
+-- * `VaultLedger` holds what the vault records: its reserves, its shares
+--   outstanding, the price of the last batch, and the batch number. The
+--   operator rewrites it once per batch.
+-- * `DepositRequest` and `RedeemRequest` are pending requests, each with its
+--   funds escrowed in an allocation of the Token Standard.
+module OpenZeppelin.AsyncVaultV1 where
+
+import DA.Action (unless)
+import DA.Fail (failWithStatus)
+import DA.Foldable (forA_)
+import DA.List (dedup)
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+
+import OpenZeppelin.Api.AsyncVaultV1 (DepositGate)
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Gate
+import OpenZeppelin.AsyncVault.Utils.Math
+import OpenZeppelin.AsyncVault.Utils.Request
+import OpenZeppelin.AsyncVault.Utils.Reserves
+import OpenZeppelin.AsyncVault.Utils.Settlement
+
+-- Rules
+-------------------------------------------------------
+
+-- | A vault's rules: its identity and the registries its requests are made
+-- on. The admin signs alone and the operator observes. Requesters receive
+-- the contract by explicit disclosure, together with the allocation
+-- factories it names.
+--
+-- Both request choices are nonconsuming and read no price, so any number of
+-- requesters use the contract at once. A request carries the admin's
+-- signature because it is created here: a `DepositRequest` or a
+-- `RedeemRequest` that names this vault's admin was opened through a `Vault`
+-- of that admin, or created by the admin directly.
+--
+-- Without a `depositGate`, deposits are open to every requester. With one,
+-- every deposit request asks the gate first, and the gate refuses it by
+-- failing. The gate is exercised with the admin's authority alone, so its
+-- code cannot act for the requester. A requester receives the gate by
+-- explicit disclosure, with the rest. Redemption requests ask no gate: a
+-- holder can always ask to redeem. Nothing here limits how often a party
+-- requests.
+--
+-- The contract has no choice that changes it. The admin replaces it by
+-- archiving it and creating another, and requests already open are
+-- unaffected: they name the vault by its admin, operator, and id.
+template Vault with
+    config : VaultConfig
+    registries : VaultRegistries
+      -- ^ The requester's allocations are made on these factories with the
+      -- requester's own authority, so a requester checks them before
+      -- submitting.
+    depositGate : Optional (ContractId DepositGate)
+      -- ^ The contract that decides who may deposit, or `None` for a vault
+      -- open to every depositor. The admin chooses it and lends it the
+      -- admin's own authority, so the admin chooses a gate whose code it
+      -- trusts.
+  where
+    signatory config.admin
+    observer config.operator
+    ensure isValidVaultConfig config
+
+    nonconsuming choice Vault_RequestDeposit : ContractId DepositRequest
+      -- ^ Open a deposit request: escrow the assets in the requester's own
+      -- holdings and record the terms. The requester's account parties
+      -- submit alone. Fails as `requestDepositImpl` does, with `eForeignGate`
+      -- when the gate does not answer to the vault's admin, and with
+      -- whatever the gate fails with when it refuses.
+      with
+        terms : DepositTerms
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+          -- ^ The requester's holdings of the underlying that fund the
+          -- escrow. What is not needed comes back as change.
+        requestedAt : Time
+        args : RequestArgs
+      controller requesterParties terms.requester
+      do
+        let policy = defaultVaultPolicy with
+              authorizeDeposit = \requested vaultArgs ->
+                forA_ depositGate $ \gateCid ->
+                  checkDepositGate config gateCid requested vaultArgs
+        requestDepositImpl config registries policy
+          (\state -> create DepositRequest with state)
+          terms inputHoldingCids requestedAt args
+
+    nonconsuming choice Vault_RequestRedeem : ContractId RedeemRequest
+      -- ^ Open a redemption request: escrow the shares in the requester's
+      -- own holdings and record the terms. The requester's account parties
+      -- submit alone. Fails as `requestRedeemImpl` does.
+      with
+        terms : RedeemTerms
+        inputHoldingCids : [ContractId HoldingV2.Holding]
+          -- ^ The requester's holdings of the share instrument that fund the
+          -- escrow. What is not needed comes back as change.
+        requestedAt : Time
+        args : RequestArgs
+      controller requesterParties terms.requester
+      do
+        requestRedeemImpl config registries
+          (\state -> create RedeemRequest with state)
+          terms inputHoldingCids requestedAt args
+
+-- Ledger
+-------------------------------------------------------
+
+-- | What `VaultLedger_SettleBatch` returns.
+data VaultLedger_SettleBatchResult = VaultLedger_SettleBatchResult with
+    ledgerCid : ContractId VaultLedger
+      -- ^ The ledger after the batch.
+    batch : SettledBatch
+      -- ^ The state the ledger now records and what each request received.
+  deriving (Eq, Show)
+
+-- | What a vault records, and the one place where requests are settled.
+--
+-- Signatories: the vault's admin, the share instrument's admin, and the
+-- custodian's account parties. A batch moves the pool and issues and burns
+-- shares, which takes all three authorities, and it takes the operator's as
+-- the other executor of the settlement. The ledger's signatories and the
+-- controller of `VaultLedger_SettleBatch` are exactly those parties, so the
+-- operator settles a batch alone. When one party is the vault's admin, the
+-- share instrument's admin, and the custodian, the contract has one
+-- signatory.
+--
+-- The operator observes. Nobody else sees the contract: a wallet that shows
+-- the vault's reserves or its last price receives it by explicit disclosure
+-- from a signatory.
+--
+-- The operator chooses the price of each batch within a band the admin
+-- sets: `maxDeviation` above or below `referencePrice`. The band does not
+-- follow the price, so the operator cannot walk the price out of it over
+-- many batches. With a `maxDeviation` of zero the operator settles only at
+-- the reference price, and the admin decides every price by moving the
+-- reference.
+--
+-- The ledger tracks the vault's pool when `trackedPool` is set. It then
+-- names the custodian's holdings behind the recorded reserves. A batch is
+-- funded from those holdings alone, and the ledger it leaves names the
+-- holdings the pool was left with, which amount to exactly the reserves it
+-- records. A holding the custodian receives outside a batch joins the pool
+-- when the operator records the reserves with it. A tracked holding that is
+-- spent outside a batch fails every batch until the reserves are recorded
+-- again. Without a `trackedPool`, the operator names the holdings that fund
+-- each batch, and the recorded reserves are a figure the batches keep.
+--
+-- Every choice that changes the ledger consumes it and creates its
+-- successor, so a vault has one writer at a time and a batch built on a
+-- ledger that has since changed fails. Nothing prevents the signatories from
+-- creating a second `VaultLedger` for the same vault: which contract is the
+-- vault's ledger is for the signatories to state. Nor does anything check a
+-- `trackedPool` when the signatories create a ledger with one: the first
+-- batch fails with `ePoolMismatch` when it does not hold the reserves.
+template VaultLedger with
+    config : VaultConfig
+    registries : VaultRegistries
+      -- ^ The registries a batch allocates the vault's own sides on and
+      -- settles through. They must be the ones the vault's requests were
+      -- made on, or no batch settles.
+    state : VaultState
+    referencePrice : SharePrice
+      -- ^ The middle of the band a batch's price is held to.
+    maxDeviation : Decimal
+      -- ^ How far from `referencePrice` a batch's price may be, as a
+      -- fraction of it, within zero and one.
+    maxBatchSize : Int
+      -- ^ The most requests one batch settles.
+    trackedPool : Optional [ContractId HoldingV2.Holding]
+      -- ^ The custodian's holdings behind the recorded reserves, when the
+      -- ledger tracks the pool, or `None` when it does not. No holding is
+      -- named twice.
+  where
+    signatory ledgerSignatories config
+    observer config.operator
+    ensure
+      isValidVaultConfig config
+        && isValidVaultState state
+        && isValidSharePrice referencePrice
+        && maxDeviation >= 0.0 && maxDeviation <= 1.0
+        && maxBatchSize >= 1
+        && optional True (\holdingCids -> dedup holdingCids == holdingCids) trackedPool
+
+    choice VaultLedger_SettleBatch : VaultLedger_SettleBatchResult
+      -- ^ Settle a batch of requests at one price and record the result.
+      -- Every request is consumed with its fill, and the tokens of both
+      -- instruments move in this transaction or not at all.
+      --
+      -- Fails with `ePriceOutOfBand` when the price is outside the band, and
+      -- otherwise as `settleBatchImpl` does. It also fails when a request is
+      -- no longer active, for example because its requester cancelled it.
+      -- When the ledger tracks the pool, it fails with `ePoolTracked` if
+      -- `poolHoldingCids` names a holding, and otherwise as
+      -- `settleTrackedBatchImpl` does.
+      with
+        price : SharePrice
+          -- ^ The price every request of the batch is filled at.
+        depositCids : [ContractId DepositRequest]
+        redeemCids : [ContractId RedeemRequest]
+        poolHoldingCids : [ContractId HoldingV2.Holding]
+          -- ^ The custodian's holdings of the underlying that fund what the
+          -- batch pays out beyond what it takes in. Empty when the ledger
+          -- tracks the pool: the tracked holdings fund the batch.
+        requestedAt : Time
+        args : RequestArgs
+      controller config.operator
+      do
+        deposits <- forA depositCids fetch
+        redeems <- forA redeemCids fetch
+        let policy = defaultVaultPolicy with
+              maxBatchSize
+              checkPrice = \_ chosen ->
+                requireRight (checkPriceWithin referencePrice maxDeviation chosen)
+        (batch, poolAfter) <- case trackedPool of
+          None -> do
+            batch <- settleBatchImpl config registries policy state price
+              (map (.state) deposits) (map (.state) redeems) poolHoldingCids requestedAt args
+            pure (batch, None)
+          Some tracked -> do
+            unless (null poolHoldingCids) (failWithStatus ePoolTracked)
+            (batch, pool) <- settleTrackedBatchImpl config registries policy state price
+              (map (.state) deposits) (map (.state) redeems) tracked requestedAt args
+            pure (batch, Some pool)
+        forA_ (zip depositCids batch.depositFills) $ \(requestCid, fill) ->
+          exercise requestCid DepositRequest_Fill with fill
+        forA_ (zip redeemCids batch.redeemFills) $ \(requestCid, fill) ->
+          exercise requestCid RedeemRequest_Fill with fill
+        ledgerCid <- create this with
+          state = batch.state
+          trackedPool = poolAfter
+        pure VaultLedger_SettleBatchResult with ledgerCid; batch
+
+    choice VaultLedger_RecordReserves : ContractId VaultLedger
+      -- ^ Replace the recorded reserves with the sum of the custodian's
+      -- holdings named here. A holding left out is not counted, so the
+      -- operator can record less than the custodian holds and never more.
+      -- When the ledger tracks the pool, the holdings named here become the
+      -- tracked pool. Fails as `recordReservesImpl` does.
+      with
+        holdingCids : [ContractId HoldingV2.Holding]
+      controller config.operator
+      do
+        recorded <- recordReservesImpl config state holdingCids
+        create this with
+          state = recorded
+          trackedPool = holdingCids <$ trackedPool
+
+    choice VaultLedger_TrackPool : ContractId VaultLedger
+      -- ^ Track the pool from now on: record the reserves as the sum of the
+      -- custodian's holdings named here, as `VaultLedger_RecordReserves`
+      -- does, and name those holdings as the tracked pool. Fails as
+      -- `recordReservesImpl` does.
+      with
+        holdingCids : [ContractId HoldingV2.Holding]
+      controller config.admin
+      do
+        recorded <- recordReservesImpl config state holdingCids
+        create this with
+          state = recorded
+          trackedPool = Some holdingCids
+
+    choice VaultLedger_UntrackPool : ContractId VaultLedger
+      -- ^ Stop tracking the pool. The recorded state is unchanged, and from
+      -- now on the operator names the holdings that fund each batch.
+      controller config.admin
+      do create this with trackedPool = None
+
+    choice VaultLedger_SetPriceBand : ContractId VaultLedger
+      -- ^ Move the band the operator chooses a batch's price within. The
+      -- recorded state is unchanged.
+      with
+        newReferencePrice : SharePrice
+        newMaxDeviation : Decimal
+      controller config.admin
+      do
+        create this with
+          referencePrice = newReferencePrice
+          maxDeviation = newMaxDeviation
+
+    choice VaultLedger_SetMaxBatchSize : ContractId VaultLedger
+      -- ^ Change the most requests one batch settles.
+      with
+        newMaxBatchSize : Int
+      controller config.admin
+      do
+        create this with maxBatchSize = newMaxBatchSize
+
+-- | The signatories of a vault's ledger: its admin, the share instrument's
+-- admin, and the custodian's account parties, each once.
+ledgerSignatories : VaultConfig -> [Party]
+ledgerSignatories config =
+  dedup (config.admin :: config.share.admin :: requesterParties config.custodian)
+
+-- Requests
+-------------------------------------------------------
+
+-- | A pending deposit request. The vault's admin and the requester's account
+-- parties sign, so neither side creates or removes a request alone, and the
+-- operator observes so that it can settle or reject it.
+--
+-- The request holds no funds. They are locked in the requester's own
+-- holdings by the escrow allocation the request names, and released by the
+-- choices below or by the requester on the allocation's registry.
+--
+-- The requester sees its own request and what it was filled with, and
+-- nothing of the other requests of its batch.
+template DepositRequest with
+    state : DepositRequestState
+  where
+    signatory state.admin, requesterParties state.terms.requester
+    observer state.operator
+    ensure isValidDepositRequestState state
+
+    choice DepositRequest_Cancel : ()
+      -- ^ Cancel the request and release the escrowed assets at once. Fails
+      -- as `cancelDepositImpl` does.
+      with
+        args : RequestArgs
+      controller requesterParties state.terms.requester
+      do cancelDepositImpl state args
+
+    choice DepositRequest_Reject : ()
+      -- ^ Reject the request and release the escrowed assets to the
+      -- requester at once. Fails as `rejectDepositImpl` does.
+      with
+        args : RequestArgs
+      controller state.operator
+      do rejectDepositImpl state args
+
+    choice DepositRequest_Expire : ()
+      -- ^ Drop the request from its deadline on. It releases nothing: the
+      -- requester withdraws the allocations on their registries. Fails with
+      -- `eDeadlineNotPassed` before the deadline.
+      controller state.operator
+      do expireRequestImpl state.terms.deadline
+
+    choice DepositRequest_Fill : ()
+      -- ^ Consume the request with what it received. `VaultLedger_SettleBatch`
+      -- exercises it for every request it settles. The admin and the
+      -- operator together can also exercise it directly, which removes the
+      -- request and moves nothing: the escrow stays the requester's to
+      -- withdraw.
+      with
+        fill : Fill
+      controller state.admin, state.operator
+      do pure ()
+
+-- | A pending redemption request. Its signatories, its observer, and what it
+-- holds are those of `DepositRequest`, for shares escrowed towards the share
+-- instrument's burn account.
+template RedeemRequest with
+    state : RedeemRequestState
+  where
+    signatory state.admin, requesterParties state.terms.requester
+    observer state.operator
+    ensure isValidRedeemRequestState state
+
+    choice RedeemRequest_Cancel : ()
+      -- ^ Cancel the request and release the escrowed shares at once. Fails
+      -- as `cancelRedeemImpl` does.
+      with
+        args : RequestArgs
+      controller requesterParties state.terms.requester
+      do cancelRedeemImpl state args
+
+    choice RedeemRequest_Reject : ()
+      -- ^ Reject the request and release the escrowed shares to the
+      -- requester at once. Fails as `rejectRedeemImpl` does.
+      with
+        args : RequestArgs
+      controller state.operator
+      do rejectRedeemImpl state args
+
+    choice RedeemRequest_Expire : ()
+      -- ^ Drop the request from its deadline on. It releases nothing: the
+      -- requester withdraws the allocations on their registries. Fails with
+      -- `eDeadlineNotPassed` before the deadline.
+      controller state.operator
+      do expireRequestImpl state.terms.deadline
+
+    choice RedeemRequest_Fill : ()
+      -- ^ Consume the request with what it received, as `DepositRequest_Fill`
+      -- does.
+      with
+        fill : Fill
+      controller state.admin, state.operator
+      do pure ()

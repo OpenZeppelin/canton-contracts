@@ -1,0 +1,243 @@
+-- | Sandbox validation for the permits gate, with the party ids Canton
+-- participants give. The vault's admin is on one participant, and the
+-- validator and the parties it enables are on another: the validator enables
+-- a party of its own namespace and none of the admin's, the party asks the
+-- gate alone with what it is shown, and access ends when a permit is
+-- removed, when the validator's appointment is revoked, and when it runs
+-- out.
+-- `scripts/check-sandbox.sh` runs each script over gRPC against a static-time
+-- Canton sandbox; the same scripts also run under `dpm test` on the in-memory
+-- ledger.
+--
+-- The gate is asked as a vault asks it: `checkDepositGate` runs in a choice
+-- of a contract the admin signed, which the requester exercises alone.
+--
+-- Every script allocates its own parties. `sandboxAppointmentRunsOut` moves
+-- the ledger's clock and runs last.
+module OpenZeppelin.AsyncVaultPermitsV1.Test.Sandbox where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.Optional (isSome)
+import DA.Text qualified as T
+import DA.Time (milliseconds)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+
+import OpenZeppelin.Api.AsyncVaultV1
+import OpenZeppelin.ScopedAuthorizationGrantV1 qualified as SAG
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Gate (checkDepositGate)
+import OpenZeppelin.AsyncVault.Utils.Request (requesterParties)
+
+import OpenZeppelin.AsyncVaultPermitsV1
+import OpenZeppelin.AsyncVaultPermitsV1.Test
+
+-- Fixtures
+-------------------------------------------------------
+
+-- | Stands in for a vault's rules: a contract of the admin on which a
+-- requester asks the vault's deposit gate, as `Vault_RequestDeposit` does.
+template GatedVault with
+    config : VaultConfig
+    gateCid : ContractId DepositGate
+  where
+    signatory config.admin
+
+    nonconsuming choice GatedVault_Ask : ()
+      with
+        terms : DepositTerms
+        extraArgs : ExtraArgs
+      controller requesterParties terms.requester
+      do checkDepositGate config gateCid terms extraArgs
+
+-- | The participant that hosts the vault's admin, and the one that hosts the
+-- validator and the parties it enables. `scripts/check-sandbox.sh` starts a
+-- Canton sandbox with both. On a ledger with one participant, and on the
+-- in-memory ledger, every party is allocated on that one.
+appNode, validatorNode : ParticipantName
+appNode = ParticipantName "app"
+validatorNode = ParticipantName "validator"
+
+-- | A party a participant allocates. A Canton participant puts every party
+-- it allocates into its own namespace. The in-memory ledger gives a party no
+-- namespace, so there the script names it after the participant.
+partyOn : ParticipantName -> Text -> Script Party
+partyOn node name = do
+  party <- allocatePartyByHintOn (PartyIdHint name) node
+  case partyNamespace party of
+    Some _ -> pure party
+    None -> allocatePartyByHintOn (PartyIdHint (name <> "::" <> node.participantName)) node
+
+-- | Wait until a party's participant has a contract. A participant other
+-- than the one a transaction was submitted on learns of it a moment later.
+visible : (Template t, HasEnsure t) => Party -> ContractId t -> Script ()
+visible = seenWithin 100 True
+
+-- | Wait until a party's participant has a contract's archival.
+archived : (Template t, HasEnsure t) => Party -> ContractId t -> Script ()
+archived = seenWithin 100 False
+
+seenWithin : (Template t, HasEnsure t) => Int -> Bool -> Party -> ContractId t -> Script ()
+seenWithin attempts active party cid = do
+  found <- queryContractId party cid
+  if isSome found == active
+    then pure ()
+    else if attempts <= 0
+      then fail "the transaction did not reach the party's participant"
+      else do
+        sleep (milliseconds 100)
+        seenWithin (attempts - 1) active party cid
+
+data Venue = Venue with
+    admin : Party
+      -- ^ On the app's participant.
+    bob : Party
+      -- ^ On the app's participant, so of another namespace than the
+      -- validator.
+    validator : Party
+    alice : Party
+      -- ^ On the validator's participant.
+    carol : Party
+      -- ^ On the validator's participant.
+    rules : (ContractId DepositPermitRules, Disclosure)
+      -- ^ Rules for `vault-1` under the same-namespace rule.
+    grantCid : ContractId SAG.AuthorizationGrant
+      -- ^ The validator's appointment.
+    vaultCid : ContractId GatedVault
+    shown : [Disclosure]
+      -- ^ What a requester is shown: the vault, the rules, and the
+      -- validator's appointment.
+
+-- | A vault of the admin whose gate is permit rules under the same-namespace
+-- rule, and a validator on another participant, appointed until an optional
+-- end.
+venue : Text -> Optional Time -> Script Venue
+venue prefix validUntil = do
+  admin <- partyOn appNode (prefix <> "admin")
+  bob <- partyOn appNode (prefix <> "bob")
+  validator <- partyOn validatorNode (prefix <> "validator")
+  alice <- partyOn validatorNode (prefix <> "alice")
+  carol <- partyOn validatorNode (prefix <> "carol")
+  rules@(rulesCid, rulesDisclosure) <- rulesFor admin "vault-1" 0 True
+  grantCid <- submit admin do
+    exerciseCmd rulesCid DepositPermitRules_Appoint with
+      validator; validFrom = None; validUntil
+  visible validator grantCid
+  vaultCid <- submit admin do
+    createCmd GatedVault with
+      config = VaultConfig with
+        admin
+        operator = admin
+        vaultId = "vault-1"
+        underlying = HoldingV2.InstrumentId with admin; id = "USD"
+        share = HoldingV2.InstrumentId with admin; id = "VSHARE"
+        custodian = accountOf admin
+      gateCid = toInterfaceContractId rulesCid
+  Some vaultDisclosure <- queryDisclosure @GatedVault admin vaultCid
+  Some grantDisclosure <- queryDisclosure @SAG.AuthorizationGrant admin grantCid
+  pure Venue with
+    admin; bob; validator; alice; carol; rules; grantCid; vaultCid
+    shown = [vaultDisclosure, rulesDisclosure, grantDisclosure]
+
+-- | Ask to deposit as the requester, alone, with these contracts disclosed.
+askAlone
+  : Venue -> [Disclosure] -> Party -> ExtraArgs -> Script (Either SubmitError ())
+askAlone v disclosed requester extraArgs =
+  trySubmit (actAs requester <> discloseMany disclosed) do
+    exerciseCmd v.vaultCid GatedVault_Ask with
+      terms = DepositTerms with
+        requester = accountOf requester
+        label = "d1"
+        assets = 100.0
+        minSharesOut = None
+        deadline = t2
+      extraArgs
+
+-- | Require a rejection because a contract the submitter was shown has been
+-- archived since. The submitter's participant takes the contract as it was
+-- shown, and the participants that host its signatories refuse the
+-- transaction. The in-memory ledger refuses the contract itself.
+mustBeArchivedSinceShown : Script (Either SubmitError a) -> Script ()
+mustBeArchivedSinceShown action = action >>= \case
+  Left ContractNotFound{} -> pure ()
+  Left (UnknownError message) | "LOCAL_VERDICT_INACTIVE_CONTRACTS" `T.isInfixOf` message -> pure ()
+  Left other -> fail ("expected an archived contract to be refused, got " <> show other)
+  Right _ -> fail "expected an archived contract to be refused, and the submission succeeded"
+
+mustSucceed : Show a => Script (Either SubmitError a) -> Script ()
+mustSucceed action = action >>= \case
+  Right _ -> pure ()
+  Left other -> fail ("expected the submission to succeed, got " <> show other)
+
+-- Scripts
+-------------------------------------------------------
+
+-- | The parties a participant allocates share its namespace, so under the
+-- same-namespace rule a validator enables the parties of its own participant
+-- and none of another. An enabled party asks the gate alone, on its own
+-- participant: it sees its own permit, and is shown the vault, the rules,
+-- and the validator's appointment, which were made on the admin's
+-- participant. The permit admits its own party only, and no longer once the
+-- validator removes it or the admin revokes the validator's appointment.
+sandboxValidatorEnablesItsOwnParties : Script ()
+sandboxValidatorEnablesItsOwnParties = script do
+  v@Venue{..} <- venue "ownparties-" None
+  let (rulesCid, _) = rules
+  isSome (partyNamespace validator) === True
+  forA_ [alice, carol] $ \party -> partyNamespace party === partyNamespace validator
+  partyNamespace bob === partyNamespace admin
+  (partyNamespace bob /= partyNamespace validator) === True
+
+  alicesPermit <- enable rules validator grantCid alice
+  mustFailWith eOtherNamespace (tryEnable rules validator grantCid bob)
+  mustFailWith eOtherNamespace (tryEnable rules validator grantCid admin)
+  queryContractId alice alicesPermit >>= (=== Some DepositPermit with
+    admin; validator; party = alice; vaultId = "vault-1"; grantCid)
+  queryContractId alice rulesCid >>= (=== None)
+  queryContractId alice grantCid >>= (=== None)
+  queryContractId carol alicesPermit >>= (=== None)
+
+  mustSucceed (askAlone v shown alice (permitArgs alicesPermit))
+  visible admin alicesPermit
+  admitted validator (ask admin rulesCid alice alicesPermit)
+  -- Without the validator's appointment disclosed, the gate cannot check it.
+  mustBeGone (askAlone v (take 2 shown) alice (permitArgs alicesPermit))
+
+  -- Carol has no permit, and Alice's is not hers: not when she names it,
+  -- and not when she is shown it.
+  mustFailWith eNoPermit (askAlone v shown carol noArgs)
+  mustBeGone (askAlone v shown carol (permitArgs alicesPermit))
+  Some permitDisclosure <- queryDisclosure @DepositPermit admin alicesPermit
+  mustFailWith ePermitMismatch
+    (askAlone v (permitDisclosure :: shown) carol (permitArgs alicesPermit))
+
+  -- The validator removes one party's permit.
+  carolsPermit <- enable rules validator grantCid carol
+  mustSucceed (askAlone v shown carol (permitArgs carolsPermit))
+  submit validator do exerciseCmd alicesPermit DepositPermit_Remove
+  mustBeGone (askAlone v shown alice (permitArgs alicesPermit))
+  mustSucceed (askAlone v shown carol (permitArgs carolsPermit))
+
+  -- The admin revokes the appointment, and every party the validator
+  -- enabled is refused, with its permit still active.
+  submit admin do exerciseCmd grantCid SAG.AuthorizationGrant_Revoke
+  archived validator grantCid
+  mustBeArchivedSinceShown (askAlone v shown carol (permitArgs carolsPermit))
+  queryContractId carol carolsPermit >>= \permit -> isSome permit === True
+  mustBeGone (tryEnable rules validator grantCid alice)
+
+-- | An appointment with an end admits the validator's parties until the
+-- ledger's clock reaches it. This script moves the ledger's clock.
+sandboxAppointmentRunsOut : Script ()
+sandboxAppointmentRunsOut = script do
+  setTime t1
+  v@Venue{..} <- venue "runsout-" (Some t2)
+  alicesPermit <- enable rules validator grantCid alice
+  mustSucceed (askAlone v shown alice (permitArgs alicesPermit))
+  setTime t2
+  mustFailWithId expired (askAlone v shown alice (permitArgs alicesPermit))
+  mustFailWithId expired (tryEnable rules validator grantCid carol)

@@ -1,0 +1,311 @@
+-- | Sandbox validation for the vault templates: a deposit and a redemption
+-- with every role held by its own party, requests opened at the same time as
+-- each other and as a batch, a batch of the largest size the ledger allows,
+-- and the three ways a request ends without settling.
+-- `scripts/check-sandbox.sh` runs each script over gRPC against a static-time
+-- Canton sandbox with two participants: one hosts the vault's parties and
+-- the registries, and the other hosts the requesters. The same scripts also
+-- run under `dpm test` on the in-memory ledger.
+--
+-- A participant learns of a transaction submitted on the other a moment
+-- later, so a script waits with `visible`, `archived`, or `holds` before it
+-- reads on one participant what was written on the other.
+--
+-- Every script allocates its own parties and pins the clock to `t1`, so the
+-- scripts compose in any order on one forward-only static-time ledger.
+-- `sandboxCancelRejectAndExpire` moves the clock to the requests' deadline
+-- and runs last.
+module OpenZeppelin.AsyncVaultV1.Test.Sandbox where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.Stack (HasCallStack)
+import Daml.Script
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.TokenStandard.Utils (basicAccount)
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Math
+import OpenZeppelin.AsyncVault.Utils.Request
+import OpenZeppelin.AsyncVault.Utils.Settlement
+import OpenZeppelin.AsyncVaultV1
+import OpenZeppelin.AsyncVaultV1.Test.Fixtures
+
+-- Helpers
+-------------------------------------------------------
+
+-- | Requesters named `prefix-1` to `prefix-count`, on the requesters'
+-- participant.
+allocateNumbered : Text -> Int -> Script [Party]
+allocateNumbered prefix count =
+  forA [1 .. count] $ \number -> allocatePartyOn (prefix <> show number) requesterNode
+
+-- | Put a holding into each owner's basic account. The registry's admin
+-- makes every offer at the same time, and then every owner accepts at the
+-- same time.
+giveEach : HoldingV2.InstrumentId -> [Party] -> Decimal -> Script ()
+giveEach instrumentId owners amount = do
+  offers <- concurrently $ forA owners $ \owner ->
+    submit instrumentId.admin do createCmd (mintOffer instrumentId owner amount)
+  forA_ (zip owners offers) (uncurry visible)
+  _ <- concurrently $ forA (zip owners offers) $ \(owner, offerCid) ->
+    submit owner do exerciseCmd offerCid TestMintOffer_Accept
+  pure ()
+
+-- | What each requester submits to open a request: the requester and the
+-- command, funded from the requester's unlocked holdings of `instrumentId`.
+funded
+  : HoldingV2.InstrumentId -> [Party] -> (Party -> [ContractId HoldingV2.Holding] -> Commands a)
+  -> Script [(Party, Commands a)]
+funded instrumentId requesters command = forA requesters $ \requester -> do
+  inputs <- unlockedHoldings instrumentId requester
+  pure (requester, command requester inputs)
+
+-- | A deposit request of `assets` from each requester.
+depositsOf
+  : Fixture -> [Party] -> Text -> Decimal -> Script [(Party, Commands (ContractId DepositRequest))]
+depositsOf f requesters label assets =
+  funded f.config.underlying requesters $ \requester ->
+    requestDepositCmd f.vault (depositTerms requester label assets)
+
+-- | A redemption request of `shares` from each requester.
+redeemsOf
+  : Fixture -> [Party] -> Text -> Decimal -> Script [(Party, Commands (ContractId RedeemRequest))]
+redeemsOf f requesters label shares =
+  funded f.config.share requesters $ \requester ->
+    requestRedeemCmd f.vault (redeemTerms requester label shares)
+
+-- | Submit each requester's command as that requester, alone, all at the
+-- same time.
+atOnce : Fixture -> [(Party, Commands a)] -> Script [Either SubmitError a]
+atOnce f commands = concurrently $ forA commands $ \(requester, command) ->
+  trySubmit (actAs requester <> discloseMany f.disclosures) command
+
+-- | Require every submission to have succeeded.
+allSucceeded : (HasCallStack, Show a) => Text -> [Either SubmitError a] -> Script [a]
+allSucceeded what results = forA results $ \case
+  Right result -> pure result
+  Left failure -> fail (what <> " failed: " <> show failure)
+
+-- Through the vault
+-------------------------------------------------------
+
+-- | A deposit and a redemption with the vault's admin, its operator, the
+-- share instrument's admin, the custodian, and the underlying's admin all
+-- different parties. Each requester submits alone on its own participant,
+-- with the vault's rules and the registries disclosed, and the operator
+-- settles alone with the escrows and the pool disclosed. A requester sees
+-- neither the rules, nor another requester's request, nor the ledger.
+sandboxDepositAndRedeem : Script ()
+sandboxDepositAndRedeem = script do
+  f@Fixture{..} <- setupSeparatePrefixed "depositandredeem-"
+  ledger <- newLedger f (stateOf 0.0 0.0 parity) parity 0.1
+  _ <- giveHolding config.underlying alice 120.0
+  _ <- giveHolding config.underlying bob 55.0
+
+  aliceDeposit <- requestDeposit f alice (depositTerms alice "d1" 110.0)
+  bobDeposit <- requestDeposit f bob (depositTerms bob "d1" 55.0)
+  holds config.underlying alice (10.0, 110.0)
+  forA_ [aliceDeposit, bobDeposit] (visible operator)
+  queryContractId alice vault >>= (=== None)
+  queryContractId alice bobDeposit >>= (=== None)
+  queryContractId bob aliceDeposit >>= (=== None)
+  forA_ [alice, bob] $ \requester ->
+    query @VaultLedger requester >>= \ledgers -> length ledgers === 0
+
+  -- A price outside the admin's band reaches the operator as the failure
+  -- status the package documents.
+  submitMustFailWith ePriceOutOfBand
+    (trySettleBatch f ledger (priceOf 12.0 10.0) [aliceDeposit, bobDeposit] [])
+  -- 110 and 55 units at 1.1 a share are 100 and 50 shares.
+  let higher = priceOf 11.0 10.0
+  first <- settleBatch f ledger higher [aliceDeposit, bobDeposit] []
+  first.batch === SettledBatch with
+    state = VaultState with reserves = 165.0; totalShares = 150.0; price = higher; batch = 1
+    depositFills =
+      [ Fill with requester = basicAccount alice; label = "d1"; assets = 110.0; shares = 100.0
+      , Fill with requester = basicAccount bob; label = "d1"; assets = 55.0; shares = 50.0 ]
+    redeemFills = []
+  holds config.underlying alice (10.0, 0.0)
+  holds config.share alice (100.0, 0.0)
+  holds config.share bob (50.0, 0.0)
+  holds config.underlying treasury (165.0, 0.0)
+
+  -- 40 shares at 1.1 a share are 44 units.
+  aliceRedeem <- requestRedeem f alice (redeemTerms alice "r1" 40.0)
+  holds config.share alice (60.0, 40.0)
+  second <- settleBatch f first.ledgerCid higher [] [aliceRedeem]
+  second.batch.state === VaultState with
+    reserves = 121.0; totalShares = 110.0; price = higher; batch = 2
+  holds config.underlying alice (54.0, 0.0)
+  holds config.share alice (60.0, 0.0)
+  holds config.underlying treasury (121.0, 0.0)
+
+  -- A gain paid to the custodian counts once the operator records it.
+  _ <- giveHolding config.underlying treasury 11.0
+  pool <- unlockedHoldings config.underlying treasury
+  poolDisclosed <- holdingDisclosures issuer pool
+  recorded <- submit (actAs operator <> discloseMany poolDisclosed) do
+    exerciseCmd second.ledgerCid VaultLedger_RecordReserves with holdingCids = pool
+  ledgerState f recorded >>= (=== second.batch.state with reserves = 132.0)
+  forA_ [alice, bob] $ \requester -> do
+    queryContractId requester recorded >>= (=== None)
+    query @VaultLedger requester >>= \ledgers -> length ledgers === 0
+
+-- | Requests do not wait for each other or for a batch. Eight requesters
+-- open a deposit request at the same time, and then again while the operator
+-- settles the first eight. Only the ledger has one writer: of two batches
+-- built on the same ledger and submitted together, one settles, and the
+-- other is refused and settles on the ledger the first one left.
+sandboxConcurrentRequests : Script ()
+sandboxConcurrentRequests = script do
+  f@Fixture{..} <- setupPrefixed "concurrent-"
+  ledger <- newEmptyLedger f
+  requesters <- allocateNumbered "concurrent-requester-" 8
+  giveEach config.underlying requesters 100.0
+
+  firstRound <- depositsOf f requesters "d1" 40.0
+  firstCids <- allSucceeded "a deposit request" =<< atOnce f firstRound
+
+  (settleDisclosed, settle) <- settleCmd f ledger parity firstCids []
+  secondRound <- depositsOf f requesters "d2" 60.0
+  (settled, opened) <- concurrently $ (,)
+    <$> trySubmit (actAs operator <> discloseMany settleDisclosed) settle
+    <*> forA secondRound (\(requester, command) ->
+          trySubmit (actAs requester <> discloseMany f.disclosures) command)
+  [first] <- allSucceeded "the batch" [settled]
+  secondCids <- allSucceeded "a deposit request opened during the batch" opened
+  first.batch.state === VaultState with
+    reserves = 320.0; totalShares = 320.0; price = parity; batch = 1
+  forA_ requesters $ \requester -> do
+    holds config.underlying requester (0.0, 60.0)
+    holds config.share requester (40.0, 0.0)
+
+  let (earlier, later) = splitAt 4 secondCids
+  (earlierDisclosed, settleEarlier) <- settleCmd f first.ledgerCid parity earlier []
+  (laterDisclosed, settleLater) <- settleCmd f first.ledgerCid parity later []
+  outcome <- concurrently $ (,)
+    <$> trySubmit (actAs operator <> discloseMany earlierDisclosed) settleEarlier
+    <*> trySubmit (actAs operator <> discloseMany laterDisclosed) settleLater
+  (won, refused) <- case outcome of
+    (Right result, Left _) -> pure (result, later)
+    (Left _, Right result) -> pure (result, earlier)
+    (Right _, Right _) -> fail "two batches settled on the same ledger"
+    (Left one, Left other) ->
+      fail ("neither batch settled: " <> show one <> " and " <> show other)
+  won.batch.state === VaultState with
+    reserves = 560.0; totalShares = 560.0; price = parity; batch = 2
+  final <- settleBatch f won.ledgerCid parity refused []
+  final.batch.state === VaultState with
+    reserves = 800.0; totalShares = 800.0; price = parity; batch = 3
+  query @DepositRequest operator >>= \requests -> length requests === 0
+  forA_ requesters $ \requester ->
+    holds config.share requester (100.0, 0.0)
+  holds config.underlying treasury (800.0, 0.0)
+
+-- | A batch of the default largest size, 25 requests, settles in one
+-- transaction: first 25 deposits, then 13 deposits and 12 redemptions. One
+-- request more is refused.
+sandboxFullBatch : Script ()
+sandboxFullBatch = script do
+  f@Fixture{..} <- setupPrefixed "fullbatch-"
+  ledger <- newEmptyLedger f
+  requesters <- allocateNumbered "fullbatch-requester-" 26
+  giveEach config.underlying requesters 100.0
+  let (batch, [extra]) = splitAt 25 requesters
+      (redeemers, depositors) = splitAt 12 batch
+
+  deposits <- allSucceeded "a deposit request"
+    =<< atOnce f =<< depositsOf f batch "d1" 60.0
+  [oneMore] <- allSucceeded "a deposit request"
+    =<< atOnce f =<< depositsOf f [extra] "d1" 60.0
+  submitMustFailWith eBatchTooLarge (trySettleBatch f ledger parity (oneMore :: deposits) [])
+  first <- settleBatch f ledger parity deposits []
+  first.batch.state === VaultState with
+    reserves = 1500.0; totalShares = 1500.0; price = parity; batch = 1
+  length first.batch.depositFills === 25
+  forA_ batch $ \requester -> holds config.share requester (60.0, 0.0)
+
+  moreDeposits <- allSucceeded "a deposit request"
+    =<< atOnce f =<< depositsOf f depositors "d2" 40.0
+  redeems <- allSucceeded "a redemption request"
+    =<< atOnce f =<< redeemsOf f redeemers "r1" 30.0
+  second <- settleBatch f first.ledgerCid parity moreDeposits redeems
+  second.batch.state === VaultState with
+    reserves = 1660.0; totalShares = 1660.0; price = parity; batch = 2
+  (length second.batch.depositFills, length second.batch.redeemFills) === (13, 12)
+  forA_ redeemers $ \requester -> do
+    holds config.underlying requester (70.0, 0.0)
+    holds config.share requester (30.0, 0.0)
+  forA_ depositors $ \requester -> do
+    holds config.underlying requester (0.0, 0.0)
+    holds config.share requester (100.0, 0.0)
+  holds config.underlying treasury (1660.0, 0.0)
+  query @DepositRequest operator >>= \requests -> map fst requests === [oneMore]
+
+-- Ending a request without settling it
+-------------------------------------------------------
+
+-- | The requester cancels and the operator rejects, and either releases the
+-- escrow at once. From the deadline on the operator drops a request, which
+-- releases nothing: the requester withdraws the allocations on their
+-- registries. This script moves the ledger's clock to the deadline.
+sandboxCancelRejectAndExpire : Script ()
+sandboxCancelRejectAndExpire = script do
+  f@Fixture{..} <- setupSeparatePrefixed "cancelrejectexpire-"
+  _ <- giveHolding config.underlying alice 300.0
+  _ <- giveHolding config.share alice 90.0
+
+  cancelledDeposit <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  cancelledRedeem <- requestRedeem f alice (redeemTerms alice "r1" 30.0)
+  visible operator cancelledDeposit
+  submitMustFailAuthorization $ trySubmit operator do
+    exerciseCmd cancelledDeposit DepositRequest_Cancel with args = noArgs
+  submit alice do exerciseCmd cancelledDeposit DepositRequest_Cancel with args = noArgs
+  submit alice do exerciseCmd cancelledRedeem RedeemRequest_Cancel with args = noArgs
+  holds config.underlying alice (300.0, 0.0)
+  holds config.share alice (90.0, 0.0)
+
+  rejectedDeposit <- requestDeposit f alice (depositTerms alice "d2" 100.0)
+  rejectedRedeem <- requestRedeem f alice (redeemTerms alice "r2" 30.0)
+  visible operator rejectedDeposit
+  visible operator rejectedRedeem
+  Some toReject <- queryContractId operator rejectedDeposit
+  Some redeemToReject <- queryContractId operator rejectedRedeem
+  depositFunding <- fundingDisclosures issuer [toReject.state.escrowCid]
+  redeemFunding <- fundingDisclosures shareAdmin [redeemToReject.state.escrowCid]
+  submitMustFailAuthorization $ trySubmit (actAs alice <> discloseMany depositFunding) do
+    exerciseCmd rejectedDeposit DepositRequest_Reject with args = noArgs
+  submit (actAs operator <> discloseMany depositFunding) do
+    exerciseCmd rejectedDeposit DepositRequest_Reject with args = noArgs
+  submit (actAs operator <> discloseMany redeemFunding) do
+    exerciseCmd rejectedRedeem RedeemRequest_Reject with args = noArgs
+  holds config.underlying alice (300.0, 0.0)
+  holds config.share alice (90.0, 0.0)
+
+  expiredDeposit <- requestDeposit f alice (depositTerms alice "d3" 100.0)
+  expiredRedeem <- requestRedeem f alice (redeemTerms alice "r3" 30.0)
+  Some deposit <- queryContractId alice expiredDeposit
+  Some redeem <- queryContractId alice expiredRedeem
+  visible operator expiredDeposit
+  visible operator expiredRedeem
+  submitMustFailWith eDeadlineNotPassed $ trySubmit operator do
+    exerciseCmd expiredDeposit DepositRequest_Expire
+  setTime t2
+  submit operator do exerciseCmd expiredDeposit DepositRequest_Expire
+  submit operator do exerciseCmd expiredRedeem RedeemRequest_Expire
+  archived alice expiredDeposit
+  archived alice expiredRedeem
+  holds config.underlying alice (200.0, 100.0)
+  holds config.share alice (60.0, 30.0)
+  forA_
+    [ deposit.state.escrowCid, deposit.state.receiptCid
+    , redeem.state.escrowCid, redeem.state.receiptCid ] $ \allocationCid ->
+      submit alice do
+        exerciseCmd allocationCid AllocationV2.Allocation_Withdraw with
+          actors = [alice]
+          extraArgs = emptyArgs
+  holds config.underlying alice (300.0, 0.0)
+  holds config.share alice (90.0, 0.0)

@@ -1,0 +1,541 @@
+-- | Tests for `OpenZeppelin.AsyncVaultPermitsV1`: the admin appoints a
+-- validator, the validator enables one party at a time, the gate admits a
+-- request that shows a valid permit, the same-namespace rule, and every way
+-- access is withdrawn. The gate is asked directly, as a vault asks it: with
+-- the admin's authority.
+module OpenZeppelin.AsyncVaultPermitsV1.Test where
+
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.Fail (FailureCategory (..), FailureStatus (..))
+import DA.Foldable (forA_)
+import DA.Optional (fromSome)
+import DA.TextMap qualified as TextMap
+import DA.Time (time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+
+import OpenZeppelin.Api.AsyncVaultV1
+import OpenZeppelin.ScopedAuthorizationGrantV1 qualified as SAG
+
+import OpenZeppelin.AsyncVaultPermitsV1
+
+-- Scenario
+-------------------------------------------------------
+
+t0, t1, t2 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+t1 = time (date 2026 Jan 1) 0 10 0
+t2 = time (date 2026 Jan 1) 0 20 0
+
+data Scene = Scene with
+    admin : Party
+    validator : Party
+      -- ^ In namespace `ns1`.
+    alice : Party
+      -- ^ In namespace `ns1`, the validator's.
+    dave : Party
+      -- ^ In namespace `ns1`, the validator's.
+    bob : Party
+      -- ^ In namespace `ns2`.
+    carol : Party
+      -- ^ With an id that has no namespace part.
+
+-- | A party with the id `name::namespace`.
+partyIn : Text -> Text -> Script Party
+partyIn namespace name = allocatePartyByHint (PartyIdHint (name <> "::" <> namespace))
+
+scene : Script Scene
+scene = do
+  admin <- partyIn "ns0" "admin"
+  validator <- partyIn "ns1" "validator"
+  alice <- partyIn "ns1" "alice"
+  dave <- partyIn "ns1" "dave"
+  bob <- partyIn "ns2" "bob"
+  carol <- allocateParty "carol"
+  setTime t0
+  pure Scene with admin; validator; alice; dave; bob; carol
+
+-- | Permit rules for a vault of the admin, and their disclosure.
+rulesFor : Party -> Text -> Int -> Bool -> Script (ContractId DepositPermitRules, Disclosure)
+rulesFor admin vaultId policyEpoch sameNamespaceOnly = do
+  rulesCid <- submit admin do
+    createCmd DepositPermitRules with admin; vaultId; policyEpoch; sameNamespaceOnly
+  Some disclosure <- queryDisclosure @DepositPermitRules admin rulesCid
+  pure (rulesCid, disclosure)
+
+-- | Rules for `vault-1` at epoch zero, open to every namespace.
+openRules : Scene -> Script (ContractId DepositPermitRules, Disclosure)
+openRules Scene{..} = rulesFor admin "vault-1" 0 False
+
+appoint : Party -> ContractId DepositPermitRules -> Party -> Script (ContractId SAG.AuthorizationGrant)
+appoint admin rulesCid validator = submit admin do
+  exerciseCmd rulesCid DepositPermitRules_Appoint with
+    validator; validFrom = None; validUntil = None
+
+-- | Enable a party, as the validator, alone, with the rules disclosed.
+tryEnable
+  : (ContractId DepositPermitRules, Disclosure) -> Party -> ContractId SAG.AuthorizationGrant
+  -> Party -> Script (Either SubmitError (ContractId DepositPermit))
+tryEnable (rulesCid, disclosure) validator grantCid party =
+  trySubmit (actAs validator <> disclose disclosure) do
+    exerciseCmd rulesCid DepositPermitRules_Enable with
+      authorization = SAG.Authorization with actor = validator; grantCid
+      party
+
+enable
+  : (ContractId DepositPermitRules, Disclosure) -> Party -> ContractId SAG.AuthorizationGrant
+  -> Party -> Script (ContractId DepositPermit)
+enable rules validator grantCid party = do
+  Right permitCid <- tryEnable rules validator grantCid party
+  pure permitCid
+
+accountOf : Party -> HoldingV2.Account
+accountOf owner = HoldingV2.Account with owner = Some owner; provider = None; id = ""
+
+noArgs : ExtraArgs
+noArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- | Ask the gate as a vault does: the admin exercises the interface choice.
+askWith
+  : Party -> ContractId DepositPermitRules -> Text -> HoldingV2.Account -> ExtraArgs
+  -> Script (Either SubmitError DepositGate_CheckResult)
+askWith asker rulesCid = askShown asker [] rulesCid
+
+-- | Ask the gate with contracts disclosed to whoever asks.
+askShown
+  : Party -> [Disclosure] -> ContractId DepositPermitRules -> Text -> HoldingV2.Account -> ExtraArgs
+  -> Script (Either SubmitError DepositGate_CheckResult)
+askShown asker disclosed rulesCid vaultId requester extraArgs =
+  trySubmit (actAs asker <> discloseMany disclosed) do
+    exerciseCmd (toInterfaceContractId @DepositGate rulesCid) DepositGate_Check with
+      vaultId; requester; assets = 100.0; extraArgs
+
+-- | Ask the gate about a party's deposit into `vault-1`, showing a permit.
+ask
+  : Party -> ContractId DepositPermitRules -> Party -> ContractId DepositPermit
+  -> Script (Either SubmitError DepositGate_CheckResult)
+ask admin rulesCid party permitCid =
+  askWith admin rulesCid "vault-1" (accountOf party) (permitArgs permitCid)
+
+admitted : Party -> Script (Either SubmitError DepositGate_CheckResult) -> Script ()
+admitted validator action = action >>= \case
+  Right result -> result === DepositGate_CheckResult with
+    meta = Metadata with
+      values = TextMap.fromList [(validatorMetaKey, partyToText validator)]
+  Left other -> fail ("expected the gate to admit the request, got " <> show other)
+
+mustFailWith : FailureStatus -> Script (Either SubmitError a) -> Script ()
+mustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  Left other -> fail ("expected " <> show expected <> ", got " <> show other)
+  Right _ -> fail ("expected " <> show expected <> ", and the submission succeeded")
+
+-- | The grant package's failure ids.
+granteeMismatch, authorityMismatch, scopeMismatch, notYetValid, expired : Text
+granteeMismatch = "openzeppelin.com/scoped-authorization-grant-grantee-mismatch"
+authorityMismatch = "openzeppelin.com/scoped-authorization-grant-authority-mismatch"
+scopeMismatch = "openzeppelin.com/scoped-authorization-grant-scope-mismatch"
+notYetValid = "openzeppelin.com/scoped-authorization-grant-not-yet-valid"
+expired = "openzeppelin.com/scoped-authorization-grant-expired"
+
+-- | Require a rejection with a failure status of this id.
+mustFailWithId : Text -> Script (Either SubmitError a) -> Script ()
+mustFailWithId expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual.errorId === expected
+  Left other -> fail ("expected " <> expected <> ", got " <> show other)
+  Right _ -> fail ("expected " <> expected <> ", and the submission succeeded")
+
+-- | Require a rejection for missing authority.
+mustFailAuthorization : Script (Either SubmitError a) -> Script ()
+mustFailAuthorization action = action >>= \case
+  Left (AuthorizationError _) -> pure ()
+  Left other -> fail ("expected an authorization failure, got " <> show other)
+  Right _ -> fail "expected an authorization failure, and the submission succeeded"
+
+-- | Require a rejection because a contract the submission needs is no
+-- longer active.
+mustBeGone : Script (Either SubmitError a) -> Script ()
+mustBeGone action = action >>= \case
+  Left ContractNotFound{} -> pure ()
+  Left other -> fail ("expected a contract to be gone, got " <> show other)
+  Right _ -> fail "expected a contract to be gone, and the submission succeeded"
+
+-- | Require a rejection because a contract id is of another template.
+mustBeWrongType : Script (Either SubmitError a) -> Script ()
+mustBeWrongType action = action >>= \case
+  Left WronglyTypedContract{} -> pure ()
+  Left other -> fail ("expected a wrongly typed contract, got " <> show other)
+  Right _ -> fail "expected a wrongly typed contract, and the submission succeeded"
+
+-- Appointing and enabling
+-------------------------------------------------------
+
+-- | The admin appoints a validator with a grant scoped to the vault. The
+-- validator enables one party at a time, alone, and each party receives a
+-- permit signed by the admin and the validator. The gate admits a request
+-- that shows the requester's permit and reports the validator. Nothing is
+-- consumed along the way.
+testValidatorEnablesAParty : Script ()
+testValidatorEnablesAParty = script do
+  s@Scene{..} <- scene
+  rules@(rulesCid, _) <- openRules s
+  grantCid <- appoint admin rulesCid validator
+  queryContractId validator grantCid >>= (=== Some SAG.AuthorizationGrant with
+    authority = admin
+    grantee = validator
+    scope = enableScope "vault-1" 0
+    validFrom = None
+    validUntil = None)
+
+  alicesPermit <- enable rules validator grantCid alice
+  let expected = DepositPermit with admin; validator; party = alice; vaultId = "vault-1"; grantCid
+  forA_ [alice, admin, validator] $ \reader ->
+    queryContractId reader alicesPermit >>= (=== Some expected)
+  queryContractId bob alicesPermit >>= (=== None)
+  admitted validator (ask admin rulesCid alice alicesPermit)
+
+  davesPermit <- enable rules validator grantCid dave
+  admitted validator (ask admin rulesCid dave davesPermit)
+  admitted validator (ask admin rulesCid alice alicesPermit)
+  -- An account with a provider is its owner's account.
+  admitted validator $ askWith admin rulesCid "vault-1"
+    ((accountOf alice) with provider = Some bob; id = "custody") (permitArgs alicesPermit)
+
+-- | Only a validator the admin appointed for this vault enables a party, and
+-- only while its grant is valid. Nobody enables in the validator's name.
+testOnlyAnAppointedValidatorEnables : Script ()
+testOnlyAnAppointedValidatorEnables = script do
+  s@Scene{..} <- scene
+  rules@(rulesCid, rulesDisclosure) <- openRules s
+  grantCid <- appoint admin rulesCid validator
+  Some grantDisclosure <- queryDisclosure @SAG.AuthorizationGrant admin grantCid
+
+  -- Another party presents the validator's grant, as itself and as the validator.
+  mustFailWithId granteeMismatch $
+    trySubmit (actAs bob <> discloseMany [rulesDisclosure, grantDisclosure]) do
+      exerciseCmd rulesCid DepositPermitRules_Enable with
+        authorization = SAG.Authorization with actor = bob; grantCid
+        party = alice
+  mustFailAuthorization $
+    trySubmit (actAs bob <> discloseMany [rulesDisclosure, grantDisclosure]) do
+      exerciseCmd rulesCid DepositPermitRules_Enable with
+        authorization = SAG.Authorization with actor = validator; grantCid
+        party = alice
+  -- The admin has no grant of its own.
+  mustFailWithId granteeMismatch $ trySubmit admin do
+    exerciseCmd rulesCid DepositPermitRules_Enable with
+      authorization = SAG.Authorization with actor = admin; grantCid
+      party = alice
+
+  -- A grant for another vault of the same admin.
+  (otherRulesCid, _) <- rulesFor admin "vault-2" 0 False
+  otherVaultGrant <- appoint admin otherRulesCid validator
+  mustFailWithId scopeMismatch (tryEnable rules validator otherVaultGrant alice)
+  -- A grant for the same vault id from another admin.
+  (strangerRulesCid, _) <- rulesFor bob "vault-1" 0 False
+  strangersGrant <- appoint bob strangerRulesCid validator
+  mustFailWithId authorityMismatch (tryEnable rules validator strangersGrant alice)
+  -- A grant made under an earlier epoch.
+  nextEpoch <- rulesFor admin "vault-1" 1 False
+  mustFailWithId scopeMismatch (tryEnable nextEpoch validator grantCid alice)
+
+  -- A grant outside its validity window.
+  windowed <- submit admin do
+    exerciseCmd rulesCid DepositPermitRules_Appoint with
+      validator; validFrom = Some t1; validUntil = Some t2
+  mustFailWithId notYetValid (tryEnable rules validator windowed alice)
+  setTime t1
+  _ <- enable rules validator windowed alice
+  setTime t2
+  mustFailWithId expired (tryEnable rules validator windowed alice)
+
+  -- A revoked grant.
+  submit admin do exerciseCmd grantCid SAG.AuthorizationGrant_Revoke
+  mustBeGone (tryEnable rules validator grantCid alice)
+  query @DepositPermit alice >>= \permits -> length permits === 1
+
+-- | A permit exists only through the rules. Neither the validator nor the
+-- admin creates one directly, so no permit skips the grant check or the
+-- namespace rule.
+testPermitsComeOnlyThroughTheRules : Script ()
+testPermitsComeOnlyThroughTheRules = script do
+  s@Scene{..} <- scene
+  (rulesCid, _) <- rulesFor admin "vault-1" 0 True
+  grantCid <- appoint admin rulesCid validator
+  let direct = DepositPermit with admin; validator; party = bob; vaultId = "vault-1"; grantCid
+  forA_ [validator, admin, bob] $ \one ->
+    submitMustFail one do createCmd direct
+  query @DepositPermit bob >>= \permits -> length permits === 0
+
+-- The same-namespace rule
+-------------------------------------------------------
+
+-- | Under the rule a validator enables only parties of its own namespace.
+-- Without it, the validator enables any party.
+testSameNamespaceRule : Script ()
+testSameNamespaceRule = script do
+  s@Scene{..} <- scene
+  open@(openCid, _) <- openRules s
+  strict@(strictCid, _) <- rulesFor admin "vault-1" 0 True
+  grantCid <- appoint admin openCid validator
+
+  alicesPermit <- enable strict validator grantCid alice
+  mustFailWith eOtherNamespace (tryEnable strict validator grantCid bob)
+  mustFailWith eOtherNamespace (tryEnable strict validator grantCid carol)
+  mustFailWith eOtherNamespace (tryEnable strict validator grantCid admin)
+  bobsPermit <- enable open validator grantCid bob
+  carolsPermit <- enable open validator grantCid carol
+
+  -- The rule is checked again at every deposit request, so a permit made
+  -- without it admits nobody of another namespace once it is on.
+  admitted validator (ask admin openCid bob bobsPermit)
+  admitted validator (ask admin openCid carol carolsPermit)
+  mustFailWith eOtherNamespace (ask admin strictCid bob bobsPermit)
+  mustFailWith eOtherNamespace (ask admin strictCid carol carolsPermit)
+  admitted validator (ask admin strictCid alice alicesPermit)
+  admitted validator (ask admin openCid alice alicesPermit)
+
+  -- A validator whose id has no namespace enables nobody under the rule.
+  plainGrant <- appoint admin openCid carol
+  mustFailWith eOtherNamespace (tryEnable strict carol plainGrant alice)
+  mustFailWith eOtherNamespace (tryEnable strict carol plainGrant carol)
+  _ <- enable open carol plainGrant alice
+  pure ()
+
+-- The gate
+-------------------------------------------------------
+
+-- | The gate admits only the requester's own permit for this vault.
+testGateChecksThePermit : Script ()
+testGateChecksThePermit = script do
+  s@Scene{..} <- scene
+  rules@(rulesCid, _) <- openRules s
+  grantCid <- appoint admin rulesCid validator
+  alicesPermit <- enable rules validator grantCid alice
+
+  -- No permit, or something else under the permit's key.
+  mustFailWith eNoPermit (askWith admin rulesCid "vault-1" (accountOf alice) noArgs)
+  mustFailWith eNoPermit $ askWith admin rulesCid "vault-1" (accountOf alice) ExtraArgs with
+    context = ChoiceContext with
+      values = TextMap.fromList [(permitContextKey, AV_Text "permit")]
+    meta = emptyMetadata
+  mustFailWith eNoPermit $ askWith admin rulesCid "vault-1" (accountOf alice) ExtraArgs with
+    context = ChoiceContext with
+      values = TextMap.fromList [("permit", AV_ContractId (coerceContractId alicesPermit))]
+    meta = emptyMetadata
+  -- A contract that is not a permit.
+  mustBeWrongType $ askWith admin rulesCid "vault-1" (accountOf alice) ExtraArgs with
+    context = ChoiceContext with
+      values = TextMap.fromList [(permitContextKey, AV_ContractId (coerceContractId grantCid))]
+    meta = emptyMetadata
+
+  -- Another party's permit, and an account nobody owns.
+  mustFailWith ePermitMismatch (ask admin rulesCid bob alicesPermit)
+  mustFailWith ePermitMismatch $ askWith admin rulesCid "vault-1"
+    ((accountOf alice) with owner = None) (permitArgs alicesPermit)
+  mustFailWith ePermitMismatch $ askWith admin rulesCid "vault-1"
+    ((accountOf bob) with provider = Some alice) (permitArgs alicesPermit)
+
+  -- A request for another vault, and a permit for another vault.
+  mustFailWith eWrongVault $
+    askWith admin rulesCid "vault-2" (accountOf alice) (permitArgs alicesPermit)
+  otherRules@(otherRulesCid, _) <- rulesFor admin "vault-2" 0 False
+  otherGrant <- appoint admin otherRulesCid validator
+  otherPermit <- enable otherRules validator otherGrant alice
+  mustFailWith ePermitMismatch (ask admin rulesCid alice otherPermit)
+  admitted validator $
+    askWith admin otherRulesCid "vault-2" (accountOf alice) (permitArgs otherPermit)
+
+  -- A permit made under another admin's rules for the same vault id.
+  strangerRules@(strangerRulesCid, _) <- rulesFor bob "vault-1" 0 False
+  strangersGrant <- appoint bob strangerRulesCid validator
+  strangersPermit <- enable strangerRules validator strangersGrant alice
+  Some strangersPermitShown <- queryDisclosure @DepositPermit bob strangersPermit
+  Some strangersGrantShown <- queryDisclosure @SAG.AuthorizationGrant bob strangersGrant
+  -- The gate runs with the admin's authority, and the admin is no party to it.
+  mustFailAuthorization $ askShown admin [strangersPermitShown, strangersGrantShown]
+    rulesCid "vault-1" (accountOf alice) (permitArgs strangersPermit)
+
+  -- Rules of a later epoch accept nothing made before.
+  (nextEpochCid, _) <- rulesFor admin "vault-1" 1 False
+  mustFailWithId scopeMismatch (ask admin nextEpochCid alice alicesPermit)
+  admitted validator (ask admin rulesCid alice alicesPermit)
+
+  -- Only the admin the gate answers to asks it, even when shown everything.
+  Some rulesShown <- queryDisclosure @DepositPermitRules admin rulesCid
+  Some permitShown <- queryDisclosure @DepositPermit admin alicesPermit
+  Some grantShown <- queryDisclosure @SAG.AuthorizationGrant admin grantCid
+  forA_ [validator, alice, bob] $ \other ->
+    mustFailAuthorization $ askShown other [rulesShown, permitShown, grantShown]
+      rulesCid "vault-1" (accountOf alice) (permitArgs alicesPermit)
+
+-- Withdrawing access
+-------------------------------------------------------
+
+-- | The validator removes one party's permit and the admin revokes one. A
+-- permit taken away admits nobody, and the others are untouched. Neither
+-- the party nor the other signatory uses a choice that is not theirs.
+testOnePermitIsWithdrawn : Script ()
+testOnePermitIsWithdrawn = script do
+  s@Scene{..} <- scene
+  rules@(rulesCid, _) <- openRules s
+  grantCid <- appoint admin rulesCid validator
+  alicesPermit <- enable rules validator grantCid alice
+  davesPermit <- enable rules validator grantCid dave
+  bobsPermit <- enable rules validator grantCid bob
+
+  forA_ [alice, admin, bob] $ \other ->
+    submitMustFail other do exerciseCmd alicesPermit DepositPermit_Remove
+  forA_ [alice, validator, bob] $ \other ->
+    submitMustFail other do exerciseCmd alicesPermit DepositPermit_Revoke
+  forA_ [alice, admin, validator] $ \one ->
+    submitMustFail one do archiveCmd alicesPermit
+
+  submit validator do exerciseCmd alicesPermit DepositPermit_Remove
+  mustBeGone (ask admin rulesCid alice alicesPermit)
+  submit admin do exerciseCmd davesPermit DepositPermit_Revoke
+  mustBeGone (ask admin rulesCid dave davesPermit)
+  admitted validator (ask admin rulesCid bob bobsPermit)
+  submit (actAs [admin, validator]) do archiveCmd bobsPermit
+  mustBeGone (ask admin rulesCid bob bobsPermit)
+
+-- | Withdrawing a validator's appointment withdraws every party it enabled,
+-- and no party of another validator. The appointment ends when the admin
+-- revokes the grant, when the validator renounces it, when it expires, and
+-- when the admin archives it.
+testWithdrawingAValidatorWithdrawsItsParties : Script ()
+testWithdrawingAValidatorWithdrawsItsParties = script do
+  s@Scene{..} <- scene
+  rules@(rulesCid, _) <- openRules s
+  -- Bob stands in for a second validator.
+  staying <- appoint admin rulesCid bob
+  carolsPermit <- enable rules bob staying carol
+
+  revoked <- appoint admin rulesCid validator
+  alicesPermit <- enable rules validator revoked alice
+  davesPermit <- enable rules validator revoked dave
+  submitMustFail validator do exerciseCmd revoked SAG.AuthorizationGrant_Revoke
+  submit admin do exerciseCmd revoked SAG.AuthorizationGrant_Revoke
+  mustBeGone (ask admin rulesCid alice alicesPermit)
+  mustBeGone (ask admin rulesCid dave davesPermit)
+  admitted bob (ask admin rulesCid carol carolsPermit)
+
+  renounced <- appoint admin rulesCid validator
+  renouncedPermit <- enable rules validator renounced alice
+  admitted validator (ask admin rulesCid alice renouncedPermit)
+  submit validator do exerciseCmd renounced SAG.AuthorizationGrant_Renounce
+  mustBeGone (ask admin rulesCid alice renouncedPermit)
+
+  expiring <- submit admin do
+    exerciseCmd rulesCid DepositPermitRules_Appoint with
+      validator; validFrom = None; validUntil = Some t1
+  expiringPermit <- enable rules validator expiring alice
+  admitted validator (ask admin rulesCid alice expiringPermit)
+  setTime t1
+  mustFailWithId expired (ask admin rulesCid alice expiringPermit)
+
+  archived <- appoint admin rulesCid validator
+  archivedPermit <- enable rules validator archived alice
+  submit admin do archiveCmd archived
+  mustBeGone (ask admin rulesCid alice archivedPermit)
+  admitted bob (ask admin rulesCid carol carolsPermit)
+
+-- The rules contract
+-------------------------------------------------------
+
+-- | Only the admin appoints a validator and archives the rules. The epoch is
+-- zero or greater.
+testOnlyTheAdminAppoints : Script ()
+testOnlyTheAdminAppoints = script do
+  s@Scene{..} <- scene
+  (rulesCid, rulesDisclosure) <- openRules s
+  forA_ [validator, alice] $ \other ->
+    submitMustFail (actAs other <> disclose rulesDisclosure) do
+      exerciseCmd rulesCid DepositPermitRules_Appoint with
+        validator = other; validFrom = None; validUntil = None
+  submitMustFail admin do
+    createCmd DepositPermitRules with
+      admin; vaultId = "vault-1"; policyEpoch = -1; sameNamespaceOnly = False
+  grantCid <- appoint admin rulesCid validator
+  submitMustFail validator do archiveCmd rulesCid
+  submit admin do archiveCmd rulesCid
+  -- The rules are gone, and the validator enables nobody through them.
+  mustBeGone (tryEnable (rulesCid, rulesDisclosure) validator grantCid alice)
+
+-- Pure parts
+-------------------------------------------------------
+
+-- | A party's namespace is the part of its id after the last `::`.
+testPartyNamespace : Script ()
+testPartyNamespace = script do
+  Scene{..} <- scene
+  partyNamespace validator === Some "ns1"
+  partyNamespace alice === Some "ns1"
+  partyNamespace bob === Some "ns2"
+  partyNamespace carol === None
+  let named text = partyNamespace (fromSome (partyFromText text))
+  named "alice::1220abcd" === Some "1220abcd"
+  named "a::b::c" === Some "c"
+  named "alice" === None
+  named "alice::" === None
+  named "alice:ns1" === None
+
+  sameNamespace validator alice === True
+  sameNamespace alice dave === True
+  sameNamespace validator validator === True
+  sameNamespace validator bob === False
+  sameNamespace validator carol === False
+  sameNamespace carol carol === False
+  sameNamespace (fromSome (partyFromText "x::ns1")) alice === True
+
+-- | The grant a validator needs, and the arguments a requester passes.
+testScopeAndArguments : Script ()
+testScopeAndArguments = script do
+  s@Scene{..} <- scene
+  enableScope "vault-1" 3 === SAG.AuthorizationScope with
+    namespace = "openzeppelin.com/async-vault-permits"
+    resourceType = "vault"
+    resourceId = "vault-1"
+    permission = "enable-depositors"
+    policyEpoch = 3
+    resourceInstanceCid = None
+  enableRequirement admin "vault-1" 3 === SAG.AuthorizationRequirement with
+    expectedAuthority = admin
+    expectedScope = enableScope "vault-1" 3
+  permitContextKey === "openzeppelin.com/async-vault-permits/permit"
+  validatorMetaKey === "openzeppelin.com/async-vault-permits/validator"
+
+  rules@(rulesCid, _) <- openRules s
+  grantCid <- appoint admin rulesCid validator
+  permitCid <- enable rules validator grantCid alice
+  permitArgs permitCid === ExtraArgs with
+    context = ChoiceContext with
+      values = TextMap.fromList [(permitContextKey, AV_ContractId (coerceContractId permitCid))]
+    meta = emptyMetadata
+  Some permit <- queryContractId admin permitCid
+  let rulesOf vaultId = DepositPermitRules with
+        admin; vaultId; policyEpoch = 0; sameNamespaceOnly = False
+  isPermitFor (rulesOf "vault-1") (accountOf alice) permit === True
+  isPermitFor (rulesOf "vault-2") (accountOf alice) permit === False
+  isPermitFor (rulesOf "vault-1") (accountOf bob) permit === False
+  isPermitFor ((rulesOf "vault-1") with admin = bob) (accountOf alice) permit === False
+
+-- | Each status in full: the id clients match on, the category, and the
+-- message.
+testFailureStatuses : Script ()
+testFailureStatuses = script do
+  let status errorId category message = FailureStatus with
+        errorId; category; message; meta = TextMap.empty
+  eWrongVault === status "openzeppelin.com/async-vault-permits-wrong-vault"
+    InvalidIndependentOfSystemState "AsyncVaultPermits: the request is for another vault"
+  eNoPermit === status "openzeppelin.com/async-vault-permits-no-permit"
+    InvalidIndependentOfSystemState "AsyncVaultPermits: the request shows no permit"
+  ePermitMismatch === status "openzeppelin.com/async-vault-permits-permit-mismatch"
+    InvalidIndependentOfSystemState
+    "AsyncVaultPermits: the permit is not the requester's permit for this vault"
+  eOtherNamespace === status "openzeppelin.com/async-vault-permits-other-namespace"
+    InvalidGivenCurrentSystemStateOther
+    "AsyncVaultPermits: the party is not of the validator's namespace"

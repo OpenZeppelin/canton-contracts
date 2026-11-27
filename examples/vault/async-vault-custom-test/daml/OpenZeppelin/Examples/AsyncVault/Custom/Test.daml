@@ -1,0 +1,437 @@
+-- | Tests for the custom lending pool: each rule the pool adds, and the
+-- request lifecycle its own templates inherit from the choice bodies of
+-- `openzeppelin-async-vault-utils`. Both instruments are on `TokenRules`
+-- registries of `openzeppelin-token-cip112-v1`.
+module OpenZeppelin.Examples.AsyncVault.Custom.Test where
+
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.Fail (FailureStatus)
+import DA.Foldable (forA_)
+import DA.Optional (isNone, isSome)
+import DA.Stack (HasCallStack)
+import DA.Time (days, hours, time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils (basicAccount)
+
+import OpenZeppelin.Token.Cip112.TypesV1 (RegistryConfig(..))
+import OpenZeppelin.Token.Cip112.V1.Holding (TokenHolding)
+import OpenZeppelin.Token.Cip112.V1.Registry (TokenRules(..), TokenRules_OfferMint(..))
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Math (ePriceOutOfBand)
+import OpenZeppelin.AsyncVault.Utils.Request (eDeadlineNotPassed)
+
+import OpenZeppelin.Examples.AsyncVault.Custom
+
+-- Additions
+-------------------------------------------------------
+
+-- | The pool takes no deposit below its smallest, and locks nothing when it
+-- refuses one.
+testPoolRefusesASmallDeposit : Script ()
+testPoolRefusesASmallDeposit = do
+  app@App{..} <- setup
+  mint app alice 100.0
+
+  mustFailWith eDepositTooSmall (tryRequestDeposit app alice (depositOf alice "deposit-1" 9.99))
+  holds config.underlying alice (100.0, 0.0)
+
+  _ <- requestDeposit app alice (depositOf alice "deposit-1" 10.0)
+  holds config.underlying alice (90.0, 10.0)
+
+-- | A batch's price is never below the last one and at most a step above
+-- it, and the bound follows the price from batch to batch.
+testPriceNeverFallsAndRisesByAStep : Script ()
+testPriceNeverFallsAndRisesByAStep = do
+  app@App{..} <- setup
+  mint app alice 100.0
+  mint app bob 105.0
+  firstCid <- requestDeposit app alice (depositOf alice "deposit-1" 100.0)
+  (ledger1, _) <- settle app openingLedgerCid parity [firstCid] []
+
+  -- From one share per unit, with a step of a twentieth.
+  secondCid <- requestDeposit app bob (depositOf bob "deposit-1" 105.0)
+  mustFailWith ePriceFell (trySettle app ledger1 (priceOf 99.0 100.0) [secondCid] [])
+  mustFailWith ePriceOutOfBand (trySettle app ledger1 (priceOf 106.0 100.0) [secondCid] [])
+  (ledger2, second) <- settle app ledger1 (priceOf 105.0 100.0) [secondCid] []
+  second.depositFills === [fillOf bob "deposit-1" 105.0 100.0]
+  second.state === VaultState with
+    reserves = 205.0; totalShares = 200.0; price = priceOf 105.0 100.0; batch = 2
+
+  -- The bound follows the price: 1.1 was out of reach from 1, and is within
+  -- a step of 1.05. The first price is now below the last one.
+  redeemCid <- requestRedeem app alice (redeemOf alice "redeem-1" 10.0)
+  mustFailWith ePriceFell (trySettle app ledger2 parity [] [redeemCid])
+  (_, third) <- settle app ledger2 (priceOf 11.0 10.0) [] [redeemCid]
+  third.redeemFills === [fillOf alice "redeem-1" 11.0 10.0]
+  holds config.underlying alice (11.0, 0.0)
+  holds config.share alice (90.0, 0.0)
+
+-- | A batch pays its redemptions at most the pool's limit. The redemptions
+-- that do not fit wait for a later batch, and the admin moves the limit.
+testRedemptionsWaitForTheLimit : Script ()
+testRedemptionsWaitForTheLimit = do
+  app@App{..} <- setup
+  mint app alice 80.0
+  mint app bob 80.0
+  aliceIn <- requestDeposit app alice (depositOf alice "deposit-1" 80.0)
+  bobIn <- requestDeposit app bob (depositOf bob "deposit-1" 80.0)
+  (ledger1, _) <- settle app openingLedgerCid parity [aliceIn, bobIn] []
+
+  -- Two redemptions of 80 against a limit of 100.
+  aliceOut <- requestRedeem app alice (redeemOf alice "redeem-1" 80.0)
+  bobOut <- requestRedeem app bob (redeemOf bob "redeem-1" 80.0)
+  mustFailWith eRedeemLimit (trySettle app ledger1 parity [] [aliceOut, bobOut])
+  holds config.share alice (0.0, 80.0)
+  holds config.underlying alice (0.0, 0.0)
+
+  -- One fits, and the other waits for the next batch.
+  (ledger2, _) <- settle app ledger1 parity [] [aliceOut]
+  holds config.underlying alice (80.0, 0.0)
+  holds config.share bob (0.0, 80.0)
+
+  -- The admin moves the limit, and nobody else does.
+  submitMustFail operator do
+    exerciseCmd ledger2 PoolLedger_SetLimits with newMaxPriceStep = 0.05; newRedeemLimit = 1000.0
+  lowered <- submit admin do
+    exerciseCmd ledger2 PoolLedger_SetLimits with newMaxPriceStep = 0.05; newRedeemLimit = 50.0
+  mustFailWith eRedeemLimit (trySettle app lowered parity [] [bobOut])
+  raised <- submit admin do
+    exerciseCmd lowered PoolLedger_SetLimits with newMaxPriceStep = 0.05; newRedeemLimit = 80.0
+  (_, last) <- settle app raised parity [] [bobOut]
+  last.state === VaultState with reserves = 0.0; totalShares = 0.0; price = parity; batch = 3
+  holds config.underlying bob (80.0, 0.0)
+
+-- Inherited lifecycle
+-------------------------------------------------------
+
+-- | The pool's own request templates end a request without a batch as the
+-- default templates do: the lender cancels, the operator rejects, and after
+-- the deadline the operator drops the request and the lender withdraws the
+-- allocations.
+testRequestsEndWithoutABatch : Script ()
+testRequestsEndWithoutABatch = do
+  app@App{..} <- setup
+  mint app alice 400.0
+  firstCid <- requestDeposit app alice (depositOf alice "deposit-1" 100.0)
+  _ <- settle app openingLedgerCid parity [firstCid] []
+  holds config.underlying alice (300.0, 0.0)
+  holds config.share alice (100.0, 0.0)
+
+  -- The lender cancels.
+  cancelledIn <- requestDeposit app alice (depositOf alice "deposit-2" 100.0)
+  cancelledOut <- requestRedeem app alice (redeemOf alice "redeem-2" 30.0)
+  holds config.underlying alice (200.0, 100.0)
+  holds config.share alice (70.0, 30.0)
+  submit alice do exerciseCmd cancelledIn PoolDepositRequest_Cancel with args = noArgs
+  submit alice do exerciseCmd cancelledOut PoolRedeemRequest_Cancel with args = noArgs
+  holds config.underlying alice (300.0, 0.0)
+  holds config.share alice (100.0, 0.0)
+
+  -- The operator rejects.
+  rejectedIn <- requestDeposit app alice (depositOf alice "deposit-3" 100.0)
+  rejectedOut <- requestRedeem app alice (redeemOf alice "redeem-3" 30.0)
+  lockedAssets <- lockedFundingOf app config.underlying.admin rejectedIn
+  submit (actAs operator <> discloseMany lockedAssets) do
+    exerciseCmd rejectedIn PoolDepositRequest_Reject with args = noArgs
+  lockedShares <- lockedFundingOf app config.share.admin rejectedOut
+  submit (actAs operator <> discloseMany lockedShares) do
+    exerciseCmd rejectedOut PoolRedeemRequest_Reject with args = noArgs
+  holds config.underlying alice (300.0, 0.0)
+  holds config.share alice (100.0, 0.0)
+
+  -- From the deadline on, the operator drops the requests and the lender
+  -- withdraws the allocations on their registries.
+  expiredIn <- requestDeposit app alice (depositOf alice "deposit-4" 100.0)
+  expiredOut <- requestRedeem app alice (redeemOf alice "redeem-4" 30.0)
+  Some deposit <- queryContractId alice expiredIn
+  Some redeem <- queryContractId alice expiredOut
+  mustFailWith eDeadlineNotPassed
+    (trySubmit operator do exerciseCmd expiredIn PoolDepositRequest_Expire)
+  setTime t2
+  submit operator do exerciseCmd expiredIn PoolDepositRequest_Expire
+  submit operator do exerciseCmd expiredOut PoolRedeemRequest_Expire
+  holds config.underlying alice (200.0, 100.0)
+  forA_
+    [ deposit.state.escrowCid, deposit.state.receiptCid
+    , redeem.state.escrowCid, redeem.state.receiptCid ] $ \allocationCid ->
+      submit alice do
+        exerciseCmd allocationCid AllocationV2.Allocation_Withdraw with
+          actors = [alice]
+          extraArgs = emptyArgs
+  holds config.underlying alice (300.0, 0.0)
+  holds config.share alice (100.0, 0.0)
+
+-- | Interest reaches the custodian's account outside any batch, and the
+-- ledger counts it once the operator records the custodian's holdings.
+testOperatorRecordsTheReserves : Script ()
+testOperatorRecordsTheReserves = do
+  app@App{..} <- setup
+  mint app alice 100.0
+  firstCid <- requestDeposit app alice (depositOf alice "deposit-1" 100.0)
+  (ledger1, _) <- settle app openingLedgerCid parity [firstCid] []
+
+  mint app admin 5.0
+  recorded <- recordReserves app ledger1
+  Some ledger <- queryContractId operator recorded
+  ledger.state === VaultState with
+    reserves = 105.0; totalShares = 100.0; price = parity; batch = 1
+
+-- Setup
+-------------------------------------------------------
+
+data App = App with
+    issuer : Party
+      -- ^ Admin of the underlying's registry.
+    admin : Party
+      -- ^ The pool's admin. Also the admin of the share instrument's
+      -- registry and the owner of the custodian account.
+    operator : Party
+    alice : Party
+    bob : Party
+    config : VaultConfig
+    underlyingRules : ContractId TokenRules
+    poolCid : ContractId Pool
+    openingLedgerCid : ContractId PoolLedger
+      -- ^ The pool's ledger before any batch.
+    registriesShown : [Disclosure]
+      -- ^ Both registries, as the operator receives them.
+    poolShown : [Disclosure]
+      -- ^ The pool and both registries, as a lender receives them.
+
+-- | Request time, the scenario's clock, and the requests' deadline.
+t0, t1, t2 : Time
+t0 = time (date 2026 Jan 1) 0 0 0
+t1 = time (date 2026 Jan 1) 0 10 0
+t2 = time (date 2026 Jan 1) 0 20 0
+
+-- | A pool with a smallest deposit of 10, a price step of a twentieth, and a
+-- redemption limit of 100 per batch.
+setup : Script App
+setup = do
+  issuer <- allocateParty "issuer"
+  admin <- allocateParty "admin"
+  operator <- allocateParty "operator"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  setTime t1
+  underlyingRules <- newRegistry issuer
+  shareRules <- newRegistry admin
+  let config = VaultConfig with
+        admin
+        operator
+        vaultId = "pool-1"
+        underlying = HoldingV2.InstrumentId with admin = issuer; id = "USDX"
+        share = HoldingV2.InstrumentId with admin; id = "POOL"
+        custodian = basicAccount admin
+      registries = VaultRegistries with
+        underlyingAllocationFactory = toInterfaceContractId underlyingRules
+        underlyingSettlementFactory = toInterfaceContractId underlyingRules
+        shareAllocationFactory = toInterfaceContractId shareRules
+        shareSettlementFactory = toInterfaceContractId shareRules
+  poolCid <- submit admin do
+    createCmd Pool with config; registries; minDeposit = 10.0
+  openingLedgerCid <- submit admin do
+    createCmd PoolLedger with
+      config
+      registries
+      state = VaultState with reserves = 0.0; totalShares = 0.0; price = parity; batch = 0
+      maxPriceStep = 0.05
+      redeemLimit = 100.0
+  Some underlyingShown <- queryDisclosure @TokenRules issuer underlyingRules
+  Some shareShown <- queryDisclosure @TokenRules admin shareRules
+  Some poolDisclosure <- queryDisclosure @Pool admin poolCid
+  pure App with
+    issuer; admin; operator; alice; bob; config; underlyingRules; poolCid; openingLedgerCid
+    registriesShown = [underlyingShown, shareShown]
+    poolShown = [poolDisclosure, underlyingShown, shareShown]
+
+newRegistry : Party -> Script (ContractId TokenRules)
+newRegistry admin = submit admin do
+  createCmd TokenRules with
+    config = RegistryConfig with admin; maxTTL = days 90; lockGrace = hours 1
+
+emptyArgs : ExtraArgs
+emptyArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- | The registries and the pool need no extra arguments.
+noArgs : RequestArgs
+noArgs = RequestArgs with underlying = emptyArgs; share = emptyArgs; vault = emptyArgs
+
+-- | One share for one unit of the underlying.
+parity : SharePrice
+parity = priceOf 1.0 1.0
+
+priceOf : Decimal -> Decimal -> SharePrice
+priceOf priceAssets priceShares = SharePrice with priceAssets; priceShares
+
+-- Lenders
+-------------------------------------------------------
+
+depositOf : Party -> Text -> Decimal -> DepositTerms
+depositOf requester label assets = DepositTerms with
+  requester = basicAccount requester
+  label
+  assets
+  minSharesOut = None
+  deadline = t2
+
+redeemOf : Party -> Text -> Decimal -> RedeemTerms
+redeemOf requester label shares = RedeemTerms with
+  requester = basicAccount requester
+  label
+  shares
+  minAssetsOut = None
+  deadline = t2
+
+fillOf : Party -> Text -> Decimal -> Decimal -> Fill
+fillOf requester label assets shares = Fill with
+  requester = basicAccount requester; label; assets; shares
+
+-- | Ask to deposit as the lender, alone, funded from every unlocked holding
+-- of the underlying the lender has, with the pool and both registries
+-- disclosed.
+tryRequestDeposit
+  : App -> Party -> DepositTerms -> Script (Either SubmitError (ContractId PoolDepositRequest))
+tryRequestDeposit App{..} requester terms = do
+  inputHoldingCids <- unlocked config.underlying requester
+  trySubmit (actAs requester <> discloseMany poolShown) do
+    exerciseCmd poolCid Pool_RequestDeposit with
+      terms; inputHoldingCids; requestedAt = t0; args = noArgs
+
+requestDeposit : App -> Party -> DepositTerms -> Script (ContractId PoolDepositRequest)
+requestDeposit app requester terms = succeeded (tryRequestDeposit app requester terms)
+
+-- | Ask to redeem as the lender, alone, funded from every unlocked holding
+-- of the share instrument the lender has.
+requestRedeem : App -> Party -> RedeemTerms -> Script (ContractId PoolRedeemRequest)
+requestRedeem App{..} requester terms = do
+  inputHoldingCids <- unlocked config.share requester
+  submit (actAs requester <> discloseMany poolShown) do
+    exerciseCmd poolCid Pool_RequestRedeem with
+      terms; inputHoldingCids; requestedAt = t0; args = noArgs
+
+-- Operator
+-------------------------------------------------------
+
+-- | Settle a batch at a price as the operator, alone, with both registries,
+-- the locked funding of every escrow, and the custodian's holdings
+-- disclosed.
+trySettle
+  : App -> ContractId PoolLedger -> SharePrice -> [ContractId PoolDepositRequest]
+  -> [ContractId PoolRedeemRequest]
+  -> Script (Either SubmitError (ContractId PoolLedger, SettledBatch))
+trySettle app@App{..} ledgerCid price depositCids redeemCids = do
+  depositFunding <- concat <$> forA depositCids (lockedFundingOf app config.underlying.admin)
+  redeemFunding <- concat <$> forA redeemCids (lockedFundingOf app config.share.admin)
+  poolHoldingCids <- unlocked config.underlying admin
+  poolShown' <- shownBy admin poolHoldingCids
+  trySubmit
+    (actAs operator <> discloseMany (registriesShown <> depositFunding <> redeemFunding <> poolShown')) do
+      exerciseCmd ledgerCid PoolLedger_SettleBatch with
+        price; depositCids; redeemCids; poolHoldingCids; requestedAt = t0; args = noArgs
+
+settle
+  : App -> ContractId PoolLedger -> SharePrice -> [ContractId PoolDepositRequest]
+  -> [ContractId PoolRedeemRequest] -> Script (ContractId PoolLedger, SettledBatch)
+settle app ledgerCid price depositCids redeemCids =
+  succeeded (trySettle app ledgerCid price depositCids redeemCids)
+
+-- | Record the custodian's unlocked holdings of the underlying as the
+-- pool's reserves, as the operator, alone, with the holdings disclosed.
+recordReserves : App -> ContractId PoolLedger -> Script (ContractId PoolLedger)
+recordReserves App{..} ledgerCid = do
+  holdingCids <- unlocked config.underlying admin
+  shown <- shownBy admin holdingCids
+  submit (actAs operator <> discloseMany shown) do
+    exerciseCmd ledgerCid PoolLedger_RecordReserves with holdingCids
+
+-- | A request's escrow, read as the operator.
+class RequestEscrow request where
+  escrowOf : request -> ContractId AllocationV2.Allocation
+
+instance RequestEscrow PoolDepositRequest where
+  escrowOf request = request.state.escrowCid
+
+instance RequestEscrow PoolRedeemRequest where
+  escrowOf request = request.state.escrowCid
+
+-- | The locked holdings behind a request's escrow, as their registry's admin
+-- discloses them. A registry's admin is the only lock holder of an escrow's
+-- funding.
+lockedFundingOf
+  : (Template request, HasEnsure request, RequestEscrow request)
+  => App -> Party -> ContractId request -> Script [Disclosure]
+lockedFundingOf App{..} registryAdmin requestCid = do
+  Some request <- queryContractId operator requestCid
+  Some allocation <- queryInterfaceContractId registryAdmin (escrowOf request)
+  shownBy registryAdmin allocation.holdingCids
+
+-- | Holdings as one of their stakeholders discloses them.
+shownBy : Party -> [ContractId HoldingV2.Holding] -> Script [Disclosure]
+shownBy stakeholder holdingCids = forA holdingCids $ \holdingCid -> do
+  Some disclosure <- queryDisclosure stakeholder (fromInterfaceContractId @TokenHolding holdingCid)
+  pure disclosure
+
+-- Registry
+-------------------------------------------------------
+
+-- | Issue the underlying as its registry does: the issuer offers a mint and
+-- the owner accepts it.
+mint : App -> Party -> Decimal -> Script ()
+mint App{..} owner amount = do
+  offerCid <- submit issuer do
+    exerciseCmd underlyingRules TokenRules_OfferMint with
+      receiver = basicAccount owner
+      instrumentId = config.underlying.id
+      amount
+      requestedAt = t0
+      executeBefore = t2
+      reason = "test mint"
+  result <- submit owner do
+    exerciseCmd offerCid TransferInstructionV2.TransferInstruction_Accept with
+      actors = [owner]
+      extraArgs = emptyArgs
+  case result.output of
+    TransferInstructionV2.TransferInstructionResult_Completed _ -> pure ()
+    other -> abort ("expected a completed mint, got: " <> show other)
+
+holdingsOf
+  : HoldingV2.InstrumentId -> Party -> Script [(ContractId HoldingV2.Holding, HoldingV2.HoldingView)]
+holdingsOf instrumentId owner = do
+  holdings <- query @TokenHolding owner
+  pure [ (toInterfaceContractId cid, h.holding) | (cid, h) <- holdings
+       , h.holding.account == basicAccount owner, h.holding.instrumentId == instrumentId ]
+
+unlocked : HoldingV2.InstrumentId -> Party -> Script [ContractId HoldingV2.Holding]
+unlocked instrumentId owner = do
+  holdings <- holdingsOf instrumentId owner
+  pure [cid | (cid, holding) <- holdings, isNone holding.lock]
+
+-- | Require what an owner holds of an instrument: unlocked and locked.
+holds : HasCallStack => HoldingV2.InstrumentId -> Party -> (Decimal, Decimal) -> Script ()
+holds instrumentId owner expected = do
+  holdings <- map snd <$> holdingsOf instrumentId owner
+  ( sum [h.amount | h <- holdings, isNone h.lock]
+    , sum [h.amount | h <- holdings, isSome h.lock] ) === expected
+
+-- Script helpers
+-------------------------------------------------------
+
+succeeded : HasCallStack => Script (Either SubmitError a) -> Script a
+succeeded action = action >>= \case
+  Right result -> pure result
+  Left other -> fail ("expected the submission to succeed, got " <> show other)
+
+-- | Require a rejection with exactly this failure status.
+mustFailWith : HasCallStack => FailureStatus -> Script (Either SubmitError a) -> Script ()
+mustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  Left other -> fail ("expected " <> show expected <> ", got " <> show other)
+  Right _ -> fail ("expected " <> show expected <> ", and the submission succeeded")

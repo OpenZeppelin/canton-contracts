@@ -1,0 +1,396 @@
+-- | Batch settlement of an asynchronous vault: the pricing of a batch as a
+-- pure function, and the body of the choice that settles one.
+--
+-- Whoever submits a batch chooses its price. Every request in the batch
+-- settles at that one price, the policy decides whether the price is
+-- acceptable, and the tokens of both instruments move in the same
+-- transaction. The choice that runs it is the one place where the vault's
+-- state is rewritten, and the state it leaves records the price used:
+--
+-- ```
+-- choice VaultLedger_SettleBatch : ContractId VaultLedger
+--   with
+--     price : SharePrice
+--     depositCids : [ContractId DepositRequest]
+--     redeemCids : [ContractId RedeemRequest]
+--     poolHoldingCids : [ContractId Holding]
+--     requestedAt : Time
+--     args : RequestArgs
+--   controller config.operator
+--   do
+--     deposits <- forA depositCids fetch
+--     redeems <- forA redeemCids fetch
+--     batch <- settleBatchImpl config registries policy state price
+--       (map (.state) deposits) (map (.state) redeems) poolHoldingCids requestedAt args
+--     forA_ (zip depositCids batch.depositFills) \(cid, fill) ->
+--       exercise cid DepositRequest_Fill with fill
+--     forA_ (zip redeemCids batch.redeemFills) \(cid, fill) ->
+--       exercise cid RedeemRequest_Fill with fill
+--     create this with state = batch.state
+-- ```
+module OpenZeppelin.AsyncVault.Utils.Settlement where
+
+import DA.Action (foldlA, unless, when)
+import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
+import DA.Foldable (forA_, minimum)
+import DA.List (dedupSort)
+import DA.TextMap qualified as TextMap
+import DA.Time (isLedgerTimeLT)
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.TokenStandard.Utils (burnAccount, mintAccount, receiverSide, senderSide)
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Internal qualified as Internal
+import OpenZeppelin.AsyncVault.Utils.Math
+import OpenZeppelin.AsyncVault.Utils.Request
+import OpenZeppelin.AsyncVault.Utils.Reserves (heldReserves)
+
+-- Pricing
+-------------------------------------------------------
+
+-- | The shares a deposit is filled with at a price. Fails with `eZeroFill`
+-- when the deposit converts to no shares, and with `eBelowMinimum` when it
+-- converts to fewer than the requester's minimum.
+depositFill : SharePrice -> DepositTerms -> Either FailureStatus Decimal
+depositFill price terms = do
+  shares <- convertToShares price terms.assets
+  checkFill shares terms.minSharesOut
+
+-- | The underlying a redemption is filled with at a price. Fails with
+-- `eZeroFill` when the shares convert to nothing, and with `eBelowMinimum`
+-- when they convert to less than the requester's minimum.
+redeemFill : SharePrice -> RedeemTerms -> Either FailureStatus Decimal
+redeemFill price terms = do
+  assets <- convertToAssets price terms.shares
+  checkFill assets terms.minAssetsOut
+
+-- | Every fill of a batch at one price, and the state after it. The state
+-- after it has every deposit added and every redemption taken, records
+-- `price` as the price used, and counts one batch more. Deposits are added
+-- first, so the redemptions of a batch can be paid from its deposits.
+--
+-- Fails with the status of the first request that cannot be filled, with
+-- `eInsufficientReserves` when the reserves and the batch's deposits do not
+-- cover its redemptions, and with `eTotalsOutOfRange` or `eExceedsTotals`
+-- when the state after the batch would not be one the vault can record.
+priceBatch
+  : VaultState -> SharePrice -> [DepositTerms] -> [RedeemTerms]
+  -> Either FailureStatus SettledBatch
+priceBatch state price deposits redeems = do
+  depositFills <- forA deposits $ \terms -> do
+    shares <- depositFill price terms
+    pure Fill with
+      requester = terms.requester
+      label = terms.label
+      assets = terms.assets
+      shares
+  redeemFills <- forA redeems $ \terms -> do
+    assets <- redeemFill price terms
+    pure Fill with
+      requester = terms.requester
+      label = terms.label
+      assets
+      shares = terms.shares
+  afterDeposits <- foldlA (\s fill -> stateAfterDeposit s fill.assets fill.shares) state depositFills
+  afterRedeems <- foldlA (\s fill -> stateAfterRedeem s fill.assets fill.shares) afterDeposits redeemFills
+  pure SettledBatch with
+    state = afterRedeems with
+      price
+      batch = state.batch + 1
+    depositFills
+    redeemFills
+
+-- | The first reason a batch is refused before it is priced, if any: it is
+-- empty or holds more requests than `maxBatchSize`, a request is for another
+-- vault, or two requests have the same transfer-leg ids, as two requests of
+-- one requester under the same label do.
+checkBatch
+  : Int -> VaultConfig -> [DepositRequestState] -> [RedeemRequestState]
+  -> Either FailureStatus ()
+checkBatch maxBatchSize config deposits redeems
+  | null vaults = Left eEmptyBatch
+  | length vaults > maxBatchSize = Left eBatchTooLarge
+  | any (/= (config.admin, config.operator, config.vaultId)) vaults = Left eForeignRequest
+  | length (dedupSort legIds) /= length legIds = Left eDuplicateRequest
+  | otherwise = Right ()
+  where
+    vaults = map (\r -> (r.admin, r.operator, r.vaultId)) deposits
+      <> map (\r -> (r.admin, r.operator, r.vaultId)) redeems
+    -- A request's two leg ids differ only in the leg's name, so one of them
+    -- stands for both.
+    legIds = map (\r -> requestLegId r.terms.requester r.terms.label underlyingLeg) deposits
+      <> map (\r -> requestLegId r.terms.requester r.terms.label underlyingLeg) redeems
+
+-- Legs
+-------------------------------------------------------
+
+-- | The transfer leg that issues a deposit's shares: from the share
+-- instrument's mint account to the requester.
+depositShareLeg : VaultConfig -> DepositTerms -> Decimal -> AllocationV2.TransferLeg
+depositShareLeg config terms shares = AllocationV2.TransferLeg with
+  transferLegId = requestLegId terms.requester terms.label shareLeg
+  sender = mintAccount
+  receiver = terms.requester
+  amount = shares
+  instrumentId = config.share.id
+  meta = emptyMetadata
+
+-- | The transfer leg that pays a redemption: from the vault's custodian to
+-- the requester.
+redeemPayoutLeg : VaultConfig -> RedeemTerms -> Decimal -> AllocationV2.TransferLeg
+redeemPayoutLeg config terms assets = AllocationV2.TransferLeg with
+  transferLegId = requestLegId terms.requester terms.label underlyingLeg
+  sender = config.custodian
+  receiver = terms.requester
+  amount = assets
+  instrumentId = config.underlying.id
+  meta = emptyMetadata
+
+-- Choice body
+-------------------------------------------------------
+
+-- | Body of the choice that settles a batch of requests at the price it is
+-- given and returns what to record. The caller fetches the requests, passes
+-- their payloads, and consumes them afterwards with the fills it gets back.
+--
+-- It refuses the batch with `checkBatch`, refuses it when a request's
+-- deadline has passed, runs the policy's `checkPrice` on the price, and
+-- prices the batch with `priceBatch`. It then allocates
+-- the vault's own sides: the custodian's, which receives every deposit and
+-- pays every redemption, and the mint and burn accounts' on the share
+-- instrument. Last it settles each registry once, for the whole batch.
+--
+-- The custodian's allocation is funded from `poolHoldingCids`. Only what
+-- the batch pays out beyond what it takes in is locked, and the rest comes
+-- back to the custodian as change, so a batch that takes in at least as much
+-- as it pays out needs none.
+--
+-- The choice must run with the authority of both executors of
+-- `vaultSettlement`, of the custodian's account parties, and of the share
+-- instrument's admin. Without all of them the transaction fails for lack of
+-- authority. Settlement on either registry failing fails the whole batch, so
+-- no request is ever half settled.
+--
+-- Fails with the status `checkBatch` or `priceBatch` returns, with
+-- `eRequestExpired` when a request's deadline has passed, with whatever the
+-- policy's `checkPrice` fails with, and with `eAllocationIncomplete` when a
+-- registry does not complete an allocation or a settlement in the same
+-- transaction.
+settleBatchImpl
+  : VaultConfig -> VaultRegistries -> VaultPolicy -> VaultState -> SharePrice
+  -> [DepositRequestState] -> [RedeemRequestState]
+  -> [ContractId HoldingV2.Holding] -> Time -> RequestArgs -> Update SettledBatch
+settleBatchImpl config registries policy state price deposits redeems poolHoldingCids requestedAt args =
+  fst <$> settleBatchAndPool config registries policy state price deposits redeems
+    poolHoldingCids requestedAt args
+
+-- | Body of the choice that settles a batch for a vault that tracks its
+-- pool: the holdings of the custodian that the vault's state names as the
+-- ones behind its reserves. It settles as `settleBatchImpl` does, funded
+-- from `trackedPool` alone, and returns with the batch the holdings the pool
+-- is left with, for the caller to store in their place.
+--
+-- The pool it returns amounts to exactly the reserves the batch records.
+-- The body checks that on the ledger, as `heldReserves` does, so a registry
+-- that returned other holdings, and a state whose reserves were not what
+-- `trackedPool` held, fail the batch. A holding the custodian received
+-- outside a batch is not in the pool it returns: the caller adds it by
+-- recording the reserves with it.
+--
+-- It needs the authority `settleBatchImpl` does. Fails as `settleBatchImpl`
+-- does, with `ePoolMismatch` when the pool it is left with does not amount to
+-- the reserves, and with the status `heldReserves` returns.
+settleTrackedBatchImpl
+  : VaultConfig -> VaultRegistries -> VaultPolicy -> VaultState -> SharePrice
+  -> [DepositRequestState] -> [RedeemRequestState]
+  -> [ContractId HoldingV2.Holding] -> Time -> RequestArgs
+  -> Update (SettledBatch, [ContractId HoldingV2.Holding])
+settleTrackedBatchImpl config registries policy state price deposits redeems trackedPool requestedAt args = do
+  (batch, pool) <- settleBatchAndPool config registries policy state price deposits redeems
+    trackedPool requestedAt args
+  held <- heldReserves config pool
+  unless (held == batch.state.reserves) (failWithStatus ePoolMismatch)
+  pure (batch, pool)
+
+-- | `settleBatchImpl`, returning with the batch the custodian's holdings the
+-- underlying's registry reports back: the change of the custodian's
+-- allocation, and what its settlement paid the custodian. When
+-- `poolHoldingCids` are all the holdings of a pool, these are all of it
+-- after the batch.
+settleBatchAndPool
+  : VaultConfig -> VaultRegistries -> VaultPolicy -> VaultState -> SharePrice
+  -> [DepositRequestState] -> [RedeemRequestState]
+  -> [ContractId HoldingV2.Holding] -> Time -> RequestArgs
+  -> Update (SettledBatch, [ContractId HoldingV2.Holding])
+settleBatchAndPool config registries policy state price deposits redeems poolHoldingCids requestedAt args = do
+  requireRight (checkBatch policy.maxBatchSize config deposits redeems)
+  -- One assertion covers every request: if the earliest deadline is still
+  -- ahead, all of them are.
+  live <- isLedgerTimeLT (minimum (map (.terms.deadline) deposits <> map (.terms.deadline) redeems))
+  unless live (failWithStatus eRequestExpired)
+  policy.checkPrice state price
+  batch <- requireRight (priceBatch state price (map (.terms) deposits) (map (.terms) redeems))
+
+  let settlement = vaultSettlement config
+      depositEscrowLegs = map (\r -> depositEscrowLeg config r.terms) deposits
+      depositShareLegs = zipWith (\r fill -> depositShareLeg config r.terms fill.shares) deposits batch.depositFills
+      redeemEscrowLegs = map (\r -> redeemEscrowLeg config r.terms) redeems
+      redeemPayoutLegs = zipWith (\r fill -> redeemPayoutLeg config r.terms fill.assets) redeems batch.redeemFills
+
+  -- The vault's own sides, allocated with the authority this choice runs
+  -- with and settled below in the same transaction.
+  (custodianCid, change) <- allocateWithChange registries.underlyingAllocationFactory settlement
+    (vaultSideSpec config.underlying.admin config.custodian
+      (map receiverSide depositEscrowLegs <> map senderSide redeemPayoutLegs))
+    poolHoldingCids requestedAt (requesterParties config.custodian) args.underlying
+  mintCids <- if null deposits then pure [] else do
+    cid <- allocate registries.shareAllocationFactory settlement
+      (vaultSideSpec config.share.admin mintAccount (map senderSide depositShareLegs))
+      [] requestedAt [config.share.admin] args.share
+    pure [cid]
+  burnCids <- if null redeems then pure [] else do
+    cid <- allocate registries.shareAllocationFactory settlement
+      (vaultSideSpec config.share.admin burnAccount (map receiverSide redeemEscrowLegs))
+      [] requestedAt [config.share.admin] args.share
+    pure [cid]
+
+  -- An escrow settles its own leg and nothing else. A receipt settles the
+  -- leg named here.
+  underlyingResults <- settle registries.underlyingSettlementFactory settlement
+    (depositEscrowLegs <> redeemPayoutLegs)
+    ( [finalized custodianCid []]
+      <> map (\r -> finalized r.escrowCid []) deposits
+      <> zipWith (\r leg -> finalized r.receiptCid [receiverSide leg]) redeems redeemPayoutLegs )
+    args.underlying
+  _ <- settle registries.shareSettlementFactory settlement
+    (depositShareLegs <> redeemEscrowLegs)
+    ( map (`finalized` []) (mintCids <> burnCids)
+      <> zipWith (\r leg -> finalized r.receiptCid [receiverSide leg]) deposits depositShareLegs
+      <> map (\r -> finalized r.escrowCid []) redeems )
+    args.share
+  -- A registry answers for the allocations in the order it was given them,
+  -- and the custodian's is the first the underlying's registry was given.
+  let paid = case underlyingResults of
+        custodianResult :: _ -> concatMap snd (TextMap.toList custodianResult.authorizerHoldingCids)
+        [] -> []
+  pure (batch, change <> paid)
+
+-- Failure statuses. A choice body that fails with one reaches the Ledger API
+-- as a `DAML_FAILURE` error carrying the `errorId` below, so a client matches
+-- on the id.
+
+-- | Raised when a batch holds no request.
+-- `errorId`: `openzeppelin.com/async-vault-empty-batch`.
+eEmptyBatch : FailureStatus
+eEmptyBatch = Internal.vaultFailure "empty-batch" InvalidIndependentOfSystemState
+  "AsyncVault: the batch holds no request"
+
+-- | Raised when a batch holds more requests than the policy's
+-- `maxBatchSize`.
+-- `errorId`: `openzeppelin.com/async-vault-batch-too-large`.
+eBatchTooLarge : FailureStatus
+eBatchTooLarge = Internal.vaultFailure "batch-too-large" InvalidIndependentOfSystemState
+  "AsyncVault: the batch holds more requests than the vault allows"
+
+-- | Raised when a batch holds a request made for another vault.
+-- `errorId`: `openzeppelin.com/async-vault-foreign-request`.
+eForeignRequest : FailureStatus
+eForeignRequest = Internal.vaultFailure "foreign-request" InvalidIndependentOfSystemState
+  "AsyncVault: the batch holds a request made for another vault"
+
+-- | Raised when a batch holds two requests with the same transfer-leg ids,
+-- as two requests of one requester under the same label have.
+-- `errorId`: `openzeppelin.com/async-vault-duplicate-request`.
+eDuplicateRequest : FailureStatus
+eDuplicateRequest = Internal.vaultFailure "duplicate-request" InvalidIndependentOfSystemState
+  "AsyncVault: the batch holds two requests with the same transfer-leg ids"
+
+-- | Raised when a batch holds a request whose deadline has passed.
+-- `errorId`: `openzeppelin.com/async-vault-request-expired`.
+eRequestExpired : FailureStatus
+eRequestExpired = Internal.vaultFailure "request-expired" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the batch holds a request whose deadline has passed"
+
+-- | Raised when a request converts to nothing at the batch's price.
+-- `errorId`: `openzeppelin.com/async-vault-zero-fill`.
+eZeroFill : FailureStatus
+eZeroFill = Internal.vaultFailure "zero-fill" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: a request converts to nothing at the batch's price"
+
+-- | Raised when a request converts to less than its requester's minimum at
+-- the batch's price.
+-- `errorId`: `openzeppelin.com/async-vault-below-minimum`.
+eBelowMinimum : FailureStatus
+eBelowMinimum = Internal.vaultFailure "below-minimum" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: a request converts to less than its requester's minimum"
+
+-- | Raised when a batch names pool holdings for a vault that tracks its
+-- pool. Such a batch is funded from the tracked holdings alone.
+-- `errorId`: `openzeppelin.com/async-vault-pool-tracked`.
+ePoolTracked : FailureStatus
+ePoolTracked = Internal.vaultFailure "pool-tracked" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the vault tracks its pool, so a batch names no pool holdings"
+
+-- | Raised when the holdings a tracked pool is left with after a batch do
+-- not amount to the reserves the batch records.
+-- `errorId`: `openzeppelin.com/async-vault-pool-mismatch`.
+ePoolMismatch : FailureStatus
+ePoolMismatch = Internal.vaultFailure "pool-mismatch" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the tracked pool does not hold the recorded reserves"
+
+-- Helpers
+-------------------------------------------------------
+
+checkFill : Decimal -> Optional Decimal -> Either FailureStatus Decimal
+checkFill amount minimum
+  | amount <= 0.0 = Left eZeroFill
+  | Some least <- minimum, amount < least = Left eBelowMinimum
+  | otherwise = Right amount
+
+-- | An allocation for one of the vault's own accounts: exactly the given
+-- legs, made and settled within one transaction.
+vaultSideSpec
+  : Party -> HoldingV2.Account -> [AllocationV2.TransferLegSide]
+  -> AllocationV2.AllocationSpecification
+vaultSideSpec admin authorizer transferLegSides = AllocationV2.AllocationSpecification with
+  admin
+  authorizer
+  transferLegSides
+  settlementDeadline = None
+  nextIterationFunding = None
+  committed = False
+  meta = emptyMetadata
+
+-- | An allocation as a batch settles it: with the given extra legs, and
+-- ended by this settlement.
+finalized
+  : ContractId AllocationV2.Allocation -> [AllocationV2.TransferLegSide]
+  -> AllocationV2.FinalizedAllocation
+finalized allocationCid extraTransferLegSides = AllocationV2.FinalizedAllocation with
+  allocationCid
+  extraTransferLegSides
+  nextIterationFunding = None
+
+-- | Settle a whole batch's legs on one registry, with the executors'
+-- authority, and require every allocation to have ended. Returns the
+-- registry's result for each allocation, in the order of `allocations`.
+settle
+  : ContractId AllocationV2.SettlementFactory -> AllocationV2.SettlementInfo
+  -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation] -> ExtraArgs
+  -> Update [AllocationV2.AllocationResult]
+settle factory settlement transferLegs allocations extraArgs = do
+  result <- exercise factory AllocationV2.SettlementFactory_SettleBatch with
+    settlement
+    transferLegs
+    allocations
+    actors = settlement.executors
+    extraArgs
+  when (length result.allocationSettleResults /= length allocations)
+    (failWithStatus eAllocationIncomplete)
+  forA_ result.allocationSettleResults $ \settled -> case settled.output of
+    AllocationV2.AllocationResult_Settled None -> pure ()
+    _ -> failWithStatus eAllocationIncomplete
+  pure result.allocationSettleResults

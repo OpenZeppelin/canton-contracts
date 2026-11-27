@@ -1,0 +1,228 @@
+-- | Tests for `OpenZeppelin.AsyncVault.Utils.Gate`: a gate decides, it
+-- receives the vault, the requester, the amount, and the extra arguments, a
+-- gate that does not answer to the vault's admin is refused before it runs,
+-- and a gate's code cannot act for the requester. The fixtures are a caller
+-- that stands in for a vault's request choice and three gates.
+module OpenZeppelin.AsyncVault.Utils.Test.Gate where
+
+import DA.Action (unless)
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
+import DA.Foldable (forA_)
+import DA.TextMap qualified as TextMap
+import DA.Time (time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.TokenStandard.Utils (basicAccount)
+
+import OpenZeppelin.Api.AsyncVaultV1
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Gate
+import OpenZeppelin.AsyncVault.Utils.Request (requesterParties)
+
+-- Fixtures
+-------------------------------------------------------
+
+testStatus : Text -> FailureStatus
+testStatus name = FailureStatus with
+  errorId = "test/" <> name
+  category = InvalidIndependentOfSystemState
+  message = "the gate refuses: " <> name
+  meta = TextMap.empty
+
+-- | Stands in for a vault's request choice: the requester's account parties
+-- control it, and it asks the gate the vault names.
+template GateCaller with
+    config : VaultConfig
+    gateCid : ContractId DepositGate
+  where
+    signatory config.admin
+
+    nonconsuming choice GateCaller_Ask : ()
+      with
+        terms : DepositTerms
+        vaultArgs : ExtraArgs
+      controller requesterParties terms.requester
+      do checkDepositGate config gateCid terms vaultArgs
+
+-- | A gate that admits listed parties, for one vault, up to an amount, with
+-- a ticket in the extra arguments. Its view names `claimedAdmin`.
+template ListGate with
+    admin : Party
+    claimedAdmin : Party
+    vaultId : Text
+    listed : [Party]
+    maxAssets : Decimal
+    ticket : Text
+  where
+    signatory admin
+
+    interface instance DepositGate for ListGate where
+      view = DepositGateView with admin = claimedAdmin
+      depositGate_checkImpl _self arg = do
+        unless (arg.vaultId == vaultId) (failWithStatus (testStatus "vault"))
+        unless (arg.requester.owner `elem` map Some listed) (failWithStatus (testStatus "requester"))
+        unless (arg.assets <= maxAssets) (failWithStatus (testStatus "assets"))
+        unless (TextMap.lookup "test/ticket" arg.extraArgs.meta.values == Some ticket)
+          (failWithStatus (testStatus "ticket"))
+        pure DepositGate_CheckResult with meta = emptyMetadata
+
+-- | A contract only its `party` can create.
+template SignedNote with
+    party : Party
+    witness : Party
+  where
+    signatory party
+    observer witness
+
+-- | A gate that answers to the vault's admin and whose method creates a
+-- contract in the requester's name.
+template GraspingGate with
+    admin : Party
+  where
+    signatory admin
+
+    interface instance DepositGate for GraspingGate where
+      view = DepositGateView with admin
+      depositGate_checkImpl _self arg = do
+        forA_ arg.requester.owner $ \owner ->
+          create SignedNote with party = owner; witness = admin
+        pure DepositGate_CheckResult with meta = emptyMetadata
+
+data Scene = Scene with
+    admin : Party
+    alice : Party
+    bob : Party
+    config : VaultConfig
+
+scene : Script Scene
+scene = do
+  admin <- allocateParty "admin"
+  operator <- allocateParty "operator"
+  issuer <- allocateParty "issuer"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  pure Scene with
+    admin; alice; bob
+    config = VaultConfig with
+      admin
+      operator
+      vaultId = "vault-1"
+      underlying = HoldingV2.InstrumentId with admin = issuer; id = "USD"
+      share = HoldingV2.InstrumentId with admin; id = "VSHARE"
+      custodian = basicAccount admin
+
+termsOf : Party -> Decimal -> DepositTerms
+termsOf requester assets = DepositTerms with
+  requester = basicAccount requester
+  label = "d1"
+  assets
+  minSharesOut = None
+  deadline = time (date 2026 Jan 1) 0 20 0
+
+ticketArgs : Text -> ExtraArgs
+ticketArgs ticket = ExtraArgs with
+  context = emptyChoiceContext
+  meta = Metadata with values = TextMap.fromList [("test/ticket", ticket)]
+
+-- | A caller for a gate, and what a requester needs disclosed to use it.
+callerFor : Scene -> VaultConfig -> ContractId DepositGate -> Script (ContractId GateCaller, [Disclosure])
+callerFor Scene{..} callerConfig gateCid = do
+  callerCid <- submit admin do createCmd GateCaller with config = callerConfig; gateCid
+  Some callerDisclosure <- queryDisclosure @GateCaller admin callerCid
+  pure (callerCid, [callerDisclosure])
+
+listGate : Scene -> Party -> Script (ContractId DepositGate, Disclosure)
+listGate Scene{..} claimedAdmin = do
+  gateCid <- submit admin do
+    createCmd ListGate with
+      admin; claimedAdmin; vaultId = "vault-1"; listed = [alice]; maxAssets = 100.0; ticket = "golden"
+  Some gateDisclosure <- queryDisclosure @ListGate admin gateCid
+  pure (toInterfaceContractId gateCid, gateDisclosure)
+
+ask
+  : ContractId GateCaller -> [Disclosure] -> Party -> Decimal -> Text
+  -> Script (Either SubmitError ())
+ask callerCid disclosed requester assets ticket =
+  trySubmit (actAs requester <> discloseMany disclosed) do
+    exerciseCmd callerCid GateCaller_Ask with
+      terms = termsOf requester assets
+      vaultArgs = ticketArgs ticket
+
+mustFailWith : FailureStatus -> Script (Either SubmitError a) -> Script ()
+mustFailWith expected action = action >>= \case
+  Left (FailureStatusError actual) -> actual === expected
+  Left other -> fail ("expected " <> show expected <> ", got " <> show other)
+  Right _ -> fail ("expected " <> show expected <> ", and the submission succeeded")
+
+-- Tests
+-------------------------------------------------------
+
+-- | The gate decides, and the requester submits alone. The gate receives the
+-- vault's id, the requester, the amount, and the request's extra arguments,
+-- each as the request states it.
+testGateDecidesOnTheRequest : Script ()
+testGateDecidesOnTheRequest = script do
+  s@Scene{..} <- scene
+  (gateCid, gateDisclosure) <- listGate s admin
+  (callerCid, callerDisclosed) <- callerFor s config gateCid
+  let disclosed = gateDisclosure :: callerDisclosed
+  Right () <- ask callerCid disclosed alice 100.0 "golden"
+  mustFailWith (testStatus "requester") (ask callerCid disclosed bob 100.0 "golden")
+  mustFailWith (testStatus "assets") (ask callerCid disclosed alice 100.0000000001 "golden")
+  mustFailWith (testStatus "ticket") (ask callerCid disclosed alice 100.0 "forged")
+
+  (otherCaller, otherDisclosed) <- callerFor s (config with vaultId = "vault-2") gateCid
+  mustFailWith (testStatus "vault")
+    (ask otherCaller (gateDisclosure :: otherDisclosed) alice 100.0 "golden")
+
+-- | A gate whose view names another party than the vault's admin is refused
+-- before its method runs, whether it names a stranger or the requester.
+testForeignGateIsRefused : Script ()
+testForeignGateIsRefused = script do
+  s@Scene{..} <- scene
+  forA_ [bob, alice] $ \claimed -> do
+    (gateCid, gateDisclosure) <- listGate s claimed
+    (callerCid, callerDisclosed) <- callerFor s config gateCid
+    mustFailWith eForeignGate (ask callerCid (gateDisclosure :: callerDisclosed) alice 100.0 "golden")
+
+-- | A gate that answers to the admin runs with the admin's authority and not
+-- with the requester's: it cannot create a contract in the requester's name.
+testGateCannotActForTheRequester : Script ()
+testGateCannotActForTheRequester = script do
+  s@Scene{..} <- scene
+  graspingCid <- submit admin do createCmd GraspingGate with admin
+  Some gateDisclosure <- queryDisclosure @GraspingGate admin graspingCid
+  (callerCid, callerDisclosed) <- callerFor s config (toInterfaceContractId graspingCid)
+  ask callerCid (gateDisclosure :: callerDisclosed) alice 100.0 "golden" >>= \case
+    Left (AuthorizationError _) -> pure ()
+    other -> fail ("expected an authorization failure, got " <> show other)
+  query @SignedNote alice >>= \notes -> length notes === 0
+
+  -- The same gate asked for the admin's own deposit acts for the admin.
+  Right () <- ask callerCid (gateDisclosure :: callerDisclosed) admin 100.0 "golden"
+  query @SignedNote admin >>= \notes -> length notes === 1
+
+-- | A requester who is not shown the gate cannot open a request.
+testRequesterMustSeeTheGate : Script ()
+testRequesterMustSeeTheGate = script do
+  s@Scene{..} <- scene
+  (gateCid, gateDisclosure) <- listGate s admin
+  (callerCid, callerDisclosed) <- callerFor s config gateCid
+  Left _ <- ask callerCid callerDisclosed alice 100.0 "golden"
+  Right () <- ask callerCid (gateDisclosure :: callerDisclosed) alice 100.0 "golden"
+  pure ()
+
+-- | The status in full: the id clients match on, the category, and the
+-- message.
+testGateFailureStatus : Script ()
+testGateFailureStatus = script do
+  eForeignGate === FailureStatus with
+    errorId = "openzeppelin.com/async-vault-foreign-gate"
+    category = InvalidIndependentOfSystemState
+    message = "AsyncVault: the deposit gate does not answer to the vault's admin"
+    meta = TextMap.empty
