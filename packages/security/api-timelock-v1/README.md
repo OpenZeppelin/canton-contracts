@@ -128,7 +128,7 @@ template TreasuryTimelock
           target' <- create current with limit = lc.newLimit
           toInterfaceContractId <$>
             create this with target = target', pending = pending'
-        None -> failWithStatus eUnknownOperation
+        None -> failWithStatus unknownOperationFailure
 
       unschedule pending' = toInterfaceContractId <$>
         create this with pending = pending'
@@ -240,7 +240,7 @@ Direct calls to `Timelock_Apply` and `Timelock_Drop` enforce the same checks.
 The pending list binds operations to the timelock's lineage. Initialize it
 empty, add only the operation that the schedule choice creates, and keep the
 remaining entries in every successor. An operation outside the list fails
-with `eNotPending`.
+with `notPendingFailure`.
 
 The timelock's contract id changes on every schedule and every apply, so an
 executor reads the current id from the ledger at execution time. The governed
@@ -254,11 +254,11 @@ The consumer selects the proposer, executors, and cancellers. The proposer
 controls the schedule choice. `OperationView` names the executors and
 cancellers.
 
-The declared `authority` must sign both the timelock and the operation, and
-the operation's signatories must be signatories of the timelock. The lifecycle
-functions fail with `eInvalidAuthority` otherwise. The choices take authority
-from the timelock's signatories and the actor only, so a substituted timelock
-cannot use the operation's signatory authority.
+The declared `authority` must sign both the timelock and the operation, and the
+operation's signatories must be signatories of the timelock. The lifecycle
+functions fail with `invalidAuthorityFailure` otherwise. The choices take
+authority from the timelock's signatories and the actor only, so a substituted
+timelock cannot use the operation's signatory authority.
 
 The pending list rejects operations created outside the schedule choices,
 and the two checks in step 5 bind the governed config. The signatory
@@ -373,7 +373,7 @@ parties that need the answer.
   returns, so it cannot tell whether that id is the successor the method
   created. The archive before `apply` already prevents a second execution.
   The consumer implements `apply` and must dispatch each operation correctly.
-  Consumer methods define their own failures, such as `eUnknownOperation`.
+  Consumer methods define their own failures, such as `unknownOperationFailure`.
 - Interface choices are frozen with the package. `Operation_Execute`,
   `Operation_Cancel`, `Operation_Cleanup`, `Timelock_Apply`, and
   `Timelock_Drop` keep their names, arguments, and bodies for the life of
@@ -410,10 +410,10 @@ parties that need the answer.
   functions archive the timelock. The timelock's observers therefore see the
   archive and the successor, but not the other effects of `apply`.
 - A `minDelay` of zero disables the delay. A `gracePeriod` of `None` keeps an
-  operation executable until it is archived, as in `TimelockController.sol`.
-  A negative `minDelay` or a `gracePeriod` of zero or less fails every schedule
-  with `eInvalidConfig`, because such a policy would produce operations that
-  are born expired.
+  operation executable until it is archived, as in `TimelockController.sol`. A
+  negative `minDelay` or a `gracePeriod` of zero or less fails every schedule
+  with `invalidConfigFailure`, because such a policy would produce operations
+  that are born expired.
 - Cleanup is open to any actor after `expiresAt`.
   Signatories can also call the operation template's `Archive` choice directly.
   That cancels the operation without a canceller check, and leaves a pending

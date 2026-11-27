@@ -65,7 +65,7 @@ template Treasury
       controller authorization.actor
       do
         void $ SAG.requirePermission this self RolePolicy.PaymentProposer authorization
-        assertMsg eAmountMustBePositive (amount > 0.0)
+        assertMsg amountMustBePositiveFailureMsg (amount > 0.0)
         create PaymentProposal with
           owner
           treasuryCid = self
@@ -81,7 +81,7 @@ template Treasury
       with newPolicyEpoch : Int
       controller owner
       do
-        assertMsg ePolicyEpochMustIncrease (newPolicyEpoch > policyEpoch)
+        assertMsg policyEpochMustIncreaseFailureMsg (newPolicyEpoch > policyEpoch)
         create this with policyEpoch = newPolicyEpoch
 
 -- | Proposal signed by the owner and proposer, with no additional observers.
@@ -107,12 +107,12 @@ template PaymentProposal
       controller authorization.actor
       do
         treasury <- fetch treasuryCid
-        assertMsg eWrongTreasury
+        assertMsg wrongTreasuryFailureMsg
           (treasury.owner == owner
             && treasury.treasuryId == treasuryId
             && treasury.policyEpoch == policyEpoch)
         void $ SAG.requirePermission treasury treasuryCid RolePolicy.PaymentApprover authorization
-        assertMsg eProposerCannotApprove
+        assertMsg proposerCannotApproveFailureMsg
           (proposer /= authorization.actor)
         create ApprovedPayment with
           owner
@@ -150,12 +150,12 @@ template ApprovedPayment
       controller authorization.actor
       do
         treasury <- fetch treasuryCid
-        assertMsg eWrongTreasury
+        assertMsg wrongTreasuryFailureMsg
           (treasury.owner == owner
             && treasury.treasuryId == treasuryId
             && treasury.policyEpoch == policyEpoch)
         void $ SAG.requirePermission treasury treasuryCid RolePolicy.PaymentExecutor authorization
-        assertMsg eExecutorMustBeIndependent
+        assertMsg executorMustBeIndependentFailureMsg
           (authorization.actor /= proposer
             && authorization.actor /= approver)
         create PaymentReceipt with
@@ -196,17 +196,17 @@ template PaymentReceipt
     signatory owner, proposer, approver, executor
     observer beneficiary
 
-eAmountMustBePositive : Text
-eAmountMustBePositive = "Treasury: payment amount must be positive"
+amountMustBePositiveFailureMsg : Text
+amountMustBePositiveFailureMsg = "Treasury: payment amount must be positive"
 
-eWrongTreasury : Text
-eWrongTreasury = "Treasury: workflow state belongs to another treasury policy"
+wrongTreasuryFailureMsg : Text
+wrongTreasuryFailureMsg = "Treasury: workflow state belongs to another treasury policy"
 
-eProposerCannotApprove : Text
-eProposerCannotApprove = "Treasury: proposer cannot approve the same payment"
+proposerCannotApproveFailureMsg : Text
+proposerCannotApproveFailureMsg = "Treasury: proposer cannot approve the same payment"
 
-eExecutorMustBeIndependent : Text
-eExecutorMustBeIndependent = "Treasury: executor must differ from proposer and approver"
+executorMustBeIndependentFailureMsg : Text
+executorMustBeIndependentFailureMsg = "Treasury: executor must differ from proposer and approver"
 
-ePolicyEpochMustIncrease : Text
-ePolicyEpochMustIncrease = "Treasury: policy epoch must increase"
+policyEpochMustIncreaseFailureMsg : Text
+policyEpochMustIncreaseFailureMsg = "Treasury: policy epoch must increase"

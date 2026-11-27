@@ -26,16 +26,16 @@ the time guards, and the failure statuses for the interfaces in
   is valid when `minDelay` is zero or greater and `gracePeriod`, when set, is
   positive.
 - `addPending` and `takePending`: add a new operation to the pending list,
-  and remove one or fail with `eNotPending`.
+  and remove one or fail with `notPendingFailure`.
 - `requireReady`, `requireExpired`, `isReadyAt`, and `isExpiredAt`: the time
   guards and their pure forms, for a consumer that writes its own choices.
-- Ten failure statuses: `eInvalidConfig` and `eDelayTooShort` for the
-  schedule functions, and `eInvalidAuthority`, `eNotPending`, `eNotExecutor`,
-  `eNotCanceller`, `ePendingMismatch`, `eNotReady`, `eExpired`, and
-  `eNotExpired` for the lifecycle functions and the guards. Each is a
-  `FailureStatus` with a stable `errorId` under `openzeppelin.com/timelock-`,
-  so an off-ledger client matches the id in the `DAML_FAILURE` error and your
-  tests compare the whole value.
+- Ten failure statuses: `invalidConfigFailure` and `delayTooShortFailure` for
+  the schedule functions, and `invalidAuthorityFailure`, `notPendingFailure`,
+  `notExecutorFailure`, `notCancellerFailure`, `pendingMismatchFailure`,
+  `notReadyFailure`, `expiredFailure`, and `notExpiredFailure` for the lifecycle
+  functions and the guards. Each is a `FailureStatus` with a stable `errorId`
+  under `openzeppelin.com/timelock-`, so an off-ledger client matches the id in
+  the `DAML_FAILURE` error and your tests compare the whole value.
 
 ## Usage
 

@@ -62,7 +62,7 @@ template LicenseRegistry
       with newPolicyEpoch : Int
       controller licensor
       do
-        assertMsg ePolicyEpochMustIncrease (newPolicyEpoch > policyEpoch)
+        assertMsg policyEpochMustIncreaseFailureMsg (newPolicyEpoch > policyEpoch)
         create this with policyEpoch = newPolicyEpoch
 
 -- | License signed by the licensor and observed by the licensee.
@@ -83,5 +83,5 @@ template SoftwareLicense
       controller licensor
       do pure ()
 
-ePolicyEpochMustIncrease : Text
-ePolicyEpochMustIncrease = "Licensing: policy epoch must increase"
+policyEpochMustIncreaseFailureMsg : Text
+policyEpochMustIncreaseFailureMsg = "Licensing: policy epoch must increase"

@@ -43,16 +43,16 @@ module OpenZeppelin.Timelock.Utils
   , requireExpired
   , isReadyAt
   , isExpiredAt
-  , eInvalidConfig
-  , eDelayTooShort
-  , eInvalidAuthority
-  , eNotPending
-  , eNotExecutor
-  , eNotCanceller
-  , ePendingMismatch
-  , eNotReady
-  , eExpired
-  , eNotExpired
+  , invalidConfigFailure
+  , delayTooShortFailure
+  , invalidAuthorityFailure
+  , notPendingFailure
+  , notExecutorFailure
+  , notCancellerFailure
+  , pendingMismatchFailure
+  , notReadyFailure
+  , expiredFailure
+  , notExpiredFailure
   ) where
 
 import DA.Action (unless)
@@ -67,13 +67,14 @@ import OpenZeppelin.Timelock.Utils.Internal
 -- | The body of `Timelock_Apply`: apply a pending operation. Call it from the
 -- timelock's `applyImpl` method with the timelock as `target`.
 --
--- Fails with `eNotPending` unless `target`'s pending list holds the
--- operation, with `eInvalidAuthority` unless `authority` signs both contracts
--- and every signatory of the operation signs `target`, with `eNotExecutor`
--- unless `actor` is an executor, and with `eNotReady` or `eExpired` outside
--- the operation's time bounds. Then archives the operation and `self`, calls
--- `apply` with the reduced pending list, and fails with `ePendingMismatch`
--- unless the successor holds exactly that list.
+-- Fails with `notPendingFailure` unless `target`'s pending list holds the
+-- operation, with `invalidAuthorityFailure` unless `authority` signs both
+-- contracts and every signatory of the operation signs `target`, with
+-- `notExecutorFailure` unless `actor` is an executor, and with
+-- `notReadyFailure` or `expiredFailure` outside the operation's time bounds.
+-- Then archives the operation and `self`, calls `apply` with the reduced
+-- pending list, and fails with `pendingMismatchFailure` unless the successor
+-- holds exactly that list.
 applyOperation : Timelock -> ContractId Timelock -> Timelock_Apply -> Update (ContractId Timelock)
 applyOperation target self Timelock_Apply{..} = do
   pending' <- takePending op (view target).pending
@@ -92,11 +93,11 @@ applyOperation target self Timelock_Apply{..} = do
 -- `target`.
 --
 -- Fails as `applyOperation` does on the pending list and the authority. For
--- `CancelOperation`, fails with `eNotCanceller` unless `actor` is a
--- canceller. For `CleanupOperation`, fails with `eNotExpired` unless the
+-- `CancelOperation`, fails with `notCancellerFailure` unless `actor` is a
+-- canceller. For `CleanupOperation`, fails with `notExpiredFailure` unless the
 -- operation has expired. Then archives the operation and `self`, calls
 -- `unschedule` with the reduced pending list, and fails with
--- `ePendingMismatch` unless the successor holds exactly that list.
+-- `pendingMismatchFailure` unless the successor holds exactly that list.
 dropOperation : Timelock -> ContractId Timelock -> Timelock_Drop -> Update (ContractId Timelock)
 dropOperation target self Timelock_Drop{..} = do
   pending' <- takePending op (view target).pending
@@ -119,23 +120,23 @@ isValidConfig config =
   config.minDelay >= zero && optional True (> zero) config.gracePeriod
   where zero = microseconds 0
 
--- | Fail with `eInvalidConfig` unless `isValidConfig` holds. Call it on the
--- proposed policy in the choice that schedules a policy change.
+-- | Fail with `invalidConfigFailure` unless `isValidConfig` holds. Call it on
+-- the proposed policy in the choice that schedules a policy change.
 requireValidConfig : TimelockConfig -> Update ()
-requireValidConfig config = unless (isValidConfig config) (failWithStatus eInvalidConfig)
+requireValidConfig config = unless (isValidConfig config) (failWithStatus invalidConfigFailure)
 
 -- | Compute the schedule of an operation that becomes ready at `readyAt`, and
 -- store the returned fields on the operation.
 --
--- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
--- with `eDelayTooShort` unless the ledger time is at least `config.minDelay`
--- before `readyAt`. The check is a ledger-time bound, so the transaction's
--- ledger time stays free within it.
+-- Fails with `invalidConfigFailure` when `isValidConfig` rejects the policy,
+-- and with `delayTooShortFailure` unless the ledger time is at least
+-- `config.minDelay` before `readyAt`. The check is a ledger-time bound, so the
+-- transaction's ledger time stays free within it.
 scheduleAt : TimelockConfig -> Time -> Update TimelockedView
 scheduleAt config readyAt = do
   requireValidConfig config
   early <- isLedgerTimeLE (addRelTime readyAt (negate config.minDelay))
-  unless early (failWithStatus eDelayTooShort)
+  unless early (failWithStatus delayTooShortFailure)
   pure TimelockedView with
     readyAt
     expiresAt = fmap (addRelTime readyAt) config.gracePeriod
@@ -145,12 +146,12 @@ scheduleAt config readyAt = do
 -- of the transaction; use `scheduleAt` when the proposer knows the target
 -- time.
 --
--- Fails with `eInvalidConfig` when `isValidConfig` rejects the policy, and
--- with `eDelayTooShort` unless `delay` is at least `config.minDelay`.
+-- Fails with `invalidConfigFailure` when `isValidConfig` rejects the policy,
+-- and with `delayTooShortFailure` unless `delay` is at least `config.minDelay`.
 scheduleAfter : TimelockConfig -> RelTime -> Update TimelockedView
 scheduleAfter config delay = do
   requireValidConfig config
-  unless (delay >= config.minDelay) (failWithStatus eDelayTooShort)
+  unless (delay >= config.minDelay) (failWithStatus delayTooShortFailure)
   now <- getTime
   let readyAt = addRelTime now delay
   pure TimelockedView with
@@ -162,37 +163,38 @@ scheduleAfter config delay = do
 addPending : HasToInterface t Timelocked => ContractId t -> Pending -> Pending
 addPending op pending = toInterfaceContractId @Timelocked op :: pending
 
--- | Remove an operation from the pending list, and fail with `eNotPending`
--- when the list does not hold it. Call it first in an apply choice that you
--- write yourself.
+-- | Remove an operation from the pending list, and fail with
+-- `notPendingFailure` when the list does not hold it. Call it first in an apply
+-- choice that you write yourself.
 takePending : HasToInterface t Timelocked => ContractId t -> Pending -> Update Pending
 takePending op pending = do
   let cid = toInterfaceContractId @Timelocked op
-  unless (cid `elem` pending) (failWithStatus eNotPending)
+  unless (cid `elem` pending) (failWithStatus notPendingFailure)
   pure (delete cid pending)
 
 -- | Fail unless the operation may execute now: the ledger time is at or after
--- `readyAt` and, when `expiresAt` is set, before it. Fails with `eNotReady`
--- before `readyAt` and with `eExpired` at or after `expiresAt`.
+-- `readyAt` and, when `expiresAt` is set, before it. Fails with
+-- `notReadyFailure` before `readyAt` and with `expiredFailure` at or after
+-- `expiresAt`.
 requireReady : HasToInterface t Timelocked => t -> Update ()
 requireReady x = do
   let v = view (toInterface @Timelocked x)
   ready <- isLedgerTimeGE v.readyAt
-  unless ready (failWithStatus eNotReady)
+  unless ready (failWithStatus notReadyFailure)
   whenSome v.expiresAt $ \expiresAt -> do
     live <- isLedgerTimeLT expiresAt
-    unless live (failWithStatus eExpired)
+    unless live (failWithStatus expiredFailure)
 
--- | Fail with `eNotExpired` unless `expiresAt` is set and the ledger time is
--- at or after it.
+-- | Fail with `notExpiredFailure` unless `expiresAt` is set and the ledger time
+-- is at or after it.
 requireExpired : HasToInterface t Timelocked => t -> Update ()
 requireExpired x = do
   let v = view (toInterface @Timelocked x)
   case v.expiresAt of
-    None -> failWithStatus eNotExpired
+    None -> failWithStatus notExpiredFailure
     Some expiresAt -> do
       expired <- isLedgerTimeGE expiresAt
-      unless expired (failWithStatus eNotExpired)
+      unless expired (failWithStatus notExpiredFailure)
 
 -- | Whether the operation may execute at `now`: `readyAt <= now`, and
 -- `now < expiresAt` when `expiresAt` is set.

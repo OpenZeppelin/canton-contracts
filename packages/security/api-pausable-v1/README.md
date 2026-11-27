@@ -83,13 +83,12 @@ exercises both.
 
 ### Old package versions after a retrofit
 
-The choices of the old version carry no guard, so a submission that pins the
-old version runs without it. Once a flip stores `Some True` or `Some False`,
-the old version cannot read the contract, and such a submission fails with an
-upgrade error rather than `eEnforcedPause`. It keeps failing after an unpause
-to `Some False`. If clients that pin the old version must resume, write the
-unpause to store `None`. Unvet the old version once every client uses the new
-one.
+The choices of the old version carry no guard, so a submission that pins the old
+version runs without it. Once a flip stores `Some True` or `Some False`, the old
+version cannot read the contract, and such a submission fails with an upgrade
+error rather than `enforcedPauseFailure`. It keeps failing after an unpause to
+`Some False`. If clients that pin the old version must resume, write the unpause
+to store `None`. Unvet the old version once every client uses the new one.
 
 ## Reading the flag off-ledger
 

@@ -146,7 +146,7 @@ template TreasuryTimelock
             toInterfaceContractId <$> create this with target = target', pending = pending'
         | Some cc <- fromInterface @ConfigChange op =
             toInterfaceContractId <$> create this with config = cc.newConfig, pending = pending'
-        | otherwise = failWithStatus eUnknownOperation
+        | otherwise = failWithStatus unknownOperationFailure
 
       unschedule pending' = toInterfaceContractId <$> create this with pending = pending'
 
@@ -252,8 +252,8 @@ template ConfigChange
 
 -- | Raised when `apply` receives an operation of a template the timelock does
 -- not handle.
-eUnknownOperation : FailureStatus
-eUnknownOperation = FailureStatus with
+unknownOperationFailure : FailureStatus
+unknownOperationFailure = FailureStatus with
   errorId = "myapp.example/treasury-unknown-operation"
   category = InvalidIndependentOfSystemState
   message = "Treasury: unknown operation template"

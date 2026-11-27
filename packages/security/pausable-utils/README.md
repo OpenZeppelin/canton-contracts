@@ -18,13 +18,10 @@ Functions over any template that implements `Pausable`:
 - `whenNotPaused` and `whenPaused`: the guards a gated choice calls.
 - `isPaused`: the flag as a `Bool`, for a choice that branches on the flag
   rather than refusing to run.
-- `eEnforcedPause` and `eExpectedPause`: the failure statuses. Each has a
-  stable `errorId` under `openzeppelin.com/pausable-`, so an off-ledger
-  client matches the id in the `DAML_FAILURE` error, and your tests compare
-  the whole value.
-
-`OpenZeppelin.Pausable.Utils.Internal` is not public API. Its contents can change
-in any version, so do not import it.
+- `enforcedPauseFailure` and `expectedPauseFailure`: the failure statuses. Each
+  has a stable `errorId` under `openzeppelin.com/pausable-`, so an off-ledger
+  client matches the id in the `DAML_FAILURE` error, and your tests compare the
+  whole value.
 
 ## Usage
 
@@ -85,14 +82,14 @@ To change other fields in the same transaction, set them in the same create.
 ```
 
 **3. Assert on the failure statuses in your tests.** A gated choice that runs
-while paused fails with `eEnforcedPause`; a paused-only choice that runs while
-unpaused fails with `eExpectedPause`. A flip choice that guards as above
-refuses a second pause or a second unpause with the same statuses:
+while paused fails with `enforcedPauseFailure`; a paused-only choice that runs
+while unpaused fails with `expectedPauseFailure`. A flip choice that guards as
+above refuses a second pause or a second unpause with the same statuses:
 
 ```daml
 Left (FailureStatusError status) <-
   trySubmit owner do exerciseCmd vault Vault_Withdraw with amount = 1.0
-status === Pausable.eEnforcedPause
+status === Pausable.enforcedPauseFailure
 ```
 
 Test one round trip as well: after a pause, the predecessor id returns `None`
@@ -120,8 +117,8 @@ flip:
       controller caller
       do
         cred <- fetch credCid
-        unless (cred.admin == admin) (failWithStatus eWrongCredentialIssuer)
-        unless (cred.account == caller) (failWithStatus eCredentialNotCallers)
+        unless (cred.admin == admin) (failWithStatus wrongCredentialIssuerFailure)
+        unless (cred.account == caller) (failWithStatus credentialNotCallersFailure)
         Pausable.whenNotPaused this
         create this with paused = True
 ```

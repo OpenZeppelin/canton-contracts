@@ -70,7 +70,7 @@ test_scheduleAtRejectsShortDelay = script do
   r <- trySubmit caller do
     exerciseCmd probe Probe_ScheduleAt with
       config = oneDayWeekGrace, readyAt = addRelTime t0 (hours 23)
-  expectFailure eDelayTooShort r
+  expectFailure delayTooShortFailure r
 
 -- | A `readyAt` exactly `minDelay` away is accepted: the bound is inclusive.
 test_scheduleAtAcceptsExactMinDelay : Script ()
@@ -87,7 +87,7 @@ test_scheduleAfterRejectsShortDelay = script do
   Fixture{..} <- setup
   r <- trySubmit caller do
     exerciseCmd probe Probe_ScheduleAfter with config = oneDayWeekGrace, delay = hours 1
-  expectFailure eDelayTooShort r
+  expectFailure delayTooShortFailure r
 
 -- | No grace period means no expiry.
 test_noGracePeriodNeverExpires : Script ()
@@ -118,10 +118,10 @@ test_zeroGracePeriodRejected = script do
   let config = TimelockConfig with minDelay = days 1, gracePeriod = Some (hours 0)
   r <- trySubmit caller do
     exerciseCmd probe Probe_ScheduleAt with config, readyAt = addRelTime t0 (days 1)
-  expectFailure eInvalidConfig r
+  expectFailure invalidConfigFailure r
   r2 <- trySubmit caller do
     exerciseCmd probe Probe_ScheduleAfter with config, delay = days 1
-  expectFailure eInvalidConfig r2
+  expectFailure invalidConfigFailure r2
 
 -- | A negative minimum delay would widen the acceptance window instead of
 -- disabling the delay, so it is refused.
@@ -131,7 +131,7 @@ test_negativeMinDelayRejected = script do
   let config = TimelockConfig with minDelay = negate (hours 1), gracePeriod = None
   r <- trySubmit caller do
     exerciseCmd probe Probe_ScheduleAt with config, readyAt = t0
-  expectFailure eInvalidConfig r
+  expectFailure invalidConfigFailure r
 
 -- | Both fields at zero is the most extreme misconfiguration.
 test_bothZeroRejected : Script ()
@@ -140,10 +140,10 @@ test_bothZeroRejected = script do
   let config = TimelockConfig with minDelay = hours 0, gracePeriod = Some (hours 0)
   r <- trySubmit caller do
     exerciseCmd probe Probe_ScheduleAt with config, readyAt = t0
-  expectFailure eInvalidConfig r
+  expectFailure invalidConfigFailure r
   r2 <- trySubmit caller do
     exerciseCmd probe Probe_RequireValidConfig with config
-  expectFailure eInvalidConfig r2
+  expectFailure invalidConfigFailure r2
   isValidConfig (TimelockConfig with minDelay = hours 0, gracePeriod = Some (microseconds 1)) === True
   isValidConfig (TimelockConfig with minDelay = hours 0, gracePeriod = None) === True
 
@@ -151,7 +151,7 @@ test_bothZeroRejected = script do
 -------------------------------------------------------
 
 -- | `addPending` records an operation, and `takePending` removes it or fails
--- with `eNotPending`.
+-- with `notPendingFailure`.
 test_takePendingRequiresMembership : Script ()
 test_takePendingRequiresMembership = script do
   f@Fixture{..} <- setup
@@ -164,7 +164,7 @@ test_takePendingRequiresMembership = script do
   rest === []
   r <- trySubmit caller do
     exerciseCmd probe Probe_TakePending with op = other, pending
-  expectFailure eNotPending r
+  expectFailure notPendingFailure r
 
 -- Guards
 -------------------------------------------------------
@@ -192,7 +192,7 @@ test_requireReadyBounds = script do
   f@Fixture{..} <- setup
   target <- scheduled f (addRelTime t0 (days 2)) (Some (addRelTime t0 (days 9)))
   r <- trySubmit caller do exerciseCmd probe Probe_RequireReady with target
-  expectFailure eNotReady r
+  expectFailure notReadyFailure r
   ready <- submit caller do
     exerciseCmd probe Probe_IsReadyAt with target, at = addRelTime t0 (days 2)
   ready === True
@@ -200,7 +200,7 @@ test_requireReadyBounds = script do
   submit caller do exerciseCmd probe Probe_RequireReady with target
   passTime (days 7)
   r2 <- trySubmit caller do exerciseCmd probe Probe_RequireReady with target
-  expectFailure eExpired r2
+  expectFailure expiredFailure r2
   Some _ <- queryInterfaceContractId caller target
   pure ()
 
@@ -211,14 +211,14 @@ test_requireExpiredBounds = script do
   expiring <- scheduled f t0 (Some (addRelTime t0 (days 1)))
   lasting <- scheduled f t0 None
   r <- trySubmit caller do exerciseCmd probe Probe_RequireExpired with target = expiring
-  expectFailure eNotExpired r
+  expectFailure notExpiredFailure r
   r2 <- trySubmit caller do exerciseCmd probe Probe_RequireExpired with target = lasting
-  expectFailure eNotExpired r2
+  expectFailure notExpiredFailure r2
   passTime (days 1)
   submit caller do exerciseCmd probe Probe_RequireExpired with target = expiring
 
 -- | The failure statuses carry stable ids.
 test_failureStatusIds : Script ()
 test_failureStatusIds = script do
-  eDelayTooShort.errorId === "openzeppelin.com/timelock-delay-too-short"
-  eInvalidConfig.errorId === "openzeppelin.com/timelock-invalid-config"
+  delayTooShortFailure.errorId === "openzeppelin.com/timelock-delay-too-short"
+  invalidConfigFailure.errorId === "openzeppelin.com/timelock-invalid-config"

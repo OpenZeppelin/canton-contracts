@@ -66,12 +66,12 @@ template Registry
       controller admin
       do
         Pausable.whenNotPaused this
-        when (entry == "") (failWithStatus eEmptyEntry)
+        when (entry == "") (failWithStatus emptyEntryFailure)
         create this with entries = entry :: entries
 
 -- | Raised when a registration names an empty entry.
-eEmptyEntry : FailureStatus
-eEmptyEntry = FailureStatus with
+emptyEntryFailure : FailureStatus
+emptyEntryFailure = FailureStatus with
   errorId = "myapp.com/registry-empty-entry"
   category = InvalidIndependentOfSystemState
   message = "Registry: entry must not be empty"
