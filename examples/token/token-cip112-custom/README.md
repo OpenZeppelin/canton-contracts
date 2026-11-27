@@ -129,7 +129,8 @@ holding is refused whichever status the sender passes.
 To change who acts as the compliance officer, keep the officer party and
 change who controls it. To replace the party:
 
-1. The pauser pauses the earlier rules, and the admin creates the new ones.
+1. The pauser pauses the earlier rules, and the admin and the pauser create
+   the new ones.
    The paused rules refuse new transfers, allocations, settlements, and
    mints. `MyRules_OpenAccount` and the admin's expiry choices still run on
    them. The earlier rules stay paused until the admin and the pauser
