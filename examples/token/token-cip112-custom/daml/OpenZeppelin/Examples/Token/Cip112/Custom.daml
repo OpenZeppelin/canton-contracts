@@ -97,9 +97,8 @@ template MyEventLog with
 -- funding a workflow, from being paid out of one, and from being returned
 -- to its owner.
 --
--- `createHolding` ignores its sources. The freeze lives on the account's
--- `MyAccountStatus`, not on the holding, and the roles come from the
--- closure, so no holding field has to survive re-creation.
+-- `createHolding` ignores its sources. `roles` is the holding's only field
+-- outside the view, and the freeze lives on the account's `MyAccountStatus`.
 --
 -- An accepted holding is a `MyHolding` that names this contract's pauser.
 -- The template check stops a foreign `Holding`. The pauser check stops a
