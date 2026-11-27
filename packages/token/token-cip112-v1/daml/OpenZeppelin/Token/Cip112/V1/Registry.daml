@@ -32,6 +32,13 @@ import OpenZeppelin.Token.Cip112.V1.Allocation
 -- | The registry's policy and entry-point contract, signed by the admin
 -- alone. Consumers obtain it by explicit disclosure; the factory choices are
 -- nonconsuming, so concurrent workflows never contend on it.
+--
+-- The admin can create another `TokenRules` at any time, and the workflows
+-- accept the admin's holdings through any of them. Every parameter here is
+-- the admin's to set, so a second contract grants the admin nothing. Roles
+-- that a consumer puts on its own rules contract restrict wallets only: a
+-- control that must bind the admin has to be held by a party that signs the
+-- holdings and the pending contracts.
 template TokenRules with
     config : RegistryConfig
   where

@@ -15,7 +15,9 @@ Three roles interact with the package:
   first (a participant that already runs Splice has these exact packages),
   then the types, utils, and package DARs. The operator creates one
   `TokenRules` contract per registry configuration and serves it to
-  consumers by explicit disclosure.
+  consumers by explicit disclosure. That is operator practice, not a ledger
+  rule: the admin signs `TokenRules` alone, so it can create more at any
+  time, and each one funds from and pays into the same holdings.
 - **Wallet users** hold accounts. Their participants upload the same DARs.
   A user's wallet needs the disclosed `TokenRules` contract in every
   submission that exercises a factory choice, and the disclosed locked

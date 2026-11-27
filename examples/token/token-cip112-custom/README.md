@@ -10,7 +10,7 @@ What it adds, and where each addition lives:
 
 | Addition | Mechanism |
 |---|---|
-| Pauser and compliance-officer roles | Controllers of consumer choices; the admin stays the signatory and holds neither power |
+| Pauser and compliance-officer roles | Controllers of consumer choices. The pauser also co-signs every holding, pending, and rules contract, so the admin holds neither power (see [Binding the admin](#binding-the-admin)) |
 | Auditor observing every contract and every holdings-change event | A consumer field on each template, reached through the closure that builds `HoldingOps`, plus the `eventObservers` operation |
 | Compliance freeze on accounts | A per-account `MyAccountStatus`, signed by the admin and the compliance officer, who replaces it through `MyAccountStatus_Freeze` and `MyAccountStatus_Unfreeze`. All three consumption operations read its id from the choice context and exercise `MyHolding_Spend`, which refuses a frozen account, so a frozen account's holdings cannot fund a transfer, allocation, or burn, and its locked funding is neither paid out nor returned. `MyHolding_OwnerUnlock`, `MyHolding_Merge`, and `MyHolding_Split` make the same check, and a merge's other inputs must carry the exercised holding's roles. In a batch, the settlement factory forwards each allocation only its authorizer's status |
 | Pause switch on the registry | A template field plus `MyRules_Pause` and `MyRules_Unpause`, checked before each factory delegates and before a mint offer |
@@ -116,6 +116,55 @@ then archives the earlier rules.
 
 No workflow body changes. `token-cip112-custom-test` drives the token through the
 standard interfaces and checks each addition.
+
+## Binding the admin
+
+A role on the rules contract alone restricts wallets, not the admin. The admin
+could sign a second `MyRules` by itself, unpaused, fee-free, or with other
+executors or roles, and the workflows would accept this token's holdings
+through it. So the pauser co-signs `MyRules`, `MyHolding`,
+`MyTransferInstruction`, and `MyAllocation`, and `MyHolding_Spend` needs its
+authority too. Every `MyRules` that accepts these holdings therefore carries
+the pauser's signature, and with it the pause, the executor allowlist, the
+fee, and the roles the pauser agreed to. A pending contract is a separate
+case. Its choices run with the authority the pauser gave when it was created
+and do not read `MyRules`, so neither the pause nor the allowlist binds a
+settle that the admin and the executors exercise directly on an allocation.
+
+The admin can still sign the same templates naming a pauser it controls.
+Those contracts form a separate token: the consumption operations refuse a
+`MyHolding` that names a different pauser, and the settlement and expiry
+choices refuse such an allocation or transfer instruction. The two tokens
+carry the same instrument id in the standard `Holding` view. Check that the
+pauser is among a holding's signatories before crediting it. Otherwise a
+holding the admin signed without the pauser passes as this token.
+
+The co-signature has costs:
+
+- Privacy. The pauser signs every holding, pending instruction, allocation,
+  and the rules contract, so it sees every balance, every pending transfer
+  and settlement, and every action on them.
+- Liveness. The pauser's participant confirms every transaction that creates
+  or consumes one of these contracts. Every mint, transfer, allocation,
+  settlement, and expiry fails while that participant is unavailable, and
+  for good if the pauser's keys are lost.
+- Coordination. Creating `MyRules` or replacing it with a new fee,
+  allowlist, or roles needs the admin's and the pauser's authority in one
+  transaction.
+  With the two on separate participants, the admin creates or replaces it
+  through a `MyRulesProposal` that the pauser accepts. Archiving `MyRules`
+  also needs the admin and the pauser in one transaction. No proposal does
+  that, because accepting one always creates a `MyRules`. Pausing and
+  unpausing need the pauser alone. The pauser itself cannot be replaced
+  through a new rules contract. Every holding and pending contract names
+  the old pauser, so a rules contract with a new pauser refuses them all,
+  and moving each one needs the old pauser's authority.
+- Independence. The binding holds only while the admin cannot act for the
+  pauser, so host the pauser on participants the admin does not operate: a
+  participant that hosts a party submits and confirms for it. The admin and
+  the pauser together can create any contract.
+
+## Build and run
 
 From the repository root:
 

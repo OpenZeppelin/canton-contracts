@@ -9,7 +9,10 @@
 -- offers, and burns, the fee leg pays the treasury and exempts burns,
 -- merges and splits bypass both the pause and the fee, the executor
 -- allowlist is enforced, roles are separate, expired funding is reclaimed,
--- and a foreign holding or allocation is refused.
+-- and a foreign holding or allocation is refused. The pauser co-signs every
+-- contract, so the admin alone can neither create one nor spend a
+-- holding, and a holding or allocation that names another pauser is
+-- refused.
 module OpenZeppelin.Examples.Token.Cip112.Custom.Test where
 
 import DA.Action (unless)
@@ -20,6 +23,7 @@ import DA.List (sort)
 import DA.Map qualified as Map
 import DA.Optional (isNone, isSome, optionalToList)
 import DA.Text (isInfixOf)
+import DA.Text qualified as T
 import DA.TextMap qualified as TextMap
 import DA.Time (addRelTime, days, hours, time)
 import Daml.Script
@@ -69,14 +73,12 @@ setupWith transferFeeBps = do
   alice <- allocateParty "alice"
   bob <- allocateParty "bob"
   setTime t1
-  rulesCid <- submit admin do
-    createCmd MyRules with
-      config = RegistryConfig with admin; maxTTL = days 90; lockGrace = hours 1
-      roles = AppRoles with auditor; complianceOfficer
-      pauser
-      paused = False
-      transferFeeBps
-      allowedExecutors = [exchange]
+  rulesCid <- proposeRules None MyRules with
+    config = RegistryConfig with admin; maxTTL = days 90; lockGrace = hours 1
+    roles = AppRoles with auditor; complianceOfficer; pauser
+    paused = False
+    transferFeeBps
+    allowedExecutors = [exchange]
   Some rulesDisclosure <- queryDisclosure @MyRules admin rulesCid
   let app = App with
         admin; auditor; complianceOfficer; pauser; exchange; alice; bob; rulesCid; rulesDisclosure
@@ -90,6 +92,12 @@ setupWith transferFeeBps = do
 
 setup : Script App
 setup = setupWith 0
+
+-- | The admin proposes `rules` and the pauser accepts, archiving `replaces`.
+proposeRules : Optional (ContractId MyRules) -> MyRules -> Script (ContractId MyRules)
+proposeRules replaces rules = do
+  proposalCid <- submit rules.config.admin do createCmd MyRulesProposal with rules; replaces
+  submit rules.roles.pauser do exerciseCmd proposalCid MyRulesProposal_Accept
 
 -- | Pausing replaces the rules contract; refresh the id and disclosure.
 pauseRegistry : App -> Script App
@@ -433,6 +441,24 @@ mustFailWith expected options cmds = do
       unless (expected `isInfixOf` msg) $
         abort ("submission failed for an unexpected reason: " <> msg)
 
+-- | The submission fails for want of the pauser's authority alone: the
+-- pauser is the only required authorizer the submission did not give.
+mustLackPauser : Party -> SubmitOptions -> Commands a -> Script ()
+mustLackPauser pauser options cmds = do
+  result <- trySubmit options cmds
+  case result of
+    Right _ -> abort "submission succeeded without the pauser"
+    Left (AuthorizationError msg) -> do
+      let field start end = case T.splitOn start msg of
+            _ :: rest :: _ -> case T.splitOn end rest of
+              value :: _ -> T.splitOn "," value
+              [] -> []
+            _ -> []
+          required = field "requires authorizers " ", but only "
+          given = field ", but only " " were given"
+      unless (filter (`notElem` given) required == [partyToText pauser]) $
+        abort ("authorization failed, but not for want of the pauser alone: " <> msg)
+    Left err -> abort ("submission failed for an unexpected reason: " <> show err)
 
 -- Consumer fields and constructors
 -----------------------------------
@@ -458,6 +484,9 @@ testLateAcceptCreatesMyHolding = do
   balanceSeenBy auditor bob >>= (=== [7.0])
   balanceSeenBy auditor alice >>= (=== [3.0])
   balanceSeenBy complianceOfficer bob >>= (=== [7.0])
+  -- The pauser signs every holding, so it sees every balance too.
+  balanceSeenBy pauser bob >>= (=== [7.0])
+  balanceSeenBy pauser alice >>= (=== [3.0])
   bobHoldings <- query @MyHolding bob
   all (\(_, h) -> h.roles.auditor == auditor) bobHoldings === True
 
@@ -844,7 +873,7 @@ testStatusMustCarryTheHoldingsOfficer = do
   let send statusCid = transferCmd app [alice, bob] (statusArgs statusCid) (mkTransfer app alice bob 7.0 [aliceTok])
       options = actAs [alice, bob] <> discloseMany [rulesDisclosure]
       openUnder newRoles = do
-        newRulesCid <- submit admin do createCmd rules with roles = newRoles
+        newRulesCid <- proposeRules None rules with roles = newRoles
         submit (actAs newRoles.complianceOfficer) do
           exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
 
@@ -852,12 +881,12 @@ testStatusMustCarryTheHoldingsOfficer = do
     createCmd MyAccountStatus with
       admin
       account = basicAccount alice
-      roles = AppRoles with auditor; complianceOfficer = admin
+      roles = AppRoles with auditor; complianceOfficer = admin; pauser
       frozen = False
   mustFailWith "account status does not cover this holding" options (send selfSigned)
-  otherOfficerStatus <- openUnder (AppRoles with auditor; complianceOfficer = otherOfficer)
+  otherOfficerStatus <- openUnder (AppRoles with auditor; complianceOfficer = otherOfficer; pauser)
   mustFailWith "account status does not cover this holding" options (send otherOfficerStatus)
-  newAuditorStatus <- openUnder (AppRoles with auditor = newAuditor; complianceOfficer)
+  newAuditorStatus <- openUnder (AppRoles with auditor = newAuditor; complianceOfficer; pauser)
   _ <- submit options (send newAuditorStatus)
   balanceSeenBy bob bob >>= (=== [7.0])
 
@@ -873,15 +902,14 @@ testStatusNeedsOfficerSignatureAndHoldingsAdmin = do
     createCmd MyAccountStatus with
       admin
       account = basicAccount alice
-      roles = AppRoles with auditor; complianceOfficer
+      roles = AppRoles with auditor; complianceOfficer; pauser
       frozen = False
   case forged of
     Left (AuthorizationError _) -> pure ()
     other -> abort ("expected an authorization error, got: " <> show other)
   otherAdmin <- allocateParty "otherAdmin"
   Some rules <- queryContractId admin rulesCid
-  otherRulesCid <- submit otherAdmin do
-    createCmd rules with config = rules.config with admin = otherAdmin
+  otherRulesCid <- proposeRules None rules with config = rules.config with admin = otherAdmin
   otherStatus <- submit (actAs complianceOfficer) do
     exerciseCmd otherRulesCid MyRules_OpenAccount with account = basicAccount alice
   mustFailWith "account status does not cover this holding" (actAs [alice, bob] <> discloseMany [rulesDisclosure])
@@ -900,8 +928,7 @@ testEarlierHoldingCannotPayFeeAfterOfficerChange = do
   earlierStatus <- statusOf app alice
   newOfficer <- allocateParty "newOfficer"
   Some rules <- queryContractId admin rulesCid
-  newRulesCid <- submit admin do
-    createCmd rules with roles = AppRoles with auditor; complianceOfficer = newOfficer
+  newRulesCid <- proposeRules None rules with roles = AppRoles with auditor; complianceOfficer = newOfficer; pauser
   Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
   newStatus <- submit (actAs newOfficer) do
     exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
@@ -926,8 +953,8 @@ testHoldingMovesToNewOfficerThroughAllocation = do
   earlierStatus <- statusOf app alice
   newOfficer <- allocateParty "newOfficer"
   Some rules <- queryContractId admin rulesCid
-  let newRoles = AppRoles with auditor; complianceOfficer = newOfficer
-  newRulesCid <- submit admin do createCmd rules with roles = newRoles
+  let newRoles = AppRoles with auditor; complianceOfficer = newOfficer; pauser
+  newRulesCid <- proposeRules None rules with roles = newRoles
   Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
   newStatus <- submit (actAs newOfficer) do
     exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
@@ -965,9 +992,7 @@ testPendingInstructionKeepsItsOfficer = do
     (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 7.0 [aliceTok]))
   newOfficer <- allocateParty "newOfficer"
   Some rules <- queryContractId admin rulesCid
-  submit admin do archiveCmd rulesCid
-  newRulesCid <- submit admin do
-    createCmd rules with roles = AppRoles with auditor; complianceOfficer = newOfficer
+  newRulesCid <- proposeRules (Some rulesCid) rules with roles = AppRoles with auditor; complianceOfficer = newOfficer; pauser
   newStatus <- submit (actAs newOfficer) do
     exerciseCmd newRulesCid MyRules_OpenAccount with account = basicAccount alice
   newDisclosure <- statusDisclosure app newStatus
@@ -996,10 +1021,9 @@ testPausedEarlierRulesStillOpenStatuses = do
   earlier <- pauseRegistry app
   newOfficer <- allocateParty "newOfficer"
   Some rules <- queryContractId admin earlier.rulesCid
-  newRulesCid <- submit admin do
-    createCmd rules with
-      roles = AppRoles with auditor; complianceOfficer = newOfficer
-      paused = False
+  newRulesCid <- proposeRules None rules with
+    roles = AppRoles with auditor; complianceOfficer = newOfficer; pauser
+    paused = False
   Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
   let newApp = app with rulesCid = newRulesCid; rulesDisclosure = newDisclosure
 
@@ -1351,9 +1375,11 @@ testTransferFeeMustBeInRange : Script ()
 testTransferFeeMustBeInRange = do
   App{..} <- setup
   Some rules <- queryContractId admin rulesCid
-  submitMustFail admin do createCmd rules with transferFeeBps = -1
-  submitMustFail admin do createCmd rules with transferFeeBps = 10001
-  _ <- submit admin do createCmd rules with transferFeeBps = 10000
+  forA_ [-1, 10001] \fee -> do
+    proposalCid <- submit admin do
+      createCmd MyRulesProposal with rules = (rules with transferFeeBps = fee); replaces = None
+    mustFailWith "Template precondition violated" (actAs pauser) do exerciseCmd proposalCid MyRulesProposal_Accept
+  _ <- proposeRules None rules with transferFeeBps = 10000
   pure ()
 
 -- Registry policy
@@ -1375,7 +1401,8 @@ testExecutorAllowlist = do
   pure ()
 
 -- | The allowlist is checked again at settlement, so allocations made before
--- the admin dropped an executor cannot settle through the new rules.
+-- the admin and the pauser dropped an executor cannot settle through the new
+-- rules.
 testSettlementChecksExecutorAllowlist : Script ()
 testSettlementChecksExecutorAllowlist = do
   app0@App{..} <- setup
@@ -1384,8 +1411,8 @@ testSettlementChecksExecutorAllowlist = do
   aliceAlloc <- allocate app0 alice (mkSpec app0 alice [senderSide leg] None) [aliceTok]
   bobAlloc <- allocate app0 bob (mkSpec app0 bob [receiverSide leg] None) []
   Some rules <- queryContractId admin rulesCid
-  submit admin do archiveCmd rulesCid
-  newRulesCid <- submit admin do createCmd rules with allowedExecutors = []
+  newRulesCid <- proposeRules (Some rulesCid) rules with allowedExecutors = []
+  (isNone <$> queryContractId admin rulesCid) >>= (=== True)
   Some disclosure <- queryDisclosure @MyRules admin newRulesCid
   let app = app0 with rulesCid = newRulesCid; rulesDisclosure = disclosure
   (batchArgs, statuses) <- batchStatusArgs app [alice, bob]
@@ -1483,13 +1510,14 @@ testAdminUnlockAfterEarlyClearedFlag = do
   unlocked.holding.account === locked.holding.account
   unlocked.roles === locked.roles
 
--- | The signatories can archive a holding and the rules contract directly.
+-- | The signatories, the pauser among them, can archive a holding and the
+-- rules contract directly.
 testSignatoriesArchive : Script ()
 testSignatoriesArchive = do
   app@App{..} <- setup
   aliceTok <- mint app alice 10.0
-  submit (actAs [admin, alice]) do archiveCmd (fromInterfaceContractId @MyHolding aliceTok)
-  submit (actAs admin) do archiveCmd rulesCid
+  submit (actAs [admin, alice, pauser]) do archiveCmd (fromInterfaceContractId @MyHolding aliceTok)
+  submit (actAs [admin, pauser]) do archiveCmd rulesCid
   balanceSeenBy alice alice >>= (=== [])
 
 -- Trust boundary
@@ -1591,7 +1619,7 @@ testExpireTransferInstructionsRefusesOtherRegistry = do
   app@App{..} <- setup
   otherAdmin <- allocateParty "otherAdmin"
   Some rules <- queryContractId admin rulesCid
-  otherRulesCid <- submit otherAdmin do createCmd rules with config = rules.config with admin = otherAdmin
+  otherRulesCid <- submit (actAs [otherAdmin, pauser]) do createCmd rules with config = rules.config with admin = otherAdmin
   Some otherDisclosure <- queryDisclosure @MyRules otherAdmin otherRulesCid
   let other = app with admin = otherAdmin; rulesCid = otherRulesCid; rulesDisclosure = otherDisclosure
   _ <- openAccount other alice
@@ -1671,7 +1699,7 @@ testMergeRefusesInputsOfOtherRoles = do
   app@App{..} <- setup
   newAuditor <- allocateParty "newAuditor"
   Some rules <- queryContractId admin rulesCid
-  newRulesCid <- submit admin do createCmd rules with roles = rules.roles with auditor = newAuditor
+  newRulesCid <- proposeRules None rules with roles = rules.roles with auditor = newAuditor
   Some newDisclosure <- queryDisclosure @MyRules admin newRulesCid
   let reissued = app with rulesCid = newRulesCid; rulesDisclosure = newDisclosure
   oldTok <- mint app alice 10.0
@@ -1708,3 +1736,158 @@ testMergeRefusesForeignInput = do
   mustFailWith "holding is not a MyHolding" (actAs attacker)
     (mergeCmd attackerStatus genuine [toInterfaceContractId @HoldingV2.Holding forgedCid])
   balanceSeenBy attacker attacker >>= (=== [1.0])
+
+-- Binding the admin
+--------------------
+
+-- | The pauser co-signs every contract, so the admin cannot replace the
+-- paused rules contract with an unpaused, fee-free one, mint itself a
+-- holding, or copy a pending instruction or allocation, even with the
+-- owner's authority. With the pauser's authority the same holding is
+-- created.
+testAdminAloneCannotCreateContracts : Script ()
+testAdminAloneCannotCreateContracts = do
+  app0@App{..} <- setup
+  aliceTok <- mint app0 alice 10.0
+  Some holding <- queryContractId admin (fromInterfaceContractId @MyHolding aliceTok)
+  _ <- alicePendingTransfer app0 4.0
+  _ <- allocate app0 alice (mkSpec app0 alice [senderSide (mkLeg "leg-1" alice bob 3.0)] None) =<< unlockedOf alice
+  app <- pauseRegistry app0
+  Some rules <- queryContractId admin app.rulesCid
+  mustLackPauser pauser (actAs admin) do
+    createCmd rules with paused = False; transferFeeBps = 0; allowedExecutors = [admin]
+  mustLackPauser pauser (actAs admin) do
+    createCmd holding with holding = holding.holding with account = basicAccount admin
+  mustLackPauser pauser (actAs [admin, alice]) do createCmd holding
+  [(_, instr)] <- query @MyTransferInstruction alice
+  mustLackPauser pauser (actAs [admin, alice]) do createCmd instr
+  [(_, alloc)] <- query @MyAllocation alice
+  mustLackPauser pauser (actAs [admin, alice]) do createCmd alloc
+  _ <- submit (actAs [admin, alice, pauser]) do createCmd holding
+  balanceSeenBy alice alice >>= (=== [3.0, 3.0, 4.0, 10.0])
+
+-- | The admin and the owner together cannot spend or archive a holding
+-- outside the workflows: both need the pauser.
+testAdminAndOwnerCannotSpendAlone : Script ()
+testAdminAndOwnerCannotSpendAlone = do
+  app@App{..} <- setup
+  aliceTok <- mint app alice 10.0
+  let aliceCid = fromInterfaceContractId @MyHolding aliceTok
+  aliceStatus <- statusOf app alice
+  mustLackPauser pauser (actAs [admin, alice]) do exerciseCmd aliceCid MyHolding_Spend with statusCid = aliceStatus
+  mustLackPauser pauser (actAs [admin, alice]) do archiveCmd aliceCid
+  mustLackPauser pauser (actAs admin) do archiveCmd rulesCid
+  balanceSeenBy alice alice >>= (=== [10.0])
+
+-- | A rules proposal takes effect only when the pauser accepts it, and only
+-- as proposed: the admin cannot accept its own, a proposal that breaks the
+-- template's checks fails on accept, and a replacement fails once the pause
+-- switch has replaced the contract it names. The admin withdraws a proposal
+-- by archiving it.
+testRulesProposalNeedsPauser : Script ()
+testRulesProposalNeedsPauser = do
+  app@App{..} <- setup
+  Some rules <- queryContractId admin rulesCid
+  proposalCid <- submit admin do
+    createCmd MyRulesProposal with rules = (rules with transferFeeBps = 100); replaces = Some rulesCid
+  mustLackPauser pauser (actAs admin) do exerciseCmd proposalCid MyRulesProposal_Accept
+  badCid <- submit admin do
+    createCmd MyRulesProposal with rules = (rules with transferFeeBps = 10001); replaces = None
+  mustFailWith "Template precondition violated" (actAs pauser) do exerciseCmd badCid MyRulesProposal_Accept
+  submit admin do archiveCmd badCid
+  _ <- pauseRegistry app
+  mustFailWith "Could not find contract" (actAs pauser) do exerciseCmd proposalCid MyRulesProposal_Accept
+  [(_, live)] <- query @MyRules admin
+  live.paused === True
+  live.transferFeeBps === 0
+
+-- | A registry the admin signed alone, naming itself as the pauser, and a
+-- holding minted through it.
+selfPausedRegistry : App -> Script (App, ContractId HoldingV2.Holding)
+selfPausedRegistry app@App{..} = do
+  Some rules <- queryContractId admin rulesCid
+  ownCid <- submit admin do createCmd rules with roles = rules.roles with pauser = admin
+  Some ownDisclosure <- queryDisclosure @MyRules admin ownCid
+  let own = app with rulesCid = ownCid; rulesDisclosure = ownDisclosure
+  ownTok <- mint own alice 10.0
+  pure (own, ownTok)
+
+-- | The admin can sign a registry that names itself as the pauser, but the
+-- two never mix: this registry refuses the other's holding as funding, and
+-- the other refuses this one's.
+testHoldingNamingAnotherPauserRefused : Script ()
+testHoldingNamingAnotherPauserRefused = do
+  app@App{..} <- setup
+  (own, ownTok) <- selfPausedRegistry app
+  Some h <- queryContractId alice (fromInterfaceContractId @MyHolding ownTok)
+  h.roles.pauser === admin
+  -- Both registries share the admin and the compliance officer, so alice's
+  -- one status covers both.
+  (aliceArgs, _) <- statusFor app alice
+  mustFailWith "holding names a different pauser" (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] aliceArgs (mkTransfer app alice bob 10.0 [ownTok]))
+  aliceTok <- mint app alice 10.0
+  mustFailWith "holding names a different pauser" (actAs alice <> discloseMany [own.rulesDisclosure])
+    (transferCmd own [alice] aliceArgs (mkTransfer own alice bob 10.0 [aliceTok]))
+  balanceSeenBy bob bob >>= (=== [])
+
+-- | An allocation made through a registry naming another pauser cannot
+-- cover a leg in this registry's settlement, where it would pay bob in this
+-- token from funding outside it, and that registry cannot settle this
+-- registry's allocations.
+testAllocationNamingAnotherPauserRefused : Script ()
+testAllocationNamingAnotherPauserRefused = do
+  app@App{..} <- setup
+  (own, ownTok) <- selfPausedRegistry app
+  let leg = mkLeg "leg-1" alice bob 10.0
+  ownAlloc <- allocate own alice (mkSpec own alice [senderSide leg] None) [ownTok]
+  bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
+  (batchArgs, statusDisclosures) <- batchStatusArgs app [alice, bob]
+  mustFailWith "allocation names a different pauser" (actAs exchange <> discloseMany (rulesDisclosure :: statusDisclosures))
+    (settleBatchCmd app [leg] (map nonIteratedAllocation [ownAlloc, bobAlloc]) batchArgs)
+  aliceTok <- mint app alice 10.0
+  aliceAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) [aliceTok]
+  mustFailWith "allocation names a different pauser" (actAs exchange <> discloseMany (own.rulesDisclosure :: statusDisclosures))
+    (settleBatchCmd own [leg] (map nonIteratedAllocation [aliceAlloc, bobAlloc]) batchArgs)
+  setTime t3
+  (aliceArgs, _) <- statusFor app alice
+  mustFailWith "allocation names a different pauser" (actAs admin)
+    (expireAllocationsCmd app [(ownAlloc, aliceArgs)])
+  balanceSeenBy bob bob >>= (=== [])
+
+-- | Even a pending contract the pauser signed cannot pay out or return a
+-- holding that names another pauser: delivery and return refuse it as
+-- funding does.
+testPendingContractRefusesHoldingNamingAnotherPauser : Script ()
+testPendingContractRefusesHoldingNamingAnotherPauser = do
+  app@App{..} <- setup
+  (own, ownTok) <- selfPausedRegistry app
+  (aliceArgs, aliceDisclosure) <- statusFor app alice
+  ownPending <- pendingCid =<< submit (actAs alice <> discloseMany [own.rulesDisclosure])
+    (transferCmd own [alice] aliceArgs (mkTransfer own alice bob 10.0 [ownTok]))
+  Some ownInstr <- queryContractId alice (fromInterfaceContractId @MyTransferInstruction ownPending)
+  -- The same pending transfer under this registry's roles, with the
+  -- pauser's signature, still naming the other registry's locked holding.
+  copyCid <- submit (actAs [admin, alice, pauser]) do
+    createCmd ownInstr with roles = ownInstr.roles with pauser
+  let copy = toInterfaceContractId @TransferInstructionV2.TransferInstruction copyCid
+  funding <- instructionDisclosures app copy
+  mustFailWith "holding names a different pauser" (actAs bob <> discloseMany (aliceDisclosure :: funding)) do
+    exerciseCmd copy TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]; extraArgs = aliceArgs
+  mustFailWith "holding names a different pauser" (actAs alice) do
+    exerciseCmd copy TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [alice]; extraArgs = aliceArgs
+  balanceSeenBy bob bob >>= (=== [])
+
+-- | The registry expires only transfer instructions that name its pauser.
+testExpireTransferInstructionsRefusesAnotherPauser : Script ()
+testExpireTransferInstructionsRefusesAnotherPauser = do
+  app@App{..} <- setup
+  (own, ownTok) <- selfPausedRegistry app
+  (aliceArgs, _) <- statusFor app alice
+  ownPending <- pendingCid =<< submit (actAs alice <> discloseMany [own.rulesDisclosure])
+    (transferCmd own [alice] aliceArgs (mkTransfer own alice bob 10.0 [ownTok]))
+  setTime t3
+  mustFailWith "transfer instruction names a different pauser" (actAs admin)
+    (expireInstructionsCmd app [(ownPending, aliceArgs)])
