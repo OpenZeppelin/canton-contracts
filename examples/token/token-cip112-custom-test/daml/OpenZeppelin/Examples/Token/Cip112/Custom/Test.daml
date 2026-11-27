@@ -1342,22 +1342,19 @@ testPauseBlocksFactories = do
 -- not accepted while the registry is paused. The rules id from before the
 -- pause is archived, so it cannot stand in for the paused one, whether the
 -- admin passes it or a receiver passes it with the disclosure it cached
--- before the pause. A reject reads
--- no rules contract and returns the funds while paused. After the unpause,
--- each accept goes through with the new id, and the paused id is refused.
+-- before the pause. After the unpause, each accept goes through with the new
+-- id, and the paused id is refused.
 testPauseHoldsAccept : Script ()
 testPauseHoldsAccept = do
   app0@App{..} <- setup
   _ <- mint app0 alice 10.0
   transferCid <- alicePendingTransfer app0 4.0
-  rejectedCid <- alicePendingTransfer app0 2.0
   (aliceArgs, aliceStatus) <- statusFor app0 alice
   burnInputs <- unlockedOf alice
   burnCid <- pendingCid =<< submit (actAs alice <> discloseMany [rulesDisclosure])
     (transferCmd app0 [alice] aliceArgs ((mkTransfer app0 alice alice 3.0 burnInputs) with receiver = burnAccount))
   mintCid <- submit (actAs admin) (offerMintCmd app0 bob 5.0)
   transferFunding <- instructionDisclosures app0 transferCid
-  rejectFunding <- instructionDisclosures app0 rejectedCid
   paused <- pauseRegistry app0
   let asBob rules = actAs bob <> discloseMany (rules :: aliceStatus :: transferFunding)
 
@@ -1368,7 +1365,6 @@ testPauseHoldsAccept = do
   mustFailWith "registry is paused" (actAs admin) (acceptCmd admin (withRules paused aliceArgs) burnCid)
   mustFailArchived app0.rulesCid (actAs admin) (acceptCmd admin (withRules app0 aliceArgs) burnCid)
   mustFailArchived app0.rulesCid (asBob rulesDisclosure) (acceptCmd bob (withRules app0 aliceArgs) transferCid)
-  _ <- submit (actAs bob <> discloseMany (aliceStatus :: rejectFunding)) (rejectCmd bob aliceArgs rejectedCid)
 
   app <- unpauseRegistry paused
   mustFailArchived paused.rulesCid (actAs admin) (acceptCmd admin (withRules paused aliceArgs) burnCid)
@@ -1376,7 +1372,7 @@ testPauseHoldsAccept = do
   _ <- submit (actAs bob <> discloseMany [app.rulesDisclosure]) (acceptCmd bob (rulesArgs app) mintCid)
   _ <- submit (actAs admin) (acceptCmd admin (withRules app aliceArgs) burnCid)
   balanceSeenBy bob bob >>= (=== [4.0, 5.0])
-  balanceSeenBy alice alice >>= (=== [1.0, 2.0])
+  balanceSeenBy alice alice >>= (=== [3.0])
   assertNoLocks alice
 
 -- | Allocations made before the pause settle neither in a batch nor
@@ -1510,12 +1506,13 @@ testPauseKeepsTheRules = do
   Some after <- queryContractId admin app.rulesCid
   after === before
 
--- | Withdraw, cancel, and the admin's expiry choices run while the registry
--- is paused and return the funds. `testPauseHoldsAccept` covers reject.
+-- | Reject, withdraw, cancel, and the admin's expiry choices run while the
+-- registry is paused and return the funds.
 testPauseReturnsFunds : Script ()
 testPauseReturnsFunds = do
   app0@App{..} <- setup
-  _ <- mint app0 alice 10.0
+  _ <- mint app0 alice 11.0
+  rejected <- alicePendingTransfer app0 1.0
   withdrawn <- alicePendingTransfer app0 1.0
   expired <- alicePendingTransfer app0 2.0
   let allocateAlice legId amount =
@@ -1524,8 +1521,10 @@ testPauseReturnsFunds = do
   cancelledAlloc <- allocateAlice "leg-2" 3.0
   expiredAlloc <- allocateAlice "leg-3" 3.0
   (aliceArgs, aliceStatus) <- statusFor app0 alice
+  rejectFunding <- instructionDisclosures app0 rejected
   cancelFunding <- allocationDisclosures app0 cancelledAlloc
   paused <- pauseRegistry app0
+  _ <- submit (actAs bob <> discloseMany (aliceStatus :: rejectFunding)) (rejectCmd bob aliceArgs rejected)
   _ <- submit (actAs alice) (withdrawCmd alice aliceArgs withdrawn)
   _ <- submit (actAs alice) (allocationWithdrawCmd alice aliceArgs withdrawnAlloc)
   _ <- submit (actAs exchange <> discloseMany (aliceStatus :: cancelFunding))
@@ -1534,7 +1533,7 @@ testPauseReturnsFunds = do
   submit (actAs admin) (expireInstructionsCmd paused [(expired, aliceArgs)])
   submit (actAs admin) (expireAllocationsCmd paused [(expiredAlloc, aliceArgs)])
   assertNoLocks alice
-  sum <$> balanceSeenBy alice alice >>= (=== 10.0)
+  sum <$> balanceSeenBy alice alice >>= (=== 11.0)
 
 -- Fee on transfer
 ------------------
