@@ -102,6 +102,7 @@ vault-fund)
 		OpenZeppelin.Examples.AsyncVault.Fund:demoPermittedDeposit
 		OpenZeppelin.Examples.AsyncVault.Fund:demoPriceChangeAndRedemption
 		OpenZeppelin.Examples.AsyncVault.Fund:demoAccessWithdrawn
+		OpenZeppelin.Examples.AsyncVault.Fund:demoTrackedPool
 	)
 	WITNESS_SCRIPTS=""
 	;;

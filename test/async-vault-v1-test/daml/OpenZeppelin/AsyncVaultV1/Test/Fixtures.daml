@@ -7,7 +7,7 @@ import DA.Action (unless)
 import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
 import DA.Fail (FailureCategory (..), FailureStatus (..), failWithStatus)
-import DA.Optional (isNone, isSome)
+import DA.Optional (fromOptional, isNone, isSome)
 import DA.Stack (HasCallStack)
 import DA.TextMap qualified as TextMap
 import DA.Time (days, hours, milliseconds, time)
@@ -398,10 +398,12 @@ stateOf : Decimal -> Decimal -> SharePrice -> VaultState
 stateOf reserves totalShares price = VaultState with reserves; totalShares; price; batch = 0
 
 -- | The ledger of the fixture's vault, with a band of `maxDeviation` around
--- `referencePrice` and batches of up to 25 requests.
+-- `referencePrice` and batches of up to 25 requests. It does not track the
+-- pool.
 ledgerOf : Fixture -> VaultState -> SharePrice -> Decimal -> VaultLedger
 ledgerOf Fixture{..} state referencePrice maxDeviation = VaultLedger with
   config; registries; state; referencePrice; maxDeviation; maxBatchSize = 25
+  trackedPool = None
 
 -- | Create a ledger with every signatory's authority.
 newLedger : Fixture -> VaultState -> SharePrice -> Decimal -> Script (ContractId VaultLedger)
@@ -434,7 +436,28 @@ settleCmd
   : Fixture -> ContractId VaultLedger -> SharePrice -> [ContractId DepositRequest]
   -> [ContractId RedeemRequest]
   -> Script ([Disclosure], Commands VaultLedger_SettleBatchResult)
-settleCmd f@Fixture{..} ledgerCid price depositCids redeemCids = do
+settleCmd f ledgerCid price depositCids redeemCids = do
+  pool <- unlockedHoldings f.config.underlying f.treasury
+  settleCmdFrom f ledgerCid price depositCids redeemCids pool pool
+
+-- | The command the operator submits to settle a batch on a ledger that
+-- tracks its pool, and the disclosures it needs. The command names no pool
+-- holdings, and the tracked ones are disclosed.
+settleTrackedCmd
+  : Fixture -> ContractId VaultLedger -> SharePrice -> [ContractId DepositRequest]
+  -> [ContractId RedeemRequest]
+  -> Script ([Disclosure], Commands VaultLedger_SettleBatchResult)
+settleTrackedCmd f ledgerCid price depositCids redeemCids = do
+  tracked <- trackedPoolOf f ledgerCid
+  settleCmdFrom f ledgerCid price depositCids redeemCids tracked []
+
+-- | A batch command that discloses the pool holdings `shown` and names the
+-- pool holdings `named`.
+settleCmdFrom
+  : Fixture -> ContractId VaultLedger -> SharePrice -> [ContractId DepositRequest]
+  -> [ContractId RedeemRequest] -> [ContractId HoldingV2.Holding] -> [ContractId HoldingV2.Holding]
+  -> Script ([Disclosure], Commands VaultLedger_SettleBatchResult)
+settleCmdFrom f@Fixture{..} ledgerCid price depositCids redeemCids shown named = do
   deposits <- forA depositCids $ \cid -> do
     visible operator cid
     Some request <- queryContractId operator cid
@@ -445,12 +468,11 @@ settleCmd f@Fixture{..} ledgerCid price depositCids redeemCids = do
     pure request.state.escrowCid
   underlyingFunding <- fundingDisclosures config.underlying.admin deposits
   shareFunding <- fundingDisclosures config.share.admin redeems
-  pool <- unlockedHoldings config.underlying treasury
-  poolDisclosures <- holdingDisclosures config.underlying.admin pool
+  poolDisclosures <- holdingDisclosures config.underlying.admin shown
   pure
     ( f.registryDisclosures <> underlyingFunding <> shareFunding <> poolDisclosures
     , exerciseCmd ledgerCid VaultLedger_SettleBatch with
-        price; depositCids; redeemCids; poolHoldingCids = pool; requestedAt = t0; args = noArgs )
+        price; depositCids; redeemCids; poolHoldingCids = named; requestedAt = t0; args = noArgs )
 
 -- | Settle a batch at a price as the operator, alone.
 settleBatch
@@ -468,8 +490,39 @@ trySettleBatch f ledgerCid price depositCids redeemCids = do
   (disclosed, cmd) <- settleCmd f ledgerCid price depositCids redeemCids
   trySubmit (actAs f.operator <> discloseMany disclosed) cmd
 
+-- | Settle a batch at a price as the operator, alone, on a ledger that
+-- tracks its pool.
+settleTrackedBatch
+  : Fixture -> ContractId VaultLedger -> SharePrice -> [ContractId DepositRequest]
+  -> [ContractId RedeemRequest] -> Script VaultLedger_SettleBatchResult
+settleTrackedBatch f ledgerCid price depositCids redeemCids = do
+  (disclosed, cmd) <- settleTrackedCmd f ledgerCid price depositCids redeemCids
+  submit (actAs f.operator <> discloseMany disclosed) cmd
+
+-- | Try to settle a batch at a price as the operator, alone, on a ledger
+-- that tracks its pool.
+trySettleTrackedBatch
+  : Fixture -> ContractId VaultLedger -> SharePrice -> [ContractId DepositRequest]
+  -> [ContractId RedeemRequest] -> Script (Either SubmitError VaultLedger_SettleBatchResult)
+trySettleTrackedBatch f ledgerCid price depositCids redeemCids = do
+  (disclosed, cmd) <- settleTrackedCmd f ledgerCid price depositCids redeemCids
+  trySubmit (actAs f.operator <> discloseMany disclosed) cmd
+
 -- | The state a ledger contract records.
 ledgerState : Fixture -> ContractId VaultLedger -> Script VaultState
 ledgerState f ledgerCid = do
   Some ledger <- queryContractId f.operator ledgerCid
   pure ledger.state
+
+-- | The holdings a ledger tracks as its pool, or none when it tracks none.
+trackedPoolOf : Fixture -> ContractId VaultLedger -> Script [ContractId HoldingV2.Holding]
+trackedPoolOf f ledgerCid = do
+  Some ledger <- queryContractId f.operator ledgerCid
+  pure (fromOptional [] ledger.trackedPool)
+
+-- | The amount of each of the custodian's holdings named, as the
+-- underlying's admin sees them.
+amountsOf : Fixture -> [ContractId HoldingV2.Holding] -> Script [Decimal]
+amountsOf f holdingCids = forA holdingCids $ \holdingCid -> do
+  Some held <- queryContractId f.config.underlying.admin (fromInterfaceContractId @TestHolding holdingCid)
+  pure held.holding.amount

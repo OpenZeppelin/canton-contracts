@@ -54,7 +54,7 @@ and `openzeppelin-async-vault-utils`.
 
 | Example | Tests | Shows |
 |---|---|---|
-| [`async-vault-fund-test`](vault/async-vault-fund-test/) | scripts only | Running the default templates of `openzeppelin-async-vault-v1` end to end with `openzeppelin-async-vault-permits-v1` as the deposit gate and `openzeppelin-token-cip112-v1` as the registry of both instruments: a validator enabling depositors, requests made alone by disclosure, batches at a price within the admin's band, a deposit paying a redemption, and a validator's withdrawal |
+| [`async-vault-fund-test`](vault/async-vault-fund-test/) | scripts only | Running the default templates of `openzeppelin-async-vault-v1` end to end with `openzeppelin-async-vault-permits-v1` as the deposit gate and `openzeppelin-token-cip112-v1` as the registry of both instruments: a validator enabling depositors, requests made alone by disclosure, batches at a price within the admin's band, a deposit paying a redemption, a validator's withdrawal, and a ledger that tracks its pool |
 | [`async-vault-custom`](vault/async-vault-custom/) | [`async-vault-custom-test`](vault/async-vault-custom-test/) | A lending pool that owns its rules, ledger, and request templates and reuses `openzeppelin-async-vault-types-v1` and `openzeppelin-async-vault-utils` unchanged: a smallest deposit, a price that never falls and rises by a bounded step per batch, and a limit on what one batch pays out to redemptions |
 
 ## Build and run

@@ -12,10 +12,11 @@
 --   instruments: the issuer's for the underlying, and the vault admin's own
 --   for the shares.
 --
--- Three scripts: `demoPermittedDeposit` opens the fund to the parties a
+-- Four scripts: `demoPermittedDeposit` opens the fund to the parties a
 -- validator enables and settles a first batch; `demoPriceChangeAndRedemption`
 -- settles a deposit and a redemption together at a new price;
--- `demoAccessWithdrawn` withdraws the validator and lets its investor leave.
+-- `demoAccessWithdrawn` withdraws the validator and lets its investor leave;
+-- `demoTrackedPool` has the ledger name the holdings behind its reserves.
 -- Each includes its failing paths.
 --
 -- The scripts run under `dpm test` on the in-memory ledger, and
@@ -28,7 +29,8 @@ module OpenZeppelin.Examples.AsyncVault.Fund where
 import DA.Assert ((===))
 import DA.Date (date, Month(Jan))
 import DA.Fail (FailureStatus)
-import DA.Optional (isNone, isSome)
+import DA.List (sort)
+import DA.Optional (fromOptional, isNone, isSome)
 import DA.Stack (HasCallStack)
 import DA.Text qualified as T
 import DA.Time (days, hours, milliseconds, time)
@@ -47,7 +49,7 @@ import OpenZeppelin.Token.Cip112.V1.Registry (TokenRules(..), TokenRules_OfferMi
 import OpenZeppelin.ScopedAuthorizationGrantV1 qualified as SAG
 
 import OpenZeppelin.AsyncVault.TypesV1
-import OpenZeppelin.AsyncVault.Utils.Math (ePriceOutOfBand)
+import OpenZeppelin.AsyncVault.Utils.Math (eInsufficientReserves, ePriceOutOfBand)
 import OpenZeppelin.AsyncVault.Utils.Settlement (eBelowMinimum)
 import OpenZeppelin.AsyncVaultV1
 import OpenZeppelin.AsyncVaultPermitsV1
@@ -172,6 +174,45 @@ demoAccessWithdrawn = do
   holds config.underlying alice (150.0, 0.0)
   holds config.share alice (0.0, 0.0)
 
+-- | Tracking the pool. The admin has the ledger track the vault's pool, and
+-- from then on the ledger names the custodian's holdings behind the
+-- reserves it records: the operator names none, and each batch leaves the
+-- holdings the registry returned. A gain paid to the custodian outside a
+-- batch is not in the pool until the operator records the reserves with it.
+demoTrackedPool : Script ()
+demoTrackedPool = do
+  f@Fund{..} <- launch "tracked-"
+  let grown = priceOf 11.0 10.0
+  alicesPermit <- enable f alice
+  mint f alice 100.0
+  tracking <- submit admin do
+    exerciseCmd openingLedgerCid VaultLedger_TrackPool with holdingCids = []
+
+  -- HAPPY: the first batch leaves the pool as one holding of the registry.
+  depositCid <- requestDeposit f alice alicesPermit (depositOf alice "deposit-1" 100.0)
+  first <- settle f tracking parity [depositCid] []
+  trackedAmounts f first.ledgerCid >>= (=== [100.0])
+  holds config.underlying admin (100.0, 0.0)
+  holds config.share alice (100.0, 0.0)
+
+  -- FAILING: the pool earns 10 outside a batch. The ledger still names the
+  -- one holding, so a redemption that needs the gain is refused.
+  mint f admin 10.0
+  trackedAmounts f first.ledgerCid >>= (=== [100.0])
+  redeemCid <- requestRedeem f alice (redeemOf alice "redeem-1" 100.0)
+  mustFailWith eInsufficientReserves (trySettle f first.ledgerCid grown [] [redeemCid])
+
+  -- HAPPY: the operator records the reserves with both holdings, and the
+  -- redemption is paid from them.
+  recorded <- recordReserves f first.ledgerCid
+  trackedAmounts f recorded >>= \amounts -> sort amounts === [10.0, 100.0]
+  second <- settle f recorded grown [] [redeemCid]
+  second.batch.state === VaultState with
+    reserves = 0.0; totalShares = 0.0; price = grown; batch = 2
+  trackedAmounts f second.ledgerCid >>= (=== [])
+  holds config.underlying alice (110.0, 0.0)
+  holds config.underlying admin (0.0, 0.0)
+
 -- Setup
 -------------------------------------------------------
 
@@ -290,6 +331,7 @@ launch prefix = do
       referencePrice = parity
       maxDeviation = 0.25
       maxBatchSize = 25
+      trackedPool = None
   grantCid <- submit admin do
     exerciseCmd permitRules DepositPermitRules_Appoint with
       validator; validFrom = None; validUntil = None
@@ -413,8 +455,14 @@ trySettle Fund{..} ledgerCid price depositCids redeemCids = do
   redeems <- forA redeemCids $ \cid -> eventually (queryContractId operator cid)
   depositFunding <- lockedFunding config.underlying.admin [request.state.escrowCid | request <- deposits]
   redeemFunding <- lockedFunding config.share.admin [request.state.escrowCid | request <- redeems]
-  poolHoldingCids <- unlocked config.underlying admin
-  poolShown <- shownBy admin poolHoldingCids
+  ledger <- eventually (queryContractId operator ledgerCid)
+  held <- unlocked config.underlying admin
+  -- A ledger that tracks its pool is funded from the holdings it names, and
+  -- the batch names none.
+  let (poolToShow, poolHoldingCids) = case ledger.trackedPool of
+        Some tracked -> (tracked, [])
+        None -> (held, held)
+  poolShown <- shownBy admin poolToShow
   trySubmit
     (actAs operator <> discloseMany (registriesShown <> depositFunding <> redeemFunding <> poolShown)) do
       exerciseCmd ledgerCid VaultLedger_SettleBatch with
@@ -439,6 +487,14 @@ recordReserves Fund{..} ledgerCid = do
   shown <- shownBy admin holdingCids
   submit (actAs operator <> discloseMany shown) do
     exerciseCmd ledgerCid VaultLedger_RecordReserves with holdingCids
+
+-- | The amounts of the holdings a ledger tracks as its pool.
+trackedAmounts : Fund -> ContractId VaultLedger -> Script [Decimal]
+trackedAmounts Fund{..} ledgerCid = do
+  ledger <- eventually (queryContractId operator ledgerCid)
+  forA (fromOptional [] ledger.trackedPool) $ \holdingCid -> do
+    held <- eventually (queryContractId admin (fromInterfaceContractId @TokenHolding holdingCid))
+    pure held.holding.amount
 
 -- | The state a ledger contract records.
 ledgerState : Fund -> ContractId VaultLedger -> Script VaultState

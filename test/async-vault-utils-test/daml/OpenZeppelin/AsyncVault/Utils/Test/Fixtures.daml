@@ -363,6 +363,29 @@ template TestVaultState with
         stateCid <- create this with state = batch.state
         pure (stateCid, batch)
 
+    choice TestVaultState_SettleTracked
+        : (ContractId TestVaultState, SettledBatch, [ContractId HoldingV2.Holding])
+      -- ^ Settle a batch as a vault that tracks its pool does: funded from
+      -- `trackedPool` alone, at the price the state records.
+      with
+        depositCids : [ContractId TestDepositRequest]
+        redeemCids : [ContractId TestRedeemRequest]
+        trackedPool : [ContractId HoldingV2.Holding]
+        requestedAt : Time
+        args : RequestArgs
+      controller config.operator
+      do
+        deposits <- forA depositCids fetch
+        redeems <- forA redeemCids fetch
+        (batch, pool) <- settleTrackedBatchImpl config registries defaultVaultPolicy state state.price
+          (map (.state) deposits) (map (.state) redeems) trackedPool requestedAt args
+        forA_ (zip depositCids batch.depositFills) $ \(cid, fill) ->
+          exercise cid TestDepositRequest_Fill with fill
+        forA_ (zip redeemCids batch.redeemFills) $ \(cid, fill) ->
+          exercise cid TestRedeemRequest_Fill with fill
+        stateCid <- create this with state = batch.state
+        pure (stateCid, batch, pool)
+
     choice TestVaultState_RecordReserves : ContractId TestVaultState
       with
         holdingCids : [ContractId HoldingV2.Holding]
@@ -624,6 +647,34 @@ trySettleBatch
 trySettleBatch f stateCid price depositCids redeemCids = do
   (disclosed, cmd) <- settleCmd f stateCid price depositCids redeemCids (requestArgs f)
   trySubmit (actAs f.operator <> discloseMany disclosed) cmd
+
+-- | Try to settle a batch as the operator, alone, funded from a tracked pool:
+-- the holdings named, and no other.
+trySettleTracked
+  : Fixture -> ContractId TestVaultState -> [ContractId TestDepositRequest]
+  -> [ContractId TestRedeemRequest] -> [ContractId HoldingV2.Holding]
+  -> Script (Either SubmitError (ContractId TestVaultState, SettledBatch, [ContractId HoldingV2.Holding]))
+trySettleTracked f@Fixture{..} stateCid depositCids redeemCids trackedPool = do
+  deposits <- forA depositCids $ \cid -> do
+    Some request <- queryContractId admin cid
+    pure request.state.escrowCid
+  redeems <- forA redeemCids $ \cid -> do
+    Some request <- queryContractId admin cid
+    pure request.state.escrowCid
+  underlyingFunding <- fundingDisclosures config.underlying.admin deposits
+  shareFunding <- fundingDisclosures config.share.admin redeems
+  poolDisclosures <- holdingDisclosures config.underlying.admin trackedPool
+  trySubmit
+    (actAs operator <> discloseMany (f.disclosures <> underlyingFunding <> shareFunding <> poolDisclosures))
+    do
+      exerciseCmd stateCid TestVaultState_SettleTracked with
+        depositCids; redeemCids; trackedPool; requestedAt = t0; args = requestArgs f
+
+-- | The amount of each of the custodian's holdings named.
+amountsOf : Fixture -> [ContractId HoldingV2.Holding] -> Script [Decimal]
+amountsOf Fixture{..} holdingCids = forA holdingCids $ \holdingCid -> do
+  Some held <- queryContractId config.underlying.admin (fromInterfaceContractId @TestHolding holdingCid)
+  pure held.holding.amount
 
 -- Reserves
 -------------------------------------------------------

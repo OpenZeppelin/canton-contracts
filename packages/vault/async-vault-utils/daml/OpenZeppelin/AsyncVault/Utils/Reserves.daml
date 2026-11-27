@@ -90,12 +90,22 @@ sumReserves config = foldlA add 0.0
 recordReservesImpl
   : VaultConfig -> VaultState -> [ContractId HoldingV2.Holding] -> Update VaultState
 recordReservesImpl config state holdingCids = do
+  reserves <- heldReserves config holdingCids
+  requireRight (stateWithReserves state reserves)
+
+-- | What the custodian's holdings named here amount to on the ledger now:
+-- the sum `sumReserves` gives for them. It fetches every holding, so it needs
+-- the authority and the visibility `recordReservesImpl` does.
+--
+-- Fails with `eDuplicateHolding` when a holding is named twice, and with the
+-- status `sumReserves` returns.
+heldReserves : VaultConfig -> [ContractId HoldingV2.Holding] -> Update Decimal
+heldReserves config holdingCids = do
   when (length (dedup holdingCids) /= length holdingCids) (failWithStatus eDuplicateHolding)
   holdings <- forA holdingCids $ \holdingCid -> do
     holding <- fetch holdingCid
     pure (signatory holding, view holding)
-  reserves <- requireRight (sumReserves config holdings)
-  requireRight (stateWithReserves state reserves)
+  requireRight (sumReserves config holdings)
 
 -- Failure statuses. A choice body that fails with one reaches the Ledger API
 -- as a `DAML_FAILURE` error carrying the `errorId` below, so a client matches

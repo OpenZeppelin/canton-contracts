@@ -33,11 +33,16 @@ of the example's own.
   deposit paying the redemption.
 - Withdrawing a validator: the admin revokes its appointment, the party it
   enabled can no longer deposit, and that party still redeems every share.
+- Tracking the pool: the admin has the ledger name the custodian's holdings
+  behind its reserves, each batch is funded from them and leaves the
+  holdings the registry returned, and a gain paid in outside a batch joins
+  the pool when the operator records the reserves.
 
-`OpenZeppelin.Examples.AsyncVault.Fund` carries three scripts:
+`OpenZeppelin.Examples.AsyncVault.Fund` carries four scripts:
 `demoPermittedDeposit` runs the gate and a first batch,
-`demoPriceChangeAndRedemption` runs a batch at a new price, and
-`demoAccessWithdrawn` runs the withdrawal of a validator.
+`demoPriceChangeAndRedemption` runs a batch at a new price,
+`demoAccessWithdrawn` runs the withdrawal of a validator, and
+`demoTrackedPool` runs a ledger that tracks its pool.
 
 ## Authority model
 

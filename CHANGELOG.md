@@ -91,9 +91,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   maths rounded down, and the request, cancel, reject, expiry,
   batch-settlement, reserve-recording, and deposit-gate choice bodies of an
   asynchronous vault as functions parameterised over the caller's templates
-  through a `VaultPolicy` record and constructor operations. It defines no
-  serializable types and depends on `openzeppelin-async-vault-types-v1` and
-  `openzeppelin-api-async-vault-v1`.
+  through a `VaultPolicy` record and constructor operations.
+  `settleTrackedBatchImpl` settles a batch from the holdings a vault tracks
+  as its pool and returns the holdings the pool is left with. The package
+  defines no serializable types and depends on
+  `openzeppelin-async-vault-types-v1` and `openzeppelin-api-async-vault-v1`.
 
 ### `openzeppelin-async-vault-v1`
 
@@ -107,7 +109,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   Standard allocation, which the requester cancels at any time. `VaultLedger`
   settles requests in batches at one price within a band the admin sets, and
   records the reserves, the shares outstanding, the last price, and the batch
-  number.
+  number. With `VaultLedger_TrackPool` it also names the custodian's holdings
+  behind the reserves and funds every batch from them.
 
 ### `openzeppelin-async-vault-permits-v1`
 

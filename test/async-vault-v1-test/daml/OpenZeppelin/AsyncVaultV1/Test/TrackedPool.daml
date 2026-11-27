@@ -1,0 +1,245 @@
+-- | Tests for a `VaultLedger` that tracks its pool: the holdings it names
+-- after each batch, what funds a batch, how a payment from outside joins the
+-- pool, what a tracked holding spent outside a batch does, who turns the
+-- tracking on and off, and the pools a ledger refuses.
+module OpenZeppelin.AsyncVaultV1.Test.TrackedPool where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.List (sort)
+import DA.Stack (HasCallStack)
+import DA.TextMap qualified as TextMap
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+
+import OpenZeppelin.AsyncVault.TypesV1
+import OpenZeppelin.AsyncVault.Utils.Math
+import OpenZeppelin.AsyncVault.Utils.Settlement
+import OpenZeppelin.AsyncVaultV1
+import OpenZeppelin.AsyncVaultV1.Test.Fixtures
+
+-- Helpers
+-------------------------------------------------------
+
+-- | The ledger of the fixture's vault with a band of a tenth around parity,
+-- tracking these holdings as its pool.
+trackedLedgerOf : Fixture -> VaultState -> [ContractId HoldingV2.Holding] -> VaultLedger
+trackedLedgerOf f state pool = (ledgerOf f state parity 0.1) with trackedPool = Some pool
+
+-- | Create a ledger that tracks these holdings, with every signatory's
+-- authority.
+newTrackedLedger
+  : Fixture -> VaultState -> [ContractId HoldingV2.Holding] -> Script (ContractId VaultLedger)
+newTrackedLedger f state pool =
+  submit (actAs (ledgerSignatories f.config)) do createCmd (trackedLedgerOf f state pool)
+
+-- | Require the ledger's tracked pool to be holdings of these amounts, to be
+-- every unlocked holding the custodian has, and to amount to the reserves
+-- the ledger records.
+poolIs : HasCallStack => Fixture -> ContractId VaultLedger -> [Decimal] -> Script ()
+poolIs f ledgerCid expected = do
+  tracked <- trackedPoolOf f ledgerCid
+  amounts <- amountsOf f tracked
+  sort amounts === sort expected
+  held <- unlockedHoldings f.config.underlying f.treasury
+  sort held === sort tracked
+  state <- ledgerState f ledgerCid
+  state.reserves === sum expected
+
+-- | Record these holdings as the reserves, as the operator, alone.
+recordPool
+  : Fixture -> ContractId VaultLedger -> [ContractId HoldingV2.Holding]
+  -> Script (ContractId VaultLedger)
+recordPool f ledgerCid holdingCids = do
+  shown <- holdingDisclosures f.config.underlying.admin holdingCids
+  submit (actAs f.operator <> discloseMany shown) do
+    exerciseCmd ledgerCid VaultLedger_RecordReserves with holdingCids
+
+-- What a tracked ledger names
+-------------------------------------------------------
+
+-- | A ledger that tracks its pool names, after every batch, the holdings the
+-- pool is left with. The operator names none. A first deposit leaves what
+-- the settlement paid the custodian. When more comes in than goes out, the
+-- pool's holding comes back as change beside the net inflow. When more goes
+-- out, one holding is left. Each time the pool is every holding the
+-- custodian has, and amounts to exactly the recorded reserves.
+testTrackedPoolFollowsEveryBatch : Script ()
+testTrackedPoolFollowsEveryBatch = script do
+  f@Fixture{..} <- setupSeparate
+  ledger <- newTrackedLedger f (stateOf 0.0 0.0 parity) []
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.underlying bob 50.0
+
+  first <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  opened <- settleTrackedBatch f ledger parity [first] []
+  poolIs f opened.ledgerCid [100.0]
+
+  second <- requestDeposit f bob (depositTerms bob "d1" 50.0)
+  out <- requestRedeem f alice (redeemTerms alice "r1" 20.0)
+  grown <- settleTrackedBatch f opened.ledgerCid parity [second] [out]
+  poolIs f grown.ledgerCid [100.0, 30.0]
+
+  rest <- requestRedeem f alice (redeemTerms alice "r2" 60.0)
+  shrunk <- settleTrackedBatch f grown.ledgerCid parity [] [rest]
+  poolIs f shrunk.ledgerCid [70.0]
+  shrunk.batch.state === VaultState with
+    reserves = 70.0; totalShares = 70.0; price = parity; batch = 3
+  balance config.underlying alice >>= (=== (80.0, 0.0))
+
+-- | A batch on a ledger that tracks its pool names no pool holdings: the
+-- operator does not choose what funds it. Naming the tracked holding itself
+-- is refused too, and nothing moves.
+testTrackedBatchNamesNoPoolHoldings : Script ()
+testTrackedBatchNamesNoPoolHoldings = script do
+  f@Fixture{..} <- setupSeparate
+  pool <- giveHolding config.underlying treasury 100.0
+  ledger <- newTrackedLedger f (stateOf 100.0 100.0 parity) [pool]
+  _ <- giveHolding config.underlying alice 40.0
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 40.0)
+
+  submitMustFailWith ePoolTracked (trySettleBatch f ledger parity [depositCid] [])
+  poolIs f ledger [100.0]
+  balance config.underlying alice >>= (=== (0.0, 40.0))
+
+  settled <- settleTrackedBatch f ledger parity [depositCid] []
+  poolIs f settled.ledgerCid [100.0, 40.0]
+
+-- Outside a batch
+-------------------------------------------------------
+
+-- | A payment the custodian receives outside a batch is not in the tracked
+-- pool: the ledger still names the holdings it had, and a redemption that
+-- needs the payment is refused. It joins the pool when the operator records
+-- the reserves with it, and the redemption then settles.
+testOutsidePaymentJoinsThePoolWhenRecorded : Script ()
+testOutsidePaymentJoinsThePoolWhenRecorded = script do
+  f@Fixture{..} <- setupSeparate
+  let higher = priceOf 11.0 10.0
+  pool <- giveHolding config.underlying treasury 100.0
+  ledger <- newTrackedLedger f (stateOf 100.0 100.0 parity) [pool]
+  _ <- giveHolding config.share bob 100.0
+
+  gain <- giveHolding config.underlying treasury 10.0
+  trackedPoolOf f ledger >>= (=== [pool])
+  ledgerState f ledger >>= (=== stateOf 100.0 100.0 parity)
+  redeemCid <- requestRedeem f bob (redeemTerms bob "r1" 100.0)
+  submitMustFailWith eInsufficientReserves (trySettleTrackedBatch f ledger higher [] [redeemCid])
+
+  recorded <- recordPool f ledger [pool, gain]
+  poolIs f recorded [100.0, 10.0]
+  paid <- settleTrackedBatch f recorded higher [] [redeemCid]
+  poolIs f paid.ledgerCid []
+  balance config.underlying bob >>= (=== (110.0, 0.0))
+
+-- | A tracked holding that the custodian spends outside a batch stops every
+-- batch: the ledger names a holding that is gone. The custodian still holds
+-- the funds, in another holding. Batches settle again once the operator
+-- records the reserves with the holdings the custodian has now.
+testSpentTrackedHoldingStopsBatches : Script ()
+testSpentTrackedHoldingStopsBatches = script do
+  f@Fixture{..} <- setupSeparate
+  pool <- giveHolding config.underlying treasury 100.0
+  ledger <- newTrackedLedger f (stateOf 100.0 100.0 parity) [pool]
+  _ <- giveHolding config.underlying alice 40.0
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 40.0)
+
+  -- An allocation of the custodian's own takes the holding as its input and
+  -- returns the same amount as change, in a new holding.
+  _ <- submit (actAs treasury <> discloseMany registryDisclosures) do
+    exerciseCmd registries.underlyingAllocationFactory
+      AllocationInstructionV2.AllocationFactory_Allocate with
+        settlement = AllocationV2.SettlementInfo with
+          executors = [treasury]; id = "outside"; cid = None; meta = emptyMetadata
+        allocation = AllocationV2.AllocationSpecification with
+          admin = issuer
+          authorizer = config.custodian
+          transferLegSides = []
+          settlementDeadline = Some t2
+          nextIterationFunding = Some TextMap.empty
+          committed = False
+          meta = emptyMetadata
+        requestedAt = t0
+        inputHoldingCids = [pool]
+        extraArgs = emptyArgs
+        actors = [treasury]
+  balance config.underlying treasury >>= (=== (100.0, 0.0))
+  queryContractId issuer (fromInterfaceContractId @TestHolding pool) >>= (=== None)
+
+  (disclosed, cmd) <- settleCmdFrom f ledger parity [depositCid] [] [] []
+  submitMustFail (actAs operator <> discloseMany disclosed) cmd
+  balance config.underlying alice >>= (=== (0.0, 40.0))
+
+  live <- unlockedHoldings config.underlying treasury
+  recorded <- recordPool f ledger live
+  poolIs f recorded [100.0]
+  settled <- settleTrackedBatch f recorded parity [depositCid] []
+  poolIs f settled.ledgerCid [100.0, 40.0]
+
+-- Who decides
+-------------------------------------------------------
+
+-- | Only the admin turns the tracking on and off. Turning it on records the
+-- reserves as the sum of the holdings named and names them as the pool.
+-- Turning it off leaves the recorded state as it was, and the operator
+-- names the holdings that fund a batch again.
+testOnlyTheAdminTracksThePool : Script ()
+testOnlyTheAdminTracksThePool = script do
+  f@Fixture{..} <- setupSeparate
+  pool <- giveHolding config.underlying treasury 60.0
+  ledger <- newLedger f (stateOf 0.0 40.0 parity) parity 0.0
+  shown <- holdingDisclosures issuer [pool]
+  let track = exerciseCmd ledger VaultLedger_TrackPool with holdingCids = [pool]
+  forA_ [operator, shareAdmin, treasury] $ \other ->
+    submitMustFailAuthorization (trySubmit (actAs other <> discloseMany shown) track)
+  submitMustFail (actAs alice <> discloseMany shown) track
+
+  tracked <- submit (actAs admin <> discloseMany shown) track
+  Some after <- queryContractId operator tracked
+  after === (ledgerOf f (stateOf 60.0 40.0 parity) parity 0.0) with trackedPool = Some [pool]
+  queryContractId operator ledger >>= (=== None)
+
+  let untrack = exerciseCmd tracked VaultLedger_UntrackPool
+  forA_ [operator, shareAdmin, treasury] $ \other ->
+    submitMustFailAuthorization (trySubmit other untrack)
+  submitMustFail alice untrack
+  untracked <- submit admin untrack
+  Some plain <- queryContractId operator untracked
+  plain === ledgerOf f (stateOf 60.0 40.0 parity) parity 0.0
+  queryContractId operator tracked >>= (=== None)
+
+  _ <- giveHolding config.underlying alice 10.0
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 10.0)
+  settled <- settleBatch f untracked parity [depositCid] []
+  Some last <- queryContractId operator settled.ledgerCid
+  last.trackedPool === None
+  last.state.reserves === 70.0
+
+-- Refused pools
+-------------------------------------------------------
+
+-- | A ledger names no holding twice in its pool. A ledger created with
+-- reserves its pool does not hold settles no batch, and settles again once
+-- the operator records the reserves from the pool.
+testLedgerRefusesAPoolThatDoesNotMatch : Script ()
+testLedgerRefusesAPoolThatDoesNotMatch = script do
+  f@Fixture{..} <- setupSeparate
+  pool <- giveHolding config.underlying treasury 100.0
+  submitMustFail (actAs (ledgerSignatories config)) do
+    createCmd (trackedLedgerOf f (stateOf 200.0 200.0 parity) [pool, pool])
+
+  overstated <- newTrackedLedger f (stateOf 150.0 150.0 parity) [pool]
+  _ <- giveHolding config.underlying alice 10.0
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 10.0)
+  submitMustFailWith ePoolMismatch (trySettleTrackedBatch f overstated parity [depositCid] [])
+  balance config.underlying alice >>= (=== (0.0, 10.0))
+  balance config.underlying treasury >>= (=== (100.0, 0.0))
+
+  recorded <- recordPool f overstated [pool]
+  ledgerState f recorded >>= (=== stateOf 100.0 150.0 parity)
+  settled <- settleTrackedBatch f recorded parity [depositCid] []
+  poolIs f settled.ledgerCid [100.0, 10.0]

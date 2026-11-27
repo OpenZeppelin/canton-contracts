@@ -434,7 +434,17 @@ allocate
   : ContractId AllocationInstructionV2.AllocationFactory -> AllocationV2.SettlementInfo
   -> AllocationV2.AllocationSpecification -> [ContractId HoldingV2.Holding] -> Time -> [Party]
   -> ExtraArgs -> Update (ContractId AllocationV2.Allocation)
-allocate factory settlement allocation inputHoldingCids requestedAt actors extraArgs = do
+allocate factory settlement allocation inputHoldingCids requestedAt actors extraArgs =
+  fst <$> allocateWithChange factory settlement allocation inputHoldingCids requestedAt actors extraArgs
+
+-- | Make an allocation, and return it with the authorizer's holdings the
+-- registry reports back: the inputs it did not use and the change it
+-- created.
+allocateWithChange
+  : ContractId AllocationInstructionV2.AllocationFactory -> AllocationV2.SettlementInfo
+  -> AllocationV2.AllocationSpecification -> [ContractId HoldingV2.Holding] -> Time -> [Party]
+  -> ExtraArgs -> Update (ContractId AllocationV2.Allocation, [ContractId HoldingV2.Holding])
+allocateWithChange factory settlement allocation inputHoldingCids requestedAt actors extraArgs = do
   result <- exercise factory AllocationInstructionV2.AllocationFactory_Allocate with
     settlement
     allocation
@@ -443,7 +453,8 @@ allocate factory settlement allocation inputHoldingCids requestedAt actors extra
     extraArgs
     actors
   case result.output of
-    AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
+    AllocationInstructionV2.AllocationInstructionResult_Completed cid ->
+      pure (cid, concatMap snd (TextMap.toList result.authorizerChangeCids))
     _ -> failWithStatus eAllocationIncomplete
 
 withdraw : ContractId AllocationV2.Allocation -> [Party] -> ExtraArgs -> Update ()

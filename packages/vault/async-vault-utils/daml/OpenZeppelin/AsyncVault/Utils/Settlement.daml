@@ -34,6 +34,7 @@ import DA.Action (foldlA, unless, when)
 import DA.Fail (FailureCategory (..), FailureStatus, failWithStatus)
 import DA.Foldable (forA_, minimum)
 import DA.List (dedupSort)
+import DA.TextMap qualified as TextMap
 import DA.Time (isLedgerTimeLT)
 
 import Splice.Api.Token.MetadataV1
@@ -45,6 +46,7 @@ import OpenZeppelin.AsyncVault.TypesV1
 import OpenZeppelin.AsyncVault.Utils.Internal qualified as Internal
 import OpenZeppelin.AsyncVault.Utils.Math
 import OpenZeppelin.AsyncVault.Utils.Request
+import OpenZeppelin.AsyncVault.Utils.Reserves (heldReserves)
 
 -- Pricing
 -------------------------------------------------------
@@ -181,7 +183,49 @@ settleBatchImpl
   : VaultConfig -> VaultRegistries -> VaultPolicy -> VaultState -> SharePrice
   -> [DepositRequestState] -> [RedeemRequestState]
   -> [ContractId HoldingV2.Holding] -> Time -> RequestArgs -> Update SettledBatch
-settleBatchImpl config registries policy state price deposits redeems poolHoldingCids requestedAt args = do
+settleBatchImpl config registries policy state price deposits redeems poolHoldingCids requestedAt args =
+  fst <$> settleBatchAndPool config registries policy state price deposits redeems
+    poolHoldingCids requestedAt args
+
+-- | Body of the choice that settles a batch for a vault that tracks its
+-- pool: the holdings of the custodian that the vault's state names as the
+-- ones behind its reserves. It settles as `settleBatchImpl` does, funded
+-- from `trackedPool` alone, and returns with the batch the holdings the pool
+-- is left with, for the caller to store in their place.
+--
+-- The pool it returns amounts to exactly the reserves the batch records.
+-- The body checks that on the ledger, as `heldReserves` does, so a registry
+-- that returned other holdings, and a state whose reserves were not what
+-- `trackedPool` held, fail the batch. A holding the custodian received
+-- outside a batch is not in the pool it returns: the caller adds it by
+-- recording the reserves with it.
+--
+-- It needs the authority `settleBatchImpl` does. Fails as `settleBatchImpl`
+-- does, with `ePoolMismatch` when the pool it is left with does not amount to
+-- the reserves, and with the status `heldReserves` returns.
+settleTrackedBatchImpl
+  : VaultConfig -> VaultRegistries -> VaultPolicy -> VaultState -> SharePrice
+  -> [DepositRequestState] -> [RedeemRequestState]
+  -> [ContractId HoldingV2.Holding] -> Time -> RequestArgs
+  -> Update (SettledBatch, [ContractId HoldingV2.Holding])
+settleTrackedBatchImpl config registries policy state price deposits redeems trackedPool requestedAt args = do
+  (batch, pool) <- settleBatchAndPool config registries policy state price deposits redeems
+    trackedPool requestedAt args
+  held <- heldReserves config pool
+  unless (held == batch.state.reserves) (failWithStatus ePoolMismatch)
+  pure (batch, pool)
+
+-- | `settleBatchImpl`, returning with the batch the custodian's holdings the
+-- underlying's registry reports back: the change of the custodian's
+-- allocation, and what its settlement paid the custodian. When
+-- `poolHoldingCids` are all the holdings of a pool, these are all of it
+-- after the batch.
+settleBatchAndPool
+  : VaultConfig -> VaultRegistries -> VaultPolicy -> VaultState -> SharePrice
+  -> [DepositRequestState] -> [RedeemRequestState]
+  -> [ContractId HoldingV2.Holding] -> Time -> RequestArgs
+  -> Update (SettledBatch, [ContractId HoldingV2.Holding])
+settleBatchAndPool config registries policy state price deposits redeems poolHoldingCids requestedAt args = do
   requireRight (checkBatch policy.maxBatchSize config deposits redeems)
   -- One assertion covers every request: if the earliest deadline is still
   -- ahead, all of them are.
@@ -198,7 +242,7 @@ settleBatchImpl config registries policy state price deposits redeems poolHoldin
 
   -- The vault's own sides, allocated with the authority this choice runs
   -- with and settled below in the same transaction.
-  custodianCid <- allocate registries.underlyingAllocationFactory settlement
+  (custodianCid, change) <- allocateWithChange registries.underlyingAllocationFactory settlement
     (vaultSideSpec config.underlying.admin config.custodian
       (map receiverSide depositEscrowLegs <> map senderSide redeemPayoutLegs))
     poolHoldingCids requestedAt (requesterParties config.custodian) args.underlying
@@ -215,19 +259,24 @@ settleBatchImpl config registries policy state price deposits redeems poolHoldin
 
   -- An escrow settles its own leg and nothing else. A receipt settles the
   -- leg named here.
-  settle registries.underlyingSettlementFactory settlement
+  underlyingResults <- settle registries.underlyingSettlementFactory settlement
     (depositEscrowLegs <> redeemPayoutLegs)
     ( [finalized custodianCid []]
       <> map (\r -> finalized r.escrowCid []) deposits
       <> zipWith (\r leg -> finalized r.receiptCid [receiverSide leg]) redeems redeemPayoutLegs )
     args.underlying
-  settle registries.shareSettlementFactory settlement
+  _ <- settle registries.shareSettlementFactory settlement
     (depositShareLegs <> redeemEscrowLegs)
     ( map (`finalized` []) (mintCids <> burnCids)
       <> zipWith (\r leg -> finalized r.receiptCid [receiverSide leg]) deposits depositShareLegs
       <> map (\r -> finalized r.escrowCid []) redeems )
     args.share
-  pure batch
+  -- A registry answers for the allocations in the order it was given them,
+  -- and the custodian's is the first the underlying's registry was given.
+  let paid = case underlyingResults of
+        custodianResult :: _ -> concatMap snd (TextMap.toList custodianResult.authorizerHoldingCids)
+        [] -> []
+  pure (batch, change <> paid)
 
 -- Failure statuses. A choice body that fails with one reaches the Ledger API
 -- as a `DAML_FAILURE` error carrying the `errorId` below, so a client matches
@@ -278,6 +327,20 @@ eBelowMinimum : FailureStatus
 eBelowMinimum = Internal.vaultFailure "below-minimum" InvalidGivenCurrentSystemStateOther
   "AsyncVault: a request converts to less than its requester's minimum"
 
+-- | Raised when a batch names pool holdings for a vault that tracks its
+-- pool. Such a batch is funded from the tracked holdings alone.
+-- `errorId`: `openzeppelin.com/async-vault-pool-tracked`.
+ePoolTracked : FailureStatus
+ePoolTracked = Internal.vaultFailure "pool-tracked" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the vault tracks its pool, so a batch names no pool holdings"
+
+-- | Raised when the holdings a tracked pool is left with after a batch do
+-- not amount to the reserves the batch records.
+-- `errorId`: `openzeppelin.com/async-vault-pool-mismatch`.
+ePoolMismatch : FailureStatus
+ePoolMismatch = Internal.vaultFailure "pool-mismatch" InvalidGivenCurrentSystemStateOther
+  "AsyncVault: the tracked pool does not hold the recorded reserves"
+
 -- Helpers
 -------------------------------------------------------
 
@@ -312,10 +375,12 @@ finalized allocationCid extraTransferLegSides = AllocationV2.FinalizedAllocation
   nextIterationFunding = None
 
 -- | Settle a whole batch's legs on one registry, with the executors'
--- authority, and require every allocation to have ended.
+-- authority, and require every allocation to have ended. Returns the
+-- registry's result for each allocation, in the order of `allocations`.
 settle
   : ContractId AllocationV2.SettlementFactory -> AllocationV2.SettlementInfo
-  -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation] -> ExtraArgs -> Update ()
+  -> [AllocationV2.TransferLeg] -> [AllocationV2.FinalizedAllocation] -> ExtraArgs
+  -> Update [AllocationV2.AllocationResult]
 settle factory settlement transferLegs allocations extraArgs = do
   result <- exercise factory AllocationV2.SettlementFactory_SettleBatch with
     settlement
@@ -328,3 +393,4 @@ settle factory settlement transferLegs allocations extraArgs = do
   forA_ result.allocationSettleResults $ \settled -> case settled.output of
     AllocationV2.AllocationResult_Settled None -> pure ()
     _ -> failWithStatus eAllocationIncomplete
+  pure result.allocationSettleResults

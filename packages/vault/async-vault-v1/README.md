@@ -25,7 +25,8 @@ under [`dars/vendor/`](../../../dars/vendor/).
 - `VaultLedger`: what the vault records, which is its reserves, its shares
   outstanding, the price of the last batch, and the batch number, together
   with the price band and the batch size the operator is held to. Batches
-  settle on it.
+  settle on it. When the admin has it track the pool, it also names the
+  custodian's holdings behind the reserves.
 - `DepositRequest` and `RedeemRequest`: a pending request, whose funds are
   escrowed in an allocation of the Token Standard.
 - `VaultLedger_SettleBatchResult`: the ledger after a batch and what each
@@ -85,6 +86,15 @@ share instrument's admin and the custodian, the ledger has one signatory.
 - **Record the reserves.** The operator exercises
   `VaultLedger_RecordReserves` with the custodian's holdings, and the ledger
   records their sum.
+- **Track the pool.** The admin exercises `VaultLedger_TrackPool` with the
+  custodian's holdings. The ledger records their sum as the reserves and
+  names them as its pool. From then on a batch names no pool holdings: the
+  tracked ones fund it, and the ledger it leaves names the holdings the pool
+  is left with, which amount to exactly the recorded reserves.
+  `VaultLedger_RecordReserves` then also replaces the tracked pool with the
+  holdings it is given, which is how a holding the custodian received
+  outside a batch joins the pool. The admin stops the tracking with
+  `VaultLedger_UntrackPool`.
 - **Hold the operator to a band.** The admin exercises
   `VaultLedger_SetPriceBand` and `VaultLedger_SetMaxBatchSize`. A batch
   settles at a price up to `maxDeviation` above or below `referencePrice`.
@@ -155,6 +165,12 @@ Visibility:
   they were last recorded, and follow only batches since. The
   [utils `README.md`](../async-vault-utils/README.md) states what counts as a
   holding and what the record does not prove.
+- A ledger that tracks the pool records reserves that are exactly what the
+  tracked holdings hold, checked on the ledger at every batch. It says
+  nothing of what the custodian holds outside the pool. A tracked holding
+  that the custodian spends outside a batch fails every batch until the
+  operator records the reserves again. A `trackedPool` the signatories give
+  a new ledger is not checked until that ledger's first batch.
 
 ## What it does not solve
 

@@ -24,6 +24,9 @@ types. It calls registries through the Token Standard V2 interface DARs under
 - `settleBatchImpl`: the body of the choice that settles a batch of requests
   on both registries, at the price the batch is submitted with, and returns
   the state to record and each request's fill.
+- `settleTrackedBatchImpl`: the same body for a vault that tracks its pool.
+  It is funded from the tracked holdings alone and also returns the holdings
+  the pool is left with.
 - `priceBatch`, `depositFill`, and `redeemFill`: the pricing of a batch and of
   one request at a price, as pure functions an operator can also run before
   submitting.
@@ -31,7 +34,8 @@ types. It calls registries through the Token Standard V2 interface DARs under
 - `depositShareLeg` and `redeemPayoutLeg`: the transfer legs a batch adds to a
   request's own.
 - `eEmptyBatch`, `eBatchTooLarge`, `eForeignRequest`, `eDuplicateRequest`,
-  `eRequestExpired`, `eZeroFill`, and `eBelowMinimum`: the failure statuses.
+  `eRequestExpired`, `eZeroFill`, `eBelowMinimum`, `ePoolTracked`, and
+  `ePoolMismatch`: the failure statuses.
 
 `OpenZeppelin.AsyncVault.Utils.Reserves`:
 
@@ -39,6 +43,8 @@ types. It calls registries through the Token Standard V2 interface DARs under
   reserves with the sum of the custodian's holdings it is given.
 - `reserveAmount` and `sumReserves`: what one holding and a list of holdings
   add to the reserves, as pure functions.
+- `heldReserves`: what a list of the custodian's holdings amounts to on the
+  ledger.
 - `eForeignHolding`, `eUnsignedHolding`, `eLockedHolding`, and
   `eDuplicateHolding`: the failure statuses.
 
@@ -165,6 +171,13 @@ policy's `maxBatchSize`, in one transaction:
 - **All or nothing.** A request that cannot be filled, a registry that fails
   or leaves an allocation unsettled, or a state the vault could not record
   fail the whole batch, and nothing moves.
+- **A tracked pool, when the vault keeps one.** `settleTrackedBatchImpl`
+  takes the holdings the vault's state names as its pool, funds the batch
+  from them, and returns the holdings the underlying's registry reports
+  back for the custodian: the change of its allocation and what its
+  settlement paid it. It checks on the ledger that they amount to the
+  reserves the batch records, and fails with `ePoolMismatch` when they do
+  not. The caller stores them as the pool for the next batch.
 
 A batch is refused when it is empty or above `maxBatchSize`, holds a request
 made for another vault, holds two requests of one requester under the same

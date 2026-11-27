@@ -9,6 +9,7 @@ module OpenZeppelin.AsyncVault.Utils.Test.Settlement where
 import DA.Assert ((===))
 import DA.Fail (FailureCategory (..), FailureStatus (..))
 import DA.Foldable (forA_)
+import DA.List (sort)
 import DA.TextMap qualified as TextMap
 import Daml.Script
 
@@ -341,6 +342,59 @@ testPayoutNeedsThePool = script do
   balance config.underlying admin >>= (=== (50.0, 0.0))
   Some unchanged <- queryContractId operator state
   unchanged.state === grownState
+
+-- | A batch on a tracked pool is funded from that pool alone and returns
+-- what the pool is left with: the holding it had as change beside the net
+-- inflow when more comes in than goes out, and one holding when more goes
+-- out. What it returns amounts to the reserves the batch records, and is all
+-- the custodian holds.
+testTrackedBatchReturnsThePool : Script ()
+testTrackedBatchReturnsThePool = script do
+  f@Fixture{..} <- setup
+  state <- newState f emptyState
+  _ <- giveHolding config.underlying alice 100.0
+  _ <- giveHolding config.underlying bob 50.0
+  let poolIs pool expected recorded = do
+        amounts <- amountsOf f pool
+        sort amounts === sort expected
+        held <- unlockedHoldings config.underlying admin
+        sort held === sort pool
+        recorded.reserves === sum expected
+
+  first <- requestDeposit f alice (depositTerms alice "d1" 100.0)
+  Right (opened, openedBatch, openedPool) <- trySettleTracked f state [first] [] []
+  poolIs openedPool [100.0] openedBatch.state
+
+  second <- requestDeposit f bob (depositTerms bob "d1" 50.0)
+  out <- requestRedeem f alice (redeemTerms alice "r1" 20.0)
+  Right (grown, grownBatch, grownPool) <- trySettleTracked f opened [second] [out] openedPool
+  poolIs grownPool [100.0, 30.0] grownBatch.state
+
+  rest <- requestRedeem f alice (redeemTerms alice "r2" 60.0)
+  Right (_, shrunkBatch, shrunkPool) <- trySettleTracked f grown [] [rest] grownPool
+  poolIs shrunkPool [70.0] shrunkBatch.state
+  shrunkBatch.state === VaultState with
+    reserves = 70.0; totalShares = 70.0; price = parity; batch = 3
+
+-- | A batch on a tracked pool fails when the pool it is left with does not
+-- amount to the reserves it records: when the state records more than the
+-- pool held, and when it records less. Nothing moves.
+testTrackedBatchRefusesAPoolThatDoesNotMatch : Script ()
+testTrackedBatchRefusesAPoolThatDoesNotMatch = script do
+  f@Fixture{..} <- setup
+  pool <- giveHolding config.underlying admin 100.0
+  _ <- giveHolding config.underlying alice 10.0
+  depositCid <- requestDeposit f alice (depositTerms alice "d1" 10.0)
+  forA_ [150.0, 60.0] $ \claimed -> do
+    state <- newState f (stateOf claimed 100.0 parity)
+    submitMustFailWith ePoolMismatch (trySettleTracked f state [depositCid] [] [pool])
+  balance config.underlying alice >>= (=== (0.0, 10.0))
+  balance config.underlying admin >>= (=== (100.0, 0.0))
+
+  exact <- newState f (stateOf 100.0 100.0 parity)
+  Right (_, batch, after) <- trySettleTracked f exact [depositCid] [] [pool]
+  batch.state.reserves === 110.0
+  amountsOf f after >>= \amounts -> sort amounts === [10.0, 100.0]
 
 -- | A cancelled request fails the batch that still names it.
 testCancelledRequestCannotBeSettled : Script ()
@@ -675,3 +729,9 @@ testSettlementFailureStatuses = script do
   eBelowMinimum === status "openzeppelin.com/async-vault-below-minimum"
     InvalidGivenCurrentSystemStateOther
     "AsyncVault: a request converts to less than its requester's minimum"
+  ePoolTracked === status "openzeppelin.com/async-vault-pool-tracked"
+    InvalidGivenCurrentSystemStateOther
+    "AsyncVault: the vault tracks its pool, so a batch names no pool holdings"
+  ePoolMismatch === status "openzeppelin.com/async-vault-pool-mismatch"
+    InvalidGivenCurrentSystemStateOther
+    "AsyncVault: the tracked pool does not hold the recorded reserves"

@@ -14,6 +14,8 @@
 --   funds escrowed in an allocation of the Token Standard.
 module OpenZeppelin.AsyncVaultV1 where
 
+import DA.Action (unless)
+import DA.Fail (failWithStatus)
 import DA.Foldable (forA_)
 import DA.List (dedup)
 
@@ -142,11 +144,23 @@ data VaultLedger_SettleBatchResult = VaultLedger_SettleBatchResult with
 -- the reference price, and the admin decides every price by moving the
 -- reference.
 --
+-- The ledger tracks the vault's pool when `trackedPool` is set. It then
+-- names the custodian's holdings behind the recorded reserves. A batch is
+-- funded from those holdings alone, and the ledger it leaves names the
+-- holdings the pool was left with, which amount to exactly the reserves it
+-- records. A holding the custodian receives outside a batch joins the pool
+-- when the operator records the reserves with it. A tracked holding that is
+-- spent outside a batch fails every batch until the reserves are recorded
+-- again. Without a `trackedPool`, the operator names the holdings that fund
+-- each batch, and the recorded reserves are a figure the batches keep.
+--
 -- Every choice that changes the ledger consumes it and creates its
 -- successor, so a vault has one writer at a time and a batch built on a
 -- ledger that has since changed fails. Nothing prevents the signatories from
 -- creating a second `VaultLedger` for the same vault: which contract is the
--- vault's ledger is for the signatories to state.
+-- vault's ledger is for the signatories to state. Nor does anything check a
+-- `trackedPool` when the signatories create a ledger with one: the first
+-- batch fails with `ePoolMismatch` when it does not hold the reserves.
 template VaultLedger with
     config : VaultConfig
     registries : VaultRegistries
@@ -161,6 +175,10 @@ template VaultLedger with
       -- fraction of it, within zero and one.
     maxBatchSize : Int
       -- ^ The most requests one batch settles.
+    trackedPool : Optional [ContractId HoldingV2.Holding]
+      -- ^ The custodian's holdings behind the recorded reserves, when the
+      -- ledger tracks the pool, or `None` when it does not. No holding is
+      -- named twice.
   where
     signatory ledgerSignatories config
     observer config.operator
@@ -170,6 +188,7 @@ template VaultLedger with
         && isValidSharePrice referencePrice
         && maxDeviation >= 0.0 && maxDeviation <= 1.0
         && maxBatchSize >= 1
+        && optional True (\holdingCids -> dedup holdingCids == holdingCids) trackedPool
 
     choice VaultLedger_SettleBatch : VaultLedger_SettleBatchResult
       -- ^ Settle a batch of requests at one price and record the result.
@@ -179,6 +198,9 @@ template VaultLedger with
       -- Fails with `ePriceOutOfBand` when the price is outside the band, and
       -- otherwise as `settleBatchImpl` does. It also fails when a request is
       -- no longer active, for example because its requester cancelled it.
+      -- When the ledger tracks the pool, it fails with `ePoolTracked` if
+      -- `poolHoldingCids` names a holding, and otherwise as
+      -- `settleTrackedBatchImpl` does.
       with
         price : SharePrice
           -- ^ The price every request of the batch is filled at.
@@ -186,7 +208,8 @@ template VaultLedger with
         redeemCids : [ContractId RedeemRequest]
         poolHoldingCids : [ContractId HoldingV2.Holding]
           -- ^ The custodian's holdings of the underlying that fund what the
-          -- batch pays out beyond what it takes in.
+          -- batch pays out beyond what it takes in. Empty when the ledger
+          -- tracks the pool: the tracked holdings fund the batch.
         requestedAt : Time
         args : RequestArgs
       controller config.operator
@@ -197,26 +220,59 @@ template VaultLedger with
               maxBatchSize
               checkPrice = \_ chosen ->
                 requireRight (checkPriceWithin referencePrice maxDeviation chosen)
-        batch <- settleBatchImpl config registries policy state price
-          (map (.state) deposits) (map (.state) redeems) poolHoldingCids requestedAt args
+        (batch, poolAfter) <- case trackedPool of
+          None -> do
+            batch <- settleBatchImpl config registries policy state price
+              (map (.state) deposits) (map (.state) redeems) poolHoldingCids requestedAt args
+            pure (batch, None)
+          Some tracked -> do
+            unless (null poolHoldingCids) (failWithStatus ePoolTracked)
+            (batch, pool) <- settleTrackedBatchImpl config registries policy state price
+              (map (.state) deposits) (map (.state) redeems) tracked requestedAt args
+            pure (batch, Some pool)
         forA_ (zip depositCids batch.depositFills) $ \(requestCid, fill) ->
           exercise requestCid DepositRequest_Fill with fill
         forA_ (zip redeemCids batch.redeemFills) $ \(requestCid, fill) ->
           exercise requestCid RedeemRequest_Fill with fill
-        ledgerCid <- create this with state = batch.state
+        ledgerCid <- create this with
+          state = batch.state
+          trackedPool = poolAfter
         pure VaultLedger_SettleBatchResult with ledgerCid; batch
 
     choice VaultLedger_RecordReserves : ContractId VaultLedger
       -- ^ Replace the recorded reserves with the sum of the custodian's
       -- holdings named here. A holding left out is not counted, so the
       -- operator can record less than the custodian holds and never more.
-      -- Fails as `recordReservesImpl` does.
+      -- When the ledger tracks the pool, the holdings named here become the
+      -- tracked pool. Fails as `recordReservesImpl` does.
       with
         holdingCids : [ContractId HoldingV2.Holding]
       controller config.operator
       do
         recorded <- recordReservesImpl config state holdingCids
-        create this with state = recorded
+        create this with
+          state = recorded
+          trackedPool = holdingCids <$ trackedPool
+
+    choice VaultLedger_TrackPool : ContractId VaultLedger
+      -- ^ Track the pool from now on: record the reserves as the sum of the
+      -- custodian's holdings named here, as `VaultLedger_RecordReserves`
+      -- does, and name those holdings as the tracked pool. Fails as
+      -- `recordReservesImpl` does.
+      with
+        holdingCids : [ContractId HoldingV2.Holding]
+      controller config.admin
+      do
+        recorded <- recordReservesImpl config state holdingCids
+        create this with
+          state = recorded
+          trackedPool = Some holdingCids
+
+    choice VaultLedger_UntrackPool : ContractId VaultLedger
+      -- ^ Stop tracking the pool. The recorded state is unchanged, and from
+      -- now on the operator names the holdings that fund each batch.
+      controller config.admin
+      do create this with trackedPool = None
 
     choice VaultLedger_SetPriceBand : ContractId VaultLedger
       -- ^ Move the band the operator chooses a batch's price within. The
