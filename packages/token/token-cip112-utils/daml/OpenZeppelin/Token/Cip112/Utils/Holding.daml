@@ -15,10 +15,12 @@
 -- choice runs.
 --
 -- Trust boundary: the workflows trust nothing they did not just create. A
--- caller-supplied holding id only ever enters through `consumeHolding`,
--- which must establish that the contract is an accepted implementation
--- before the workflow credits its amount. `consumeByArchive` is the safe
--- default; an interface `fetch` followed by an interface `archive` is not.
+-- caller-supplied holding id only ever enters through `fundHolding`, and the
+-- workflows consume the funding they locked through `deliverHolding` or
+-- `returnHolding`. Each must establish that the contract is an accepted
+-- implementation before the workflow credits its amount. `consumeByArchive`
+-- is the safe default; an interface `fetch` followed by an interface
+-- `archive` is not.
 module OpenZeppelin.Token.Cip112.Utils.Holding where
 
 import DA.Assert (assertDeadlineExceeded)
@@ -47,21 +49,60 @@ isValidRegistryConfig c =
 -- Operations supplied by the template owner
 --------------------------------------------
 
--- | What a workflow needs from the template owner. Not serializable. A
--- holding named in the `lockedHoldingCids` of a pending transfer
--- instruction or allocation must keep its contract id until its lock
--- expires.
+-- | What a workflow needs from the template owner. Not serializable.
+--
+-- A refusal in `deliverHolding` or `returnHolding` leaves the other's paths
+-- open, and a refusal in both holds the locked funds until the lock
+-- expires. Put a rule in either only if a known party can lift it without
+-- re-creating the locked holding, such as a compliance officer lifting a
+-- freeze kept on a separate per-account contract. A pending instruction or
+-- allocation names its locked holdings by id, so keep a holding's contract
+-- id until its lock expires.
+--
+-- A rule that tracks live registry state reads the current policy contract
+-- from the context, and the operation checks the contract it fetches: its
+-- template, its signatories, and that it covers this holding's admin and
+-- account. The submitter writes the context, so the operation fails when
+-- the entry is missing, and the contract's presence is what permits the
+-- spend: a context cannot show that a contract is absent. The submitter
+-- also chooses which contract to pass, so the registry keeps one live
+-- policy contract for each admin and account.
 data HoldingOps = HoldingOps with
     createHolding : HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding)
       -- ^ Create a holding from its standard view. Law: the created
       -- contract's `Holding` view equals the argument, and its signatories
       -- include `view.instrumentId.admin` and the account parties. Extra
       -- template fields come from the closure that builds the record.
-    consumeHolding : ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
-      -- ^ Remove a holding from the ledger and return the view it had. Law:
-      -- fails unless the contract is an accepted implementation. This is the
-      -- accepted-implementation policy and the spend hook in one place:
-      -- archive by default, or a custom spend choice.
+    fundHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
+      -- ^ Consume a caller-supplied input holding that funds a new transfer
+      -- or allocation, through `consumeUnlockedHolding`: the inputs of
+      -- `transferFactoryImpl` and `executeTransfer`, including a one-step
+      -- transfer and a burn, and of `allocationFactoryImpl`. Fails unless the
+      -- contract is an accepted implementation, then removes the holding from
+      -- the ledger and returns the view it had. An input may be a holding
+      -- whose lock has expired, such as the funding of an instruction or
+      -- allocation that never completed, so a rule that must hold locked
+      -- funds after the lock expires is also checked here. Put a rule that
+      -- only stops new spending, such as a minimum holding age, here.
+    deliverHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
+      -- ^ Consume locked funding to pay it out, through
+      -- `consumeLockedHolding`: `transferAcceptImpl`, including the admin's
+      -- accept of a burn request, and `allocationSettleImpl`. Both consume
+      -- all of the locked funding here, including any part that stays with
+      -- its owner: an accept's surplus, a settlement's payout to the
+      -- authorizer, and a reserve rolled into the next iteration. Fails
+      -- unless the contract is an accepted implementation, then removes the
+      -- holding from the ledger and returns the view it had.
+      -- `settleBatchImpl` passes each `Allocation_Settle` an empty context,
+      -- so a rule that requires a context entry refuses every batch
+      -- settlement.
+    returnHolding : ChoiceContext -> ContractId HoldingV2.Holding -> Update HoldingV2.HoldingView
+      -- ^ Consume locked funding to return it to its owner, through
+      -- `unlockHoldings`: `transferRejectImpl`, `transferWithdrawImpl`,
+      -- `transferExpireImpl`, `allocationWithdrawImpl`, and
+      -- `allocationCancelImpl`. Fails unless the contract is an accepted
+      -- implementation, then removes the holding from the ledger and returns
+      -- the view it had.
     withEventLog : (ContractId TransferEventsV2.EventLog -> Update ()) -> Update ()
       -- ^ Run one emission against an `EventLog` host. The default templates
       -- supply a transient host created and archived within the transaction.
@@ -87,6 +128,23 @@ consumeByArchive cid = do
     Some (tcid, t) -> do
       archive tcid
       pure (view (toInterface @HoldingV2.Holding t))
+
+-- | Build an operations record from `createHolding`, `withEventLog`, and
+-- `eventObservers`, with `consumeByArchive @t` as all three consumption
+-- operations. Override one of them with `with` to add a rule to its paths.
+holdingOpsFor
+  : forall t. (HasFromInterface t HoldingV2.Holding, HasToInterface t HoldingV2.Holding, HasArchive t)
+  => (HoldingV2.HoldingView -> Update (ContractId HoldingV2.Holding))
+  -> ((ContractId TransferEventsV2.EventLog -> Update ()) -> Update ())
+  -> (HoldingV2.Account -> [Party])
+  -> HoldingOps
+holdingOpsFor createHolding withEventLog eventObservers = HoldingOps with
+  createHolding
+  fundHolding = \_ -> consumeByArchive @t
+  deliverHolding = \_ -> consumeByArchive @t
+  returnHolding = \_ -> consumeByArchive @t
+  withEventLog
+  eventObservers
 
 -- Creation-time invariants
 ---------------------------
@@ -129,6 +187,10 @@ newHolding ops admin account instrumentId amount lock =
 -- has expired, so recreate the holding unlocked and emit an account-local
 -- `EventLog_HoldingsChange` naming the consumed holding and its replacement.
 -- `self` is the holding being exercised; the choice itself archives it.
+--
+-- Check a rule that must block an owner unlock, such as a freeze, in the
+-- holding's choice before it calls this body. Otherwise the owner can
+-- unlock a frozen holding once its lock expires.
 holdingOwnerUnlockImpl
   : HoldingOps -> ContractId HoldingV2.Holding -> HoldingV2.HoldingView
   -> Update (ContractId HoldingV2.Holding)
@@ -187,25 +249,34 @@ expireLockFromContext context = case TextMap.lookup expireLockKey context.values
 -- Consumption
 --------------
 
--- | Consume a locked input holding after validating its identity.
+-- | Consume locked funding through `deliverHolding` to pay it out, then
+-- check its admin, its account, and that it is locked. `context` is the
+-- context of the choice the workflow runs in.
 consumeLockedHolding
-  : HoldingOps -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
+  : HoldingOps -> ChoiceContext -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
   -> Update HoldingV2.HoldingView
-consumeLockedHolding ops admin expectedAccount cid = do
-  h <- ops.consumeHolding cid
+consumeLockedHolding ops context admin expectedAccount cid =
+  ops.deliverHolding context cid >>= checkLockedHolding admin expectedAccount
+
+-- | The identity checks on a consumed locked holding: this admin, the
+-- expected account, and a lock.
+checkLockedHolding
+  : Party -> HoldingV2.Account -> HoldingV2.HoldingView -> Update HoldingV2.HoldingView
+checkLockedHolding admin expectedAccount h = do
   require' ("inputHolding.instrumentId.admin", h.instrumentId.admin) isEqualR ("admin", admin)
   require' ("inputHolding.account", h.account) isEqualR ("expectedAccount", expectedAccount)
   require "input holding must be locked" (isSome h.lock)
   pure h
 
--- | Consume an unlocked input holding after validating its identity. A
--- holding whose lock has expired is accepted, giving a combined
--- unlock-and-use; unexpired or indefinite locks are rejected.
+-- | Consume a caller-supplied input holding through `fundHolding`, then
+-- check its admin and account. A holding whose lock has expired is
+-- accepted, giving a combined unlock-and-use; unexpired or indefinite locks
+-- are rejected. `context` is the context of the choice the workflow runs in.
 consumeUnlockedHolding
-  : HoldingOps -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
+  : HoldingOps -> ChoiceContext -> Party -> HoldingV2.Account -> ContractId HoldingV2.Holding
   -> Update HoldingV2.HoldingView
-consumeUnlockedHolding ops admin expectedAccount cid = do
-  h <- ops.consumeHolding cid
+consumeUnlockedHolding ops context admin expectedAccount cid = do
+  h <- ops.fundHolding context cid
   require' ("inputHolding.instrumentId.admin", h.instrumentId.admin) isEqualR ("admin", admin)
   require' ("inputHolding.account", h.account) isEqualR ("expectedAccount", expectedAccount)
   forA_ h.lock $ \lock -> case lock.expiresAt of
@@ -224,14 +295,15 @@ debitHoldings consume cids = do
     pure (h.instrumentId.id, h.amount)
   pure (TextMap.fromListWithR (+) amounts)
 
--- | Release locked holdings back to their account, returning the new unlocked
--- holdings keyed by instrument id.
+-- | Release locked holdings back to their account through `returnHolding`,
+-- returning the new unlocked holdings keyed by instrument id. `context` is
+-- the context of the choice the workflow runs in.
 unlockHoldings
-  : HoldingOps -> Party -> HoldingV2.Account -> [ContractId HoldingV2.Holding]
+  : HoldingOps -> ChoiceContext -> Party -> HoldingV2.Account -> [ContractId HoldingV2.Holding]
   -> Update (TextMap.TextMap [ContractId HoldingV2.Holding])
-unlockHoldings ops admin expectedAccount cids = do
+unlockHoldings ops context admin expectedAccount cids = do
   unlocked <- forA cids $ \cid -> do
-    h <- consumeLockedHolding ops admin expectedAccount cid
+    h <- ops.returnHolding context cid >>= checkLockedHolding admin expectedAccount
     newCid <- ops.createHolding (h with lock = None)
     pure (h.instrumentId.id, [newCid])
   pure (TextMap.fromListWithR (++) unlocked)

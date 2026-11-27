@@ -14,10 +14,16 @@ functions, with every template decision left to the caller.
 ## What it provides
 
 - `HoldingOps`: the record a template owner builds inside a choice body with
-  `createHolding`, `consumeHolding`, `withEventLog`, and `eventObservers`
-  (extra informees of every holdings-change event, for auditors and
-  regulators who must see the standard event stream). It holds functions,
-  so it is never stored.
+  `createHolding`, three consumption operations, `withEventLog`, and
+  `eventObservers` (extra informees of every holdings-change event, for
+  auditors and regulators who must see the standard event stream). The
+  consumption operations split by where the value goes: `fundHolding` for
+  caller-supplied inputs, `deliverHolding` for locked funding paid out, and
+  `returnHolding` for locked funding returned to its owner. Each receives the
+  `ChoiceContext` of the choice the workflow runs in. The record holds
+  functions, so it is never stored.
+- `holdingOpsFor @T`: a `HoldingOps` whose three consumption operations are
+  `consumeByArchive @T`, ready to override one operation with `with`.
 - `consumeByArchive @T` and `pinAllocationTo @T`: the safe ways to write the
   consumption and allocation policies, pinned to one template.
 - `privateAssetAllocateExtraObservers`: the allocation factory's extra
@@ -55,10 +61,34 @@ package. Versions follow semver, and the package name carries no `vN` suffix.
 The workflows trust nothing they did not just create. Every caller-supplied
 contract id enters through an operation the template owner wrote:
 
-- `consumeHolding` must fail on any holding that is not an accepted
-  implementation. Use `consumeByArchive @YourHolding`, or a custom spend
+- `fundHolding`, `deliverHolding`, and `returnHolding` must each fail on any
+  holding that is not an accepted implementation, and otherwise archive it
+  and return its view. Use `holdingOpsFor @YourHolding`, or a custom spend
   choice reached through `fetchFromInterface @YourHolding`. Never archive a
   caller-supplied id by interface.
+- A refusal in `deliverHolding` or `returnHolding` leaves the other
+  operation's paths open, and a refusal in both holds the locked funds until
+  the lock expires. After that the owner recovers them through the holding's
+  owner-unlock choice or by passing the holding to a factory, which runs
+  `fundHolding`. Put a rule in `deliverHolding` or `returnHolding` only if a
+  known party can lift it without re-creating the locked holding: pending
+  instructions and allocations name their locked holdings by id, so they can
+  neither pay out nor return a replaced holding. A rule that only limits new
+  spending, such as a minimum holding age, belongs in `fundHolding`.
+- A rule that tracks live registry state reads the current policy contract
+  from the context and checks the contract it fetches. A value copied into
+  the holding does not follow later registry changes, and a policy contract
+  id stored in the holding fails every spend once the registry replaces that
+  contract.
+- `settleBatchImpl` passes each `Allocation_Settle` an empty context, so a
+  `deliverHolding` rule that requires a context entry refuses every batch
+  settlement. `expireAllocationsImpl` cancels its allocations in one
+  transaction, so one refusing `returnHolding` fails the whole batch.
+- `holdingOwnerUnlockImpl` runs none of the consumption operations. A rule
+  that must block an owner unlock, such as a freeze, is checked inside the
+  holding's own owner-unlock choice. A rule that must hold funds after the
+  lock expires also belongs in `fundHolding`, because `transferFactoryImpl`
+  and `allocationFactoryImpl` accept an input whose lock has expired.
 - The `PinAllocation` passed to `settleBatchImpl` and `expireAllocationsImpl`
   must fail on any allocation whose choice bodies the registry does not
   control. Use `pinAllocationTo @YourAllocation`.
@@ -70,12 +100,6 @@ contract id enters through an operation the template owner wrote:
   account.
 - `createHolding` must create a contract whose view equals the argument and
   whose signatories include the admin and the account parties.
-- A holding with a live lock belongs to the pending transfer instruction or
-  allocation that names it in `lockedHoldingCids`. Every path that ends the
-  pending contract consumes that exact contract id. No choice on the holding
-  template may archive or re-create the holding before the lock's
-  `expiresAt`, for example to freeze, merge, split, or edit metadata.
-  Otherwise the pending contract can no longer complete, release, or expire.
 - The settlement factory must settle through `settleBatchImpl`, or keep its
   exact-cover check: every leg in the batch needs a sending and a receiving
   allocation with the same amount. Without it, a settlement can create

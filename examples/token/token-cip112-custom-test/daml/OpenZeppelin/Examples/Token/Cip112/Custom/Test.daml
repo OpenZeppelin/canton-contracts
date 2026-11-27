@@ -1,7 +1,8 @@
 -- | Drives `OpenZeppelin.Examples.Token.Cip112.Custom` through the Token Standard V2 interfaces and checks
--- each consumer addition: the auditor sees every contract, every consumption
--- runs `MyHolding_Spend`, a late acceptance creates a `MyHolding`, iteration
--- successors are `MyAllocation`s, a frozen holding cannot move on any path,
+-- each consumer addition: the auditor sees every contract, funding and
+-- payouts run `MyHolding_Spend` while returns do not, a late acceptance
+-- creates a `MyHolding`, iteration successors are `MyAllocation`s, a frozen
+-- holding cannot fund any workflow,
 -- the pause switch blocks the factories, mint offers, and burns, the fee
 -- leg pays the treasury and exempts burns, the
 -- executor allowlist is enforced, roles are separate, expired funding is
@@ -304,10 +305,10 @@ testLateAcceptCreatesMyHolding = do
   bobHoldings <- query @MyHolding bob
   all (\(_, h) -> h.roles.auditor == auditor && not h.frozen) bobHoldings === True
 
--- | Every consumption goes through the consumer's spend choice. A one-step
--- transfer funded by two inputs exercises it twice; a burn once.
-testSpendChoiceRunsOnEveryConsumption : Script ()
-testSpendChoiceRunsOnEveryConsumption = do
+-- | Funding goes through the consumer's spend choice. A one-step transfer
+-- funded by two inputs exercises it twice; a burn once.
+testSpendChoiceRunsOnFunding : Script ()
+testSpendChoiceRunsOnFunding = do
   app@App{..} <- setup
   in1 <- mint app alice 4.0
   in2 <- mint app alice 6.0
@@ -321,6 +322,80 @@ testSpendChoiceRunsOnEveryConsumption = do
     (burnCmd app bob 7.0 (toInterfaceContractId @HoldingV2.Holding bobCid))
   countSpends burnTree === 1
   balanceSeenBy bob bob >>= (=== [])
+
+-- | The unlocked holdings `owner` owns.
+unlockedOf : Party -> Script [ContractId HoldingV2.Holding]
+unlockedOf owner = do
+  holdings <- queryFilter @MyHolding owner
+    (\h -> isNone h.holding.lock && h.holding.account.owner == Some owner)
+  pure [toInterfaceContractId cid | (cid, _) <- holdings]
+
+-- | A pending transfer of `amount` from alice to bob, funded by all of
+-- alice's unlocked holdings.
+alicePendingTransfer : App -> Decimal -> Script (ContractId TransferInstructionV2.TransferInstruction)
+alicePendingTransfer app@App{..} amount = do
+  inputs <- unlockedOf alice
+  result <- submit (actAs alice <> discloseMany [rulesDisclosure])
+    (transferCmd app [alice] (mkTransfer app alice bob amount inputs))
+  pendingCid result
+
+-- | Paying out locked funding, on accept or settle, runs the spend choice.
+-- Returning it to its owner, on reject, withdraw, cancel, or expiry,
+-- archives it without the spend, so the freeze check never runs there.
+testSpendRunsOnPayoutButNotOnReturn : Script ()
+testSpendRunsOnPayoutButNotOnReturn = do
+  app@App{..} <- setup
+  _ <- mint app alice 10.0
+
+  accepted <- alicePendingTransfer app 4.0
+  acceptFunding <- instructionDisclosures app accepted
+  acceptTree <- submitTree (actAs bob <> discloseMany acceptFunding) do
+    exerciseCmd accepted TransferInstructionV2.TransferInstruction_Accept with
+      actors = [bob]; extraArgs = emptyExtraArgs
+  countSpends acceptTree === 1
+
+  rejected <- alicePendingTransfer app 2.0
+  rejectFunding <- instructionDisclosures app rejected
+  rejectTree <- submitTree (actAs bob <> discloseMany rejectFunding) do
+    exerciseCmd rejected TransferInstructionV2.TransferInstruction_Reject with
+      actors = [bob]; extraArgs = emptyExtraArgs
+  countSpends rejectTree === 0
+
+  withdrawn <- alicePendingTransfer app 2.0
+  withdrawTree <- submitTree (actAs alice) do
+    exerciseCmd withdrawn TransferInstructionV2.TransferInstruction_Withdraw with
+      actors = [alice]; extraArgs = emptyExtraArgs
+  countSpends withdrawTree === 0
+
+  let leg = mkLeg "leg-1" alice bob 3.0
+  cancelled <- allocate app alice (mkSpec app alice [senderSide leg] None) =<< unlockedOf alice
+  Some cancelledView <- queryInterfaceContractId admin cancelled
+  cancelFunding <- fundingDisclosures app cancelledView.holdingCids
+  cancelTree <- submitTree (actAs exchange <> discloseMany cancelFunding) do
+    exerciseCmd cancelled AllocationV2.Allocation_Cancel with
+      actors = [exchange]; extraArgs = emptyExtraArgs
+  countSpends cancelTree === 0
+
+  aliceAlloc <- allocate app alice (mkSpec app alice [senderSide leg] None) =<< unlockedOf alice
+  bobAlloc <- allocate app bob (mkSpec app bob [receiverSide leg] None) []
+  let finalized = map nonIteratedAllocation [aliceAlloc, bobAlloc]
+  disclosures <- settlementDisclosures app finalized
+  settleTree <- submitTree (actAs exchange <> discloseMany disclosures)
+    (settleBatchCmd app [leg] finalized)
+  -- Alice's one locked holding; bob's allocation locks nothing.
+  countSpends settleTree === 1
+
+  expiring <- alicePendingTransfer app 1.0
+  setTime t3
+  expireTree <- submitTree (actAs admin) do
+    exerciseCmd rulesCid MyRules_ExpireTransferInstructions with
+      expireArgs =
+        [ (fromInterfaceContractId @MyTransferInstruction expiring, MyTransferInstruction_Expire with extraArgs = emptyExtraArgs) ]
+  countSpends expireTree === 0
+
+  balanceSeenBy bob bob >>= (=== [3.0, 4.0])
+  balanceSeenBy alice alice >>= (=== [1.0, 2.0])
+  assertNoLocks alice
 
 -- | The iteration successor is the consumer's `MyAllocation`, created by the
 -- constructor the template passed.
@@ -441,10 +516,10 @@ testAuditorObservesEvents = do
 -- Compliance freeze
 --------------------
 
--- | Only the compliance officer can freeze. A frozen holding is refused on
--- every consumption path, transfer, allocation, and burn, while the standard
--- view still shows it as an ordinary holding. After unfreezing, the same
--- transfer goes through.
+-- | Only the compliance officer can freeze. A frozen holding is refused as
+-- funding for a transfer, an allocation, and a burn, while the standard view
+-- still shows it as an ordinary holding. After unfreezing, the same transfer
+-- goes through.
 testFrozenHoldingCannotMove : Script ()
 testFrozenHoldingCannotMove = do
   app@App{..} <- setup
@@ -813,7 +888,7 @@ testSignatoriesArchive = do
 -- Trust boundary
 -----------------
 
--- | The consumer's `consumeHolding` pins the template, so a foreign
+-- | The consumer's `fundHolding` pins the template, so a foreign
 -- `Holding` claiming this admin is refused as funding.
 template ForeignHolding with
     attacker : Party

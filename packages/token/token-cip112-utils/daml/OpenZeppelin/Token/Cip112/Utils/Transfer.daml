@@ -78,7 +78,7 @@ transferAcceptImpl ops self s arg = do
   assertWithinDeadline "transfer.executeBefore" s.transfer.executeBefore
   let admin = s.transfer.instrumentId.admin
       transfer = s.transfer
-  lockedAmounts <- debitHoldings (consumeLockedHolding ops admin transfer.sender) s.lockedHoldingCids
+  lockedAmounts <- debitHoldings (consumeLockedHolding ops arg.extraArgs.context admin transfer.sender) s.lockedHoldingCids
   -- A mint offer locks nothing: the admin's signature on it authorizes the
   -- new holding.
   unless (transfer.sender == mintAccount) $
@@ -101,7 +101,7 @@ transferRejectImpl
   -> Update TransferInstructionV2.TransferInstructionResult
 transferRejectImpl ops self s arg = do
   archiveAndCheckActors self arg.actors [receiverParties s.transfer]
-  returnFundsToSender ops s "transfer rejected"
+  returnFundsToSender ops arg.extraArgs.context s "transfer rejected"
 
 -- | `transferInstruction_withdrawImpl`.
 transferWithdrawImpl
@@ -110,13 +110,14 @@ transferWithdrawImpl
   -> Update TransferInstructionV2.TransferInstructionResult
 transferWithdrawImpl ops self s arg = do
   archiveAndCheckActors self arg.actors [senderParties s.transfer]
-  returnFundsToSender ops s "transfer withdrawn"
+  returnFundsToSender ops arg.extraArgs.context s "transfer withdrawn"
 
 -- | Body of a consuming admin-expiry choice. It fails before `expiresAt`,
 -- then reads the `expire-lock` flag. On `True` it returns the locked funds
 -- to the sender. On `False` it ends the instruction without touching them,
 -- and only once `lockExpiresAt` has passed. Both end with
--- `TransferInstructionResult_Failed`.
+-- `TransferInstructionResult_Failed`. `extraArgs.context` reaches
+-- `returnHolding` for every locked holding.
 transferExpireImpl
   : HoldingOps -> TransferInstructionState -> ExtraArgs
   -> Update TransferInstructionV2.TransferInstructionResult
@@ -124,7 +125,7 @@ transferExpireImpl ops s extraArgs = do
   assertDeadlineExceeded "expiresAt" s.expiresAt
   expireLock <- expireLockFromContext extraArgs.context
   if expireLock
-    then returnFundsToSender ops s "transfer instruction expired"
+    then returnFundsToSender ops extraArgs.context s "transfer instruction expired"
     else do
       assertDeadlineExceeded "lockExpiresAt" s.lockExpiresAt
       pure TransferInstructionV2.TransferInstructionResult with
@@ -148,26 +149,27 @@ transferFactoryImpl config ops createInstruction arg = do
       bothSides = dedupSort (senderParties arg.transfer <> receiverParties arg.transfer)
       actors = dedupSort arg.actors
   checkActors arg.actors [senders, bothSides]
-  executeTransfer config ops createInstruction (all (`elem` actors) receivers) arg.transfer
+  executeTransfer config ops arg.extraArgs.context createInstruction (all (`elem` actors) receivers) arg.transfer
 
 -- | Validate, debit the sender's inputs, and either complete in one step or
 -- lock the transfer amount and create a pending instruction. The caller is
 -- responsible for authorization: the debit needs the sender's and the admin's
 -- authority, and the one-step path also creates the receiver's holding.
+-- `context` reaches `fundHolding` for every input.
 --
 -- A transfer to the CIP-0112 burn account is a burn.
 executeTransfer
-  : RegistryConfig -> HoldingOps -> CreateTransferInstruction -> Bool
+  : RegistryConfig -> HoldingOps -> ChoiceContext -> CreateTransferInstruction -> Bool
   -> TransferInstructionV2.Transfer
   -> Update TransferInstructionV2.TransferInstructionResult
-executeTransfer config ops createInstruction oneStep transfer = do
+executeTransfer config ops context createInstruction oneStep transfer = do
   let admin = config.admin
   validateTransfer config transfer
   require "transfer sender must be a regular account" (isRegularAccount transfer.sender)
   require "transfer receiver must be a regular account or the burn account"
     (isRegularAccount transfer.receiver || transfer.receiver == burnAccount)
 
-  inputAmounts <- debitHoldings (consumeUnlockedHolding ops admin transfer.sender) transfer.inputHoldingCids
+  inputAmounts <- debitHoldings (consumeUnlockedHolding ops context admin transfer.sender) transfer.inputHoldingCids
   funded <- case TextMap.toList inputAmounts of
     [(instrumentId, amount)] | instrumentId == transfer.instrumentId.id -> pure amount
     [] -> fail "transfer requires input holdings to fund it"
@@ -326,11 +328,11 @@ logTransferEvents ops eventLogCid transfer senderOutputHoldingCids receiverOutpu
 
 -- | Release the locked funding to the sender and log the change.
 returnFundsToSender
-  : HoldingOps -> TransferInstructionState -> Text
+  : HoldingOps -> ChoiceContext -> TransferInstructionState -> Text
   -> Update TransferInstructionV2.TransferInstructionResult
-returnFundsToSender ops s reason = do
+returnFundsToSender ops context s reason = do
   let admin = s.transfer.instrumentId.admin
-  holdings <- unlockHoldings ops admin s.transfer.sender s.lockedHoldingCids
+  holdings <- unlockHoldings ops context admin s.transfer.sender s.lockedHoldingCids
   let senderChangeCids = concat (textMapValues holdings)
   emitHoldingsChange ops admin s.transfer.sender [] s.lockedHoldingCids senderChangeCids [] reason
   pure TransferInstructionV2.TransferInstructionResult with

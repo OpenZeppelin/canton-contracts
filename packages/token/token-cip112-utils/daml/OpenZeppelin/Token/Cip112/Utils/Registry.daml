@@ -18,7 +18,9 @@ import OpenZeppelin.Token.Cip112.Utils.Allocation
 
 -- | `settlementFactory_settleBatchImpl`: pin every allocation to an accepted
 -- implementation, then run the vendored exact-cover settlement. No part of
--- the batch's `extraArgs` reaches the allocations' `Allocation_Settle`.
+-- the batch's `extraArgs` reaches the allocations' `Allocation_Settle`, so
+-- each `deliverHolding` call receives an empty context: a rule there that
+-- requires a context entry refuses every batch settlement.
 --
 -- The vendored default validates each `FinalizedAllocation`'s extra legs but
 -- not its `nextIterationFunding`; the `validateNextIterationArgs` call in
@@ -31,10 +33,9 @@ settleBatchImpl pin admin self arg = do
   require "a settlement batch must cover at least one transfer leg"
     (not (null arg.transferLegs))
   -- Each authorizer witnesses its own `Allocation_Settle`, so nothing from
-  -- the batch's arguments should reach it: they may describe other authorizers'
-  -- trades, and the allocation bodies read neither context nor metadata.
-  -- Information meant for every participant belongs in `SettlementInfo.meta`,
-  -- which each authorizer already sees and agreed to.
+  -- the batch's arguments should reach it: they may describe other
+  -- authorizers' trades. Information meant for every participant belongs in
+  -- `SettlementInfo.meta`, which each authorizer already sees and agreed to.
   let redactedBatchArgs _allocView _settleArg = pure ExtraArgs with
         context = emptyChoiceContext
         meta = emptyMetadata
@@ -43,7 +44,8 @@ settleBatchImpl pin admin self arg = do
 
 -- | Body of a batched admin-expiry choice: each allocation is pinned, and
 -- actors, admin, and expiry are re-verified per allocation independently of
--- the cancel implementation.
+-- the cancel implementation. Each cancel's `extraArgs.context` reaches the
+-- allocation's `returnHolding`, and one refusal fails the whole batch.
 --
 -- The "Trust boundary" section of the package `README.md` says when the
 -- choice that runs this body may have observers.

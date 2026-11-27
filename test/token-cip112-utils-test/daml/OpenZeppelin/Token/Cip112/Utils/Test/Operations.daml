@@ -1,0 +1,666 @@
+-- | The three consumption operations, path by path. A local template set
+-- runs every workflow body through operations built from a `Policy` stored
+-- on each contract, with one rule per operation. Each operation exercises a
+-- consuming choice on the holding that takes the context it was given, so a
+-- transaction tree shows which operation ran on which path and with which
+-- context.
+--
+-- The scripts check that a rule on new spending leaves locked funding free
+-- to move, that a refusing payout or return blocks only its own paths, that
+-- every operation receives the context its submitter passed, and the two
+-- limits of that delivery: batch settlement passes an empty context, and one
+-- refusal fails a whole expiry batch.
+module OpenZeppelin.Token.Cip112.Utils.Test.Operations where
+
+import DA.Action (replicateA, unless)
+import DA.Assert ((===))
+import DA.Date (date, Month(Jan))
+import DA.List (sort)
+import DA.Optional (isNone, isSome, optionalToList)
+import DA.Text (isInfixOf)
+import DA.TextMap qualified as TextMap
+import DA.Time (RelTime, addRelTime, days, hours, time)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.AllocationV2 qualified as AllocationV2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.TransferInstructionV2 qualified as TransferInstructionV2
+import Splice.TokenStandard.Utils
+
+import OpenZeppelin.Token.Cip112.TypesV1
+import OpenZeppelin.Token.Cip112.Utils.Holding
+import OpenZeppelin.Token.Cip112.Utils.Transfer
+import OpenZeppelin.Token.Cip112.Utils.Allocation
+import OpenZeppelin.Token.Cip112.Utils.Registry
+
+-- Times
+--------
+
+-- | Holdings are minted at `mintedAt` and everything else happens a day
+-- later. `executeBefore` is also the settlement deadline, so instructions
+-- and allocations expire there, and their locks expire two hours later.
+mintedAt, fundedAt, executeBefore, expiredAt, lockExpired : Time
+mintedAt = time (date 2026 Jan 1) 0 0 0
+fundedAt = time (date 2026 Jan 2) 0 0 0
+executeBefore = time (date 2026 Jan 2) 1 0 0
+expiredAt = time (date 2026 Jan 2) 2 0 0
+lockExpired = time (date 2026 Jan 2) 4 0 0
+
+-- Policy
+---------
+
+data Rule
+  = Allow
+  | Refuse
+  | MinAge RelTime
+    -- ^ The holding must be at least this old.
+  deriving (Eq, Show)
+
+-- | One rule per consumption operation.
+data Policy = Policy with
+    fundRule : Rule
+    deliverRule : Rule
+    returnRule : Rule
+  deriving (Eq, Show)
+
+allowAll : Policy
+allowAll = Policy with fundRule = Allow; deliverRule = Allow; returnRule = Allow
+
+applyRule : Text -> Rule -> Time -> Update ()
+applyRule operation rule createdAt = case rule of
+  Allow -> pure ()
+  Refuse -> fail (operation <> " rule refuses")
+  MinAge age -> do
+    now <- getTime
+    require (operation <> " rule: holding is younger than the minimum age")
+      (now >= createdAt `addRelTime` age)
+
+-- Local templates
+------------------
+
+-- | A holding that carries the policy and its creation time. Each operation
+-- is a consuming choice taking the context, controlled by the parties a
+-- plain archive needs.
+template PolicyHolding with
+    holding : HoldingV2.HoldingView
+    policy : Policy
+    createdAt : Time
+  where
+    signatory holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+    observer lockHolders holding.lock
+    ensure isValidHoldingView holding
+
+    choice PolicyHolding_Fund : HoldingV2.HoldingView
+      with context : ChoiceContext
+      controller holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+      do applyRule "fund" policy.fundRule createdAt >> pure holding
+
+    choice PolicyHolding_Deliver : HoldingV2.HoldingView
+      with context : ChoiceContext
+      controller holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+      do applyRule "deliver" policy.deliverRule createdAt >> pure holding
+
+    choice PolicyHolding_Return : HoldingV2.HoldingView
+      with context : ChoiceContext
+      controller holding.instrumentId.admin, accountParties holding.instrumentId.admin holding.account
+      do applyRule "return" policy.returnRule createdAt >> pure holding
+
+    choice PolicyHolding_OwnerUnlock : ContractId HoldingV2.Holding
+      controller accountParties holding.instrumentId.admin holding.account
+      do holdingOwnerUnlockImpl (policyOps policy) (toInterfaceContractId self) holding
+
+    interface instance HoldingV2.Holding for PolicyHolding where
+      view = holding
+
+-- | Events are not under test here, so emission does nothing.
+policyOps : Policy -> HoldingOps
+policyOps policy = HoldingOps with
+    createHolding = \v -> do
+      now <- getTime
+      toInterfaceContractId <$> create PolicyHolding with holding = v; policy; createdAt = now
+    fundHolding = viaChoice PolicyHolding_Fund
+    deliverHolding = viaChoice PolicyHolding_Deliver
+    returnHolding = viaChoice PolicyHolding_Return
+    withEventLog = \_ -> pure ()
+    eventObservers = const []
+
+viaChoice
+  : HasExercise PolicyHolding c HoldingV2.HoldingView
+  => (ChoiceContext -> c) -> ChoiceContext -> ContractId HoldingV2.Holding
+  -> Update HoldingV2.HoldingView
+viaChoice mkChoice context cid = do
+  fetched <- fetchFromInterface @PolicyHolding cid
+  case fetched of
+    None -> fail "holding is not a PolicyHolding"
+    Some (tcid, _) -> exercise tcid (mkChoice context)
+
+template PolicyInstruction with
+    state : TransferInstructionState
+    policy : Policy
+  where
+    signatory state.transfer.instrumentId.admin, senderParties state.transfer
+    observer receiverParties state.transfer
+    ensure isValidTransferInstructionState state
+
+    interface instance TransferInstructionV2.TransferInstruction for PolicyInstruction where
+      view = transferInstructionView state
+      transferInstruction_acceptExtraObservers _ = observer this
+      transferInstruction_rejectExtraObservers _ = observer this
+      transferInstruction_withdrawExtraObservers _ = observer this
+      transferInstruction_acceptImpl self arg = transferAcceptImpl (policyOps policy) self state arg
+      transferInstruction_rejectImpl self arg = transferRejectImpl (policyOps policy) self state arg
+      transferInstruction_withdrawImpl self arg = transferWithdrawImpl (policyOps policy) self state arg
+
+    -- | The admin expiry, taking `extraArgs` as the standard choices do.
+    choice PolicyInstruction_Expire : TransferInstructionV2.TransferInstructionResult
+      with extraArgs : ExtraArgs
+      controller state.transfer.instrumentId.admin
+      do transferExpireImpl (policyOps policy) state extraArgs
+
+template PolicyAllocation with
+    state : AllocationState
+    policy : Policy
+  where
+    signatory state.allocation.admin, accountParties state.allocation.admin state.allocation.authorizer
+    observer state.settlement.executors
+    ensure isValidAllocationState state
+
+    interface instance AllocationV2.Allocation for PolicyAllocation where
+      view = allocationView state
+      allocation_settleExtraObservers _ = observer this
+      allocation_cancelExtraObservers _ = observer this
+      allocation_withdrawExtraObservers _ = observer this
+      allocation_settleImpl self arg =
+        allocationSettleImpl (policyOps policy) (createPolicyAllocation policy) self state arg
+      allocation_withdrawImpl self arg = allocationWithdrawImpl (policyOps policy) self state arg
+      allocation_cancelImpl self arg = allocationCancelImpl (policyOps policy) self state arg
+
+template PolicyRules with
+    config : RegistryConfig
+    policy : Policy
+  where
+    signatory config.admin
+    ensure isValidRegistryConfig config
+
+    interface instance TransferInstructionV2.TransferFactory for PolicyRules where
+      view = TransferInstructionV2.TransferFactoryView with admin = config.admin; meta = emptyMetadata
+      transferFactory_publicFetchImpl = publicFetchDefaultImpl this
+      transferFactory_transferExtraObservers = transferFactoryV2_privateAsset_transferExtraObserversDefaultImpl
+      transferFactory_transferImpl _self arg =
+        transferFactoryImpl config (policyOps policy) (createPolicyInstruction policy) arg
+
+    interface instance AllocationInstructionV2.AllocationFactory for PolicyRules where
+      view = AllocationInstructionV2.AllocationFactoryView with admin = config.admin; meta = emptyMetadata
+      allocationFactory_publicFetchImpl = publicFetchDefaultImpl this
+      allocationFactory_allocateExtraObservers = privateAssetAllocateExtraObservers
+      allocationFactory_allocateImpl _self arg =
+        allocationFactoryImpl config (policyOps policy) (createPolicyAllocation policy) arg
+
+    interface instance AllocationV2.SettlementFactory for PolicyRules where
+      view = AllocationV2.SettlementFactoryView with admin = config.admin; meta = emptyMetadata
+      settlementFactory_publicFetchImpl = publicFetchDefaultImpl this
+      settlementFactory_settleBatchExtraObservers _ = []
+      settlementFactory_settleBatchImpl self arg =
+        settleBatchImpl (pinAllocationTo @PolicyAllocation) config.admin self arg
+
+    nonconsuming choice PolicyRules_ExpireAllocations : ()
+      with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]
+      controller config.admin
+      do expireAllocationsImpl (pinAllocationTo @PolicyAllocation) config.admin cancelArgs
+
+createPolicyInstruction : Policy -> CreateTransferInstruction
+createPolicyInstruction policy s =
+  toInterfaceContractId <$> create PolicyInstruction with state = s; policy
+
+createPolicyAllocation : Policy -> CreateAllocation
+createPolicyAllocation policy s =
+  toInterfaceContractId <$> create PolicyAllocation with state = s; policy
+
+-- Scenario
+-----------
+
+data World = World with
+    admin : Party
+    alice : Party
+    bob : Party
+    exchange : Party
+    rulesCid : ContractId PolicyRules
+    rulesDisclosure : Disclosure
+    policy : Policy
+
+setupWith : Policy -> Script World
+setupWith policy = do
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  exchange <- allocateParty "exchange"
+  setTime mintedAt
+  (rulesCid, rulesDisclosure) <- createRules admin policy
+  pure World with ..
+
+-- | The world with a new rules contract of the same admin under `policy`.
+withRules : World -> Policy -> Script World
+withRules w policy = do
+  (rulesCid, rulesDisclosure) <- createRules w.admin policy
+  pure w with rulesCid; rulesDisclosure; policy
+
+createRules : Party -> Policy -> Script (ContractId PolicyRules, Disclosure)
+createRules admin policy = do
+  rulesCid <- submit admin do
+    createCmd PolicyRules with
+      config = RegistryConfig with admin; maxTTL = days 2; lockGrace = hours 2
+      policy
+  Some rulesDisclosure <- queryDisclosure @PolicyRules admin rulesCid
+  pure (rulesCid, rulesDisclosure)
+
+-- | A holding of 10 for `owner`, created now under the world's policy.
+mint : World -> Party -> Script (ContractId HoldingV2.Holding)
+mint World{..} owner = do
+  now <- getTime
+  cid <- submit (actAs [admin, owner]) do
+    createCmd PolicyHolding with
+      holding = mkHoldingView admin (basicAccount owner) "TOK" 10.0 None
+      policy
+      createdAt = now
+  pure (toInterfaceContractId cid)
+
+ctx : Text -> ChoiceContext
+ctx path = ChoiceContext with values = TextMap.fromList [("test/path", AV_Text path)]
+
+withContext : ChoiceContext -> ExtraArgs
+withContext context = ExtraArgs with context; meta = emptyMetadata
+
+disclosed : World -> Party -> SubmitOptions
+disclosed w party = actAs party <> discloseMany [w.rulesDisclosure]
+
+-- | Disclosures of locked funding, as the registry serves them: the admin is
+-- the only lock holder, and it reads every holding as a signatory.
+fundingDisclosures : World -> [ContractId HoldingV2.Holding] -> Script [Disclosure]
+fundingDisclosures w cids = forA cids $ \cid -> do
+  Some d <- queryDisclosure w.admin (fromInterfaceContractId @PolicyHolding cid)
+  pure d
+
+-- | Bob with the locked funding of a pending transfer instruction disclosed.
+asReceiver
+  : World -> ContractId TransferInstructionV2.TransferInstruction -> Script SubmitOptions
+asReceiver w cid = do
+  Some v <- queryInterfaceContractId w.admin cid
+  funding <- fundingDisclosures w v.transfer.inputHoldingCids
+  pure (actAs w.bob <> discloseMany funding)
+
+-- | The exchange with the rules contract and the locked funding of `allocs`
+-- disclosed.
+asExecutor : World -> [ContractId AllocationV2.Allocation] -> Script SubmitOptions
+asExecutor w allocs = do
+  views <- forA allocs $ \cid -> do
+    Some v <- queryInterfaceContractId w.admin cid
+    pure v
+  funding <- fundingDisclosures w (concatMap (.holdingCids) views)
+  pure (disclosed w w.exchange <> discloseMany funding)
+
+-- | Alice instructs a transfer of 4 to bob, funded by `inputs`.
+transferCmd
+  : World -> ChoiceContext -> [ContractId HoldingV2.Holding]
+  -> Commands TransferInstructionV2.TransferInstructionResult
+transferCmd World{..} context inputs =
+  exerciseCmd (toInterfaceContractId @TransferInstructionV2.TransferFactory rulesCid)
+    TransferInstructionV2.TransferFactory_Transfer with
+      transfer = TransferInstructionV2.Transfer with
+        sender = basicAccount alice
+        receiver = basicAccount bob
+        amount = 4.0
+        instrumentId = HoldingV2.InstrumentId with admin; id = "TOK"
+        requestedAt = fundedAt
+        executeBefore
+        inputHoldingCids = inputs
+        meta = emptyMetadata
+      actors = [alice]
+      extraArgs = withContext context
+
+pendingTransfer
+  : World -> [ContractId HoldingV2.Holding]
+  -> Script (ContractId TransferInstructionV2.TransferInstruction)
+pendingTransfer w inputs = do
+  result <- submit (disclosed w w.alice) (transferCmd w emptyChoiceContext inputs)
+  case result.output of
+    TransferInstructionV2.TransferInstructionResult_Pending cid -> pure cid
+    other -> abort ("expected a pending transfer, got: " <> show other)
+
+acceptCmd, rejectCmd, withdrawCmd
+  : World -> ChoiceContext -> ContractId TransferInstructionV2.TransferInstruction
+  -> Commands TransferInstructionV2.TransferInstructionResult
+acceptCmd w context cid = exerciseCmd cid TransferInstructionV2.TransferInstruction_Accept with
+  actors = [w.bob]; extraArgs = withContext context
+rejectCmd w context cid = exerciseCmd cid TransferInstructionV2.TransferInstruction_Reject with
+  actors = [w.bob]; extraArgs = withContext context
+withdrawCmd w context cid = exerciseCmd cid TransferInstructionV2.TransferInstruction_Withdraw with
+  actors = [w.alice]; extraArgs = withContext context
+
+expireCmd
+  : ChoiceContext -> ContractId TransferInstructionV2.TransferInstruction
+  -> Commands TransferInstructionV2.TransferInstructionResult
+expireCmd context cid = exerciseCmd (fromInterfaceContractId @PolicyInstruction cid)
+  PolicyInstruction_Expire with extraArgs = withContext context
+
+-- | Alice sends 5 to bob in "trade-1".
+tradeLeg : World -> AllocationV2.TransferLeg
+tradeLeg World{..} = AllocationV2.TransferLeg with
+  transferLegId = "leg-1"
+  sender = basicAccount alice
+  receiver = basicAccount bob
+  amount = 5.0
+  instrumentId = "TOK"
+  meta = emptyMetadata
+
+settlementInfo : World -> AllocationV2.SettlementInfo
+settlementInfo World{..} = AllocationV2.SettlementInfo with
+  executors = [exchange]; id = "trade-1"; cid = None; meta = emptyMetadata
+
+-- | Alice's sending side of the trade, funded by `inputs`.
+allocateCmd
+  : World -> ChoiceContext -> [ContractId HoldingV2.Holding]
+  -> Commands AllocationInstructionV2.AllocationInstructionResult
+allocateCmd w context inputs = allocateSideCmd w context w.alice (senderSide (tradeLeg w)) inputs
+
+allocateSideCmd
+  : World -> ChoiceContext -> Party -> AllocationV2.TransferLegSide -> [ContractId HoldingV2.Holding]
+  -> Commands AllocationInstructionV2.AllocationInstructionResult
+allocateSideCmd w@World{..} context authorizer side inputs =
+  exerciseCmd (toInterfaceContractId @AllocationInstructionV2.AllocationFactory rulesCid)
+    AllocationInstructionV2.AllocationFactory_Allocate with
+      settlement = settlementInfo w
+      allocation = AllocationV2.AllocationSpecification with
+        admin
+        authorizer = basicAccount authorizer
+        transferLegSides = [side]
+        settlementDeadline = Some executeBefore
+        nextIterationFunding = None
+        committed = False
+        meta = emptyMetadata
+      requestedAt = fundedAt
+      inputHoldingCids = inputs
+      extraArgs = withContext context
+      actors = [authorizer]
+
+completedAllocation
+  : AllocationInstructionV2.AllocationInstructionResult -> Script (ContractId AllocationV2.Allocation)
+completedAllocation result = case result.output of
+  AllocationInstructionV2.AllocationInstructionResult_Completed cid -> pure cid
+  other -> abort ("expected a completed allocation, got: " <> show other)
+
+-- | Alice's sending allocation, funded by `inputs`, and bob's receiving one.
+allocateTrade
+  : World -> [ContractId HoldingV2.Holding]
+  -> Script (ContractId AllocationV2.Allocation, ContractId AllocationV2.Allocation)
+allocateTrade w inputs = do
+  aliceAlloc <- completedAllocation =<< submit (disclosed w w.alice) (allocateCmd w emptyChoiceContext inputs)
+  bobAlloc <- completedAllocation =<< submit (disclosed w w.bob)
+    (allocateSideCmd w emptyChoiceContext w.bob (receiverSide (tradeLeg w)) [])
+  pure (aliceAlloc, bobAlloc)
+
+settleBatchCmd
+  : World -> ChoiceContext -> (ContractId AllocationV2.Allocation, ContractId AllocationV2.Allocation)
+  -> Commands AllocationV2.SettlementFactory_SettleBatchResult
+settleBatchCmd w context (aliceAlloc, bobAlloc) =
+  exerciseCmd (toInterfaceContractId @AllocationV2.SettlementFactory w.rulesCid)
+    AllocationV2.SettlementFactory_SettleBatch with
+      settlement = settlementInfo w
+      transferLegs = [tradeLeg w]
+      allocations = map nonIteratedAllocation [aliceAlloc, bobAlloc]
+      actors = [w.exchange]
+      extraArgs = withContext context
+
+-- | `Allocation_Settle` exercised directly by the admin and the executor.
+settleCmd : World -> ChoiceContext -> ContractId AllocationV2.Allocation -> Commands AllocationV2.AllocationResult
+settleCmd w context cid = exerciseCmd cid AllocationV2.Allocation_Settle with
+  actors = [w.admin, w.exchange]
+  extraTransferLegSides = []
+  nextIterationFunding = None
+  extraArgs = withContext context
+
+cancelCmd : World -> ChoiceContext -> ContractId AllocationV2.Allocation -> Commands AllocationV2.AllocationResult
+cancelCmd w context cid = exerciseCmd cid AllocationV2.Allocation_Cancel with
+  actors = [w.exchange]; extraArgs = withContext context
+
+allocationWithdrawCmd : World -> ChoiceContext -> ContractId AllocationV2.Allocation -> Commands AllocationV2.AllocationResult
+allocationWithdrawCmd w context cid = exerciseCmd cid AllocationV2.Allocation_Withdraw with
+  actors = [w.alice]; extraArgs = withContext context
+
+-- | One operation call seen in a transaction tree.
+data OpCall = OpCall with
+    operation : Text
+    context : ChoiceContext
+  deriving (Eq, Show)
+
+opCalls : TransactionTree -> [OpCall]
+opCalls tree = concatMap opCallsIn tree.rootEvents
+
+opCallsIn : TreeEvent -> [OpCall]
+opCallsIn (CreatedEvent _) = []
+opCallsIn (ExercisedEvent ex) =
+  map (\c -> OpCall "fund" c.context)
+      (optionalToList (fromAnyChoice @PolicyHolding ex.argument : Optional PolicyHolding_Fund))
+  <> map (\c -> OpCall "deliver" c.context)
+      (optionalToList (fromAnyChoice @PolicyHolding ex.argument : Optional PolicyHolding_Deliver))
+  <> map (\c -> OpCall "return" c.context)
+      (optionalToList (fromAnyChoice @PolicyHolding ex.argument : Optional PolicyHolding_Return))
+  <> concatMap opCallsIn ex.childEvents
+
+-- | The amounts `owner` holds.
+balanceOf : Party -> Script [Decimal]
+balanceOf owner = do
+  holdings <- query @PolicyHolding owner
+  pure (sort [h.holding.amount | (_, h) <- holdings, h.holding.account.owner == Some owner])
+
+assertNoLocks : Party -> Script ()
+assertNoLocks owner = do
+  holdings <- query @PolicyHolding owner
+  all (\(_, h) -> isNone h.holding.lock) holdings === True
+
+mustFailWith : Text -> SubmitOptions -> Commands a -> Script ()
+mustFailWith expected options cmds = do
+  result <- trySubmit options cmds
+  case result of
+    Right _ -> abort "submission succeeded but was expected to fail"
+    Left err -> unless (expected `isInfixOf` show err) $
+      abort ("submission failed for an unexpected reason: " <> show err)
+
+-- Scripts
+----------
+
+-- | A minimum-age rule in `fundHolding` gates only new spending. A holding
+-- minted at funding time cannot fund a transfer or an allocation. The
+-- funding a workflow has just locked is younger still, yet every path that
+-- pays it out or returns it runs: accept, reject, withdraw, expire, batch
+-- settlement, allocation withdraw, and cancel.
+testMinimumAgeFundRuleGatesOnlyFunding : Script ()
+testMinimumAgeFundRuleGatesOnlyFunding = do
+  w@World{..} <- setupWith allowAll with fundRule = MinAge (days 1)
+  [i1, i2, i3, i4, i5, i6, i7] <- replicateA 7 (mint w alice)
+  setTime fundedAt
+  fresh <- mint w alice
+  mustFailWith "fund rule: holding is younger than the minimum age" (disclosed w alice)
+    (transferCmd w emptyChoiceContext [fresh])
+  mustFailWith "fund rule: holding is younger than the minimum age" (disclosed w alice)
+    (allocateCmd w emptyChoiceContext [fresh])
+
+  accepted <- pendingTransfer w [i1]
+  rejected <- pendingTransfer w [i2]
+  withdrawn <- pendingTransfer w [i3]
+  expiring <- pendingTransfer w [i4]
+  acceptAs <- asReceiver w accepted
+  _ <- submit acceptAs (acceptCmd w emptyChoiceContext accepted)
+  rejectAs <- asReceiver w rejected
+  _ <- submit rejectAs (rejectCmd w emptyChoiceContext rejected)
+  _ <- submit (actAs alice) (withdrawCmd w emptyChoiceContext withdrawn)
+
+  trade@(aliceAlloc, bobAlloc) <- allocateTrade w [i5]
+  settleAs <- asExecutor w [aliceAlloc, bobAlloc]
+  _ <- submit settleAs (settleBatchCmd w emptyChoiceContext trade)
+  (withdrawnAlloc, _) <- allocateTrade w [i6]
+  _ <- submit (actAs alice) (allocationWithdrawCmd w emptyChoiceContext withdrawnAlloc)
+  (cancelledAlloc, _) <- allocateTrade w [i7]
+  cancelAs <- asExecutor w [cancelledAlloc]
+  _ <- submit cancelAs (cancelCmd w emptyChoiceContext cancelledAlloc)
+
+  setTime expiredAt
+  _ <- submit (actAs admin) (expireCmd emptyChoiceContext expiring)
+  assertNoLocks alice
+  balanceOf bob >>= (=== [4.0, 5.0])
+  -- 80 minted, 9 paid to bob.
+  sum <$> balanceOf alice >>= (=== 71.0)
+
+-- | A refusing `deliverHolding` blocks accept and settle, directly or in a
+-- batch, while every return path still gives the funds back: the same
+-- instruction and allocation that refused to pay out are rejected and
+-- cancelled.
+testRefusingDeliverRuleBlocksOnlyPayouts : Script ()
+testRefusingDeliverRuleBlocksOnlyPayouts = do
+  w@World{..} <- setupWith allowAll with deliverRule = Refuse
+  [i1, i2, i3, i4, i5] <- replicateA 5 (mint w alice)
+  setTime fundedAt
+
+  instr <- pendingTransfer w [i1]
+  receiverAs <- asReceiver w instr
+  mustFailWith "deliver rule refuses" receiverAs (acceptCmd w emptyChoiceContext instr)
+  _ <- submit receiverAs (rejectCmd w emptyChoiceContext instr)
+  withdrawn <- pendingTransfer w [i2]
+  _ <- submit (actAs alice) (withdrawCmd w emptyChoiceContext withdrawn)
+  expiring <- pendingTransfer w [i3]
+
+  trade@(aliceAlloc, bobAlloc) <- allocateTrade w [i4]
+  executorAs <- asExecutor w [aliceAlloc, bobAlloc]
+  mustFailWith "deliver rule refuses" executorAs (settleBatchCmd w emptyChoiceContext trade)
+  mustFailWith "deliver rule refuses" (actAs [admin, exchange]) (settleCmd w emptyChoiceContext aliceAlloc)
+  _ <- submit executorAs (cancelCmd w emptyChoiceContext aliceAlloc)
+  (withdrawnAlloc, _) <- allocateTrade w [i5]
+  _ <- submit (actAs alice) (allocationWithdrawCmd w emptyChoiceContext withdrawnAlloc)
+
+  setTime expiredAt
+  _ <- submit (actAs admin) (expireCmd emptyChoiceContext expiring)
+  assertNoLocks alice
+  balanceOf bob >>= (=== [])
+  sum <$> balanceOf alice >>= (=== 50.0)
+
+-- | A refusing `returnHolding` blocks reject, withdraw, expire, allocation
+-- withdraw, and cancel, while accept and settle still pay out the same
+-- instruction and allocation. The owner unlock runs outside the operations,
+-- so once the lock expires the owner recovers funding the rule held.
+testRefusingReturnRuleBlocksOnlyReturns : Script ()
+testRefusingReturnRuleBlocksOnlyReturns = do
+  w@World{..} <- setupWith allowAll with returnRule = Refuse
+  [i1, i2, i3] <- replicateA 3 (mint w alice)
+  setTime fundedAt
+
+  instr <- pendingTransfer w [i1]
+  receiverAs <- asReceiver w instr
+  mustFailWith "return rule refuses" receiverAs (rejectCmd w emptyChoiceContext instr)
+  mustFailWith "return rule refuses" (actAs alice) (withdrawCmd w emptyChoiceContext instr)
+  _ <- submit receiverAs (acceptCmd w emptyChoiceContext instr)
+
+  trade@(aliceAlloc, bobAlloc) <- allocateTrade w [i2]
+  executorAs <- asExecutor w [aliceAlloc, bobAlloc]
+  mustFailWith "return rule refuses" executorAs (cancelCmd w emptyChoiceContext aliceAlloc)
+  mustFailWith "return rule refuses" (actAs alice) (allocationWithdrawCmd w emptyChoiceContext aliceAlloc)
+  _ <- submit executorAs (settleBatchCmd w emptyChoiceContext trade)
+
+  expiring <- pendingTransfer w [i3]
+  setTime expiredAt
+  mustFailWith "return rule refuses" (actAs admin) (expireCmd emptyChoiceContext expiring)
+
+  setTime lockExpired
+  [(lockedCid, _)] <- queryFilter @PolicyHolding alice (\h -> isSome h.holding.lock)
+  _ <- submit (actAs alice) do exerciseCmd lockedCid PolicyHolding_OwnerUnlock
+  assertNoLocks alice
+  balanceOf bob >>= (=== [4.0, 5.0])
+  sum <$> balanceOf alice >>= (=== 21.0)
+
+-- | Each operation receives the context its submitter passed: the factory's
+-- for every input it funds, and each accept, reject, withdraw, expiry,
+-- direct settle, allocation withdraw, and cancel its own, including a
+-- cancel run from the admin's expiry batch. Batch settlement passes
+-- `deliverHolding` an empty context whatever the batch carried.
+testOperationsReceiveTheSubmittersContext : Script ()
+testOperationsReceiveTheSubmittersContext = do
+  w@World{..} <- setupWith allowAll
+  [i1, i2, i3, i4, i5, i6, i7, i8, i9, i10] <- replicateA 10 (mint w alice)
+  setTime fundedAt
+
+  (instructed, tree) <- submitResultAndTree (disclosed w alice) (transferCmd w (ctx "transfer") [i1, i2])
+  opCalls tree === [OpCall "fund" (ctx "transfer"), OpCall "fund" (ctx "transfer")]
+  accepted <- case instructed.output of
+    TransferInstructionV2.TransferInstructionResult_Pending cid -> pure cid
+    other -> abort ("expected a pending transfer, got: " <> show other)
+  acceptAs <- asReceiver w accepted
+  tree <- submitTree acceptAs (acceptCmd w (ctx "accept") accepted)
+  opCalls tree === [OpCall "deliver" (ctx "accept")]
+
+  rejected <- pendingTransfer w [i3]
+  rejectAs <- asReceiver w rejected
+  tree <- submitTree rejectAs (rejectCmd w (ctx "reject") rejected)
+  opCalls tree === [OpCall "return" (ctx "reject")]
+
+  withdrawn <- pendingTransfer w [i4]
+  tree <- submitTree (actAs alice) (withdrawCmd w (ctx "withdraw") withdrawn)
+  opCalls tree === [OpCall "return" (ctx "withdraw")]
+
+  expiring <- pendingTransfer w [i5]
+
+  (allocated, tree) <- submitResultAndTree (disclosed w alice) (allocateCmd w (ctx "allocate") [i6])
+  opCalls tree === [OpCall "fund" (ctx "allocate")]
+  aliceAlloc <- completedAllocation allocated
+  bobAlloc <- completedAllocation =<< submit (disclosed w bob)
+    (allocateSideCmd w emptyChoiceContext bob (receiverSide (tradeLeg w)) [])
+  -- Both sides settled directly in one submission, so value is conserved.
+  tree <- submitTree (actAs [admin, exchange])
+    (settleCmd w (ctx "settle") aliceAlloc *> settleCmd w (ctx "settle") bobAlloc)
+  opCalls tree === [OpCall "deliver" (ctx "settle")]
+
+  (cancelled, _) <- allocateTrade w [i7]
+  cancelAs <- asExecutor w [cancelled]
+  tree <- submitTree cancelAs (cancelCmd w (ctx "cancel") cancelled)
+  opCalls tree === [OpCall "return" (ctx "cancel")]
+
+  (withdrawnAlloc, _) <- allocateTrade w [i8]
+  tree <- submitTree (actAs alice) (allocationWithdrawCmd w (ctx "allocation withdraw") withdrawnAlloc)
+  opCalls tree === [OpCall "return" (ctx "allocation withdraw")]
+
+  trade@(tradeAlloc, tradeBobAlloc) <- allocateTrade w [i9]
+  settleAs <- asExecutor w [tradeAlloc, tradeBobAlloc]
+  tree <- submitTree settleAs (settleBatchCmd w (ctx "batch") trade)
+  opCalls tree === [OpCall "deliver" emptyChoiceContext]
+
+  (expiringAlloc, _) <- allocateTrade w [i10]
+  setTime expiredAt
+  tree <- submitTree (actAs admin) (expireCmd (ctx "expire") expiring)
+  opCalls tree === [OpCall "return" (ctx "expire")]
+  tree <- submitTree (actAs admin) do
+    exerciseCmd rulesCid PolicyRules_ExpireAllocations with
+      cancelArgs =
+        [ ( expiringAlloc
+          , AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = withContext (ctx "admin cancel") ) ]
+  opCalls tree === [OpCall "return" (ctx "admin cancel")]
+  assertNoLocks alice
+
+-- | The admin's expiry batch cancels its allocations in one transaction, so
+-- one allocation whose `returnHolding` refuses fails the whole batch. The
+-- batch without it goes through.
+testOneRefusingReturnFailsTheExpiryBatch : Script ()
+testOneRefusingReturnFailsTheExpiryBatch = do
+  w@World{..} <- setupWith allowAll
+  [i1, i2] <- replicateA 2 (mint w alice)
+  refusing <- withRules w (allowAll with returnRule = Refuse)
+  setTime fundedAt
+  (allowed, _) <- allocateTrade w [i1]
+  (held, _) <- allocateTrade refusing [i2]
+  setTime expiredAt
+  let expireCmdFor allocs = exerciseCmd rulesCid PolicyRules_ExpireAllocations with
+        cancelArgs =
+          [ (cid, AllocationV2.Allocation_Cancel with actors = [admin]; extraArgs = withContext emptyChoiceContext)
+          | cid <- allocs ]
+  mustFailWith "return rule refuses" (actAs admin) (expireCmdFor [allowed, held])
+  submit (actAs admin) (expireCmdFor [allowed])
+  [(_, stillLocked)] <- queryFilter @PolicyHolding alice (\h -> isSome h.holding.lock)
+  stillLocked.policy === refusing.policy

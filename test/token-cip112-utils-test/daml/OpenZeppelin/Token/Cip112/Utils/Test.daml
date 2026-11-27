@@ -3,9 +3,10 @@
 -- against a minimal local template it accepts and a foreign template it must
 -- refuse. The consumption and expiry bodies are run here too, for the
 -- guards that only a consumer's own `HoldingOps` or allocation template can
--- reach. The full workflows run under `test/token-cip112-v1-test` through the
--- default templates and under `examples/token/token-cip112-custom-test`
--- through a consumer's templates.
+-- reach. `OpenZeppelin.Token.Cip112.Utils.Test.Operations` runs every
+-- workflow path through operations with a spend rule. The full workflows run
+-- under `test/token-cip112-v1-test` through the default templates and under
+-- `examples/token/token-cip112-custom-test` through a consumer's templates.
 module OpenZeppelin.Token.Cip112.Utils.Test where
 
 import DA.Action (unless)
@@ -119,12 +120,19 @@ template Harness with
     nonconsuming choice Harness_ConsumeLocked : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
       controller actors
-      do consumeLockedHolding unitOps admin expectedAccount cid
+      do consumeLockedHolding unitOps emptyChoiceContext admin expectedAccount cid
 
     nonconsuming choice Harness_ConsumeUnlocked : HoldingV2.HoldingView
       with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
       controller actors
-      do consumeUnlockedHolding unitOps admin expectedAccount cid
+      do consumeUnlockedHolding unitOps emptyChoiceContext admin expectedAccount cid
+
+    nonconsuming choice Harness_UnlockHoldings : ()
+      with cid : ContractId HoldingV2.Holding; expectedAccount : HoldingV2.Account; actors : [Party]
+      controller actors
+      do
+        _ <- unlockHoldings unitOps emptyChoiceContext admin expectedAccount [cid]
+        pure ()
 
     nonconsuming choice Harness_ExpireAllocations : ()
       with cancelArgs : [(ContractId AllocationV2.Allocation, AllocationV2.Allocation_Cancel)]; actors : [Party]
@@ -139,11 +147,10 @@ template Harness with
 -- | The operations the harness runs the bodies with. Events are not under
 -- test here, so emission does nothing.
 unitOps : HoldingOps
-unitOps = HoldingOps with
-  createHolding = \v -> toInterfaceContractId <$> create UnitHolding with holding = v
-  consumeHolding = consumeByArchive @UnitHolding
-  withEventLog = \_ -> pure ()
-  eventObservers = const []
+unitOps = holdingOpsFor @UnitHolding
+  (\v -> toInterfaceContractId <$> create UnitHolding with holding = v)
+  (\_ -> pure ())
+  (const [])
 
 basicOwner : HoldingV2.HoldingView -> Party
 basicOwner v = case v.account.owner of
@@ -474,7 +481,9 @@ testEventObserversFor = do
   let account = HoldingV2.Account with owner = Some alice; provider = Some provider; id = "custody"
       ops = HoldingOps with
         createHolding = \_ -> fail "unused"
-        consumeHolding = \_ -> fail "unused"
+        fundHolding = \_ _ -> fail "unused"
+        deliverHolding = \_ _ -> fail "unused"
+        returnHolding = \_ _ -> fail "unused"
         withEventLog = \_ -> fail "unused"
         eventObservers = const [auditor, alice]
   eventObserversFor ops admin account === dedupSort (accountParties admin account <> [auditor])
@@ -498,7 +507,7 @@ savingsAccount owner = HoldingV2.Account with owner = Some owner; provider = Non
 
 -- | The default templates need the instrument admin's authority to consume a
 -- holding, so another admin's holding fails authorization first. A consumer
--- whose `consumeHolding` needs less authority relies on this check.
+-- whose `deliverHolding` needs less authority relies on this check.
 testConsumeLockedRefusesOtherAdmin : Script ()
 testConsumeLockedRefusesOtherAdmin = do
   Fixture{..} <- setup
@@ -524,6 +533,32 @@ testConsumeLockedRefusesUnlockedHolding = do
   cid <- unitHolding admin alice (basicAccount alice) None
   mustFailWith "input holding must be locked" (actAs admin) $
     exerciseCmd harnessCid Harness_ConsumeLocked with
+      cid; expectedAccount = basicAccount alice; actors = [admin]
+
+-- | `unlockHoldings` makes the same three checks on the holdings it returns.
+testUnlockHoldingsRefusesOtherAdmin : Script ()
+testUnlockHoldingsRefusesOtherAdmin = do
+  Fixture{..} <- setup
+  otherAdmin <- allocateParty "otherAdmin"
+  cid <- unitHolding otherAdmin alice (basicAccount alice) (Some (lockUntil otherAdmin (Some t2)))
+  mustFailWith "'inputHolding.instrumentId.admin' is not equal to" (actAs [admin, otherAdmin]) $
+    exerciseCmd harnessCid Harness_UnlockHoldings with
+      cid; expectedAccount = basicAccount alice; actors = [admin, otherAdmin]
+
+testUnlockHoldingsRefusesOtherAccount : Script ()
+testUnlockHoldingsRefusesOtherAccount = do
+  Fixture{..} <- setup
+  cid <- unitHolding admin alice (savingsAccount alice) (Some (lockUntil admin (Some t2)))
+  mustFailWith "'inputHolding.account' is not equal to" (actAs admin) $
+    exerciseCmd harnessCid Harness_UnlockHoldings with
+      cid; expectedAccount = basicAccount alice; actors = [admin]
+
+testUnlockHoldingsRefusesUnlockedHolding : Script ()
+testUnlockHoldingsRefusesUnlockedHolding = do
+  Fixture{..} <- setup
+  cid <- unitHolding admin alice (basicAccount alice) None
+  mustFailWith "input holding must be locked" (actAs admin) $
+    exerciseCmd harnessCid Harness_UnlockHoldings with
       cid; expectedAccount = basicAccount alice; actors = [admin]
 
 testConsumeUnlockedRefusesOtherAdmin : Script ()
