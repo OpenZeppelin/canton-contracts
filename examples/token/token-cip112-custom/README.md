@@ -133,7 +133,8 @@ change who controls it. To replace the party:
 1. The pauser pauses the earlier rules, and the admin creates the new ones.
    The paused rules refuse new transfers, allocations, settlements, and
    mints. `MyRules_OpenAccount` and the admin's expiry choices still run on
-   them. The earlier rules stay paused until the admin archives them.
+   them. The earlier rules stay paused until the admin and the pauser
+   archive them.
 2. The earlier officer opens a status, through the paused rules, for each
    receiver of a pending instruction and each authorizer of a pending
    allocation that has none. These parties receive holdings under the
@@ -147,7 +148,7 @@ change who controls it. To replace the party:
 
 The earlier officer keeps its statuses live, and freezes through them, until
 no earlier holding or pending instruction or allocation is left. The admin
-then archives the earlier rules.
+and the pauser then archive the earlier rules in one transaction.
 
 No workflow body changes. `token-cip112-custom-test` drives the token through the
 standard interfaces and checks each addition.
