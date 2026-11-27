@@ -97,6 +97,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   split choices on a holding template. A merge consumes its inputs through
   `fundHolding`. Both conserve value, emit a holdings-change event with no
   transfer legs, and refuse an exercised holding with any lock.
+- `HoldingOps h` takes the owner's per-holding state as a type parameter.
+  The consumption operations return each consumed holding's view and state,
+  and `createHolding` receives the states of the holdings that fund the new
+  one, so a consumer template field can survive re-creation on transfers,
+  allocations, returns, unlocks, merges, and splits. `consumeByArchive @T`
+  returns the archived `T`, `holdingOpsFor @T` builds a `HoldingOps T`, and
+  `holdingOwnerUnlockImpl`, `holdingAdminUnlockImpl`, `holdingMergeImpl`,
+  and `holdingSplitImpl` take the exercised holding's state.
 
 ### `openzeppelin-token-cip112-v1`
 

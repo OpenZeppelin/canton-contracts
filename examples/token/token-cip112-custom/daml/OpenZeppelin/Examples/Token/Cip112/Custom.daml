@@ -97,11 +97,14 @@ template MyEventLog with
 -- funding a workflow, from being paid out of one, and from being returned
 -- to its owner.
 --
+-- `createHolding` ignores its sources. `roles` is the holding's only field
+-- outside the view, and the freeze lives on the account's `MyAccountStatus`.
+--
 -- An accepted holding is a `MyHolding` that names this contract's pauser.
 -- The template check stops a foreign `Holding`. The pauser check stops a
 -- `MyHolding` created through contracts the admin signed with a pauser it
 -- controls, which would otherwise fund or settle against this token.
-myOps : Party -> AppRoles -> HoldingOps
+myOps : Party -> AppRoles -> HoldingOps MyHolding
 myOps admin roles = HoldingOps with
     createHolding = createMyHolding
     fundHolding = spend
@@ -110,7 +113,7 @@ myOps admin roles = HoldingOps with
     withEventLog = withMyEventLog
     eventObservers = auditorObserves
   where
-    createMyHolding v = toInterfaceContractId <$> create MyHolding with holding = v; roles
+    createMyHolding _sources v = toInterfaceContractId <$> create MyHolding with holding = v; roles
     withMyEventLog emit = do
       cid <- create MyEventLog with admin
       emit (toInterfaceContractId cid)
@@ -127,7 +130,8 @@ myOps admin roles = HoldingOps with
         Some (tcid, h) -> do
           require "holding names a different pauser" (h.roles.pauser == roles.pauser)
           statusCid <- statusFromContext context
-          exercise tcid MyHolding_Spend with statusCid
+          v <- exercise tcid MyHolding_Spend with statusCid
+          pure (v, h)
 
 -- Account status
 -----------------
@@ -234,7 +238,7 @@ template MyHolding with
       controller accountParties holding.instrumentId.admin holding.account
       do
         requireNotFrozen roles holding statusCid
-        holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
+        holdingOwnerUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding this
 
     choice MyHolding_Merge : ContractId HoldingV2.Holding
       -- ^ Merge other holdings of this account and instrument into this one.
@@ -257,7 +261,7 @@ template MyHolding with
           forA_ fetched $ \(_, input) ->
             require "input holding carries other roles" (input.roles == roles)
         holdingMergeImpl (myOps holding.instrumentId.admin roles) (accountStatusContext statusCid)
-          (toInterfaceContractId self) holding inputHoldingCids
+          (toInterfaceContractId self) holding this inputHoldingCids
 
     choice MyHolding_Split : [ContractId HoldingV2.Holding]
       -- ^ Split this holding into one holding per amount. Refused while the
@@ -268,7 +272,7 @@ template MyHolding with
       controller accountParties holding.instrumentId.admin holding.account
       do
         requireNotFrozen roles holding statusCid
-        holdingSplitImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding amounts
+        holdingSplitImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding this amounts
 
     -- | Unlock an expired lock with the admin's authority alone. Refused
     -- while the account is frozen, for the same reason as
@@ -279,7 +283,7 @@ template MyHolding with
       controller holding.instrumentId.admin
       do
         requireNotFrozen roles holding statusCid
-        holdingAdminUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding
+        holdingAdminUnlockImpl (myOps holding.instrumentId.admin roles) (toInterfaceContractId self) holding this
 
     interface instance HoldingV2.Holding for MyHolding where
       view = holding
@@ -545,7 +549,7 @@ createAllocation rules s =
 
 -- | One class so every template builds its ops the same way.
 class HasOps t where
-  ops : t -> HoldingOps
+  ops : t -> HoldingOps MyHolding
 
 instance HasOps MyHolding where
   ops this = myOps this.holding.instrumentId.admin this.roles

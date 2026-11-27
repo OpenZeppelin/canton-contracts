@@ -47,5 +47,5 @@ template TokenTransferInstruction with
       controller state.transfer.instrumentId.admin
       do transferExpireImpl (instructionOps state) state extraArgs
 
-instructionOps : TransferInstructionState -> HoldingOps
+instructionOps : TransferInstructionState -> HoldingOps TokenHolding
 instructionOps s = defaultHoldingOps s.transfer.instrumentId.admin

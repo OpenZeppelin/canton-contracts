@@ -13,19 +13,23 @@ functions, with every template decision left to the caller.
 
 ## What it provides
 
-- `HoldingOps`: the record a template owner builds inside a choice body with
-  `createHolding`, three consumption operations, `withEventLog`, and
+- `HoldingOps h`: the record a template owner builds inside a choice body
+  with `createHolding`, three consumption operations, `withEventLog`, and
   `eventObservers` (extra informees of every holdings-change event, for
   auditors and regulators who must see the standard event stream). The
   consumption operations split by where the value goes: `fundHolding` for
   caller-supplied inputs, `deliverHolding` for locked funding paid out, and
   `returnHolding` for locked funding returned to its owner. Each receives the
-  `ChoiceContext` of the choice the workflow runs in. The record holds
-  functions, so it is never stored.
-- `holdingOpsFor @T`: a `HoldingOps` whose three consumption operations are
-  `consumeByArchive @T`, ready to override one operation with `with`.
+  `ChoiceContext` of the choice the workflow runs in, and returns the
+  consumed holding's view and its state `h`, usually the holding template.
+  `createHolding` receives the new holding's sources (see
+  [Holding state across re-creation](#holding-state-across-re-creation)).
+  The record holds functions, so it is never stored.
+- `holdingOpsFor @T`: a `HoldingOps T` whose three consumption operations
+  are `consumeByArchive @T`, ready to override one operation with `with`.
 - `consumeByArchive @T` and `pinAllocationTo @T`: the safe ways to write the
   consumption and allocation policies, pinned to one template.
+  `consumeByArchive @T` returns the archived `T` as the state.
 - `privateAssetAllocateExtraObservers`: the allocation factory's extra
   observers, which admit the settlement executors only to a call that needs
   no funding and names no input holdings.
@@ -52,6 +56,42 @@ The functions read and return the `RegistryConfig`,
 `TransferInstructionState`, and `AllocationState` records of
 `openzeppelin-token-cip112-types-v1`.
 
+## Holding state across re-creation
+
+The workflows consume holdings and create new ones in their place, building
+each new holding through `createHolding` from its standard view and its
+sources: the states of the holdings consumed in the same step whose value
+funds it, all in its instrument, in the order the workflow consumed them.
+
+| Path | Consumed through | New holdings and their sources |
+|---|---|---|
+| Transfer factory, including one-step transfers and burns | `fundHolding` | The sender's change, the locked funding, and a one-step receiver's holding, each from the inputs |
+| Accept of a pending transfer | `deliverHolding` | The receiver's holding from the locked funding in the transfer's instrument, and the surplus in each instrument from that instrument's locked funding |
+| Accept of a mint offer | Nothing | The minted holding, with no sources |
+| Reject, withdraw, and expiry of a pending transfer | `returnHolding` | One returned holding per locked holding, each from the holding it replaces |
+| Allocation factory | `fundHolding` | The locked funding and the change in each instrument, from that instrument's inputs |
+| Settlement of an allocation | `deliverHolding` | The next-iteration reserve and the authorizer's payout in each instrument, from that instrument's locked funding; none for an instrument without locked funding |
+| Withdraw, cancel, and expiry of an allocation | `returnHolding` | One returned holding per locked holding, each from the holding it replaces |
+| Owner unlock and admin unlock | The unlock choice | The unlocked holding, from the exercised holding |
+| Merge | The merge choice, and `fundHolding` for the inputs | The merged holding, from the exercised holding and then the inputs |
+| Split | The split choice | Every part, from the exercised holding |
+
+A template field outside the view keeps its value across re-creation only
+when the closure derives it from the sources, and otherwise resets to the
+closure's value. Every holding a factory, accept, or settlement creates in
+one instrument receives the same sources, and the submitter picks the order
+of a factory's inputs, so derive a field as the sources' most restrictive
+value, such as the latest issue date, rather than the first source's or a
+sum. The sources of a transfer receiver's holding are the sender's, so
+compare each source's account with the new holding's to decide which fields
+follow value between accounts. A settlement passes only the authorizer's
+locked holdings, so state follows value through a transfer but not through
+a settlement.
+
+Keep a restriction that must hold while funds are in flight, such as a
+compliance freeze, on a separate per-account contract. The `HoldingOps`
+doc comment names the funds that a field on the holding misses.
+
 ## Compatibility
 
 The package defines no templates, interfaces, exceptions, or serializable
@@ -66,8 +106,8 @@ contract id enters through an operation the template owner wrote:
 
 - `fundHolding`, `deliverHolding`, and `returnHolding` must each fail on any
   holding that is not an accepted implementation, and otherwise archive it
-  and return its view. The workflows credit that view, so an operation that
-  leaves the holding live lets it be spent again. Use
+  and return its view and state. The workflows credit that view, so an
+  operation that leaves the holding live lets it be spent again. Use
   `holdingOpsFor @YourHolding`, or a consuming spend choice reached through
   `fetchFromInterface @YourHolding`. Never archive a caller-supplied id by
   interface.
@@ -141,8 +181,8 @@ contract id enters through an operation the template owner wrote:
   batch and every holding the expiries release. To show a party one account's
   holdings-change events, return the party from `eventObservers` for that
   account.
-- `createHolding` must create a contract whose view equals the argument and
-  whose signatories include the admin and the account parties.
+- `createHolding` must create a contract whose view equals the view
+  argument and whose signatories include the admin and the account parties.
 - The settlement factory must settle through `settleBatchImpl`, or keep its
   exact-cover check: every leg in the batch needs a sending and a receiving
   allocation with the same amount. Without it, a settlement can create

@@ -48,7 +48,7 @@ template TokenHolding with
       -- this template's signatories, so the account parties exercise alone.
       controller accountParties holding.instrumentId.admin holding.account
       do holdingOwnerUnlockImpl (defaultHoldingOps holding.instrumentId.admin)
-           (toInterfaceContractId self) holding
+           (toInterfaceContractId self) holding this
 
     choice TokenHolding_AdminUnlock : ContractId HoldingV2.Holding
       -- ^ Return a holding whose lock has expired to its account, unlocked,
@@ -57,7 +57,7 @@ template TokenHolding with
       -- account parties can already spend this holding as unlocked.
       controller holding.instrumentId.admin
       do holdingAdminUnlockImpl (defaultHoldingOps holding.instrumentId.admin)
-           (toInterfaceContractId self) holding
+           (toInterfaceContractId self) holding this
 
     choice TokenHolding_Merge : ContractId HoldingV2.Holding
       -- ^ Merge other holdings of the same account and instrument into this
@@ -71,7 +71,7 @@ template TokenHolding with
         inputHoldingCids : [ContractId HoldingV2.Holding]
       controller accountParties holding.instrumentId.admin holding.account
       do holdingMergeImpl (defaultHoldingOps holding.instrumentId.admin) emptyChoiceContext
-           (toInterfaceContractId self) holding inputHoldingCids
+           (toInterfaceContractId self) holding this inputHoldingCids
 
     choice TokenHolding_Split : [ContractId HoldingV2.Holding]
       -- ^ Split this holding into one holding per entry of `amounts`,
@@ -82,17 +82,17 @@ template TokenHolding with
         amounts : [Decimal]
       controller accountParties holding.instrumentId.admin holding.account
       do holdingSplitImpl (defaultHoldingOps holding.instrumentId.admin)
-           (toInterfaceContractId self) holding amounts
+           (toInterfaceContractId self) holding this amounts
 
     interface instance HoldingV2.Holding for TokenHolding where
       view = holding
 
 -- | Build the operations the default templates run the workflows with:
--- create `TokenHolding`, consume by archiving a pinned `TokenHolding` in
--- all three consumption operations, and emit through a transient
--- `TokenEventLog`.
-defaultHoldingOps : Party -> HoldingOps
+-- create `TokenHolding` from the view alone, consume by archiving a pinned
+-- `TokenHolding` in all three consumption operations, and emit through a
+-- transient `TokenEventLog`.
+defaultHoldingOps : Party -> HoldingOps TokenHolding
 defaultHoldingOps admin = holdingOpsFor @TokenHolding
-  (\v -> toInterfaceContractId <$> create TokenHolding with holding = v)
+  (\_ v -> toInterfaceContractId <$> create TokenHolding with holding = v)
   (withTempEventLog admin)
   (const [])

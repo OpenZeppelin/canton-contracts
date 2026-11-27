@@ -35,7 +35,7 @@ template TokenAllocation with
       -- `allocationCancelImpl` describes.
       allocation_cancelImpl self arg = allocationCancelImpl (allocationOps state) self state arg
 
-allocationOps : AllocationState -> HoldingOps
+allocationOps : AllocationState -> HoldingOps TokenHolding
 allocationOps s = defaultHoldingOps s.allocation.admin
 
 -- | Iteration successors are the same template with a new payload.
